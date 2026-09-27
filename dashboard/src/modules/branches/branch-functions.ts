@@ -1,8 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 import { createBranch, setBranchSetupDefaults } from "./branch-operations.server";
+import { mergeBranch } from "./branch-merge.server";
 import { updateBranch } from "./branch-update.server";
-import { CreateBranch, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
+import { CreateBranch, MergeBranch, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -20,3 +21,8 @@ export const updateBranchServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(UpdateBranch))
   .handler(({ context, data }) => runActor(context, updateBranch(context.actor, data)));
+
+export const mergeBranchServerFn = createServerFn({ method: "POST" })
+  .middleware(middleware)
+  .validator(strictValidator(MergeBranch))
+  .handler(({ context, data }) => runActor(context, mergeBranch(context.actor, data)));

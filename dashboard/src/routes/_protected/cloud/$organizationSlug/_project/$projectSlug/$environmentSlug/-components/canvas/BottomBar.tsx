@@ -92,7 +92,7 @@ export function BottomBar({
   const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
   // The server's gate (assertBranchSettled) is the same: an empty Environment Change Set and no active attempt.
-  const unsettled = totalChanges > 0 ? "Deploy or discard the changes staged here first."
+  const unsettled = hasChanges ? "Deploy or discard the changes staged here first."
     : active.length ? "Wait for this branch's deployment to finish." : null;
   useEffect(() => setUnsettled(unsettled), [setUnsettled, unsettled]);
 

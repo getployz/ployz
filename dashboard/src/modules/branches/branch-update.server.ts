@@ -9,7 +9,6 @@ import { withMutationResult } from "#/server/mutation-result.server";
 import { environment, environmentBranch } from "#/modules/project/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
 import { loadCurrentEnvironmentState, loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
-import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introduction.repository.server";
 import { parseDashboardEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
@@ -17,7 +16,7 @@ import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock
 import { branchHostnameSuffix } from "./branch-plan";
 import { rowLineage, usedLive } from "./branch-review";
 import { assertBranchSettled } from "./branch-guard.server";
-import { copyIdentityRows } from "./branch-operations.server";
+import { captureIntroductions, copyIdentities } from "./branch-operations.server";
 import { liveOwner } from "./live-owner";
 import type { UpdateBranch } from "./branch-schemas";
 
@@ -81,10 +80,9 @@ export const updateBranch = Effect.fn("Branches.updateBranch")(function* (actor:
 
     const services = next.services.filter((node) => !into.services.some((own) => own.id === node.id));
     const volumes = next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId));
-    yield* copyIdentityRows({ project, sourceId: source.id, environmentId: document.id, services, volumes });
+    yield* copyIdentities({ project, from: source.id, to: document.id, services, volumes });
     const written = yield* writeEnvironmentDocument(document, next);
-    for (const node of services) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "service", nodeId: node.id });
-    for (const node of volumes) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "volume", nodeId: node.resourceId });
+    yield* captureIntroductions(document.id, services, volumes);
     yield* drizzle.update(environmentBranch).set({ base: parseDashboardEnvironmentIntent(applied.base) })
       .where(eq(environmentBranch.environmentId, document.id));
     return written;

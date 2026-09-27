@@ -168,7 +168,7 @@ describe("updateBranch", () => {
     expect(await updateRows(branchId)).toEqual([]);
 
     // Staged until the Branch deploys; then Update has nothing to take.
-    expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("hasn't deployed") });
+    expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("aren't deployed") });
     await deploy(branchId);
     expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: "Nothing new in production." });
   });
@@ -176,7 +176,7 @@ describe("updateBranch", () => {
   it("is refused while the Branch has an active attempt", async () => {
     const branchId = await branchOfWeb();
     await deploy(branchId, "queued");
-    expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("deploying") });
+    expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("still running") });
   });
 
   it("turns a Live Node into an Own Copy, with an empty copy of the Volume it mounts", async () => {

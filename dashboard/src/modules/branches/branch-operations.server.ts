@@ -12,7 +12,7 @@ import { getEnvironmentContextForActorById } from "#/modules/environment-design/
 import { createEnvironmentRecord } from "#/modules/environment-design/workspace-repository.server";
 import { loadCurrentEnvironmentSnapshotProjection, loadCurrentEnvironmentState, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introduction.repository.server";
-import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { environmentDeployment } from "#/modules/deployments/tables";
@@ -124,13 +124,12 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     projectId: project.id, organizationId: project.organizationId, name: input.name.trim(), namespace,
   });
 
-  // 3. Identity rows under core's fresh ids.
-  yield* copyIdentityRows({ project, sourceId: parent.id, environmentId: document.id, services: next.services, volumes: next.volumes });
+  // 3. Identity rows under core's fresh ids: lineage reused; names, policy, credentials and positions copied.
+  yield* copyIdentities({ project, from: parent.id, to: document.id, services: next.services, volumes: next.volumes });
 
   // 4. Working State, then each node's Node Introduction.
   const written = yield* writeEnvironmentDocument(document, next);
-  for (const node of next.services) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "service", nodeId: node.id });
-  for (const node of next.volumes) yield* captureEnvironmentNodeIntroduction({ environmentId: document.id, nodeType: "volume", nodeId: node.resourceId });
+  yield* captureIntroductions(document.id, next.services, next.volumes);
 
   // 5. The Branch row, with the base core returned.
   if (!base) return yield* Effect.die("Core returned no base for a new Branch.");
@@ -145,23 +144,27 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   return { environment: written, branch };
 });
 
-/** Identity rows for nodes core introduced under fresh ids: lineage reused; names, policy, credentials and positions copied from the source Environment. */
-export const copyIdentityRows = Effect.fn("Branches.copyIdentityRows")(function* ({ project, sourceId, environmentId, services: nodes, volumes }: {
-  project: ProjectRow; sourceId: string; environmentId: string;
-  services: SavedEnvironmentIntent["services"]; volumes: SavedEnvironmentIntent["volumes"];
+/**
+ * Identity rows for nodes arriving in `to` under core's fresh ids, each from its lineage's node in `from`: lineage
+ * reused; display name, Deployment Policy, registry credential and canvas position copied.
+ */
+export const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, from, to, services: arriving, volumes: arrivingVolumes }: {
+  project: ProjectRow; from: string; to: string;
+  services: ReadonlyArray<{ id: string; lineageId: string }>;
+  volumes: ReadonlyArray<{ resourceId: string; resourceLineageId: string }>;
 }) {
   const { drizzle } = yield* Database;
-  const services = yield* drizzle.select().from(service).where(eq(service.environmentId, sourceId));
-  const credentials = yield* drizzle.select().from(serviceRegistryCredential)
-    .where(inArray(serviceRegistryCredential.serviceId, services.map((row) => row.id)));
-  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, sourceId));
-  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, sourceId));
+  const services = yield* drizzle.select().from(service).where(eq(service.environmentId, from));
+  const credentials = services.length ? yield* drizzle.select().from(serviceRegistryCredential)
+    .where(inArray(serviceRegistryCredential.serviceId, services.map((row) => row.id))) : [];
+  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, from));
+  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, from));
   const copies: Array<{ from: string; to: string }> = [];
-  for (const node of nodes) {
+  for (const node of arriving) {
     const source = services.find((row) => row.lineageId === node.lineageId);
     if (!source) return yield* Effect.die(`Source service for lineage ${node.lineageId} is missing.`);
     yield* drizzle.insert(service).values({
-      id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId,
+      id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId: to,
       lineageId: node.lineageId, name: source.name, policy: source.policy, hasRegistryCredential: source.hasRegistryCredential,
     });
     const credential = credentials.find((row) => row.serviceId === source.id);
@@ -171,19 +174,29 @@ export const copyIdentityRows = Effect.fn("Branches.copyIdentityRows")(function*
     });
     copies.push({ from: source.id, to: node.id });
   }
-  for (const node of volumes) {
+  for (const node of arrivingVolumes) {
     const source = resources.find((row) => row.lineageId === node.resourceLineageId);
     if (!source) return yield* Effect.die(`Source volume for lineage ${node.resourceLineageId} is missing.`);
     yield* drizzle.insert(environmentResource).values({
-      id: node.resourceId, organizationId: project.organizationId, projectId: project.id, environmentId,
+      id: node.resourceId, organizationId: project.organizationId, projectId: project.id, environmentId: to,
       lineageId: node.resourceLineageId, implementationType: "volume",
     });
     copies.push({ from: source.id, to: node.resourceId });
   }
-  const copiedPositions = copies.flatMap(({ from: sourceNodeId, to }) => positions
-    .filter((row) => row.resourceId === sourceNodeId)
-    .map((row) => ({ organizationId: project.organizationId, environmentId, resourceType: row.resourceType, resourceId: to, x: row.x, y: row.y })));
+  const copiedPositions = copies.flatMap((copy) => positions
+    .filter((row) => row.resourceId === copy.from)
+    .map((row) => ({ organizationId: project.organizationId, environmentId: to, resourceType: row.resourceType, resourceId: copy.to, x: row.x, y: row.y })));
   if (copiedPositions.length) yield* drizzle.insert(environmentCanvasNodePosition).values(copiedPositions);
+});
+
+/** Each arrived node's Node Introduction; call after writing the Working State. */
+export const captureIntroductions = Effect.fn("Branches.captureIntroductions")(function* (
+  environmentId: string,
+  services: ReadonlyArray<{ id: string }>,
+  volumes: ReadonlyArray<{ resourceId: string }>,
+) {
+  for (const node of services) yield* captureEnvironmentNodeIntroduction({ environmentId, nodeType: "service", nodeId: node.id });
+  for (const node of volumes) yield* captureEnvironmentNodeIntroduction({ environmentId, nodeType: "volume", nodeId: node.resourceId });
 });
 
 /** The failed attempt's Saved configuration of one service. */
