@@ -42,7 +42,7 @@ import {
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
-import { lockProjectRow } from "#/modules/environment-design/workspace-repository.server";
+import { lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 
@@ -471,7 +471,7 @@ const admitTeardown = Effect.fn("Teardown.admit")(function* (
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const current = access.scope === "organization" ? access
-      : { ...access, project: { ...access.project, defaultEnvironmentId: yield* lockProjectRow(access.project.id) } };
+      : { ...access, project: { ...access.project, defaultEnvironmentId: yield* lockProjectDefault(access.project.id) } };
     const graph = yield* loadTeardownGraph(current);
     if (input.expected && graph.environments.map((environment) => environment.id).join() !== input.expected.join()) {
       return yield* new Conflict({ message: "What this teardown removes changed. Try again." });
