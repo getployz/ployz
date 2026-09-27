@@ -15,6 +15,7 @@ import {
 import {
   project as schemaProject,
   environment as schemaEnvironment,
+  environmentBranch as schemaEnvironmentBranch,
 } from "#/modules/project/tables";
 import {
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
@@ -22,6 +23,7 @@ import {
 
 type ProjectRow = typeof schemaProject.$inferSelect;
 type EnvironmentRow = typeof schemaEnvironment.$inferSelect;
+export type BranchRow = typeof schemaEnvironmentBranch.$inferSelect;
 type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
@@ -45,6 +47,7 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
 
 export const getProjectsCollection = changeCollection<ProjectRow>("project", (row) => row.id);
 export const getEnvironmentsCollection = changeCollection<EnvironmentRow>("environment", (row) => row.id);
+export const getBranchesCollection = changeCollection<BranchRow>("environment_branch", (row) => row.environmentId);
 export const getRawServicesCollection = changeCollection<ServiceRow>("service", (row) => row.id);
 export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
   "environment_canvas_node_position", (row) => `${row.resourceType}:${row.resourceId}`);
@@ -73,6 +76,7 @@ export const orgStoreTables = {
   project: getProjectsCollection,
   environment: getEnvironmentsCollection,
   environment_summary: getEnvironmentSummariesCollection,
+  environment_branch: getBranchesCollection,
   service: getRawServicesCollection,
   resource_lineage: getResourceLineagesCollection,
   environment_resource: getRawEnvironmentResourcesCollection,
