@@ -109,6 +109,8 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::CompiledEnvironmentIntent>();
     declarations.add::<ployz_core::config::ResolveVariablesInput>();
     declarations.add::<ployz_core::config::ResolveVariablesResult>();
+    declarations.add::<ployz_core::config::LiveValuesInput>();
+    declarations.add::<ployz_core::config::LiveValues>();
     declarations.add::<ployz_core::config::ServiceSettingInput>();
     declarations.add::<ployz_core::config::ServiceSettingChange>();
 

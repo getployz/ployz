@@ -8,6 +8,7 @@ export const compareServiceSettings = (current, baseline) => request({ operation
 export const restoreServiceSetting = (current, baseline, path) => request({ operation: 'restore_service', current, baseline, path });
 
 export const resolveVariables = value => request({ operation: 'resolve_variables', value });
+export const liveValues = value => request({ operation: 'live_values', value });
 
 export const parseEnvironmentIntent = value => request({ operation: 'parse_environment', value });
 export const canonicalizeEnvironmentIntent = value => request({ operation: 'canonicalize_environment', value });

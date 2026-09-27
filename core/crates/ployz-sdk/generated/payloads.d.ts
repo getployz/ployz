@@ -337,6 +337,14 @@ accepts_ingress: boolean, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
+
+export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
+
+export type LiveValuesInput = { owner: LiveValuesOwner, lineages: Array<LiveLineageUse>, };
+
+export type LiveValuesOwner = { namespace: string, producers: Array<SavedVariableProducer>, };
+
 export type LocalMachinePhase = "uninitialized" | "joining" | "participating" | "resetting" | string;
 
 export type LocalMachineRemoved = { reset_warning: string | null, };
@@ -540,6 +548,8 @@ export type MintBuildGrantRequest = {
  * The only repository the push may write, as Docker names it (`ployz-build/web`).
  */
 repository: BuildGrantRepository, };
+
+export type MissingLiveValue = { lineageId: string, key: string, };
 
 export type ObservationKind = "container" | "volume";
 
