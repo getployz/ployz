@@ -522,7 +522,7 @@ export function MobileDashboardNavigation({
       {!isInspectorOpen ? (
         <div className="flex min-w-0 items-center gap-2">
           <DashboardNavigationPicker scope={scope} />
-          {Crumb ? <><span aria-hidden="true" className="text-muted-foreground">/</span><Crumb /></> : null}
+          {Crumb ? <><ChevronRightIcon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" /><Crumb /></> : null}
         </div>
       ) : null}
     </div>

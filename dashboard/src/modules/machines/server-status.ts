@@ -29,19 +29,22 @@ export function sortServers<T extends { name: string; status: ServerStatus }>(se
     RANK[left.status] - RANK[right.status] || left.name.localeCompare(right.name, undefined, { numeric: true }));
 }
 
-export type ServerListState = "loading" | "unreachable" | "stale" | "live";
-
-/** What the Servers pages can show for a Runtime Watch status. `unavailable` keeps the last observation, if any. */
-export function serverListState(status: RuntimeLensStatus, serverCount: number): ServerListState {
+/**
+ * What the Servers pages can show for a Runtime Watch status. `unavailable` keeps the last observation, if any; an
+ * incomplete observation is just as uncertain (incomplete IDs are never deletions), as the Projects page reads it too.
+ */
+export function serverListState(status: RuntimeLensStatus, serverCount: number, incomplete: boolean) {
+  const uncertain = serverCount > 0 ? "stale" : "unreachable";
   switch (status) {
     case "connecting":
       return "loading";
     case "unreachable":
       return "unreachable";
     case "unavailable":
-      return serverCount > 0 ? "stale" : "unreachable";
-    case "no_connection":
+      return uncertain;
     case "observed":
+      return incomplete ? uncertain : "live";
+    case "no_connection":
       return "live";
     default: {
       const _exhaustive: never = status;

@@ -10,7 +10,7 @@ import { serverListState, serverStatus, sortServers } from "./server-status";
 export function useServerList(organizationSlug: string) {
   const runtime = useRuntimeLens(organizationSlug);
   const servers = sortServers(runtime.machines.map((machine) => ({ machine, name: machine.name, status: serverStatus(machine) })));
-  return { state: serverListState(runtime.status, servers.length), servers };
+  return { state: serverListState(runtime.status, servers.length, runtime.incomplete), servers };
 }
 
 export type ServerListItem = ReturnType<typeof useServerList>["servers"][number];

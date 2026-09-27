@@ -7,6 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { RemoveServerSection } from "./-components/remove-server-section";
@@ -31,7 +32,7 @@ function RouteComponent() {
   if (state === "loading") {
     return <DashboardPage width="content"><ServersSkeleton /></DashboardPage>;
   }
-  if (state === "unreachable") {
+  if (state === "unreachable" || (state === "stale" && !server)) {
     return <DashboardPage width="content"><ServersUnreachable /></DashboardPage>;
   }
   if (!server) {
@@ -87,7 +88,7 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
   stale: boolean;
 }) {
   const { projects, environments } = useWorkspace(organizationSlug);
-  const up = servers.filter((other) => other.machine.id !== server.machine.id && (other.status === "online" || other.status === "building"));
+  const up = servers.filter((other) => other.machine.id !== server.machine.id && !needsAttention(other.status));
 
   return (
     <section aria-labelledby="running-here-heading">

@@ -123,10 +123,12 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
             </ItemActions>
           </Item>
         ) : null}
-        <ItemDescription>
-          Which builders go first is set in{" "}
-          <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Settings › Builds</Link>.
-        </ItemDescription>
+        <ItemContent>
+          <ItemDescription>
+            Which builders go first is set in{" "}
+            <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Settings › Builds</Link>.
+          </ItemDescription>
+        </ItemContent>
       </ItemGroup>
     </section>
   );

@@ -27,11 +27,16 @@ describe("sortServers", () => {
 
 describe("serverListState", () => {
   it("keeps the last observation only while there is one to show", () => {
-    expect(serverListState("connecting", 0)).toBe("loading");
-    expect(serverListState("observed", 0)).toBe("live");
-    expect(serverListState("no_connection", 0)).toBe("live");
-    expect(serverListState("unavailable", 3)).toBe("stale");
-    expect(serverListState("unavailable", 0)).toBe("unreachable");
-    expect(serverListState("unreachable", 0)).toBe("unreachable");
+    expect(serverListState("connecting", 0, false)).toBe("loading");
+    expect(serverListState("observed", 0, false)).toBe("live");
+    expect(serverListState("no_connection", 0, false)).toBe("live");
+    expect(serverListState("unavailable", 3, false)).toBe("stale");
+    expect(serverListState("unavailable", 0, false)).toBe("unreachable");
+    expect(serverListState("unreachable", 0, false)).toBe("unreachable");
+  });
+
+  it("reads an incomplete observation as uncertain, never as Servers gone", () => {
+    expect(serverListState("observed", 3, true)).toBe("stale");
+    expect(serverListState("observed", 0, true)).toBe("unreachable");
   });
 });
