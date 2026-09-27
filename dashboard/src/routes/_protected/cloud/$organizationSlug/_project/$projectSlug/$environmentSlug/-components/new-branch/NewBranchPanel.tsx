@@ -8,6 +8,7 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLab
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
+import { useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
@@ -24,9 +25,10 @@ import { WhatComesAlongSection } from "./WhatComesAlongSection";
 
 /**
  * "New branch of X": pick what gets an Own Copy, name it, create and deploy. Core plans every pick over the Parent's
- * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes.
+ * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes. With `fix`, a failed
+ * attempt, the focused service carries the change that failed while it keeps its own copy (Fix it on a branch).
  */
-export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }) {
+export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | null; fix: string | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
@@ -36,6 +38,7 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
   const { data: services } = useLiveQuery(getRawServicesCollection(params.organizationSlug, scope));
   const clusterDomain = useClusterDomainName(params.organizationSlug);
   const create = useCreateBranch(params.projectSlug);
+  const failedAttempt = useDeploymentAttempt(params.organizationSlug, environmentId, fix).attempt?.deployment;
   const parent = findEnvironment(projects, environments, params);
   const taken = new Set(environments.map((environment) => environment.namespace));
   const intent = document?.intent;
@@ -43,7 +46,7 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
 
   const [focus, setFocus] = useState(() => initialFocus && owned.has(initialFocus) ? [initialFocus] : []);
   const [picks, setPicks] = useState<BranchPicks>({ preset: "only" });
-  const [name, setName] = useState(() => defaultBranchName(params.projectSlug, "new-branch", taken));
+  const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
   if (!intent || !parent) return null;
 
@@ -60,9 +63,17 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
   let root = parent;
   for (let up = parentOf(root.id); up; up = parentOf(root.id)) root = up;
 
-  const nameError = branchNameError(params.projectSlug, name, taken);
+  // The failed service, while it keeps its own copy: its node in the attempt, and the Parent's service it failed on.
+  const failedService = intent.services.find((node) => node.lineageId === initialFocus);
+  const failedNode = failedAttempt?.status === "failed" && failedService && own.includes(failedService.lineageId)
+    ? failedAttempt.targetNodes.nodes.find((node) => node.nodeId === failedService.id) : undefined;
+  const failedChange = failedNode?.settings?.[0];
+  const moreChanges = (failedNode?.settings?.length ?? 1) - 1;
+
+  const branchName = name ?? defaultBranchName(params.projectSlug, failedNode ? `fix-${failedNode.name}` : "new-branch", taken);
+  const nameError = branchNameError(params.projectSlug, branchName, taken);
   const fromSuffix = branches.some((row) => row.environmentId === parent.id) ? branchHostnameSuffix(params.projectSlug, parent.namespace) : "";
-  const intoSuffix = branchHostnameSuffix(params.projectSlug, branchNamespace(params.projectSlug, name));
+  const intoSuffix = branchHostnameSuffix(params.projectSlug, branchNamespace(params.projectSlug, branchName));
   // ponytail: mirrors core's suffix swap for the preview only; the server's addresses come from core's branchChanges.
   const addresses = intent.services.filter((node) => own.includes(node.lineageId))
     .flatMap((node) => node.config.managedHostnames.map(({ prefix }) =>
@@ -81,17 +92,23 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
     <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
       event.preventDefault();
       if (blocked || nameError || create.isPending) return;
-      create.mutate({ organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: name.trim(), focus, picks, keep });
+      create.mutate({
+        organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep,
+        fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
+      });
     }}>
       <CanvasInspectorHeader params={params}>
-        <span className="font-medium">New branch</span>
-        <p className="truncate text-sm text-muted-foreground">From {parent.name}</p>
+        <span className="font-medium">{failedNode ? `Fix ${failedNode.name} on a branch` : "New branch"}</span>
+        <p className="truncate text-sm text-muted-foreground">
+          From {parent.name}{failedNode ? `, with the change that failed${failedChange
+            ? `: ${failedChange.label.toLowerCase()} ${failedChange.newValue}${moreChanges > 0 ? ` and ${moreChanges} more` : ""}` : ""}` : null}
+        </p>
       </CanvasInspectorHeader>
       <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
         <WhatComesAlongSection parentName={parent.name} plan={plan} presets={presets} nameOf={nameOf} owned={owned}
           onPreset={(preset) => setPicks({ preset })} onToggle={toggle} />
         <DataSection intent={intent} plan={plan} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf} />
-        <NameSection name={name} onName={setName} error={nameError} addresses={addresses} />
+        <NameSection name={branchName} onName={setName} error={nameError} addresses={addresses} />
         <FieldSet>
           <FieldLegend>When it's done</FieldLegend>
           <FieldLabel htmlFor="branch-keep">

@@ -182,9 +182,10 @@ describe("createBranch", () => {
       attempt(appliedId, appliedSaved?.id ?? "", "applied", 1_000), attempt(failedId, failedSaved?.id ?? "", "failed", 2_000),
     ]);
     await harness.db.insert(schema.environmentNodeConfigSnapshot).values([
-      { nodeType: "service" as const, nodeId: webId, nodeLineageId: webLineage, config: { ...parentIntent.services[0]?.config } },
-      { nodeType: "service" as const, nodeId: dbId, nodeLineageId: dbLineage, config: { ...parentIntent.services[1]?.config } },
-      { nodeType: "volume" as const, nodeId: dataId, nodeLineageId: dataLineage, config: { version: 2, name: "data" } },
+      // Applied State is rebuilt from the Saved revision each node came from; only the ids matter here.
+      { nodeType: "service" as const, nodeId: webId, nodeLineageId: webLineage, config: { version: 2 } },
+      { nodeType: "service" as const, nodeId: dbId, nodeLineageId: dbLineage, config: { version: 2 } },
+      { nodeType: "volume" as const, nodeId: dataId, nodeLineageId: dataLineage, config: { version: 2 } },
     ].map((node) => ({ organizationId, environmentId: parentId, environmentDeploymentId: appliedId, ...node })));
     const staged = { ...parentIntent, services: parentIntent.services.map((node) => node.id === webId
       ? { ...node, config: { ...node.config, source: { ...node.config.source, image: "web:3" } } } : node) };
