@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
@@ -189,6 +189,14 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
+                {current && <CommandItem value="new-branch" onSelect={() => {
+                  setOpen(false);
+                  const { organizationSlug, projectSlug, environmentSlug } = scope;
+                  void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch",
+                    params: { organizationSlug, projectSlug, environmentSlug } });
+                }}>
+                  <GitBranchPlusIcon />New branch of {current.name}
+                </CommandItem>}
                 <CommandItem value="manage-environments" onSelect={() => {
                   setOpen(false);
                   const { organizationSlug, projectSlug, environmentSlug } = scope;

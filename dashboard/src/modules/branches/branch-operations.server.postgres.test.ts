@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { parseServiceConfig, type ServiceManagedHostname, type ServiceSource } from "@ployz/sdk/config";
 import * as schema from "#/db/schema";
 import { InngestClient } from "#/modules/inngest/client";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -26,7 +26,7 @@ const urlId = "00000000-0000-4000-8000-000000000342";
 const encrypted = { version: 1 as const, iv: "iv", tag: "tag", ciphertext: "parent-cipher" };
 const policy = { autoDeploy: false };
 
-function config(slug: string, source: unknown, managedHostnames: unknown[] = []) {
+function config(slug: string, source: ServiceSource, managedHostnames: ServiceManagedHostname[] = []) {
   const { env: _env, mounts: _mounts, ...parsed } = parseServiceConfig({
     version: 2, source, healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: slug, managedHostnames,
   });
@@ -115,36 +115,45 @@ describe("createBranch", () => {
 
     // Own Copies: the Parent's lineage under fresh ids. The Parent was never deployed, so db and its Volume come along.
     const services = await harness.db.select().from(schema.service).where(eq(schema.service.environmentId, branchId));
-    expect(services.map((row) => [row.lineageId, row.name, row.policy, row.hasRegistryCredential]).sort()).toEqual([
-      [dbLineage, "Postgres", policy, false], [webLineage, "Storefront", policy, true],
-    ].sort());
-    expect(services.map((row) => row.id)).not.toContain(webId);
-    const web = services.find((row) => row.lineageId === webLineage)!;
-    const [volume] = await harness.db.select().from(schema.environmentResource).where(eq(schema.environmentResource.environmentId, branchId));
-    expect(volume).toMatchObject({ lineageId: dataLineage });
-    expect(volume!.id).not.toBe(dataId);
+    expect(services).toHaveLength(2);
+    expect(services).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lineageId: dbLineage, name: "Postgres", policy, hasRegistryCredential: false }),
+      expect.objectContaining({ lineageId: webLineage, name: "Storefront", policy, hasRegistryCredential: true }),
+    ]));
+    const serviceIds = services.map((row) => row.id);
+    expect(serviceIds).not.toContain(webId);
+    expect(serviceIds).not.toContain(dbId);
+    const volumes = await harness.db.select().from(schema.environmentResource).where(eq(schema.environmentResource.environmentId, branchId));
+    expect(volumes).toEqual([expect.objectContaining({ lineageId: dataLineage })]);
+    const volumeIds = volumes.map((row) => row.id);
+    expect(volumeIds).not.toContain(dataId);
 
     // Credentials, positions and sealed values are copied; the managed hostname follows the name.
-    const [credential] = await harness.db.select().from(schema.serviceRegistryCredential).where(eq(schema.serviceRegistryCredential.serviceId, web.id));
-    expect(credential?.encryptedRegistrySecret).toEqual(encrypted);
+    const webNode = data.environment.intent.services.find((node) => node.lineageId === webLineage);
+    expect(webNode?.config.managedHostnames[0]?.prefix).toBe("web-fix-web");
+    const credentials = await harness.db.select().from(schema.serviceRegistryCredential).where(eq(schema.serviceRegistryCredential.serviceId, webNode?.id ?? ""));
+    expect(credentials.map((row) => row.encryptedRegistrySecret)).toEqual([encrypted]);
     const positions = await harness.db.select().from(schema.environmentCanvasNodePosition).where(eq(schema.environmentCanvasNodePosition.environmentId, branchId));
-    expect(positions.map((row) => [row.resourceId, row.x, row.y]).sort()).toEqual([[web.id, 10, 20], [volume!.id, 30, 40]].sort());
-    const intent = data.environment.intent;
-    const webNode = intent.services.find((node) => node.lineageId === webLineage)!;
-    expect(webNode.config.managedHostnames[0]?.prefix).toBe("web-fix-web");
-    const token = webNode.variables.find((variable) => variable.key === "TOKEN")!;
-    expect(token.id).not.toBe(tokenId);
-    const [secret] = await harness.db.select().from(schema.variableSecret).where(eq(schema.variableSecret.variableId, token.id));
-    expect(secret?.encryptedValue).toEqual(encrypted);
+    expect(positions).toHaveLength(2);
+    expect(positions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ resourceId: webNode?.id, x: 10, y: 20 }),
+      expect.objectContaining({ resourceId: volumeIds[0], x: 30, y: 40 }),
+    ]));
+    const token = webNode?.variables.find((variable) => variable.key === "TOKEN");
+    expect(token?.id).not.toBe(tokenId);
+    const secrets = await harness.db.select().from(schema.variableSecret).where(eq(schema.variableSecret.variableId, token?.id ?? ""));
+    expect(secrets.map((row) => row.encryptedValue)).toEqual([encrypted]);
 
     // The base and the Node Introductions.
-    const [branch] = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, branchId));
-    expect(branch).toMatchObject({ parentEnvironmentId: parentId, kept: true, createdByUserId: userId });
-    expect(branch!.base.services.map((node) => node.id).sort()).toEqual([dbId, webId].sort());
-    expect(JSON.stringify(branch!.base)).not.toContain("parent-cipher");
+    const branches = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, branchId));
+    expect(branches).toEqual([expect.objectContaining({ parentEnvironmentId: parentId, kept: true, createdByUserId: userId })]);
+    const base = branches[0]?.base;
+    expect(base?.services.map((node) => node.id)).toEqual(expect.arrayContaining([dbId, webId]));
+    expect(JSON.stringify(base)).not.toContain("parent-cipher");
     const introductions = await harness.db.select().from(schema.environmentNodeIntroduction)
       .where(eq(schema.environmentNodeIntroduction.environmentId, branchId));
-    expect(introductions.map((row) => row.nodeId).sort()).toEqual([...services.map((row) => row.id), volume!.id].sort());
+    expect(introductions).toHaveLength(3);
+    expect(introductions.map((row) => row.nodeId)).toEqual(expect.arrayContaining([...serviceIds, ...volumeIds]));
 
     // Its first deployment is admitted and dispatched.
     const attempts = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.environmentId, branchId));

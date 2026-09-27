@@ -86,9 +86,8 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   // 1. Core derives the Branch's configuration: fresh ids, the Parent's lineages, secrets with their values.
   const changes = yield* core("picks", () => branchChanges({
     base: null,
-    // SAFETY: core parses the Dashboard's document, variables included, in the same shape.
-    from: from as never,
-    into: emptyEnvironmentIntent(namespace) as never,
+    from,
+    into: emptyEnvironmentIntent(namespace),
     provided: liveLineages(plan),
     hostnames: { from: parentBranch ? branchHostnameSuffix(project.slug, parent.namespace) : "", into: branchHostnameSuffix(project.slug, namespace) },
     fromKept: false,
