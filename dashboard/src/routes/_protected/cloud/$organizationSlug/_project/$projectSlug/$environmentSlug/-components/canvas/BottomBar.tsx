@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Kbd } from "#/components/ui/kbd";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useIsMobile } from "#/hooks/use-mobile";
+import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
@@ -41,8 +42,8 @@ type BottomBarProps = {
 };
 
 /**
- * The bottom bar shows one thing at a time: staged changes, else a running or queued attempt whose page isn't open,
- * else nothing.
+ * The bottom bar shows one thing at a time: a starting point's state, else staged changes, else a running or queued
+ * attempt whose page isn't open, else nothing. A starting point's staged nodes are the recipe Branches copy, not pending work.
  */
 export function BottomBar({
   environmentId,
@@ -69,8 +70,9 @@ export function BottomBar({
   // Newest first: the oldest active attempt holds, or is next for, the Environment execution slot.
   const active = useEnvironmentDeployments(params.organizationSlug, environmentId)
     .filter(({ deployment }) => isActiveDeployment(deployment.status)).reverse();
-  const hasChanges = totalChanges > 0 || canSaveWithoutDeploying;
-  const deployable = canDeploy && totalChanges > 0;
+  const startingPoint = useStartingPoint(params.organizationSlug, environmentId);
+  const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
+  const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
 
   function deploy() {
@@ -103,7 +105,11 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
-  const bar = hasChanges ? (
+  const bar = startingPoint ? (
+    <Bar title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
+      <Link to={"/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"} params={params} className={buttonVariants({ size: "sm" })}>New branch</Link>
+    </Bar>
+  ) : hasChanges ? (
     <Bar staged title={totalChanges > 0 ? `${totalChanges} ${totalChanges === 1 ? "change" : "changes"}` : "Unpublished changes"} detail={stagedDetail(groups, totalChanges)}>
       <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Review</Button>
       {/* Deploying behind a running or queued attempt queues. */}

@@ -6,6 +6,7 @@ import {
   createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider,
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import * as branchCollections from "#/modules/branches/branch.collection";
 import * as deploymentCollections from "#/modules/deployments/deployment.collection";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { asTestDouble } from "#/lib/test-double";
@@ -25,9 +26,13 @@ const cache = asTestDouble<CanvasEnvironmentChangeGroup>()({ ...replicas, nodeId
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
 let attempts: ReturnType<typeof attempt>[] = [];
+let startingPoint: { name: string } | undefined;
 
 beforeEach(() => {
   attempts = [];
+  startingPoint = undefined;
+  vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
     asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
   vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
@@ -58,9 +63,10 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
   } });
   const index = createRoute({ getParentRoute: () => canvas, path: "/", component: () => null });
   const page = createRoute({ getParentRoute: () => canvas, path: "deployments/$deploymentId", component: () => <p>Deployment Page</p> });
+  const newBranch = createRoute({ getParentRoute: () => canvas, path: "new-branch", component: () => <p>New branch panel</p> });
   const router = createRouter({
     routeTree: root.addChildren([protectedRoute.addChildren([organization.addChildren([projectGroup.addChildren([
-      environment.addChildren([canvas.addChildren([index, page])])])])])]),
+      environment.addChildren([canvas.addChildren([index, page, newBranch])])])])])]),
     history: createMemoryHistory({ initialEntries: [url] }),
   });
   render(<RouterProvider router={router} />);
@@ -122,4 +128,19 @@ it("hides while nothing is staged or running, and while the only attempt's page 
   open(canvasUrl);
   await act(async () => {});
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+});
+
+it("shows a starting point's state over its staged nodes, with New branch and no Deploy", async () => {
+  startingPoint = { name: "template" };
+  const router = open(canvasUrl, [replicas, cache], 2);
+  const shown = await bar();
+  expect(shown.getByText("template isn't deployed")).toBeTruthy();
+  expect(shown.getByText("A starting point for branches")).toBeTruthy();
+  expect(shown.queryByText("2 changes")).toBeNull();
+  expect(shown.queryByRole("button", { name: /^Deploy/ })).toBeNull();
+  await act(async () => { fireEvent.keyDown(document.body, { key: "Enter", shiftKey: true }); });
+  expect(onDeploy).not.toHaveBeenCalled();
+  fireEvent.click(shown.getByRole("link", { name: "New branch" }));
+  await screen.findByText("New branch panel");
+  expect(router.state.location.href).toBe(`${canvasUrl}/new-branch`);
 });

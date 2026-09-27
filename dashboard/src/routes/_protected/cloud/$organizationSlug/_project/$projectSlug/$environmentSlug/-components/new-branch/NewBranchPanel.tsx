@@ -23,7 +23,7 @@ import { NameSection } from "./NameSection";
 import { WhatComesAlongSection } from "./WhatComesAlongSection";
 
 /**
- * "New branch of X": pick what gets an Own Copy, name it, create and deploy. Core plans every pick over the Parent's
+ * "New branch of X": pick what gets an Own Copy, name it, create and deploy it, or keep it as a starting point. Core plans every pick over the Parent's
  * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes.
  */
 export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }) {
@@ -45,6 +45,7 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
   const [picks, setPicks] = useState<BranchPicks>({ preset: "only" });
   const [name, setName] = useState(() => defaultBranchName(params.projectSlug, "new-branch", taken));
   const [keep, setKeep] = useState(false);
+  const [deployNow, setDeployNow] = useState(true);
   if (!intent || !parent) return null;
 
   const planned = { parent: intent, deployed: applied.map((node) => node.nodeLineageId), focus };
@@ -81,7 +82,7 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
     <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
       event.preventDefault();
       if (blocked || nameError || create.isPending) return;
-      create.mutate({ organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: name.trim(), focus, picks, keep });
+      create.mutate({ organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: name.trim(), focus, picks, keep, deployNow });
     }}>
       <CanvasInspectorHeader params={params}>
         <span className="font-medium">New branch</span>
@@ -107,12 +108,23 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }
             </Field>
           </FieldLabel>
         </FieldSet>
+        <FieldLabel htmlFor="branch-deploy-now">
+          <Field orientation="horizontal">
+            <FieldContent>
+              <span className="font-medium">Deploy it now</span>
+              <FieldDescription>
+                {deployNow ? "Its copies start in about a minute." : "Nothing runs. It becomes a starting point that other branches copy."}
+              </FieldDescription>
+            </FieldContent>
+            <Switch id="branch-deploy-now" checked={deployNow} onCheckedChange={setDeployNow} />
+          </Field>
+        </FieldLabel>
       </FieldGroup>
       <div className="flex shrink-0 flex-col gap-2 border-t p-4">
         {create.isError && <FieldError>{create.error.message}</FieldError>}
         <Button type="submit" disabled={Boolean(blocked || nameError) || create.isPending}>
           {create.isPending && <Spinner data-icon="inline-start" />}
-          {blocked ?? "Create and deploy"}
+          {blocked ?? (deployNow ? "Create and deploy" : "Create without deploying")}
         </Button>
       </div>
     </form>

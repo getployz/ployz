@@ -16,5 +16,7 @@ export const CreateBranch = Schema.Struct({
   focus: Lineages,
   picks: BranchPicksSchema,
   keep: Schema.Boolean,
+  /** Off makes a starting point: the Branch is written and nothing is admitted. */
+  deployNow: Schema.Boolean,
 });
 export type CreateBranch = typeof CreateBranch.Type;

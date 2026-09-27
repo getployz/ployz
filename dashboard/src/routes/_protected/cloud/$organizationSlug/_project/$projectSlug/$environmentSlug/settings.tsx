@@ -15,11 +15,13 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { cn } from "#/lib/utils";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
+import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
@@ -51,6 +53,7 @@ function RouteComponent() {
   const environment = environments.find((row) => row.id === environmentId);
   const branch = branches.find((row) => row.environmentId === environmentId);
   const parent = branch && environments.find((row) => row.id === branch.parentEnvironmentId);
+  const startingPoint = useStartingPoint(organizationSlug, environmentId);
   // A teardown takes the Environment's Branches with it, deepest first.
   const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
   const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
@@ -80,6 +83,8 @@ function RouteComponent() {
           {branch && parent && (
             <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent} />
           )}
+          {startingPoint && <StartingPointSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug}
+            environmentSlug={environmentSlug} environmentId={environmentId} />}
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"

@@ -35,6 +35,7 @@ const SPINNER_FILES = {
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/starting-point-settings-section.tsx": "deploy in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
