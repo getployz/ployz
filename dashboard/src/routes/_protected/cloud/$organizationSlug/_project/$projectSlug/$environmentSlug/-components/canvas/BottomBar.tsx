@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Kbd } from "#/components/ui/kbd";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useIsMobile } from "#/hooks/use-mobile";
-import { useStartingPoint } from "#/modules/branches/branch.collection";
+import { useHasStagedChanges, useStartingPoint } from "#/modules/branches/branch.collection";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
@@ -84,8 +84,9 @@ export function BottomBar({
   const active = useEnvironmentDeployments(params.organizationSlug, environmentId)
     .filter(({ deployment }) => isActiveDeployment(deployment.status)).reverse();
   const startingPoint = useStartingPoint(params.organizationSlug, environmentId);
-  const staged = totalChanges > 0 || canSaveWithoutDeploying;
-  const hasChanges = !startingPoint && staged;
+  // The review page's staged list follows the rule Merge and Update wait on, so the two never disagree.
+  const stagedForReview = useHasStagedChanges(params.organizationSlug, environmentId);
+  const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
   const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
 
@@ -159,7 +160,7 @@ export function BottomBar({
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
-      {reviewSlot ? createPortal(staged ? <StagedChanges inline {...reviewProps} />
+      {reviewSlot ? createPortal(stagedForReview ? <StagedChanges inline {...reviewProps} />
         : <p className="text-sm text-muted-foreground">Nothing staged here.</p>, reviewSlot) : null}
     </>
   );

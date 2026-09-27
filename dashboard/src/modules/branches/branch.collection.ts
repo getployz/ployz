@@ -65,18 +65,24 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   return environments.find((environment) => environment.id === environmentId);
 }
 
+/** Whether anything is staged here: Working State differs from Applied State, as the server's gate reads it. */
+export function useHasStagedChanges(organizationSlug: string, environmentId: string) {
+  const document = useEnvironmentDocument(organizationSlug, environmentId);
+  const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
+  return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? []);
+}
+
 /**
  * Why Merge, Update and Own Copy must wait, or null: a Branch moves only what it runs. Something staged (a starting point's
  * nodes too) or an active attempt holds them; the server's gate, assertBranchSettled, is the same rule.
  */
 export function useBranchUnsettled(organizationSlug: string, environmentId: string): string | null {
-  const document = useEnvironmentDocument(organizationSlug, environmentId);
-  const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
+  const startingPoint = useStartingPoint(organizationSlug, environmentId);
+  const staged = useHasStagedChanges(organizationSlug, environmentId);
   const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
-  if (attempts.length === 0) return "Deploy this starting point first.";
+  if (startingPoint) return "Deploy this starting point first.";
   if (attempts.some(({ deployment }) => isActiveDeployment(deployment.status))) return "Wait for this branch's deployment to finish.";
-  return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? [])
-    ? "Deploy or discard the changes staged here first." : null;
+  return staged ? "Deploy or discard the changes staged here first." : null;
 }
 
 const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, scope) => {
