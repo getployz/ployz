@@ -15,7 +15,7 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
   // Old links: Deployment Mode's `?deployment=<id>` (on the canvas or a service) opens that attempt's Deployment Page, and
-  // the deploy bar's `?deploymentList=true` opens the deployment list.
+  // the old deploy bar's `?deploymentList=true` opens the deployment list.
   beforeLoad: ({ location, params }) => {
     const legacy = legacyDeploymentLink(location);
     if (legacy) throw redirect({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: legacy.deploymentId }, search: legacy.search, replace: true });

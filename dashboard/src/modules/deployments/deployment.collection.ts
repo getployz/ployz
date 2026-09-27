@@ -122,7 +122,7 @@ function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildL
  */
 export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}) {
   const stored = useStoredAttempts(organizationSlug, environmentId).find((candidate) => candidate.id === deploymentId);
-  // useQuery, not useSuspenseQuery: the header, deploy bar and inspector read this attempt too and must stay mounted while
+  // useQuery, not useSuspenseQuery: the header and inspector read this attempt too and must stay mounted while
   // it loads, so only the canvas nodes wait (on `pending`). A failed read (not a missing attempt) still fails the route.
   const { data: read, isPending } = useQuery({ ...deploymentAttemptQueryOptions(organizationSlug, stored ? null : deploymentId), throwOnError: true });
   const deployment = stored ?? (read?.row.environmentId === environmentId ? deploymentSummary(read.row) : undefined);

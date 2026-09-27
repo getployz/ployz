@@ -417,6 +417,18 @@ export const nodeOutcomeLabels = {
   queued: "Queued", building: "Building", deploying: "Deploying",
 } satisfies Record<DeploymentNodeView["outcome"], string>;
 
+/**
+ * Where an active attempt is: the service it works on and its step there ("api · Checking health"), from the Engine's running
+ * row, else the first building or deploying service. Null while nothing has started.
+ */
+export function activeStep(progress: DeploymentProgress | null, nodes: readonly TargetNode[], view: DeploymentView) {
+  const row = progress?.rows.find((candidate) => candidate.status === "running");
+  if (row) return { nodeId: row.serviceId, text: [row.serviceName, progressRowLabel(row)].filter(Boolean).join(" · ") };
+  const node = view.nodes.find((candidate) => candidate.outcome === "building" || candidate.outcome === "deploying");
+  const name = node && nodes.find((target) => target.nodeId === node.nodeId)?.name;
+  return node && name ? { nodeId: node.nodeId, text: `${name} · ${nodeOutcomeLabels[node.outcome]}` } : null;
+}
+
 /** The first eight characters: how the UI names an attempt next to its message. */
 export const shortDeploymentId = (id: string) => id.slice(0, 8);
 

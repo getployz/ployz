@@ -257,7 +257,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Details (the review) and Deploy in the deploy bar's apply zone. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 ### Deployments
 
@@ -268,7 +268,13 @@ Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt
 - One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
 - A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
-One floating **deploy bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. When changes are pending, the whole bar takes the staged-intent surface and adds **Apply N changes · Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Git-triggered deployments never clear these changes. Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
+One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It shows one thing at a time, the first that applies:
+
+1. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
+2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
+3. Otherwise, no bar.
+
+Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
 The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
 
