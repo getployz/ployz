@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "#/components/ui/dialog";
 import { Button } from "#/components/ui/button";
 import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
@@ -19,10 +20,13 @@ export type EnvironmentChangesReviewProps = {
   onDeploy: () => void;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
+  /** Changes held here for pull requests, read-only, after the staged ones. */
+  held?: ReactNode;
 };
 
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { canSave, totalChanges, onClose } = props;
+  const { canSave, totalChanges, onClose, held } = props;
+  const staged = canSave || totalChanges > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
@@ -30,11 +34,11 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
         <div>
           <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription className="mt-2">
-            {canSave ? "Unpublished configuration" : totalChanges > 0 ? "Configuration saved · not yet deployed" : "No changes to review"}
+            {canSave ? "Unpublished configuration" : totalChanges > 0 ? "Configuration saved · not yet deployed" : "Nothing staged here"}
           </DialogDescription>
         </div>
       </div>
-      <StagedChanges {...props} />
+      {staged ? <StagedChanges {...props} /> : <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-6">{held}</div>}
       </DialogContent>
     </Dialog>
   );
@@ -54,6 +58,7 @@ export function StagedChanges({
   onDeploy,
   onDiscardNode,
   onDiscardRow,
+  held,
   inline = false,
 }: EnvironmentChangesReviewProps & { inline?: boolean }) {
   return (
@@ -81,6 +86,7 @@ export function StagedChanges({
                 onDiscardRow={(_, path) => onDiscardRow(group, path)}
               />
             ))}
+            {inline ? null : held}
           </div>
         </div>
 

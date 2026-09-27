@@ -16,6 +16,7 @@ export const changeNameSources = {
   environment_summary: ["environment"],
   environment_branch: ["environment_branch"],
   pr_environment_plan: ["pr_environment_plan"],
+  conditional_save: ["conditional_save"],
   service: ["service"],
   resource_lineage: ["resource_lineage"],
   environment_resource: ["environment_resource"],

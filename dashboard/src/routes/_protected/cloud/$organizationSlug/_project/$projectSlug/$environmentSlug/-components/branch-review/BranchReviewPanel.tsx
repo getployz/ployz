@@ -12,6 +12,7 @@ import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { DifferSection } from "./DifferSection";
 import { GoesToSection } from "./GoesToSection";
+import { HeldChanges } from "./HeldChanges";
 import { MergeSection } from "./MergeSection";
 import { UpdateSection } from "./UpdateSection";
 
@@ -39,11 +40,12 @@ export function BranchReviewPanel() {
             {/* The bottom bar owns the change actions and renders the staged-changes review here. */}
             <div ref={setSlot} />
           </ReviewSection>
+          <HeldChanges environmentId={environmentId} />
           {pr ? (
             <>
               <CodeSection review={review} pr={pr} />
               {review.goesTo.map((landing) => (
-                <GoesToSection key={landing.destination.id} review={review} pr={pr} landing={landing} name={name} />
+                <GoesToSection key={landing.destination.id} review={review} pr={pr} landing={landing} name={name} environmentId={environmentId} />
               ))}
             </>
           ) : <MergeSection review={review} branch={{ id: environmentId, name }} />}
