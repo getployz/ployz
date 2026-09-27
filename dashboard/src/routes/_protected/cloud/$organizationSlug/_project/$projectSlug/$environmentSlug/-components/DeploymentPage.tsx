@@ -157,12 +157,15 @@ function SettingChanges({ node }: { node: TargetNode }) {
   if (!node.settings.length) {
     return <p className="text-muted-foreground">{node.needsBuild ? "No setting changes, only a rebuild." : "No setting changes."}</p>;
   }
+  // The table scrolls sideways in a wrapper the page's flex column would otherwise shrink away on phones.
   return (
-    <Table aria-label={`${node.name} setting changes`}>
-      <TableBody>
-        {node.settings.map((row) => <ApplyChangeRow key={row.path} row={row} tone="applied" showCurrentValue showNewValue />)}
-      </TableBody>
-    </Table>
+    <section aria-label={`${node.name} setting changes`} className="shrink-0">
+      <Table>
+        <TableBody>
+          {node.settings.map((row) => <ApplyChangeRow key={row.path} row={row} tone="applied" showCurrentValue showNewValue />)}
+        </TableBody>
+      </Table>
+    </section>
   );
 }
 

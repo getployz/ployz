@@ -24,7 +24,7 @@ export function ApplyChangeValueCell({
             "flex min-h-8 items-center rounded-lg px-3 font-mono text-sm",
             side === "current" ? "bg-muted" : null,
             side === "current" && tone === "applied" ? "text-muted-foreground line-through" : null,
-            tone === "applied" ? "break-all" : null,
+            tone === "applied" ? "whitespace-normal wrap-anywhere" : null,
             side === "new" && tone === "applied" ? "border" : null,
             staged && kind === "remove"
               ? "bg-destructive-soft text-destructive"
