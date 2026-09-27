@@ -4,6 +4,7 @@ import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-
 import { presentSettingChange } from "#/modules/services/service-deployment-diff/fields";
 
 export type { ChangeRow };
+type RowValue = ChangeRow["from"];
 
 /** Both sides of a Branch's relationship with its Parent, as the browser has them: redacted, secrets as fingerprints. */
 export type BranchReviewInput = {
@@ -97,7 +98,7 @@ export type PresentedRow = { key: string; lineageId: string; node: string; label
 export function presentRow(row: ChangeRow, nameOf: (lineage: string) => string): PresentedRow {
   const lineageId = rowLineage(row);
   const path = rowPath(row);
-  const value = (side: unknown) => display(path, side, nameOf);
+  const value = (side: RowValue) => display(path, side, nameOf);
   const label = path === "node" ? (row.role === "move" ? "New" : "")
     : path === "name" ? "Name"
     : path === "data" ? "Data"
@@ -107,7 +108,7 @@ export function presentRow(row: ChangeRow, nameOf: (lineage: string) => string):
   return { key: row.key, lineageId, node: nameOf(lineageId), label, before: value(row.into), after: value(row.from) };
 }
 
-function display(path: string, value: unknown, nameOf: (lineage: string) => string): string {
+function display(path: string, value: RowValue, nameOf: (lineage: string) => string): string {
   if (value === null || value === undefined) return "";
   if (path.startsWith("variables.")) {
     const record = asRecord(value);
@@ -123,12 +124,14 @@ function display(path: string, value: unknown, nameOf: (lineage: string) => stri
   if (path === "source.repository") return asString(asRecord(value)?.["repository"]) ?? "";
   if (path === "source.credentials") return "Configured";
   if (path === "routes") return Array.isArray(value) ? value.join(", ") || "None" : "";
-  if (["node", "name", "data"].includes(path) || path.startsWith("mounts.")) return asString(value) ?? "";
-  return presentSettingChange("service", path, null, value as never).newValue;
+  // A node or data row names the node, which the row's title already says.
+  if (path === "node" || path === "data") return "";
+  if (path === "name" || path.startsWith("mounts.")) return asString(value) ?? "";
+  return presentSettingChange("service", path, null, value).newValue;
 }
 
 /** Why a row is meant to differ, in words. */
-export const DIFFER_REASONS: Record<BranchReason, string> = {
+export const DIFFER_REASONS = {
   live: "Used live, not copied",
   left_out: "Left out of this branch",
   sizing: "Replicas and resource limits are sized per environment",
@@ -136,4 +139,4 @@ export const DIFFER_REASONS: Record<BranchReason, string> = {
   generated_address: "Each environment gets its own web address",
   git_branch: "Each environment deploys its own Git branch",
   data: "Volume size and data stay with each environment",
-};
+} satisfies Record<BranchReason, string>;

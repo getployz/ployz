@@ -8,6 +8,8 @@ const DEPLOYMENT_LIST_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/";
 const NEW_BRANCH_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/new-branch";
+const BRANCH_REVIEW_ROUTE_ID =
+  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/review";
 const ENVIRONMENT_RESOURCE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
 
@@ -24,6 +26,8 @@ export type CanvasInspectorSelection = {
   deploymentList: boolean;
   /** The New branch panel is open over the Parent's canvas. */
   newBranch: boolean;
+  /** A Branch's review page is open over its canvas. */
+  branchReview: boolean;
   isInspectorOpen: boolean;
 };
 
@@ -55,6 +59,10 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: NEW_BRANCH_ROUTE_ID,
     shouldThrow: false,
   });
+  const branchReviewMatch = useMatch({
+    from: BRANCH_REVIEW_ROUTE_ID,
+    shouldThrow: false,
+  });
   const selectedServiceId = serviceMatch?.params.serviceId ?? null;
   const selectedResourceId = resourceMatch?.params.resourceId ?? null;
   const selectedNodeId = selectedServiceId ?? selectedResourceId;
@@ -67,6 +75,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
     deploymentList: deploymentListMatch != null,
     newBranch: newBranchMatch != null,
+    branchReview: branchReviewMatch != null,
     isInspectorOpen: selectedNodeId != null,
   };
 }

@@ -29,7 +29,8 @@ function branchOf(parent: SavedEnvironmentIntent) {
   const create = { base: null, from: parent, into: emptyEnvironmentIntent("shop-fix-web"), provided: [DB],
     hostnames: { from: "", into: "-fix-web" }, fromKept: false };
   const created = branchChanges({ ...create, picks: [{ key: `${WEB}:node` }] });
-  return { branch: created.next, base: created.base! };
+  if (!created.base) throw new Error("Creating returns a base.");
+  return { branch: created.next, base: created.base };
 }
 
 function input(edit: (sides: { branch: SavedEnvironmentIntent; parent: SavedEnvironmentIntent; parentApplied: SavedEnvironmentIntent }) => void): BranchReviewInput {
@@ -41,10 +42,21 @@ function input(edit: (sides: { branch: SavedEnvironmentIntent; parent: SavedEnvi
 }
 
 const keys = (rows: { key: string }[]) => rows.map((row) => row.key);
-const image = (intent: SavedEnvironmentIntent, lineage: string, tag: string) => {
-  const node = intent.services.find((candidate) => candidate.lineageId === lineage)!;
-  node.config = { ...node.config, source: { ...node.config.source, image: tag } } as typeof node.config;
+function web(intent: SavedEnvironmentIntent) {
+  const node = intent.services.find((candidate) => candidate.lineageId === WEB);
+  if (!node) throw new Error("No web.");
+  return node;
+}
+const image = (intent: SavedEnvironmentIntent, tag: string) => {
+  const node = web(intent);
+  if (node.config.source.type === "image") node.config.source.image = tag;
 };
+function only<T>(rows: T[]) {
+  expect(rows).toHaveLength(1);
+  const [row] = rows;
+  if (!row) throw new Error("No row.");
+  return row;
+}
 
 describe("branch review", () => {
   it("shows nothing to merge or update right after branching, and postgres as used live", () => {
@@ -56,24 +68,24 @@ describe("branch review", () => {
 
   it("merges the Branch's changes, marking one production also changed", () => {
     const review = branchReview(input(({ branch, parent }) => {
-      image(branch, WEB, "web:2");
-      branch.services.find((node) => node.lineageId === WEB)!.config.replicas = 3;
-      image(parent, WEB, "web:1.1");
+      image(branch, "web:2");
+      web(branch).config.replicas = 3;
+      image(parent, "web:1.1");
     }));
-    expect(keys(review.merge)).toEqual([`${WEB}:source.image`]);
-    const [row] = review.merge;
-    expect(row?.role === "move" && row.conflict).toBe(true);
-    expect(presentRow(row!, nameOf)).toMatchObject({ node: "web", label: "Container image", before: "web:1.1", after: "web:2" });
+    const row = only(review.merge);
+    expect(row.key).toBe(`${WEB}:source.image`);
+    expect(row.role === "move" && row.conflict).toBe(true);
+    expect(presentRow(row, nameOf)).toMatchObject({ node: "web", label: "Container image", before: "web:1.1", after: "web:2" });
     expect(review.differ.map((differ) => differ.role === "differ" && differ.why)).toEqual(["sizing", "live"]);
   });
 
   it("lists what production deployed that the Branch lacks, not what it only staged", () => {
     const review = branchReview(input(({ parent, parentApplied }) => {
       parentApplied.services.push(service(3, SEARCH, "search"));
-      image(parent, WEB, "web:staged-only");
+      image(parent, "web:staged-only");
     }));
     expect(keys(review.update)).toEqual([`${SEARCH}:node`]);
-    expect(presentRow(review.update[0]!, nameOf)).toMatchObject({ node: "search", label: "New", after: "search" });
+    expect(presentRow(only(review.update), nameOf)).toMatchObject({ node: "search", label: "New", after: "" });
   });
 
   it("has nothing to update before production's first deploy", () => {

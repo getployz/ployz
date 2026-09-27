@@ -13,17 +13,29 @@ import { useIsMobile } from "#/hooks/use-mobile";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
+import { presentRow } from "#/modules/branches/branch-review";
+import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
+import { EnvironmentChangesReview, StagedChanges } from "./EnvironmentChangesReview";
 
 /**
  * Where the bottom bar renders: the scene, outside the canvas that turns inert under a panel. The canvas owns the change
  * state, so it portals the bar here.
  */
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
+
+/**
+ * Where a Branch's review page shows its staged changes ("Not deployed here yet"). The page sets the slot; the bar, which
+ * owns the change actions, portals the staged-changes review into it.
+ */
+export const StagedReviewSlot = createContext<{ slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void }>({
+  slot: null, setSlot: () => {},
+});
+
+const BRANCH_REVIEW_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
 
 type BottomBarProps = {
   environmentId: string;
@@ -41,8 +53,8 @@ type BottomBarProps = {
 };
 
 /**
- * The bottom bar shows one thing at a time: staged changes, else a running or queued attempt whose page isn't open,
- * else nothing.
+ * The bottom bar shows one thing at a time: staged changes, else a running or queued attempt whose page isn't open, else
+ * on a Branch what would merge into its Parent, else what's new in its Parent, else nothing.
  */
 export function BottomBar({
   environmentId,
@@ -59,7 +71,9 @@ export function BottomBar({
   onDiscardRow,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
+  const reviewSlot = useContext(StagedReviewSlot).slot;
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const review = useBranchReview(params.organizationSlug, environmentId);
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
@@ -105,7 +119,8 @@ export function BottomBar({
 
   const bar = hasChanges ? (
     <Bar staged title={totalChanges > 0 ? `${totalChanges} ${totalChanges === 1 ? "change" : "changes"}` : "Unpublished changes"} detail={stagedDetail(groups, totalChanges)}>
-      <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Review</Button>
+      {/* On a Branch, Review opens its review page, whose first section is this review. */}
+      {review ? <ReviewLink label="Review" /> : <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Review</Button>}
       {/* Deploying behind a running or queued attempt queues. */}
       <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
         {active.length > 0 ? "Deploy next" : "Deploy"}{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
@@ -121,25 +136,23 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Bar>
-  ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} /> : null;
+  ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
+    : review ? <BranchState review={review} /> : null;
+
+  const reviewProps = {
+    groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
+    onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
+    onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
+    onDiscardAll: async () => { if (await onDiscardAll()) setOpen(false); },
+    onDiscardNode, onDiscardRow,
+  };
 
   return (
     <>
       {bar && slot ? createPortal(bar, slot) : null}
-      {open ? <EnvironmentChangesReview
-        groups={groups}
-        totalChanges={totalChanges}
-        canDeploy={deployable}
-        canSave={canSaveWithoutDeploying}
-        commitMessage={commitMessage}
-        onClose={() => setOpen(false)}
-        onCommitMessageChange={onCommitMessageChange}
-        onDeploy={deploy}
-        onSave={() => { setOpen(false); onSaveWithoutDeploying(); }}
-        onDiscardAll={async () => { if (await onDiscardAll()) setOpen(false); }}
-        onDiscardNode={onDiscardNode}
-        onDiscardRow={onDiscardRow}
-      /> : null}
+      {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
+      {reviewSlot ? createPortal(hasChanges ? <StagedChanges inline {...reviewProps} />
+        : <p className="text-sm text-muted-foreground">Nothing staged here.</p>, reviewSlot) : null}
     </>
   );
 }
@@ -152,6 +165,33 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
     return `${first.nodeName} · ${row.label} ${row.currentValue ? `${row.currentValue} → ` : ""}${row.newValue}`;
   }
   return groups.map((group) => group.nodeName).join(", ");
+}
+
+/** A Branch with nothing staged or running: what would merge into its Parent, else what's new there. */
+function BranchState({ review }: { review: BranchReviewView }) {
+  const isMobile = useIsMobile();
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+  const [first] = review.merge;
+  if (first) {
+    const row = presentRow(first, review.nameOf);
+    return (
+      <Bar title={`${plural(review.changes, "change")} for ${review.parent.name}`}
+        detail={`${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
+        <ReviewLink label={isMobile ? "Review" : "Review and merge"} />
+      </Bar>
+    );
+  }
+  if (review.updates === 0) return null;
+  return (
+    <Bar title={`${plural(review.updates, "update")} from ${review.parent.name}`} detail={null}>
+      <ReviewLink label="Review" />
+    </Bar>
+  );
+}
+
+function ReviewLink({ label }: { label: string }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  return <Link to={BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
 }
 
 /**
