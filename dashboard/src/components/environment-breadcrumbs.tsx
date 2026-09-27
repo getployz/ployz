@@ -134,8 +134,8 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
                       if (!environment) return;
                       go(getDashboardDestination({ ...scope, projectSlug: candidate.slug, environmentSlug: environment.namespace }, section));
                     }}>
-                    <span className="truncate">{candidate.name}</span>
-                    <span className="ml-auto truncate text-muted-foreground">{environment?.name ?? "No environments"}</span>
+                    <span className="flex-1 truncate">{candidate.name}</span>
+                    <span className="truncate text-muted-foreground">{environment?.name ?? "No environments"}</span>
                   </CommandItem>;
                 })}
               </CommandGroup>
