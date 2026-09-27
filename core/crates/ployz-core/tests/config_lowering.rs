@@ -128,3 +128,81 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         json!({"state":"http","path":"/health","port":8080,"timeout_seconds":10})
     );
 }
+
+fn lower_hook(
+    pre_deploy: Option<&str>,
+    setup: Value,
+) -> Result<Value, ployz_core::config::ConfigError> {
+    let config = json!({"version":2,"privateDns":"api",
+        "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+        "preDeployCommand":pre_deploy,"healthcheck":{"type":"none"},"restartPolicy":"on-failure"
+    });
+    let mut snapshot = json!({"config":config});
+    if !setup.is_null() {
+        snapshot["setupCommands"] = setup;
+    }
+    config_request(json!({"operation":"lower_deployment","value":{
+        "projectName":"production","snapshots":[snapshot]
+    }}))
+    .map(|intent| intent["target"][0]["pre_deploy"]["command"].clone())
+}
+
+/// Run a lowered hook command the way the Hook Container does: argv, no extra shell.
+fn run(command: &Value) -> (bool, String) {
+    let argv: Vec<&str> = command
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    let output = std::process::Command::new(argv[0])
+        .args(&argv[1..])
+        .output()
+        .unwrap();
+    (
+        output.status.success(),
+        String::from_utf8(output.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn setup_commands_run_after_the_own_command_each_as_it_would_alone() {
+    // Without Setup Commands the hook is exactly today's.
+    assert_eq!(
+        lower_hook(Some("migrate"), Value::Null).unwrap(),
+        json!(["/bin/sh", "-c", "migrate"])
+    );
+    assert_eq!(lower_hook(None, json!([])).unwrap(), Value::Null);
+
+    // A trailing comment and quotes in either command change nothing else.
+    let hook = lower_hook(
+        Some(r#"echo "own 'one'" # trailing comment"#),
+        json!([r#"echo 'setup "two"'"#]),
+    )
+    .unwrap();
+    assert_eq!(run(&hook), (true, "own 'one'\nsetup \"two\"\n".into()));
+
+    let hook = lower_hook(None, json!(["echo alone # note"])).unwrap();
+    assert_eq!(hook, json!(["/bin/sh", "-c", "echo alone # note"]));
+    assert_eq!(run(&hook), (true, "alone\n".into()));
+
+    let hook = lower_hook(None, json!(["echo 1", "echo 2 #", "echo 3"])).unwrap();
+    assert_eq!(run(&hook), (true, "1\n2\n3\n".into()));
+
+    let hook = lower_hook(Some("echo own; exit 3"), json!(["echo setup"])).unwrap();
+    assert_eq!(run(&hook), (false, "own\n".into()));
+    let hook = lower_hook(Some("true"), json!(["echo 1; false", "echo 2"])).unwrap();
+    assert_eq!(run(&hook), (false, "1\n".into()));
+}
+
+#[test]
+fn setup_commands_follow_pre_deploy_command_rules() {
+    let hook = lower_hook(None, json!(["  seed  "])).unwrap();
+    assert_eq!(hook, json!(["/bin/sh", "-c", "seed"]));
+    for refused in [json!(["  "]), json!(["x".repeat(2001)])] {
+        assert_eq!(
+            lower_hook(Some("migrate"), refused).unwrap_err().path,
+            "setupCommands"
+        );
+    }
+}
