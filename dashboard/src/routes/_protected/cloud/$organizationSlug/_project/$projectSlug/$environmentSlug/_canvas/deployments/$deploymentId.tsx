@@ -17,11 +17,10 @@ export const Route = createFileRoute(
   validateSearch: Schema.toStandardSchemaV1(deploymentPageSearchSchema),
   // The attempt (who started it, the configs it deployed), its build tail (each image's stage) and its build log (the Build
   // tab) start together; SSR renders them and hover warms them. The deploy logs stream once the Deploy tab shows.
-  loader: ({ params, context }) => Promise.all([
-    prefetchRemote(context, deploymentAttemptQueryOptions(params.organizationSlug, params.deploymentId)),
-    prefetchRemote(context, deploymentBuildTailQueryOptions(params.organizationSlug, params.deploymentId)),
-    prefetchRemote(context, deploymentBuildLogQueryOptions(params.organizationSlug, params.deploymentId)),
-  ]),
+  loader: ({ params, context }) => prefetchRemote(context,
+    deploymentAttemptQueryOptions(params.organizationSlug, params.deploymentId),
+    deploymentBuildTailQueryOptions(params.organizationSlug, params.deploymentId),
+    deploymentBuildLogQueryOptions(params.organizationSlug, params.deploymentId)),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Deployment" />,
   component: RouteComponent,
