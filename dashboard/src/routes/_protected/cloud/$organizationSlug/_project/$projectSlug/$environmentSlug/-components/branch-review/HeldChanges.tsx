@@ -29,14 +29,15 @@ export function HeldChanges({ environmentId }: { environmentId: string }) {
     const pr = documents.find((document) => document.id === save.prEnvironmentId);
     const line = waitingLine(save);
     return (
-      <ReviewSection key={save.id} title={line.title} help={`${line.detail}. They land when #${save.prNumber} merges.`}>
+      <ReviewSection key={save.id} title={line.title} count={save.rows.length}
+        help={`Approved by ${save.approvedBy ?? "a former member"}. They land when #${save.prNumber} merges, and change only in its review.`}>
         <ItemGroup className="gap-1">
           {save.rows.map(({ row }) => <ChangeRowItem key={row.key} row={presentRow(row, (lineage) => lineageName(lineage, save.prEnvironmentId ?? undefined))} />)}
         </ItemGroup>
         {pr ? (
           <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={{ ...params, environmentSlug: pr.namespace }}
             className={buttonVariants({ size: "sm", variant: "outline", className: "self-start" })}>
-            Change them in #{save.prNumber}'s review
+            Open #{save.prNumber}'s review
           </Link>
         ) : null}
       </ReviewSection>
