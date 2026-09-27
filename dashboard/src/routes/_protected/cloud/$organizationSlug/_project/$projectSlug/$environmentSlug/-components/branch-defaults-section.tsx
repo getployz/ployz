@@ -19,7 +19,11 @@ export function BranchDefaultsSection({ organizationSlug, environmentId }: { org
   const [draft, setDraft] = useState<SetupCommand[] | null>(null);
   if (!document) return null;
   const commands = draft ?? saved;
-  const own = services.filter((row) => row.environmentId === environmentId).map((row) => ({ lineageId: row.lineageId, name: row.name }));
+  // The Working State's services; a removed service keeps its row until deployed away.
+  const own = document.intent.services.map((node) => ({
+    lineageId: node.lineageId,
+    name: services.find((row) => row.id === node.id)?.name ?? node.slug,
+  }));
 
   // Blank commands stay in the draft until typed; only whole ones save, and only when they changed.
   function commit(next: SetupCommand[]) {

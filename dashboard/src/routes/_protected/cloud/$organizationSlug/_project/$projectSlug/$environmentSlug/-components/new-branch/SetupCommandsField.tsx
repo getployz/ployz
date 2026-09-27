@@ -16,7 +16,8 @@ export function SetupCommandsField({ id, commands, services, onChange, onBlur }:
   const nameOf = (lineage: string) => services.find((service) => service.lineageId === lineage)?.name ?? "a service";
   const at = (index: number, change: Partial<SetupCommand>, typed?: boolean) =>
     onChange(commands.map((setup, i) => i === index ? { ...setup, ...change } : setup), typed);
-  const first = services[0];
+  // A new command runs where the last one does.
+  const first = services.find((service) => service.lineageId === commands.at(-1)?.lineageId) ?? services[0];
   return (
     <div className="flex flex-col gap-2">
       {commands.map((setup, index) => (
