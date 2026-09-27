@@ -209,12 +209,15 @@ function BranchState({ review }: { review: BranchReviewView }) {
 function PrEnvironmentState({ review, pullRequest }: { review: BranchReviewView; pullRequest: PullRequest }) {
   const isMobile = useIsMobile();
   if (review.changes === 0) return <UpdatesState review={review} />;
-  const passing = review.check?.passing === true;
-  const to = listNames(review.goesTo.filter((landing) => landing.rows.length).map((landing) => landing.destination.name));
+  const landings = review.goesTo.filter((landing) => landing.rows.length);
+  // Approved: every Destination with changes has a standing approval. The check may still want a value.
+  const approved = landings.every((landing) => landing.approval);
+  const to = listNames(landings.map((landing) => landing.destination.name));
   return (
-    <Bar title={pullRequest.closed ? `#${pullRequest.number} is closed` : passing ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
-      detail={pullRequest.closed ? null : passing ? `Lands when #${pullRequest.number} merges` : review.check?.reason ?? null}>
-      <ReviewLink label={isMobile || passing || pullRequest.closed ? "Review" : "Review and approve"} />
+    <Bar title={pullRequest.closed ? `#${pullRequest.number} is closed` : approved ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
+      detail={pullRequest.closed ? null : !approved ? "Not approved yet"
+        : review.check?.passing ? `Lands when #${pullRequest.number} merges` : review.check?.reason ?? null}>
+      <ReviewLink label={isMobile || approved || pullRequest.closed ? "Review" : "Review and approve"} />
     </Bar>
   );
 }

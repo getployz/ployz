@@ -280,7 +280,7 @@ One floating **bottom bar** sits at the bottom of the canvas on every screen siz
 1. **A starting point:** "X isn't deployed" and **New branch**. Its staged nodes are what Branches of it copy, not pending work, so the bar doesn't count them; its review page still lists them under **Not deployed here yet**.
 2. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
 3. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
-4. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**. On a PR Environment: "N changes for X" with what its check still needs and **Review and approve**, or "Approved · lands when #142 merges" and **Review**.
+4. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**. On a PR Environment: "N changes for X · Not approved yet" and **Review and approve**, or "Approved · lands when #142 merges" and **Review**.
 5. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
 6. **Changes held for a pull request:** "Waiting for #142 · N changes · approved by maya" and **Review**.
 7. Otherwise, no bar.
