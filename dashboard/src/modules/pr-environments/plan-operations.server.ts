@@ -7,14 +7,15 @@ import { getProjectContextForActor } from "#/modules/environment-design/workspac
 import { environment } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
-import { planRepositories } from "./repositories";
+import { defaultPrEnvironmentPlan, planRepositories } from "./repositories";
 import { isPrEnvironment } from "./pr-environment.repository.server";
 import type { SetPrEnvironmentPlan } from "./plan-schemas";
 import { prEnvironmentPlan } from "./tables";
 
 /**
- * Saves a project's PR Environments plan for one repository its services deploy from. The start-from Environment must be
- * one of the project's. Turning PR Environments on records the member they act as.
+ * Changes a project's PR Environments plan for one repository its services deploy from, field by field over the saved
+ * one (or the default), so quick edits don't overwrite each other. The start-from Environment must be one of the
+ * project's. Turning PR Environments on records the member they act as.
  */
 export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function* (actor: Actor, input: SetPrEnvironmentPlan) {
   const context = yield* getProjectContextForActor(actor, input);
@@ -27,24 +28,27 @@ export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function
       .from(environment).where(eq(environment.projectId, projectId));
     const repository = planRepositories(environments).find((candidate) => candidate.repositoryId === input.repositoryId);
     if (!repository) return yield* new Validation({ message: "No service in this project deploys from that repository." });
-    if (input.startFromEnvironmentId !== null && !environments.some((row) => row.id === input.startFromEnvironmentId)) {
+    const { organizationSlug: _organization, projectSlug: _project, repositoryId: _repository, ...change } = input;
+    const startFrom = change.startFromEnvironmentId;
+    if (startFrom != null && !environments.some((row) => row.id === startFrom)) {
       return yield* new Validation({ message: "Pick an environment of this project to start from." });
     }
-    if (input.startFromEnvironmentId !== null && (yield* isPrEnvironment(input.startFromEnvironmentId))) {
+    if (startFrom != null && (yield* isPrEnvironment(startFrom))) {
       return yield* new Validation({ message: "A PR environment can't be where PR environments start from." });
     }
     const key = and(eq(prEnvironmentPlan.projectId, projectId), eq(prEnvironmentPlan.repositoryId, input.repositoryId));
     const [existing] = yield* drizzle.select().from(prEnvironmentPlan).where(key).for("update");
+    const plan = { ...defaultPrEnvironmentPlan, startFromEnvironmentId: null, ...existing, ...change };
     const values = {
       installationId: repository.installationId,
       repository: repository.repository,
-      enabled: input.enabled,
-      startFromEnvironmentId: input.startFromEnvironmentId,
-      picks: input.picks,
-      setupCommands: input.setupCommands,
-      removeOnClose: input.removeOnClose,
-      includeBots: input.includeBots,
-      enabledByUserId: !input.enabled ? null : existing?.enabled && existing.enabledByUserId ? existing.enabledByUserId : actor.userId,
+      enabled: plan.enabled,
+      startFromEnvironmentId: plan.startFromEnvironmentId,
+      picks: plan.picks,
+      setupCommands: plan.setupCommands,
+      removeOnClose: plan.removeOnClose,
+      includeBots: plan.includeBots,
+      enabledByUserId: !plan.enabled ? null : existing?.enabled && existing.enabledByUserId ? existing.enabledByUserId : actor.userId,
     };
     const [row] = yield* drizzle.insert(prEnvironmentPlan)
       .values({ organizationId: context.organization.id, projectId, repositoryId: input.repositoryId, ...values })

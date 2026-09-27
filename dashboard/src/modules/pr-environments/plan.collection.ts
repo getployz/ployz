@@ -47,18 +47,16 @@ function projectPlans(
 
 const getPlanAction = cachedByCollectionScope((organizationSlug, scope) => {
   const plans = getPrEnvironmentPlansCollection(organizationSlug, scope);
-  return createOptimisticAction<{ projectSlug: string; plan: PrEnvironmentPlanRow }>({
-    onMutate: ({ plan }) => {
+  return createOptimisticAction<{ projectSlug: string; plan: PrEnvironmentPlanRow; change: PlanChange }>({
+    onMutate: ({ plan, change }) => {
       const key = prEnvironmentPlanKey(plan);
-      if (plans.has(key)) plans.update(key, (draft) => Object.assign(draft, plan));
-      else plans.insert(plan);
+      if (plans.has(key)) plans.update(key, (draft) => Object.assign(draft, change));
+      else plans.insert({ ...plan, ...change });
     },
-    mutationFn: async ({ projectSlug, plan }) => {
+    mutationFn: async ({ projectSlug, plan, change }) => {
       try {
         await plans.writeCommitted(await setPrEnvironmentPlanServerFn({ data: {
-          organizationSlug, projectSlug, repositoryId: plan.repositoryId, enabled: plan.enabled,
-          startFromEnvironmentId: plan.startFromEnvironmentId, picks: plan.picks, setupCommands: plan.setupCommands,
-          removeOnClose: plan.removeOnClose, includeBots: plan.includeBots,
+          organizationSlug, projectSlug, repositoryId: plan.repositoryId, ...change,
         } }));
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Could not save the PR environments plan.");
@@ -68,10 +66,19 @@ const getPlanAction = cachedByCollectionScope((organizationSlug, scope) => {
   });
 });
 
-/** Saves a change to one repository's plan; applies at once and rolls back on failure. */
+type PlanChange = Partial<Pick<PrEnvironmentPlanRow, "enabled" | "startFromEnvironmentId" | "picks" | "setupCommands" | "removeOnClose" | "includeBots">>;
+
+/**
+ * Saves a change to one repository's plan; applies at once and rolls back on failure. A plan's first save sends it
+ * whole; later ones send only what changed, so quick edits don't overwrite each other.
+ */
 export function useSetPrEnvironmentPlan(organizationSlug: string, projectSlug: string) {
-  const save = getPlanAction(organizationSlug, useCollectionScope());
-  return (plan: PrEnvironmentPlanRow, change: Partial<Pick<PrEnvironmentPlanRow,
-    "enabled" | "startFromEnvironmentId" | "picks" | "setupCommands" | "removeOnClose" | "includeBots">>) =>
-    observeFailure(save({ projectSlug, plan: { ...plan, ...change } }));
+  const scope = useCollectionScope();
+  const save = getPlanAction(organizationSlug, scope);
+  const plans = getPrEnvironmentPlansCollection(organizationSlug, scope);
+  return (plan: PrEnvironmentPlanRow, change: PlanChange) => {
+    const { enabled, startFromEnvironmentId, picks, setupCommands, removeOnClose, includeBots } = plan;
+    const whole = { enabled, startFromEnvironmentId, picks, setupCommands, removeOnClose, includeBots };
+    return observeFailure(save({ projectSlug, plan, change: plans.has(prEnvironmentPlanKey(plan)) ? change : { ...whole, ...change } }));
+  };
 }

@@ -10,14 +10,19 @@ import { environment, project } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
 import { Validation } from "#/server/public-error";
-import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { loadCurrentEnvironmentState, loadEnvironmentDocument, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { loadLatestEnvironmentSavedState } from "#/modules/environment-design/saved-state-repository.server";
+import { publishLandedSavedState } from "#/modules/environment-design/saved-state-operations.server";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
 import { carryInWaitingTriggers, landAtMerge, settleAtClose } from "./land.server";
-import { fromRepository, prEnvironmentIntent } from "./pull-request";
+import { fromRepository, prEnvironmentIntent, trackingHead } from "./pull-request";
 import { actingMember } from "./plan-operations.server";
 import { defaultPrEnvironmentPlan, prPlanInput } from "./repositories";
 import { conditionalSave, prEnvironment, prEnvironmentPlan } from "./tables";
 
 type Plan = typeof prEnvironmentPlan.$inferSelect;
+type Document = typeof environment.$inferSelect;
 type LivePullRequest = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
 
 /**
@@ -46,7 +51,12 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     // Together, under its document as settlement takes it: no approval freezes in between.
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      yield* loadEnvironmentDocument(environmentId, true);
+      const [before] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, environmentId));
+      const renamed = before !== undefined && before.headBranch !== live.headBranch;
+      // A renamed head Git branch: the repository's services track the new name, in Saved and Working.
+      if (renamed) yield* lockEnvironmentDeploymentQueue(environmentId);
+      const document = yield* loadEnvironmentDocument(environmentId, true);
+      if (renamed) yield* trackRenamedHead(before, document, live.headBranch, plans);
       yield* drizzle.update(prEnvironment).set({ retired: true }).where(eq(prEnvironment.environmentId, environmentId));
       yield* drizzle.delete(conditionalSave).where(and(eq(conditionalSave.prEnvironmentId, environmentId), eq(conditionalSave.state, "standing")));
     }));
@@ -56,7 +66,12 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     // Under its document, as an approval takes it: none lands between the refresh and the withdrawal.
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      yield* loadEnvironmentDocument(environmentId, true);
+      const [before] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, environmentId));
+      const renamed = before !== undefined && before.headBranch !== live.headBranch;
+      // A renamed head Git branch: the repository's services track the new name, in Saved and Working.
+      if (renamed) yield* lockEnvironmentDeploymentQueue(environmentId);
+      const document = yield* loadEnvironmentDocument(environmentId, true);
+      if (renamed) yield* trackRenamedHead(before, document, live.headBranch, plans);
       yield* drizzle.update(prEnvironment).set({
         title: live.title, author: live.author.login, headBranch: live.headBranch, targetBranch: live.targetBranch,
         commits: live.commits, closed: !live.open,
@@ -111,6 +126,20 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
   }
   if (created || existing.length > 0) return "pull_request_projected" as const;
   return nothingFromRepository ? "ignored_nothing_from_repository" as const : "ignored_pull_request" as const;
+});
+
+const trackRenamedHead = Effect.fn("PrEnvironments.trackRenamedHead")(function* (
+  pullRequest: typeof prEnvironment.$inferSelect, document: Document, headBranch: string, plans: Plan[],
+) {
+  const tracking = (intent: SavedEnvironmentIntent) => trackingHead(intent, { repositoryId: pullRequest.repositoryId, headBranch });
+  const latest = yield* loadLatestEnvironmentSavedState(document.id);
+  const plan = plans.find((row) => row.projectId === pullRequest.projectId);
+  const actorId = plan ? yield* actingMember(plan) : null;
+  if (latest && actorId) {
+    yield* publishLandedSavedState({ environmentId: document.id, actorId, message: `Track ${headBranch}`,
+      basis: { kind: "saved_revision", savedStateSnapshotId: latest.id }, intent: tracking(latest.intent) });
+  }
+  yield* writeEnvironmentDocument(document, tracking((yield* loadCurrentEnvironmentState(document.id)).intent));
 });
 
 const logNotCreated = (plan: Plan) => (error: { message: string }) =>

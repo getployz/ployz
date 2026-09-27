@@ -18,8 +18,8 @@ type Producers = SavedDeploymentTarget["variableProducers"];
 
 /**
  * A Branch's attempt as admission writes it, captured fresh on every attempt: plus each never-deployed Own Copy's Setup
- * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. Any
- * Environment's variables with an empty value count as missing too.
+ * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides or
+ * that resolved empty. Any Environment's variables with an empty value count as missing too.
  */
 export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
   environmentId: string,
@@ -138,6 +138,9 @@ const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
     });
     variableProducers.push(...result.producers);
     missing.push(...result.missing);
+    // A Live value that resolved empty, such as one a pull request landed without a value, is missing to its readers too.
+    missing.push(...result.producers.filter((producer) => isEmptyValue(producer.value) && uses.get(producer.ownerLineageId)?.has(producer.key))
+      .map((producer) => ({ lineageId: producer.ownerLineageId, key: producer.key })));
   }
   if (missing.length === 0) return { variableProducers, missingLiveValues };
 

@@ -24,6 +24,7 @@ import { rowLineage, usedLive } from "#/modules/branches/branch-review";
 import type { CarriedSave } from "./carried";
 import { actingMember } from "./plan-operations.server";
 import { trackedBranch } from "./pull-request";
+import { prDestinations } from "./pr-environment.repository.server";
 import { conditionalSave, prEnvironment, prEnvironmentPlan } from "./tables";
 
 type ConditionalSave = typeof conditionalSave.$inferSelect;
@@ -337,8 +338,11 @@ export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function*
       const document = yield* loadEnvironmentDocument(prEnvironmentId, true);
       const ofPr = eq(conditionalSave.prEnvironmentId, prEnvironmentId);
       if (merge) {
+        // Only where it's still a Destination: elsewhere nothing deploys the merge commit, so it drops.
+        const current = yield* prDestinations(prEnvironmentId);
         yield* drizzle.update(conditionalSave).set({ state: "frozen", mergeCommitSha: merge.commitSha, prEnvironmentId: null })
-          .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision), eq(conditionalSave.targetBranch, merge.targetBranch)));
+          .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision), eq(conditionalSave.targetBranch, merge.targetBranch),
+            inArray(conditionalSave.destinationEnvironmentId, current)));
       }
       yield* drizzle.delete(conditionalSave).where(ofPr);
       // Closed under its document: settled before the closed delivery (a merge push), it takes no approval after.

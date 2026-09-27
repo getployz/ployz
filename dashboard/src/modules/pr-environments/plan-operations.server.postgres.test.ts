@@ -61,6 +61,12 @@ it.live("saves a repository's PR Environments plan, refuses another project's st
       assert.strictEqual((yield* setPrEnvironmentPlan({ userId: other.id }, { ...plan, enabled: false })).enabledByUserId, null);
       assert.strictEqual((yield* setPrEnvironmentPlan({ userId: other.id }, plan)).enabledByUserId, other.id);
 
+      // A change sends only its fields: two in a row both stand.
+      const scope = { organizationSlug: "acme", projectSlug, repositoryId: 42 };
+      yield* setPrEnvironmentPlan(actor, { ...scope, removeOnClose: true });
+      const patched = yield* setPrEnvironmentPlan(actor, { ...scope, includeBots: false });
+      assert.deepStrictEqual([patched.removeOnClose, patched.includeBots, patched.picks], [true, false, { preset: "uses" }]);
+
       const refusals = [
         yield* Effect.flip(setPrEnvironmentPlan(actor, { ...plan, startFromEnvironmentId: elsewhere.id })),
         yield* Effect.flip(setPrEnvironmentPlan(actor, { ...plan, repositoryId: 99 })),

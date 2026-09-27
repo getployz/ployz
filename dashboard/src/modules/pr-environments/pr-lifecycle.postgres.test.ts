@@ -24,7 +24,7 @@ import type { PullRequestEffectRunner } from "./pr-lifecycle.server";
 import { prDestinations } from "./pr-environment.repository.server";
 import { readCollection } from "#/collections/read.server";
 import { createServiceVariable, updateServiceVariable } from "#/modules/environment-design/variable-operations.server";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { closePrEnvironment } from "#/modules/branches/branch-close.server";
@@ -328,6 +328,12 @@ describe("PR Environment lifecycle", () => {
     expect(await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142b", sha: "d".repeat(40), repo: { id: repositoryId } } }))
       .toBe("pull_request_projected");
     expect((await prEnvironment(142))?.headBranch).toBe("feature-142b");
+    // Its api tracks the renamed head Git branch, in Working and Saved.
+    const branchOf = (intent: SavedEnvironmentIntent | undefined) => intent?.services.flatMap((node) => node.config.source.type === "git" ? [node.config.source.branch] : [])[0];
+    const [working] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, environmentId));
+    const saved = (await harness.db.select().from(schema.environmentSavedStateSnapshot)
+      .where(eq(schema.environmentSavedStateSnapshot.environmentId, environmentId))).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).at(-1);
+    expect([branchOf(working?.intent), branchOf(saved?.intent as SavedEnvironmentIntent | undefined)]).toEqual([{ type: "connected", name: "feature-142b" }, { type: "connected", name: "feature-142b" }]);
 
     const asDefault = await harness.runEffect(setProjectDefaultEnvironment({ userId }, {
       organizationSlug: "acme", projectSlug: "shop", environmentId,
@@ -690,6 +696,23 @@ describe("PR Environment lifecycle", () => {
       const latestSaved = async () => (await harness.db.select().from(schema.environmentSavedStateSnapshot)
         .where(eq(schema.environmentSavedStateSnapshot.environmentId, stagingId))).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).at(-1);
       const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
+
+      it("drops an approval for an Environment that stopped being a Destination before the merge", async () => {
+        const prId = (await prEnvironment(142))?.environmentId ?? "";
+        await setVariable(prId, "FLAG", "on");
+        await approve(prId, tickAll);
+        // staging's api now deploys another Git branch.
+        const intent = (await environmentOf(stagingId))?.intent;
+        const api = intent?.services.find((node) => node.id === apiId);
+        if (api?.config.source.type === "git") api.config.source.branch = { type: "connected", name: "release" };
+        await harness.db.update(schema.environment).set({ intent }).where(eq(schema.environment.id, stagingId));
+        await saveStaging();
+        const before = (await latestSaved())?.id;
+
+        await pullRequest("merged", "closed", 142, merged);
+        expect(await saves()).toEqual([]);
+        expect((await latestSaved())?.id).toBe(before);
+      });
 
       it("lands where nothing deploys on push: changed rows staged and marked, staged edits kept, a missing secret empty", async () => {
         await setVariable(stagingId, "MODE", "a");

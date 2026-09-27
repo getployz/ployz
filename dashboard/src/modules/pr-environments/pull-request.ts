@@ -15,18 +15,17 @@ export function trackedBranch(config: Pick<ServiceConfig, "source">, repositoryI
 
 /** A PR Environment's derived configuration: the repository's services track the head Git branch; every Own Copy runs one replica. */
 export function prEnvironmentIntent(intent: SavedEnvironmentIntent, pullRequest: { repositoryId: number; headBranch: string }): SavedEnvironmentIntent {
+  const tracking = trackingHead(intent, pullRequest);
+  return { ...tracking, services: tracking.services.map((node) => ({ ...node, config: { ...node.config, replicas: 1 } })) };
+}
+
+/** `intent` with the repository's services tracking the pull request's head Git branch. */
+export function trackingHead(intent: SavedEnvironmentIntent, pullRequest: { repositoryId: number; headBranch: string }): SavedEnvironmentIntent {
   return {
     ...intent,
-    services: intent.services.map((node) => ({
-      ...node,
-      config: {
-        ...node.config,
-        replicas: 1,
-        source: fromRepository(node.config, pullRequest.repositoryId)
-          ? { ...node.config.source, branch: { type: "connected", name: pullRequest.headBranch } }
-          : node.config.source,
-      },
-    })),
+    services: intent.services.map((node) => fromRepository(node.config, pullRequest.repositoryId)
+      ? { ...node, config: { ...node.config, source: { ...node.config.source, branch: { type: "connected", name: pullRequest.headBranch } } } }
+      : node),
   };
 }
 
