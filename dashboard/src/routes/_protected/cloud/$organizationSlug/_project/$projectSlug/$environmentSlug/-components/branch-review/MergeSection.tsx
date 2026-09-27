@@ -69,8 +69,12 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
             {picks.map(({ row, choice, pick, presented }) => (
               <div key={row.key} className="flex flex-col gap-1">
                 <ChangeRowItem row={presented} conflict={row.role === "move" && row.conflict ? destination : undefined}>
-                  {choice && pick.ticked ? (
-                    <NativeSelect size="sm" aria-label={`Value of ${presented.label}`} value={pick.option}
+                  <Checkbox checked={pick.ticked} onCheckedChange={(checked) => edit(row.key, { ticked: checked === true })}
+                    aria-label={`Merge ${presented.node}${presented.label ? ` · ${presented.label}` : ""}`} />
+                </ChangeRowItem>
+                {choice && pick.ticked ? (
+                  <div className="flex flex-wrap gap-1">
+                    <NativeSelect aria-label={`Value of ${presented.label}`} value={pick.option}
                       // SAFETY: the options are exactly choice.options.
                       onChange={(event) => edit(row.key, { option: event.target.value as BranchOption })}>
                       {choice.options.map((option) => (
@@ -80,15 +84,13 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
                         </NativeSelectOption>
                       ))}
                     </NativeSelect>
-                  ) : null}
-                  <Checkbox checked={pick.ticked} onCheckedChange={(checked) => edit(row.key, { ticked: checked === true })}
-                    aria-label={`Merge ${presented.node}${presented.label ? ` · ${presented.label}` : ""}`} />
-                </ChangeRowItem>
-                {choice && pick.ticked && pick.option === "new" ? (
-                  <Input type={choice.secret ? "password" : "text"} autoComplete="off" value={pick.value}
-                    aria-label={`New value of ${presented.label}`}
-                    placeholder={choice.secret ? `${destination}'s value; empty leaves it for later` : `${destination}'s value`}
-                    onChange={(event) => edit(row.key, { value: event.target.value })} />
+                    {pick.option === "new" ? (
+                      <Input className="min-w-48 flex-1" type={choice.secret ? "password" : "text"} autoComplete="off" value={pick.value}
+                        aria-label={`New value of ${presented.label}`}
+                        placeholder={choice.secret ? `${destination}'s value, or empty for later` : `${destination}'s value`}
+                        onChange={(event) => edit(row.key, { value: event.target.value })} />
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
             ))}

@@ -285,6 +285,8 @@ One floating **bottom bar** sits at the bottom of the canvas on every screen siz
 
 On a Branch, Review opens the Branch's review page instead of a dialog: a panel over its canvas with the whole relationship to its Parent, in order: **Not deployed here yet** (the staged-changes review), **Merge into X**, **New in X** (including Live Nodes their owner redeployed since this Branch last deployed), and **Meant to differ**, each with a plain reason. A conflict, a setting the Parent also changed since branching, reads old → new with a marker.
 
+Merge never deploys. Each change under **Merge into X** has a tick, and each variable a value choice: this Branch's, the Parent's, a new one, or leave it out; a new secret asks for X's value. Merge stays disabled, with the reason, while anything is staged on the Branch or an attempt of it is active, so only what runs there merges. It stages the ticked changes in X and lands on X's canvas, whose bottom bar shows them; X's own Review → Deploy ships them. **Then close** says Merge closes the Branch; a Kept Branch doesn't show it, and the Default Environment can't turn it on.
+
 Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
 The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
