@@ -1,60 +1,44 @@
 import type { ServiceConfig } from "@ployz/sdk/config";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
-/** What a PR Environment's Branch row records about its pull request. */
-export type PullRequestFacts = {
-  repositoryId: number;
-  repository: string;
-  number: number;
-  title: string;
-  author: string;
-  headBranch: string;
-  headSha: string;
-  targetBranch: string;
-};
+type GitSource = Extract<ServiceConfig["source"], { type: "git" }>;
 
-/** The Branch row's pull request columns: all null on a Branch without one. */
-export function pullRequestColumns(pullRequest: PullRequestFacts | undefined) {
-  return {
-    prRepositoryId: pullRequest?.repositoryId ?? null,
-    prRepository: pullRequest?.repository ?? null,
-    prNumber: pullRequest?.number ?? null,
-    prTitle: pullRequest?.title ?? null,
-    prAuthor: pullRequest?.author ?? null,
-    prHeadBranch: pullRequest?.headBranch ?? null,
-    prHeadSha: pullRequest?.headSha ?? null,
-    prTargetBranch: pullRequest?.targetBranch ?? null,
-  };
-}
-
-export function fromRepository(config: Pick<ServiceConfig, "source">, repositoryId: number) {
+/** Whether a service deploys from the repository. */
+export function fromRepository(config: Pick<ServiceConfig, "source">, repositoryId: number): config is { source: GitSource } {
   return config.source.type === "git" && config.source.repositoryId === repositoryId;
 }
 
+/** The Git branch of the repository a service tracks, or null. */
+export function trackedBranch(config: Pick<ServiceConfig, "source">, repositoryId: number) {
+  return fromRepository(config, repositoryId) && config.source.branch.type === "connected" ? config.source.branch.name : null;
+}
+
 /** A PR Environment's derived configuration: the repository's services track the head Git branch; every Own Copy runs one replica. */
-export function prEnvironmentIntent(intent: SavedEnvironmentIntent, pullRequest: PullRequestFacts): SavedEnvironmentIntent {
+export function prEnvironmentIntent(intent: SavedEnvironmentIntent, pullRequest: { repositoryId: number; headBranch: string }): SavedEnvironmentIntent {
   return {
     ...intent,
-    services: intent.services.map((node) => {
-      const { source } = node.config;
-      return {
-        ...node,
-        config: {
-          ...node.config,
-          replicas: 1,
-          source: source.type === "git" && source.repositoryId === pullRequest.repositoryId
-            ? { ...source, branch: { type: "connected", name: pullRequest.headBranch } }
-            : source,
-        },
-      };
-    }),
+    services: intent.services.map((node) => ({
+      ...node,
+      config: {
+        ...node.config,
+        replicas: 1,
+        source: fromRepository(node.config, pullRequest.repositoryId)
+          ? { ...node.config.source, branch: { type: "connected", name: pullRequest.headBranch } }
+          : node.config.source,
+      },
+    })),
   };
 }
 
-type PrBranch = { projectId: string; prRepositoryId: number | null; prNumber: number | null };
+type PrBranch = { environmentId: string; projectId: string; pullRequest: { repositoryId: number; number: number; closed: boolean } | null };
 
-/** The project's open PR Environments for one repository, by pull request number. */
+/** The PR Environments among `branches`, by Environment id. */
+export function prEnvironmentIds(branches: ReadonlyArray<PrBranch>) {
+  return new Set(branches.flatMap((branch) => branch.pullRequest ? [branch.environmentId] : []));
+}
+
+/** The project's PR Environments for one repository whose pull request is open, by pull request number. */
 export function openPrEnvironments<B extends PrBranch>(branches: ReadonlyArray<B>, projectId: string, repositoryId: number) {
-  return branches.filter((branch) => branch.projectId === projectId && branch.prRepositoryId === repositoryId)
-    .sort((a, b) => (a.prNumber ?? 0) - (b.prNumber ?? 0));
+  return branches.filter((branch) => branch.projectId === projectId && branch.pullRequest?.repositoryId === repositoryId && !branch.pullRequest.closed)
+    .sort((a, b) => (a.pullRequest?.number ?? 0) - (b.pullRequest?.number ?? 0));
 }

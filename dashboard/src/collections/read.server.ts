@@ -11,11 +11,12 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import type { BranchRow, ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import type { JsonValue } from "#/db/tables";
 import { Database } from "#/server/database.server";
 
 export class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
@@ -28,6 +29,10 @@ export class CollectionReadDenied extends Data.TaggedError("CollectionReadDenied
 }> {
   readonly publicErrorCategory = "not-found" as const;
 }
+
+const withoutFingerprints = <Value>(value: Value): Value =>
+  // SAFETY: a JSON round trip of JSON data returns the same shape minus the dropped keys.
+  JSON.parse(JSON.stringify(value, (key: string, entry: JsonValue) => key === "fingerprint" || key === "valueFingerprint" ? undefined : entry)) as Value;
 
 export const readCollection = Effect.fn("Collections.read")(function* (
   actor: Actor,
@@ -60,21 +65,26 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment":
         return yield* database.drizzle.select().from(tables.environment).where(scoped(tables.environment));
       // A base is core's redacted configuration; stripping again keeps sealed ciphertext on the server regardless.
-      case "environment_branch":
-        return (yield* database.drizzle.select().from(tables.environmentBranch)
-          .where(scoped(tables.environmentBranch))).map((row) => ({ ...row, base: withoutSealedCiphertext(row.base) }));
+      case "environment_branch": {
+        const rows: BranchRow[] = (yield* database.drizzle.select({ branch: tables.environmentBranch, pullRequest: tables.prEnvironment })
+          .from(tables.environmentBranch)
+          .leftJoin(tables.prEnvironment, eq(tables.prEnvironment.environmentId, tables.environmentBranch.environmentId))
+          .where(scoped(tables.environmentBranch)))
+          .map(({ branch, pullRequest }) => ({ ...branch, base: withoutSealedCiphertext(branch.base), pullRequest }));
+        return rows;
+      }
       case "pr_environment_plan":
         return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
-      // Sealed picks, the Destination's values and the landing copy stay on the server.
+      // Sealed picks and the landing copy stay on the server; held rows go without secret fingerprints.
       case "conditional_save": {
         const save = tables.conditionalSave;
-        const rows: ConditionalSaveRow[] = yield* database.drizzle.select({
+        const rows: ConditionalSaveRow[] = (yield* database.drizzle.select({
           id: save.id, organizationId: save.organizationId, projectId: save.projectId, prEnvironmentId: save.prEnvironmentId,
           repositoryId: save.repositoryId, prNumber: save.prNumber, destinationEnvironmentId: save.destinationEnvironmentId,
           rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
-          approvedBy: tables.user.name, approvedAt: save.approvedAt,
-          mergeCommitSha: save.mergeCommitSha, landedSavedStateId: save.landedSavedStateId,
-        }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save));
+          approvedBy: tables.user.name, approvedAt: save.approvedAt, state: save.state, landedSavedStateId: save.landedSavedStateId,
+        }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save)))
+          .map((row) => ({ ...row, rows: withoutFingerprints(row.rows) }));
         return rows;
       }
       case "service":

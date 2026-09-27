@@ -14,7 +14,9 @@ import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinationCandidates, destinations, trackedBranches } from "#/modules/pr-environments/destinations";
 import { usePrEnvironmentPlans, useSetPrEnvironmentPlan } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
-import { openPrEnvironments } from "#/modules/pr-environments/pull-request";
+import { openPrEnvironments, prEnvironmentIds } from "#/modules/pr-environments/pull-request";
+import { environmentTree } from "#/modules/project/environment-tree";
+import { BranchIndent } from "#/components/environment-tree";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useBranchPicking } from "../new-branch/branch-picking";
@@ -46,10 +48,10 @@ function Plan({ repositoryId, project, environments: all, branches }: {
   const approve = useMissingPrEnvironmentGrant(organizationSlug, plan?.installationId ?? 0);
   const environments = all.filter((environment) => environment.projectId === project.id)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-  const prEnvironmentIds = new Set(branches.flatMap((branch) => branch.prNumber === null ? [] : [branch.environmentId]));
-  const open = openPrEnvironments(branches, project.id, repositoryId).flatMap((branch) => {
-    const environment = environments.find((row) => row.id === branch.environmentId);
-    return environment ? [{ branch, environment }] : [];
+  const prEnvironments = prEnvironmentIds(branches);
+  const open = openPrEnvironments(branches, project.id, repositoryId).flatMap(({ environmentId, pullRequest }) => {
+    const environment = environments.find((row) => row.id === environmentId);
+    return environment && pullRequest ? [{ pullRequest, environment }] : [];
   });
   const { data: attempts } = useLiveSuspenseQuery(getEnvironmentDeploymentsCollection(organizationSlug, useCollectionScope()));
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
@@ -113,8 +115,9 @@ function Plan({ repositoryId, project, environments: all, branches }: {
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {environments.filter((environment) => !prEnvironmentIds.has(environment.id)).map((environment) => (
+                {environmentTree(environments.filter((environment) => !prEnvironments.has(environment.id)), branches).map(({ environment, depth }) => (
                   <SelectItem key={environment.id} value={environment.id} label={environment.name}>
+                    <BranchIndent depth={depth} />
                     {environment.name}
                     {!deployed.has(environment.id) && <span className="text-muted-foreground">not deployed</span>}
                   </SelectItem>
@@ -148,7 +151,7 @@ function Plan({ repositoryId, project, environments: all, branches }: {
             </Field>
           </FieldLabel>
           <FieldDescription>
-            Merges: settings move only after someone approves them in the PR environment. They go where the target branch deploys
+            Merges: settings move only after someone approves them in the PR environment. They go where the target Git branch deploys
             {landings.length > 0 ? ` (${landings.join(", ")})` : ""}, in the same deploy as the code.
           </FieldDescription>
         </FieldSet>
@@ -167,15 +170,15 @@ function Plan({ repositoryId, project, environments: all, branches }: {
           <FieldSet>
             <FieldLegend>Open now</FieldLegend>
             <ItemGroup className="gap-2">
-              {open.map(({ branch, environment }) => (
+              {open.map(({ pullRequest, environment }) => (
                 <Item key={environment.id} variant="outline" size="sm" render={
                   <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
                     params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
                 }>
                   <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
                   <ItemContent className="min-w-0">
-                    <ItemTitle>{environment.name} <span className="font-normal text-muted-foreground">#{branch.prNumber}</span></ItemTitle>
-                    <ItemDescription className="truncate">{branch.prTitle} · {branch.prAuthor}</ItemDescription>
+                    <ItemTitle>{environment.name} <span className="font-normal text-muted-foreground">#{pullRequest.number}</span></ItemTitle>
+                    <ItemDescription className="truncate">{pullRequest.title} · {pullRequest.author}</ItemDescription>
                   </ItemContent>
                   <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
                 </Item>

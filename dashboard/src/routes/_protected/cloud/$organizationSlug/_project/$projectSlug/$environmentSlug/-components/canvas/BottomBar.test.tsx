@@ -192,19 +192,20 @@ it("on a Branch, then shows what would merge into its Parent, else what's new th
 });
 
 it("on a PR Environment, says whether it's approved; on a Destination, what waits for a pull request once nothing else shows", async () => {
-  const pullRequest = (approved: boolean, check: branchReviews.BranchReviewView["check"] = null) => asTestDouble<branchReviews.BranchReviewView>()({
-    ...branchReview([], 0), pullRequest: { number: 142, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main" },
+  const pullRequest = (check: NonNullable<branchReviews.BranchReviewView["check"]>) => asTestDouble<branchReviews.BranchReviewView>()({
+    ...branchReview([], 0),
+    pullRequest: { number: 142, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main", commits: 2, closed: false },
     goesTo: [{ destination: { id: "env-0", name: "production", namespace: "shop-production" }, rows: [imageRow("web:2")], review: "r", approval: null }],
-    approved, changes: 1, check,
+    changes: 1, check,
   });
-  branch = pullRequest(false);
+  branch = pullRequest({ passing: false, reason: "Review and approve 1 change for production" });
   open(canvasUrl);
   const unapproved = await bar();
   expect(unapproved.getByText("1 change for production")).toBeTruthy();
-  expect(unapproved.getByText("Not approved yet")).toBeTruthy();
+  expect(unapproved.getByText("Review and approve 1 change for production")).toBeTruthy();
   expect(unapproved.getByRole("link", { name: "Review and approve" })).toBeTruthy();
   cleanup();
-  branch = pullRequest(true);
+  branch = pullRequest({ passing: true, reason: "1 change approved for production by maya" });
   open(canvasUrl);
   const approved = await bar();
   expect(approved.getByText("Approved")).toBeTruthy();
@@ -212,7 +213,7 @@ it("on a PR Environment, says whether it's approved; on a Destination, what wait
   expect(approved.getByRole("link", { name: "Review" })).toBeTruthy();
   cleanup();
   // Approved, but the check still wants something: the bar says what.
-  branch = pullRequest(true, { passing: false, reason: "STRIPE_KEY needs a value for production" });
+  branch = pullRequest({ passing: false, reason: "STRIPE_KEY needs a value for production" });
   open(canvasUrl);
   expect((await bar()).getByText("STRIPE_KEY needs a value for production")).toBeTruthy();
   cleanup();

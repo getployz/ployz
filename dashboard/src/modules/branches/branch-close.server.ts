@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import { prEnvironment } from "#/modules/pr-environments/tables";
 
 import { and, eq, inArray, isNotNull, max, or } from "drizzle-orm";
 import { Cause, Effect } from "effect";
@@ -112,7 +113,8 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
     }
     const [row] = yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where).returning();
     if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
-    return { ...row, base: withoutSealedCiphertext(row.base) };
+    const [pullRequest = null] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, row.environmentId));
+    return { ...row, base: withoutSealedCiphertext(row.base), pullRequest };
   }));
 });
 

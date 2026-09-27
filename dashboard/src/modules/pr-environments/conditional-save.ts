@@ -8,8 +8,8 @@ import { OrganizationSlug, Uuid } from "#/modules/environment-design/workspace-s
  */
 export const standing = (
   save: { prEnvironmentId: string | null; workingRevision: string; targetBranch: string },
-  prEnvironment: { id: string; revision: string; targetBranch: string | null } | undefined,
-) => prEnvironment !== undefined && save.prEnvironmentId === prEnvironment.id
+  prEnvironment: { id: string; revision: string; targetBranch: string } | null | undefined,
+) => !!prEnvironment && save.prEnvironmentId === prEnvironment.id
   && save.workingRevision === prEnvironment.revision && save.targetBranch === prEnvironment.targetBranch;
 
 const HeldOn = {

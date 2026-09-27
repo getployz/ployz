@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { MachineId, ProjectName } from "@ployz/sdk";
 import { parseServiceConfig, type ServiceSource } from "@ployz/sdk/config";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -114,7 +114,7 @@ describe("PR Environment lifecycle", () => {
         switch (request.operation) {
           case "fetch_pull_request": {
             const pull = pulls.get(Number(request.url.split("/pulls/")[1]));
-            return pull && { base: { ref: "main" }, merged: false, merge_commit_sha: null, ...pull, title: `Change ${pull.number}` };
+            return pull && { base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull, title: `Change ${pull.number}` };
           }
           case "resolve_repository": return { id: repositoryId, full_name: "acme/app" };
           case "resolve_branch_head": {
@@ -229,8 +229,13 @@ describe("PR Environment lifecycle", () => {
     });
   }
 
-  const prEnvironments = () => harness.db.select().from(schema.environmentBranch).where(isNotNull(schema.environmentBranch.prNumber));
-  const prEnvironment = async (number: number) => (await prEnvironments()).find((row) => row.prNumber === number);
+  const prEnvironments = async () => (await harness.db.select().from(schema.environmentBranch)
+    .innerJoin(schema.prEnvironment, eq(schema.prEnvironment.environmentId, schema.environmentBranch.environmentId)))
+    .map((row) => ({ ...row.environment_branch, ...row.pr_environment }));
+  const prEnvironment = async (number: number) => {
+    const rows = (await prEnvironments()).filter((row) => row.number === number);
+    return rows.find((row) => !row.closed) ?? rows[0];
+  };
   const deploymentsOf = (environmentId: string) => harness.db.select().from(schema.environmentDeployment)
     .where(eq(schema.environmentDeployment.environmentId, environmentId));
   const teardownsOf = async (environmentId: string) => (await harness.db.select().from(schema.teardownAttempt))
@@ -290,8 +295,7 @@ describe("PR Environment lifecycle", () => {
     const branch = await prEnvironment(142);
     expect(branch).toMatchObject({
       parentEnvironmentId: stagingId, createdByUserId: userId, kept: false,
-      prRepositoryId: repositoryId, prRepository: "acme/app", prNumber: 142, prTitle: "Change 142", prAuthor: "maya",
-      prHeadBranch: "feature-142", prHeadSha: "c".repeat(40), prTargetBranch: "main",
+      repositoryId, number: 142, title: "Change 142", author: "maya", headBranch: "feature-142", targetBranch: "main", commits: 1, closed: false,
     });
     const environmentId = branch?.environmentId ?? "";
     const [environment] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, environmentId));
@@ -314,10 +318,10 @@ describe("PR Environment lifecycle", () => {
     // Staging tracks main, so it deploys nothing.
     expect(await deploymentsOf(stagingId)).toEqual([]);
 
-    // A later delivery refreshes the recorded head.
-    expect(await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142", sha: "d".repeat(40), repo: { id: repositoryId } } }))
+    // A later delivery refreshes the recorded facts.
+    expect(await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142b", sha: "d".repeat(40), repo: { id: repositoryId } } }))
       .toBe("pull_request_projected");
-    expect((await prEnvironment(142))?.prHeadSha).toBe("d".repeat(40));
+    expect((await prEnvironment(142))?.headBranch).toBe("feature-142b");
 
     const asDefault = await harness.runEffect(setProjectDefaultEnvironment({ userId }, {
       organizationSlug: "acme", projectSlug: "shop", environmentId,
@@ -348,7 +352,7 @@ describe("PR Environment lifecycle", () => {
 
     await setPlan({ includeBots: true });
     expect(await pullRequest("bot-push", "synchronize", 8, { user: { login: "renovate[bot]", type: "Bot" } })).toBe("pull_request_projected");
-    expect((await prEnvironments()).map((row) => row.prNumber)).toEqual([8]);
+    expect((await prEnvironments()).map((row) => row.number)).toEqual([8]);
 
     // Turned off: no new ones.
     await setPlan({ enabled: false });
@@ -358,7 +362,7 @@ describe("PR Environment lifecycle", () => {
     await harness.db.update(schema.environment).set({ intent: { ...stagingIntent, services: stagingIntent.services.filter((node) => node.lineageId === dbLineage) } as never })
       .where(eq(schema.environment.id, stagingId));
     expect(await pullRequest("nothing", "opened", 10)).toBe("ignored_nothing_from_repository");
-    expect((await prEnvironments()).map((row) => row.prNumber)).toEqual([8]);
+    expect((await prEnvironments()).map((row) => row.number)).toEqual([8]);
   });
 
   it("tears it down when it closes, recreates it on reopen or push, and never undoes a newer state", async () => {
@@ -367,12 +371,13 @@ describe("PR Environment lifecycle", () => {
 
     expect(await pullRequest("closed", "closed", 142)).toBe("pull_request_projected");
     expect(await teardownsOf(first)).toHaveLength(1);
-    // Reopened while the old one is still going: the delivery fails and Inngest retries it.
-    await expect(pullRequest("reopened-early", "reopened", 142)).rejects.toThrow("still being torn down");
-    await finishTeardown(first);
+    // Reopened while the old one is still going: a new one starts beside it, under the next free name.
     expect(await pullRequest("reopened", "reopened", 142)).toBe("pull_request_projected");
     const second = (await prEnvironment(142))?.environmentId ?? "";
     expect(second).not.toBe(first);
+    const [renamed] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, second));
+    expect(renamed?.name).toBe("pr-142-2");
+    await finishTeardown(first);
 
     // Closed by hand: the next push to the pull request brings it back.
     await harness.db.delete(schema.environment).where(eq(schema.environment.id, second));
@@ -391,8 +396,8 @@ describe("PR Environment lifecycle", () => {
     pulls.set(143, late);
     expect(await deliverPullRequest("late-opened", "opened", { ...late, state: "open" })).toBe("ignored_pull_request");
     expect(await prEnvironment(143)).toBeUndefined();
-    expect(await harness.db.select().from(schema.environmentBranch)
-      .where(and(eq(schema.environmentBranch.projectId, projectId), eq(schema.environmentBranch.prNumber, 143)))).toEqual([]);
+    expect(await harness.db.select().from(schema.prEnvironment)
+      .where(and(eq(schema.prEnvironment.projectId, projectId), eq(schema.prEnvironment.number, 143)))).toEqual([]);
   });
 
   it("follows the pull request's target Git branch, and its Destinations with it", async () => {
@@ -411,7 +416,7 @@ describe("PR Environment lifecycle", () => {
     expect(await destinationsNow()).toEqual([stagingId]);
 
     expect(await pullRequest("edited", "edited", 142, { base: { ref: "dev" } })).toBe("pull_request_projected");
-    expect((await prEnvironment(142))?.prTargetBranch).toBe("dev");
+    expect((await prEnvironment(142))?.targetBranch).toBe("dev");
     expect(await destinationsNow()).toEqual([devId]);
 
     // Nothing deploys release: no Destinations.
@@ -448,7 +453,7 @@ describe("PR Environment lifecycle", () => {
     const stands = async (prId: string) => {
       const [save] = await saves();
       const [pr, branch] = [await environmentOf(prId), await prEnvironment(142)];
-      return save !== undefined && standing(save, pr && { id: pr.id, revision: pr.revision, targetBranch: branch?.prTargetBranch ?? null });
+      return save !== undefined && standing(save, pr && { id: pr.id, revision: pr.revision, targetBranch: branch?.targetBranch ?? "" });
     };
 
     beforeEach(async () => {
@@ -481,7 +486,6 @@ describe("PR Environment lifecycle", () => {
         workingRevision: (await environmentOf(prId))?.revision,
       });
       expect(save?.rows.map((row) => [row.row.key, row.option, row.missing])).toEqual([[flag, "from", false], [stripe, "new", true]]);
-      expect(Object.keys(save?.approvedAgainst ?? {})).toEqual([flag, stripe]);
       expect(save?.landing.identities.services.map((row) => row.lineageId)).toEqual([apiLineage]);
       expect(await stands(prId)).toBe(true);
 
@@ -494,7 +498,7 @@ describe("PR Environment lifecycle", () => {
       expect(await stands(prId)).toBe(true);
       const read = await harness.runEffect(readCollection({ userId }, { table: "conditional_save", userId, organizationSlug }));
       expect(read.rows).toEqual([expect.objectContaining({ id: given?.id, approvedBy: "Owner" })]);
-      expect(JSON.stringify(read.rows)).not.toMatch(/encryptedValue|landing|picks|approvedAgainst/u);
+      expect(JSON.stringify(read.rows)).not.toMatch(/encryptedValue|ingerprint|landing|picks/u);
 
       // An edit in the Destination and a new commit leave it standing.
       await runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), key: "OTHER", description: null, exported: false, value: { type: "plain", value: "x" } }));
@@ -525,6 +529,19 @@ describe("PR Environment lifecycle", () => {
       await pullRequest("edited-back", "edited", 142, { base: { ref: "main" } });
       await approve(prId, tickAll);
       await harness.db.delete(schema.environment).where(eq(schema.environment.id, prId));
+      expect(await saves()).toEqual([]);
+    });
+
+    it("takes no approval once its pull request closes, even with its environment kept", async () => {
+      await setPlan({ removeOnClose: false });
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      await pullRequest("closed", "closed", 142);
+      const { rows, review: string } = await review(prId);
+      const refused = await runEffect(approveConditionalSave({ userId }, {
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
+      }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
+      expect(refused).toMatchObject({ _tag: "Conflict", message: "#142 is closed." });
       expect(await saves()).toEqual([]);
     });
 
@@ -765,6 +782,27 @@ describe("PR Environment lifecycle", () => {
           expect(variableIn(saved, "FLAG")).toEqual(plain("on"));
           expect(saved?.services.some((node) => node.lineageId === worker.data.service.lineageId)).toBe(true);
           expect(await saves()).toEqual([]);
+        });
+
+        it("ships two pull requests' approvals in one deployment, with a new secret the same in both states", async () => {
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await pullRequest("opened-150", "opened", 150);
+          const second = (await prEnvironment(150))?.environmentId ?? "";
+          await runEffect(createServiceVariable({ userId }, { ...(await scope(second)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test" } }));
+          await approve(second, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "sk_live" })));
+          const secondMerge = "f".repeat(40);
+          await pullRequest("merged", "closed", 142, merged);
+          await pullRequest("merged-150", "closed", 150, { ...merged, merge_commit_sha: secondMerge });
+          history.push(mergeSha);
+          await push(secondMerge, ["api/main.ts"]);
+
+          const { saved } = await attemptAt(secondMerge);
+          expect(variableIn(saved, "FLAG")).toEqual(plain("on"));
+          expect(variableIn(saved, "STRIPE_KEY")).toMatchObject({ kind: "secret" });
+          expect(await saves()).toEqual([]);
+          const idOf = (intent: Intent | undefined) => intent?.services.find((node) => node.lineageId === apiLineage)?.variables
+            .find((variable) => variable.key === "STRIPE_KEY") as { id?: string } | undefined;
+          expect(idOf((await environmentOf(stagingId))?.intent as Intent | undefined)?.id).toBe(idOf(saved)?.id);
         });
 
         it("lands at the merge commit's push when it comes before the closed delivery, by asking GitHub", async () => {

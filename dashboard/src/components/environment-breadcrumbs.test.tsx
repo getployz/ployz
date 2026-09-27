@@ -39,8 +39,8 @@ async function renderAt(path: string) {
     { createdAt: new Date(3), id: "store-pr-142", projectId: "store", namespace: "pr-142", name: "pr-142" },
   ]));
   queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
-    { environmentId: "store-fix-web", parentEnvironmentId: "store-production", prNumber: null },
-    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", prNumber: 142 },
+    { environmentId: "store-fix-web", parentEnvironmentId: "store-production", pullRequest: null },
+    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", pullRequest: { number: 142 } },
   ]));
   queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
     { id: "attempt", environmentId: "store-production" },

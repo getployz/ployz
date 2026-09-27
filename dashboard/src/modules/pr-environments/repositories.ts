@@ -1,5 +1,11 @@
 import { planBranch, type BranchPicks, type ServiceConfig } from "@ployz/sdk/config";
 import { branchSetupCommands, copiesData, listNames } from "#/modules/branches/branch-plan";
+import type { prEnvironmentPlan } from "./tables";
+
+/** A repository's plan before anyone saves one: Off, with the table's defaults. */
+export const defaultPrEnvironmentPlan = {
+  enabled: false, picks: { preset: "only" }, setupCommands: [], removeOnClose: true, includeBots: false, enabledByUserId: null,
+} satisfies Partial<typeof prEnvironmentPlan.$inferSelect>;
 
 export type PlanRepository = { installationId: number; repositoryId: number; repository: string };
 

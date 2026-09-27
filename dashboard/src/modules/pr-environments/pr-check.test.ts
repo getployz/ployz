@@ -8,7 +8,7 @@ const approval = (over: Partial<NonNullable<PrCheckDestination["approval"]>> = {
 
 describe("prCheck", () => {
   it.each<[string, PrCheckDestination[], boolean, string]>([
-    ["no Destination", [], true, "Nothing here deploys its target branch"],
+    ["no Destination", [], true, "Nothing here deploys its target Git branch"],
     ["nothing to move", [production({ changes: 0 })], true, "Nothing here that production doesn’t have"],
     ["not approved", [production()], false, "Review and approve 3 changes for production"],
     ["one change, not approved", [production({ changes: 1 })], false, "Review and approve 1 change for production"],

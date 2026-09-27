@@ -55,7 +55,7 @@ import {
   planGithubBranchEvaluation,
 } from "#/modules/github/github-branch-evaluation";
 import { runInngestEffect } from "#/server/run.server";
-import { heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
+import { freezeMergedBy, heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
@@ -216,18 +216,16 @@ async function processPushAttempt(input: {
         ),
       )
     : [];
-  const carried = liveBranch.state === "present" && needsCandidates
-    ? await step.run(`list-carried-held-changes-${attempt}`, () =>
-        runEffect(
-          heldChangesCarriedBy({
-            installationId: payload.installationId,
-            repository,
-            repositoryId: payload.repositoryId,
-            ref: payload.ref,
-            headSha: liveBranch.headSha,
-          }),
-        ),
-      )
+  const push = liveBranch.state === "present" && needsCandidates ? {
+    installationId: payload.installationId,
+    repository,
+    repositoryId: payload.repositoryId,
+    ref: payload.ref,
+    headSha: liveBranch.headSha,
+  } : null;
+  if (push) await step.run(`freeze-merged-held-changes-${attempt}`, () => runEffect(freezeMergedBy(push)));
+  const carried = push
+    ? await step.run(`list-carried-held-changes-${attempt}`, () => runEffect(heldChangesCarriedBy(push)))
     : [];
   const plan = await step.run(`plan-branch-evaluation-${attempt}`, () => {
     const planned = planGithubBranchEvaluation({

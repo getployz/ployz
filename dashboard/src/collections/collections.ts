@@ -15,16 +15,15 @@ import {
 import {
   project as schemaProject,
   environment as schemaEnvironment,
-  environmentBranch as schemaEnvironmentBranch,
 } from "#/modules/project/tables";
-import { prEnvironmentPlan as schemaPrEnvironmentPlan, type ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import { prEnvironmentPlan as schemaPrEnvironmentPlan, type BranchRow, type ConditionalSaveRow } from "#/modules/pr-environments/tables";
+export type { BranchRow };
 import {
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
 type EnvironmentRow = typeof schemaEnvironment.$inferSelect;
-export type BranchRow = typeof schemaEnvironmentBranch.$inferSelect;
 export type PrEnvironmentPlanRow = typeof schemaPrEnvironmentPlan.$inferSelect;
 type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;

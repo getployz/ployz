@@ -13,14 +13,14 @@ import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "#/modules/
 import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
-import { loadIdentitySources } from "#/modules/branches/branch-operations.server";
+import { core, loadIdentitySources } from "#/modules/branches/branch-operations.server";
 import { corePicks, sealValue } from "#/modules/branches/branch-merge.server";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { mergeInput, rowLineage } from "#/modules/branches/branch-review";
 import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
 import { standing, type ApproveConditionalSave, type GiveConditionalSaveValue, type WithdrawConditionalSave } from "./conditional-save";
-import { conditionalSave, type HeldRow } from "./tables";
+import { conditionalSave, prEnvironment, type HeldRow } from "./tables";
 
 /** The PR Environment, checked against the actor's organization. */
 const prEnvironmentFor = Effect.fn("PrEnvironments.prEnvironmentFor")(function* (actor: Actor, input: { organizationSlug: string; prEnvironmentId: string }) {
@@ -35,25 +35,26 @@ const prEnvironmentFor = Effect.fn("PrEnvironments.prEnvironmentFor")(function* 
  * string is refused. It stores what landing needs, so landing never reads the PR Environment. Approving again replaces it.
  */
 export const approveConditionalSave = Effect.fn("PrEnvironments.approveConditionalSave")(function* (actor: Actor, input: ApproveConditionalSave) {
-  const { project, environment: prEnvironment } = yield* prEnvironmentFor(actor, input);
+  const { project, environment: prEnvironmentRow } = yield* prEnvironmentFor(actor, input);
   const encryption = yield* SecretEncryption;
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // The Project, the Branch row, then the PR Environment's document, whose revision the approval records.
     const branch = yield* lockBranchScope(project.id, input.prEnvironmentId, "share");
-    if (branch?.prNumber == null || branch.prRepositoryId === null || branch.prTargetBranch === null) {
-      return yield* new NotFound({ message: "The PR environment was not found." });
-    }
+    const [pullRequest] = branch ? yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, input.prEnvironmentId)) : [];
+    if (!branch || !pullRequest) return yield* new NotFound({ message: "The PR environment was not found." });
+    // Nothing would land or drop an approval of a closed pull request.
+    if (pullRequest.closed) return yield* new Conflict({ message: `#${pullRequest.number} is closed.` });
     const document = yield* loadEnvironmentDocument(input.prEnvironmentId, true);
     if (!(yield* prDestinations(input.prEnvironmentId)).includes(input.destinationEnvironmentId)) {
-      return yield* new Conflict({ message: `Nothing there deploys ${branch.prTargetBranch} any more. Review again.` });
+      return yield* new Conflict({ message: `Nothing there deploys ${pullRequest.targetBranch} any more. Review again.` });
     }
 
     const { from, into, compare } = yield* goesToComparison({
-      projectSlug: project.slug, prEnvironment, branch, destinationEnvironmentId: input.destinationEnvironmentId,
+      projectSlug: project.slug, prEnvironment: prEnvironmentRow, branch, destinationEnvironmentId: input.destinationEnvironmentId,
     });
-    const { rows, review } = branchChanges(compare);
+    const { rows, review } = yield* core("review", () => branchChanges(compare));
     if (review !== input.review) return yield* new Conflict({ message: "Changes moved after this review. Review them again." });
     const byKey = new Map(rows.flatMap((row) => row.role === "move" ? [[row.key, row] as const] : []));
     const unknown = input.picks.find((pick) => !byKey.has(pick.key));
@@ -61,28 +62,29 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
     if (input.picks.length === 0) return yield* new Validation({ field: "picks", message: "Tick a change to approve." });
 
     const picks = corePicks({ encryption, rows, into, picks: input.picks });
+    // Core refuses picks it couldn't land, such as a new service's variable without the service.
+    yield* core("picks", () => branchChanges({ ...compare, picks }));
     const held = input.picks.flatMap((pick): HeldRow[] => {
       const row = byKey.get(pick.key);
       return row ? [{ row: withoutSealedCiphertext(row), option: pick.option, missing: pick.option === "new" && pick.value === "" }] : [];
     });
     const values = {
       organizationId: project.organizationId, projectId: project.id,
-      prEnvironmentId: input.prEnvironmentId, repositoryId: branch.prRepositoryId, prNumber: branch.prNumber,
+      prEnvironmentId: input.prEnvironmentId, repositoryId: pullRequest.repositoryId, prNumber: pullRequest.number,
       destinationEnvironmentId: input.destinationEnvironmentId,
       rows: held, picks,
-      approvedAgainst: Object.fromEntries(held.map(({ row }) => [row.key, row.into])),
       landing: {
         base: branch.base, from, parent: compare.parent ?? null, hostnames: compare.hostnames,
         identities: yield* loadIdentitySources(input.prEnvironmentId, new Set(picks.map(rowLineage))),
       },
-      workingRevision: document.revision, targetBranch: branch.prTargetBranch,
+      workingRevision: document.revision, targetBranch: pullRequest.targetBranch,
       approvedByUserId: actor.userId, approvedAt: new Date(),
     };
     const [saved] = yield* drizzle.insert(conditionalSave).values(values)
       .onConflictDoUpdate({ target: [conditionalSave.prEnvironmentId, conditionalSave.destinationEnvironmentId], set: values })
       .returning({ id: conditionalSave.id });
     if (!saved) return yield* Effect.die("PostgreSQL did not return the Conditional Save.");
-    yield* requestPrCheck([input.prEnvironmentId]);
+    yield* requestPrCheck(input.prEnvironmentId);
     return saved;
   }));
 });
@@ -92,7 +94,7 @@ export const withdrawConditionalSave = Effect.fn("PrEnvironments.withdrawConditi
   yield* prEnvironmentFor(actor, input);
   const { drizzle } = yield* Database;
   yield* drizzle.delete(conditionalSave).where(heldOn(input));
-  yield* requestPrCheck([input.prEnvironmentId]);
+  yield* requestPrCheck(input.prEnvironmentId);
 });
 
 /** A new value an approved row still lacks, sealed and stored with the approval, which stays standing. */
@@ -103,9 +105,9 @@ export const giveConditionalSaveValue = Effect.fn("PrEnvironments.giveConditiona
   return yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     const [save] = yield* drizzle.select().from(conditionalSave).where(heldOn(input)).for("update");
-    const [pr] = yield* drizzle.select({ id: environment.id, revision: environment.revision, targetBranch: environmentBranch.prTargetBranch })
-      .from(environment).innerJoin(environmentBranch, eq(environmentBranch.environmentId, environment.id))
-      .where(eq(environment.id, input.prEnvironmentId));
+    const [pr] = yield* drizzle.select({ id: environment.id, revision: environment.revision, targetBranch: prEnvironment.targetBranch })
+      .from(environment).innerJoin(prEnvironment, eq(prEnvironment.environmentId, environment.id))
+      .where(and(eq(environment.id, input.prEnvironmentId), eq(prEnvironment.closed, false)));
     if (!save || !standing(save, pr)) return yield* new Conflict({ message: "It isn't approved any more. Review and approve again." });
     const held = save.rows.find(({ row }) => row.key === input.key);
     if (!held || held.option !== "new") return yield* new Validation({ field: "key", message: "That change doesn't take a new value." });
@@ -115,7 +117,7 @@ export const giveConditionalSaveValue = Effect.fn("PrEnvironments.giveConditiona
       picks: save.picks.map((pick) => pick.key === input.key ? { key: pick.key, choice: { option: "new", value } } : pick),
       rows: save.rows.map((row) => row.row.key === input.key ? { ...row, missing: false } : row),
     }).where(eq(conditionalSave.id, save.id));
-    yield* requestPrCheck([input.prEnvironmentId]);
+    yield* requestPrCheck(input.prEnvironmentId);
     return { id: save.id };
   }));
 });

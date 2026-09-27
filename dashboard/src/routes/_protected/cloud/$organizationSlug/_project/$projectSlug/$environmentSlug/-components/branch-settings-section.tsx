@@ -7,6 +7,7 @@ import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { getPrEnvironmentPlansCollection, type BranchRow } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useKeepBranch } from "#/modules/branches/branch.collection";
+import { defaultPrEnvironmentPlan } from "#/modules/pr-environments/repositories";
 
 /** A Branch's own settings: where it came from and lands, and whether it's kept. A PR Environment has no Keep. */
 export function BranchSettingsSection({ organizationSlug, projectSlug, branch, parent }: {
@@ -17,8 +18,9 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
 }) {
   const keepBranch = useKeepBranch(organizationSlug);
   const { data: plans } = useLiveSuspenseQuery(getPrEnvironmentPlansCollection(organizationSlug, useCollectionScope()));
-  // No plan row reads as the defaults: removed when it closes.
-  const removedOnClose = plans.find((plan) => plan.projectId === branch.projectId && plan.repositoryId === branch.prRepositoryId)?.removeOnClose ?? true;
+  const { pullRequest } = branch;
+  const { removeOnClose } = plans.find((plan) => plan.projectId === branch.projectId && plan.repositoryId === pullRequest?.repositoryId)
+    ?? defaultPrEnvironmentPlan;
   return (
     <section aria-labelledby="branch-heading" className="flex flex-col gap-4">
       <h2 id="branch-heading" className="text-lg font-semibold">Branch</h2>
@@ -30,14 +32,14 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
         <ItemContent className="min-w-0">
           <ItemTitle>From {parent.name}</ItemTitle>
           <ItemDescription>
-            {branch.prNumber === null
-              ? `Its changes land in ${parent.name}.`
-              : `PR environment for #${branch.prNumber} · ${branch.prTitle} · ${removedOnClose ? "removed when it closes" : "stays 7 days after its last deploy"}`}
+            {pullRequest
+              ? `PR environment for #${pullRequest.number} · ${pullRequest.title} · ${removeOnClose ? "removed when it closes" : "stays 7 days after its last deploy"}`
+              : `Its changes land in ${parent.name}.`}
           </ItemDescription>
         </ItemContent>
         <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
       </Item>
-      {branch.prNumber === null && <Field orientation="horizontal">
+      {!pullRequest && <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor="keep-branch">Keep this branch</FieldLabel>
           <FieldDescription>

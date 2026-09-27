@@ -29,6 +29,7 @@ import { StartingPointSettingsSection } from "./-components/starting-point-setti
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { PrEnvironmentsSection } from "./-components/pr-environments-section";
 import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
+import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
 const settingsTab = Schema.Literals(["environment", "project"]);
@@ -145,7 +146,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const defaultEnvironment = project.resolvedEnvironment;
   // A PR Environment can't be the Default Environment.
-  const prEnvironmentIds = new Set(branches.flatMap((branch) => branch.prNumber === null ? [] : [branch.environmentId]));
+  const prEnvironments = prEnvironmentIds(branches);
 
   return (
     <>
@@ -161,7 +162,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {environments.filter((environment) => !prEnvironmentIds.has(environment.id)).map((environment) => (
+                {environments.filter((environment) => !prEnvironments.has(environment.id)).map((environment) => (
                   <SelectItem key={environment.id} value={environment.id} label={environment.name}>{environment.name}</SelectItem>
                 ))}
               </SelectGroup>

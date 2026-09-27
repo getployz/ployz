@@ -102,7 +102,7 @@ describe("Inngest function policies", () => {
       { id: "sweep-idle-branches", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
-      { id: "post-pr-check", retries: 3, concurrency: [{ key: "event.data.prEnvironmentId", limit: 1 }] },
+      { id: "post-pr-check", retries: 3, concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }] },
     ]);
   });
 

@@ -155,6 +155,7 @@ const pullRequestResponseSchema = Schema.Struct({
   base: Schema.Struct({ ref: githubBranchNameSchema }),
   merged: Schema.Boolean,
   merge_commit_sha: Schema.NullOr(githubExactShaSchema),
+  commits: Schema.Number,
 });
 const commitPullsResponseSchema = Schema.Array(Schema.Struct({
   number: githubIdSchema,
@@ -331,7 +332,7 @@ export const compareInstallationRepositoryCommits = Effect.fn(
       : [file.filename],
   );
   const canonicalPaths = yield* Schema.decodeUnknownEffect(
-  githubChangedPathsSchema,
+    githubChangedPathsSchema,
   )(paths).pipe(
     Effect.mapError(() =>
       githubObservationError({
@@ -416,6 +417,7 @@ export const fetchInstallationPullRequest = Effect.fn(
     headBranch: observed.head.ref,
     headSha: observed.head.sha,
     targetBranch: observed.base.ref,
+    commits: observed.commits,
     // Only a merged pull request's is its merge commit.
     mergeCommitSha: observed.merged ? observed.merge_commit_sha : null,
   };
@@ -438,7 +440,26 @@ export const listInstallationCommitMergedPullRequests = Effect.fn(
   return observed.flatMap((pull) => pull.merged_at && pull.merge_commit_sha
     ? [{ number: pull.number, targetBranch: pull.base.ref, mergeCommitSha: pull.merge_commit_sha }] : []);
 });
-export type GithubPullRequestObservation = Effect.Success<ReturnType<typeof fetchInstallationPullRequest>>;
+
+const installationSchema = Schema.Struct({
+  html_url: Schema.String,
+  permissions: Schema.Record(Schema.String, Schema.String),
+});
+
+/** The permissions an installation of the GitHub App has granted, and where its owner manages them. */
+export const fetchAppInstallationPermissions = Effect.fn(
+  "Github.fetchAppInstallationPermissions",
+)(function* (installationId: number) {
+  const api = yield* GithubApi;
+  const installation = yield* api.json({
+    auth: "app",
+    installationId,
+    url: `https://api.github.com/app/installations/${installationId}`,
+    operation: "fetch_installation",
+    schema: installationSchema,
+  });
+  return { url: installation.html_url, permissions: installation.permissions };
+});
 
 const checkRunSchema = Schema.Struct({ id: githubIdSchema });
 const checkRunsResponseSchema = Schema.Struct({ check_runs: Schema.Array(checkRunSchema) });

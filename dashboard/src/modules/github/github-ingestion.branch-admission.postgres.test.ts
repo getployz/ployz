@@ -271,6 +271,7 @@ describe("GitHub branch deployment admission", () => {
     await input.beforeApply?.();
     return runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+      carried: [],
       deliveryId: input.deliveryId,
         receiptSequence: recorded.success.receiptSequence,
       processingRunId,

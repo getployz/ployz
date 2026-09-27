@@ -1,4 +1,6 @@
-import { listNames } from "#/modules/branches/branch-plan";
+import { listNames, plural } from "#/modules/branches/branch-plan";
+import { variableName } from "#/modules/branches/branch-review";
+import type { HeldRow } from "./tables";
 
 /** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
 export const PR_CHECK_NAME = "Ployz · ready to merge";
@@ -12,7 +14,22 @@ export type PrCheckDestination = {
 
 export type PrCheck = { passing: boolean; reason: string };
 
-const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+/** Who approved, for display; an approver who has since been deleted is "a former member". */
+export const approverName = (approvedBy: string | null) => approvedBy ?? "a former member";
+
+/** A Destination as the check reads it: `changes` going there now, and its Conditional Save, whether or not it stands. */
+export function checkDestination(
+  name: string, changes: number, save: { standing: boolean; rows: HeldRow[]; approvedBy: string | null } | null,
+): PrCheckDestination {
+  return {
+    name, changes,
+    approval: save && {
+      standing: save.standing, changes: save.rows.length, approvedBy: save.approvedBy,
+      missing: save.rows.filter((held) => held.missing).map((held) => variableName(held.row)),
+    },
+  };
+}
+
 const sum = (list: number[]) => list.reduce((total, n) => total + n, 0);
 
 /**
@@ -20,7 +37,7 @@ const sum = (list: number[]) => list.reduce((total, n) => total + n, 0);
  * with every value it needs. Browser and server both call it, so the review, the bar and GitHub say the same thing.
  */
 export function prCheck(destinations: PrCheckDestination[]): PrCheck {
-  if (!destinations.length) return { passing: true, reason: "Nothing here deploys its target branch" };
+  if (!destinations.length) return { passing: true, reason: "Nothing here deploys its target Git branch" };
   const held = destinations.filter((destination) => destination.changes > 0 || destination.approval?.standing);
   if (!held.length) return { passing: true, reason: `Nothing here that ${listNames(destinations.map((d) => d.name))} doesn’t have` };
   const unapproved = held.filter((destination) => !destination.approval);

@@ -7,7 +7,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { VirtualRowProps } from "@tanstack/react-db";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { planRepositories } from "./repositories";
+import { defaultPrEnvironmentPlan, planRepositories } from "./repositories";
 import { setPrEnvironmentPlanServerFn } from "./plan-functions";
 
 type Project = ReturnType<typeof useWorkspace>["projects"][number];
@@ -40,9 +40,8 @@ function projectPlans(
   const saved = new Map(data.map((row) => [prEnvironmentPlanKey(row), withoutVirtualProps(row as VirtualRowProps & typeof row)]));
   return planRepositories(environments.filter((environment) => environment.projectId === project.id)).map((repository): PrEnvironmentPlanRow =>
     saved.get(prEnvironmentPlanKey({ projectId: project.id, repositoryId: repository.repositoryId })) ?? {
-      ...repository, organizationId: project.organizationId, projectId: project.id, enabled: false,
-      startFromEnvironmentId: project.resolvedEnvironment?.id ?? null, picks: { preset: "only" }, setupCommands: [],
-      removeOnClose: true, includeBots: false, enabledByUserId: null, updatedAt: new Date(0),
+      ...repository, ...defaultPrEnvironmentPlan, organizationId: project.organizationId, projectId: project.id,
+      startFromEnvironmentId: project.resolvedEnvironment?.id ?? null, updatedAt: new Date(0),
     });
 }
 

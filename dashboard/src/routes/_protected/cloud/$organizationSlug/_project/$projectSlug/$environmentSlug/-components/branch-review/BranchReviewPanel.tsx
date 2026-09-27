@@ -4,7 +4,7 @@ import { CircleCheckIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-r
 import { Badge } from "#/components/ui/badge";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { listNames } from "#/modules/branches/branch-plan";
+import { listNames, plural } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modules/branches/use-branch-review";
 import { PR_CHECK_NAME, type PrCheck } from "#/modules/pr-environments/pr-check";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -48,7 +48,7 @@ export function BranchReviewPanel() {
               {review.goesTo.map((landing) => (
                 <GoesToSection key={landing.destination.id} review={review} pr={pr} landing={landing} name={name} environmentId={environmentId} />
               ))}
-              {review.check ? <CheckSection check={review.check} pr={pr} /> : null}
+              {review.check && !pr.closed ? <CheckSection check={review.check} pr={pr} /> : null}
             </>
           ) : <MergeSection review={review} branch={{ id: environmentId, name }} />}
           <UpdateSection review={review} environmentId={environmentId} />
@@ -92,10 +92,10 @@ function CodeSection({ review, pr }: { review: BranchReviewView; pr: PullRequest
           <ItemContent className="min-w-0">
             <ItemTitle className="flex-wrap">#{pr.number} {pr.title}</ItemTitle>
             <ItemDescription className="wrap-anywhere">
-              <span className="font-mono">{pr.headBranch}</span> → <span className="font-mono">{pr.targetBranch}</span> · {pr.author}
+              <span className="font-mono">{pr.headBranch}</span> → <span className="font-mono">{pr.targetBranch}</span> · {pr.author} · {plural(pr.commits, "commit")}
             </ItemDescription>
           </ItemContent>
-          <ItemActions className="text-sm text-muted-foreground">Merges on GitHub</ItemActions>
+          <ItemActions><ItemDescription>{pr.closed ? "Closed on GitHub" : "Merges on GitHub"}</ItemDescription></ItemActions>
         </Item>
       </ItemGroup>
     </ReviewSection>

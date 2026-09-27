@@ -40,7 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
-import { landCarried } from "#/modules/pr-environments/land.server";
+import { landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
@@ -316,7 +316,6 @@ const admitActiveGithubDeployments = Effect.fn(
   const { drizzle } = yield* Database;
   const headSha = input.plan.branch.headSha;
   const branch = input.plan.branch;
-  const carried = input.carried ?? [];
   const selected = yield* selectLatestGithubTriggers({
     ...input.plan,
     ...input,
@@ -342,7 +341,7 @@ const admitActiveGithubDeployments = Effect.fn(
             branchEvaluationRevision: branch.evaluationRevision,
             triggerRevision: branch.evaluationRevision,
             changedPaths: input.plan.changedPaths,
-            conditionalSaveIds: carried.filter((save) => save.destinationEnvironmentId === trigger.environmentId).map((save) => save.id),
+            conditionalSaveIds: input.carried.filter((save) => save.destinationEnvironmentId === trigger.environmentId).map((save) => save.id),
           })
           .onConflictDoNothing()
           .returning();
@@ -350,13 +349,7 @@ const admitActiveGithubDeployments = Effect.fn(
         return yield* admitGithubTrigger(inserted);
       }),
   );
-  // A Destination this push deploys nothing in saves what it carries now.
-  const idle = new Set(carried.map((save) => save.destinationEnvironmentId)
-    .filter((environmentId) => !selected.some((trigger) => trigger.environmentId === environmentId)));
-  for (const environmentId of idle) {
-    yield* lockEnvironmentDeploymentQueue(environmentId);
-    yield* landCarried(carried.map((save) => save.id), yield* loadEnvironmentDocument(environmentId, true));
-  }
+  yield* landCarriedInIdle(input.carried, new Set(selected.map((trigger) => trigger.environmentId)));
   return admitted.filter((row) => row !== null);
 });
 
@@ -403,7 +396,7 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     // Held changes land only once it's admitted, so its Saved revision has them; a service they add builds this commit too.
     let serviceIds = selected.serviceIds;
     let savedStateSnapshotId = target.savedStateSnapshotId;
-    if (yield* landCarried(trigger.conditionalSaveIds, document)) {
+    if ((yield* landCarried(trigger.conditionalSaveIds, document)).landed) {
       const landed = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
       const added = (yield* savedStateCandidates({ ...landed, environmentId: trigger.environmentId }, trigger))
         .filter(row => !candidates.some(candidate => candidate.serviceId === row.serviceId)).map(row => row.serviceId);

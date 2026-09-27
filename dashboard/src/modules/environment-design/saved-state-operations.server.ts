@@ -9,6 +9,7 @@ import { emptyEnvironmentIntent, restoreDashboardEnvironmentNode } from "./saved
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 
+import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
@@ -152,6 +153,8 @@ const publishEnvironmentSavedState = Effect.fn(
       message: input.message,
       ...encodePersistedSavedEnvironmentIntent({ intent: canonical.intent }),
       volumeDeletionAuthorizations,
+      // Its own time, not the transaction's: revisions saved in one transaction (held changes landing) stay in order.
+      createdAt: sql`clock_timestamp()`,
     })
     .returning({ id: schemaEnvironmentSavedStateSnapshot.id });
   const inserted = rows[0];

@@ -5,6 +5,8 @@ import { presentRow } from "#/modules/branches/branch-review";
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useHeldChanges, useStagedInstead } from "#/modules/pr-environments/conditional-save.collection";
+import { plural } from "#/modules/branches/branch-plan";
+import { approverName } from "#/modules/pr-environments/pr-check";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { ReviewSection } from "./BranchReviewPanel";
@@ -13,12 +15,12 @@ import { ChangeRowItem } from "./ChangeRowItem";
 /** "Waiting for #142 · 3 changes · approved by maya": one approval held here, for the bottom bar and the review. */
 export function waitingLine(save: ConditionalSaveRow) {
   const n = save.rows.length;
-  return { title: `Waiting for #${save.prNumber}`, detail: `${n} ${n === 1 ? "change" : "changes"} · approved by ${save.approvedBy ?? "a former member"}` };
+  return { title: `Waiting for #${save.prNumber}`, detail: `${plural(n, "change")} · approved by ${approverName(save.approvedBy)}` };
 }
 
 /**
  * Changes approved for pull requests and held on this Destination until each merges. Read-only and neutral: nothing is
- * staged here, and they're changed in the PR Environment's review. First, the rows a merge staged instead of saving.
+ * staged here, and they're changed in the PR Environment's review. First, the rows a merge didn't save.
  */
 export function HeldChanges({ environmentId }: { environmentId: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -33,7 +35,7 @@ export function HeldChanges({ environmentId }: { environmentId: string }) {
   );
   const changed = stagedInstead.map((save) => (
     <ReviewSection key={save.id} title={`Changed since #${save.prNumber} was approved`} count={save.rows.length}
-      help={`#${save.prNumber} merged, but these changed here after its approval, so they're staged, not saved. Save or discard them.`}>
+      help={`#${save.prNumber} merged, but these changed here after its approval, so they weren't saved. Each is staged unless you'd staged your own change to it: save or discard them.`}>
       {rowsOf(save)}
     </ReviewSection>
   ));
@@ -42,7 +44,7 @@ export function HeldChanges({ environmentId }: { environmentId: string }) {
     const line = waitingLine(save);
     return (
       <ReviewSection key={save.id} title={line.title} count={save.rows.length}
-        help={`Approved by ${save.approvedBy ?? "a former member"}. They land when #${save.prNumber} merges, and change only in its review.`}>
+        help={`Approved by ${approverName(save.approvedBy)}. They land when #${save.prNumber} merges, and change only in its review.`}>
         {rowsOf(save)}
         {pr ? (
           <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={{ ...params, environmentSlug: pr.namespace }}

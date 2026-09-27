@@ -15,8 +15,8 @@ import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deplo
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { presentRow } from "#/modules/branches/branch-review";
-import { listNames } from "#/modules/branches/branch-plan";
-import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
+import { listNames, plural } from "#/modules/branches/branch-plan";
+import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modules/branches/use-branch-review";
 import { useHeldChanges, useStagedInstead } from "#/modules/pr-environments/conditional-save.collection";
 import { HeldChanges, waitingLine } from "../branch-review/HeldChanges";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
@@ -153,7 +153,8 @@ export function BottomBar({
       </DropdownMenu>
     </Bar>
   ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
-    : review && branchHasBar(review) ? <BranchState review={review} />
+    : review && (review.changes > 0 || review.updates > 0)
+      ? review.pullRequest ? <PrEnvironmentState review={review} pullRequest={review.pullRequest} /> : <BranchState review={review} />
     : waiting ? (
       <Bar icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={waitingLine(waiting).title} detail={waitingLine(waiting).detail}>
         {review ? <ReviewLink label="Review" /> : <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Review</Button>}
@@ -188,29 +189,37 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
   return groups.map((group) => group.nodeName).join(", ");
 }
 
-const firstChange = (review: BranchReviewView) => (review.pullRequest ? review.goesTo.flatMap((landing) => landing.rows) : review.merge)[0];
-const branchHasBar = (review: BranchReviewView) => firstChange(review) !== undefined || review.updates > 0;
-
-/**
- * A Branch with nothing staged or running: what would merge into its Parent (on a PR Environment, what goes to its
- * Destinations and whether it's approved), else what's new there.
- */
+/** A Branch with nothing staged or running: what would merge into its Parent, else what's new there. */
 function BranchState({ review }: { review: BranchReviewView }) {
   const isMobile = useIsMobile();
-  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-  const first = firstChange(review);
-  const pr = review.pullRequest;
+  const [first] = review.merge;
   if (first) {
     const row = presentRow(first, review.nameOf);
-    const to = pr ? listNames(review.goesTo.filter((landing) => landing.rows.length).map((landing) => landing.destination.name)) : review.parent.name;
     return (
-      <Bar title={pr && review.approved ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
-        detail={pr ? (review.approved ? (review.check?.passing === false ? review.check.reason : `Lands when #${pr.number} merges`) : "Not approved yet")
-          : `${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
-        <ReviewLink label={isMobile || (pr && review.approved) ? "Review" : pr ? "Review and approve" : "Review and merge"} />
+      <Bar title={`${plural(review.changes, "change")} for ${review.parent.name}`}
+        detail={`${row.node}${row.label ? ` · ${row.label}` : ""}${row.after ? ` ${row.before ? `${row.before} → ` : ""}${row.after}` : ""}`}>
+        <ReviewLink label={isMobile ? "Review" : "Review and merge"} />
       </Bar>
     );
   }
+  return <UpdatesState review={review} />;
+}
+
+/** A PR Environment with nothing staged or running: what goes to its Destinations, and where its check stands. */
+function PrEnvironmentState({ review, pullRequest }: { review: BranchReviewView; pullRequest: PullRequest }) {
+  const isMobile = useIsMobile();
+  if (review.changes === 0) return <UpdatesState review={review} />;
+  const passing = review.check?.passing === true;
+  const to = listNames(review.goesTo.filter((landing) => landing.rows.length).map((landing) => landing.destination.name));
+  return (
+    <Bar title={pullRequest.closed ? `#${pullRequest.number} is closed` : passing ? "Approved" : `${plural(review.changes, "change")} for ${to}`}
+      detail={pullRequest.closed ? null : passing ? `Lands when #${pullRequest.number} merges` : review.check?.reason ?? null}>
+      <ReviewLink label={isMobile || passing || pullRequest.closed ? "Review" : "Review and approve"} />
+    </Bar>
+  );
+}
+
+function UpdatesState({ review }: { review: BranchReviewView }) {
   if (review.updates === 0) return null;
   return (
     <Bar title={`${plural(review.updates, "update")} from ${review.parent.name}`} detail={null}>

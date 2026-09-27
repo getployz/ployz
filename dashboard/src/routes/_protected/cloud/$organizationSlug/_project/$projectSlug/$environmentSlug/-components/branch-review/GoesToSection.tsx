@@ -9,6 +9,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { presentRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView, PullRequest } from "#/modules/branches/use-branch-review";
 import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
+import { approverName } from "#/modules/pr-environments/pr-check";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { ReviewSection } from "./BranchReviewPanel";
@@ -42,12 +43,13 @@ export function GoesToSection({ review, pr, landing, name, environmentId }: {
       {approval ? <HeldRows approval={approval} review={review} save={save} destination={destination} /> : landing.rows.length ? (
         <RowPicks picks={rows} names={{ from: name, parent: review.parent.name, destination }} verb={`Send to ${destination}`} />
       ) : <p className="text-sm text-muted-foreground">Nothing here that {destination} doesn't have.</p>}
-      {approval || landing.rows.length ? (
+      {pr.closed ? <FieldDescription>#{pr.number} is closed, so nothing here goes to {destination}.</FieldDescription>
+        : approval || landing.rows.length ? (
         <div className="flex flex-col gap-2">
           {approval ? (
             <Button className="self-start" variant="outline" disabled={save.withdraw.isPending} onClick={() => save.withdraw.mutate()}>
               {save.withdraw.isPending ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}
-              Approved by {approval.approvedBy ?? "a former member"} · Undo
+              Approved by {approverName(approval.approvedBy)} · Undo
             </Button>
           ) : (
             <Button className="self-start" disabled={rows.ticked.length === 0 || save.approve.isPending}

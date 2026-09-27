@@ -29,7 +29,7 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments,
       <div className="flex flex-col gap-1">
         <h2 id="pr-environments-heading" className="text-base font-semibold">PR environments</h2>
         <p className="text-sm text-muted-foreground">
-          Each pull request can get its own environment, running its code. It's removed when the pull request closes.
+          Each pull request can get its own environment, running its code.
         </p>
       </div>
       <ItemGroup className="gap-2">

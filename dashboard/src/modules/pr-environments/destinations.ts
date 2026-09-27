@@ -1,5 +1,6 @@
 import type { ServiceConfig } from "@ployz/sdk/config";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
+import { prEnvironmentIds, trackedBranch } from "./pull-request";
 
 /** One of a project's Environments, by its latest Saved State. */
 export type DestinationCandidate = {
@@ -9,8 +10,7 @@ export type DestinationCandidate = {
 };
 
 function trackedBy(environment: DestinationCandidate, repositoryId: number) {
-  return environment.savedServices.flatMap(({ source }) =>
-    source.type === "git" && source.repositoryId === repositoryId && source.branch.type === "connected" ? [source.branch.name] : []);
+  return environment.savedServices.flatMap((config) => trackedBranch(config, repositoryId) ?? []);
 }
 
 /**
@@ -33,13 +33,13 @@ export function trackedBranches(environments: ReadonlyArray<DestinationCandidate
 /** Each Environment as a Destination candidate in the browser, by its change state's latest Saved services. */
 export function destinationCandidates(
   environments: ReadonlyArray<{ id: string }>,
-  branches: ReadonlyArray<{ environmentId: string; prNumber: number | null }>,
+  branches: Parameters<typeof prEnvironmentIds>[0],
   states: ReadonlyArray<Pick<EnvironmentChangeStateProjection, "environmentId" | "saved">>,
 ): DestinationCandidate[] {
-  const prEnvironmentIds = new Set(branches.flatMap((branch) => branch.prNumber === null ? [] : [branch.environmentId]));
+  const prEnvironments = prEnvironmentIds(branches);
   return environments.map((environment) => ({
     id: environment.id,
-    prEnvironment: prEnvironmentIds.has(environment.id),
+    prEnvironment: prEnvironments.has(environment.id),
     savedServices: states.find((state) => state.environmentId === environment.id)?.saved?.nodes
       .flatMap((node) => node.nodeType === "service" ? [node.config] : []) ?? [],
   }));

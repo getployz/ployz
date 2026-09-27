@@ -1,31 +1,25 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createPrCheckRequestedEvent } from "#/modules/inngest/events";
-import { environmentBranch } from "#/modules/project/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
-import { isPrEnvironment } from "./pr-environment.repository.server";
+import { prEnvironment } from "./tables";
 
 /**
- * Asks for a PR Environment's check to be posted again once the change commits. The poster reads the state it posts,
+ * Asks for a pull request's check to be posted again once the change commits. The poster reads the state it posts,
  * so requests only need to follow changes. A failed request is logged: the change itself stands.
  */
-export const requestPrCheck = (prEnvironmentIds: string[]) => prEnvironmentIds.length === 0 ? Effect.void : afterDatabaseCommit(
-  sendInngestEvent(prEnvironmentIds.map((prEnvironmentId) => createPrCheckRequestedEvent({ prEnvironmentId }))).pipe(
-    Effect.catch((error) => Effect.logWarning("The PR check was not requested.", { prEnvironmentIds, error })),
+export const requestPullRequestChecks = (repositoryId: number, number: number) => afterDatabaseCommit(
+  sendInngestEvent(createPrCheckRequestedEvent({ repositoryId, number })).pipe(
+    Effect.catch((error) => Effect.logWarning("The PR check was not requested.", { repositoryId, number, error })),
   ),
 );
 
-/** `requestPrCheck` when the Environment is a PR Environment: its settings changed. */
-export const requestPrCheckIfPrEnvironment = Effect.fn("PrEnvironments.requestPrCheckIfPrEnvironment")(function* (environmentId: string) {
-  if (yield* isPrEnvironment(environmentId)) yield* requestPrCheck([environmentId]);
-});
-
-/** `requestPrCheck` for every PR Environment of one pull request. */
-export const requestPullRequestChecks = Effect.fn("PrEnvironments.requestPullRequestChecks")(function* (repositoryId: number, number: number) {
+/** `requestPullRequestChecks` when the Environment is a PR Environment: its settings or approvals changed. */
+export const requestPrCheck = Effect.fn("PrEnvironments.requestPrCheck")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
-  const rows = yield* drizzle.select({ id: environmentBranch.environmentId }).from(environmentBranch)
-    .where(and(eq(environmentBranch.prRepositoryId, repositoryId), eq(environmentBranch.prNumber, number)));
-  yield* requestPrCheck(rows.map((row) => row.id));
+  const [pullRequest] = yield* drizzle.select({ repositoryId: prEnvironment.repositoryId, number: prEnvironment.number })
+    .from(prEnvironment).where(eq(prEnvironment.environmentId, environmentId));
+  if (pullRequest) yield* requestPullRequestChecks(pullRequest.repositoryId, pullRequest.number);
 });

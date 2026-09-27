@@ -3,13 +3,13 @@ import { useEnvironmentDocuments } from "#/modules/environment-design/environmen
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinationCandidates, destinations } from "#/modules/pr-environments/destinations";
 import { useConditionalSaves } from "#/modules/pr-environments/conditional-save.collection";
-import { prCheck, type PrCheck } from "#/modules/pr-environments/pr-check";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import { checkDestination, prCheck, type PrCheck } from "#/modules/pr-environments/pr-check";
+import type { ConditionalSaveRow, PullRequest } from "#/modules/pr-environments/tables";
 import { branchHostnameSuffix } from "./branch-plan";
 import { useLineageNames } from "./use-lineage-names";
-import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, variableName, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
+import { branchReview, goesTo, latestDeploy, liveUpdates, usedLive, type BranchReview, type GoesTo, type LiveUpdate } from "./branch-review";
 
-export type PullRequest = { number: number; title: string; author: string; headBranch: string; targetBranch: string };
+export type { PullRequest };
 
 type EnvironmentName = { id: string; name: string; namespace: string };
 
@@ -22,8 +22,6 @@ export type BranchReviewView = BranchReview & {
   pullRequest: PullRequest | null;
   /** A PR Environment's changes for each of its Destinations, which it never Merges into. Empty for any other Branch. */
   goesTo: Array<GoesTo & { destination: EnvironmentName; approval: ConditionalSaveRow | null }>;
-  /** A PR Environment whose every Destination with changes has a standing approval. */
-  approved: boolean;
   /** A PR Environment's "Ployz · ready to merge" check, as Ployz posts it on the pull request; null for any other Branch. */
   check: PrCheck | null;
   /** "N changes": what would merge, or on a PR Environment what goes to its Destinations. */
@@ -66,15 +64,12 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       hostnames: { branch: hostnameSuffix(branch.id), parent: hostnameSuffix(parent.id) },
     });
     const live = liveUpdates({ live: usedLive(branch.intent), parentId: parent.id, branches, branchDeployedAt: latestDeploy(deployedAt.get(environmentId)), deployedAt });
-    const pr = row.prNumber === null || row.prRepositoryId === null ? null : {
-      number: row.prNumber, title: row.prTitle ?? "", author: row.prAuthor ?? "",
-      headBranch: row.prHeadBranch ?? "", targetBranch: row.prTargetBranch ?? "",
-    };
+    const pr = row.pullRequest;
     // Oldest first, as the Environments tree lists them.
-    const project = summaries.filter((environment) => environment.projectId === branch.projectId)
+    const projectEnvironments = summaries.filter((environment) => environment.projectId === branch.projectId)
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
-    const landings = pr && row.prRepositoryId !== null ? destinations({
-      environments: destinationCandidates(project, branches, states), repositoryId: row.prRepositoryId, targetBranch: pr.targetBranch,
+    const landings = pr ? destinations({
+      environments: destinationCandidates(projectEnvironments, branches, states), repositoryId: pr.repositoryId, targetBranch: pr.targetBranch,
     }).flatMap((id) => {
       const destination = environmentById.get(id);
       const save = saves.find((candidate) => candidate.prEnvironmentId === environmentId && candidate.destinationEnvironmentId === id) ?? null;
@@ -89,17 +84,9 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
         }),
       }] : [];
     }) : [];
-    const check = pr && prCheck(landings.map(({ destination, rows, save }) => ({
-      name: destination.name,
-      changes: rows.length,
-      approval: save && {
-        standing: save.standing, changes: save.rows.length, approvedBy: save.approvedBy,
-        missing: save.rows.filter((held) => held.missing).map((held) => variableName(held.row)),
-      },
-    })));
+    const check = pr && prCheck(landings.map(({ destination, rows, save }) => checkDestination(destination.name, rows.length, save)));
     return {
       ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings, check,
-      approved: landings.some((landing) => landing.rows.length) && landings.every((landing) => !landing.rows.length || landing.approval),
       changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.merge.length,
       updates: review.update.length + live.length,
       nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",

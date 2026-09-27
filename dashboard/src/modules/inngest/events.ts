@@ -137,7 +137,10 @@ export type ClusterDomainSyncRequestedEventData = {
 };
 
 export type PrCheckRequestedEventData = {
-  prEnvironmentId: string;
+  repositoryId: number;
+  number: number;
+  /** `repositoryId:number`: one pull request's posts run one at a time. */
+  pullRequestKey: string;
 };
 
 export type InngestFunctionCancelledEventData = {
@@ -304,8 +307,8 @@ export function createClusterDomainSyncRequestedEvent(
   return { name: clusterDomainSyncRequestedEvent, data } as const;
 }
 
-export function createPrCheckRequestedEvent(data: PrCheckRequestedEventData) {
-  return { name: prCheckRequestedEvent, data } as const;
+export function createPrCheckRequestedEvent(input: { repositoryId: number; number: number }) {
+  return { name: prCheckRequestedEvent, data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies PrCheckRequestedEventData } as const;
 }
 
 export function createOrganizationBillingSyncRequestedEvent(

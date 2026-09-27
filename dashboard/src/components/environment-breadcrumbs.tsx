@@ -161,7 +161,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const project = projects.find((candidate) => candidate.slug === scope.projectSlug);
   const current = findEnvironment(projects, environments, scope);
   const currentBranch = branches.find((branch) => branch.environmentId === current?.id);
-  const prNumbers = new Map(branches.flatMap((branch) => branch.prNumber === null ? [] : [[branch.environmentId, branch.prNumber]]));
+  const prNumbers = new Map(branches.flatMap((branch) => branch.pullRequest ? [[branch.environmentId, branch.pullRequest.number]] : []));
   const tree = environmentTree(environments.filter((environment) => environment.projectId === project?.id), branches);
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(deployments.map((deployment) => deployment.environmentId));
@@ -207,7 +207,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   void navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
-                  <GitCompareArrowsIcon />{currentBranch.prNumber === null ? `Review ${current.name}` : `What #${currentBranch.prNumber} changes`}
+                  <GitCompareArrowsIcon />{currentBranch.pullRequest ? `What #${currentBranch.pullRequest.number} changes` : `Review ${current.name}`}
                 </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);

@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
+import { member } from "#/modules/identity/tables";
 import { getProjectContextForActor } from "#/modules/environment-design/workspace-repository.server";
 import { environment } from "#/modules/project/tables";
 import { Database } from "#/server/database.server";
@@ -52,4 +53,25 @@ export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function
     if (!row) return yield* new NotFound({ message: "Project not found." });
     return row;
   }));
+});
+
+/**
+ * Who a plan's PR Environments act as: the member who turned them on while they're still in the organization, else its
+ * first owner, who then stands recorded instead. Null for a plan that's off.
+ */
+export const actingMember = Effect.fn("PrEnvironments.actingMember")(function* (plan: typeof prEnvironmentPlan.$inferSelect) {
+  if (!plan.enabled) return null;
+  const { drizzle } = yield* Database;
+  const inOrganization = eq(member.organizationId, plan.organizationId);
+  if (plan.enabledByUserId !== null) {
+    const [enabler] = yield* drizzle.select({ userId: member.userId }).from(member)
+      .where(and(inOrganization, eq(member.userId, plan.enabledByUserId)));
+    if (enabler) return enabler.userId;
+  }
+  const [owner] = yield* drizzle.select({ userId: member.userId }).from(member)
+    .where(and(inOrganization, eq(member.role, "owner"))).orderBy(asc(member.createdAt)).limit(1);
+  if (!owner) return null;
+  yield* drizzle.update(prEnvironmentPlan).set({ enabledByUserId: owner.userId })
+    .where(and(eq(prEnvironmentPlan.projectId, plan.projectId), eq(prEnvironmentPlan.repositoryId, plan.repositoryId)));
+  return owner.userId;
 });
