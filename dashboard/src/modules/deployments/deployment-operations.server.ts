@@ -17,7 +17,8 @@ import type {
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
 import { strictParseOptions } from "#/modules/environment-design/schema";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { redactSavedEnvironmentIntent, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -101,9 +102,23 @@ function parseEvidenceChangeStateNode(input: {
     : parseEnvironmentChangeStateNode(input);
 }
 
+/**
+ * Applied State in authored form, redacted, for Branch reviews in the browser.
+ * ponytail: one Saved revision read per distinct source revision per Environment, org-wide; a per-Environment read if it
+ * gets heavy.
+ */
+const redactedAppliedIntent = Effect.fn("Deployments.redactedAppliedIntent")(function* (
+  projection: EnvironmentSnapshotProjection, state: EnvironmentSnapshotProjection["explicitStates"][number], namespace: string,
+) {
+  if (state.applied.nodes.length === 0) return null;
+  const ids = new Set(state.applied.nodes.map((node) => node.nodeId));
+  const own = { ...projection, appliedSavedNodeByKey: new Map([...projection.appliedSavedNodeByKey].filter(([, node]) => ids.has(node.nodeId))) };
+  return redactSavedEnvironmentIntent(yield* loadAppliedIntent(state.environmentId, namespace, own));
+});
+
 const projectEnvironmentChangeStateRecords = Effect.fn(
   "Deployments.projectEnvironmentChangeStateRecords",
-)(function* (projection: EnvironmentSnapshotProjection) {
+)(function* (projection: EnvironmentSnapshotProjection, namespaces: ReadonlyMap<string, string>) {
   return yield* Effect.forEach(projection.explicitStates, (state) =>
     Effect.gen(function* () {
       const savedNodes = yield* Effect.forEach(
@@ -121,7 +136,10 @@ const projectEnvironmentChangeStateRecords = Effect.fn(
       return {
         environmentId: state.environmentId,
         saved: state.saved ? { ...state.saved, nodes: savedNodes } : null,
-        applied: { ...state.applied, nodes: appliedNodes },
+        applied: {
+          ...state.applied, nodes: appliedNodes,
+          intent: yield* redactedAppliedIntent(projection, state, namespaces.get(state.environmentId) ?? ""),
+        },
         deploymentEvidence: state.deploymentEvidence
           ? { ...state.deploymentEvidence, nodes: evidenceNodes }
           : null,
@@ -141,7 +159,10 @@ export const listLatestOrganizationEnvironmentChangeStates = Effect.fn(
       kind: "organization",
       organizationId: organization.id,
     });
-  return yield* projectEnvironmentChangeStateRecords(projection);
+  const { drizzle } = yield* Database;
+  const namespaces = yield* drizzle.select({ id: environment.id, namespace: environment.namespace }).from(environment)
+    .innerJoin(project, eq(environment.projectId, project.id)).where(eq(project.organizationId, organization.id));
+  return yield* projectEnvironmentChangeStateRecords(projection, new Map(namespaces.map((row) => [row.id, row.namespace])));
 });
 
 const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {

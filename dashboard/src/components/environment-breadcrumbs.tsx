@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
@@ -19,6 +19,7 @@ import { Command, CommandGroup, CommandItem, CommandList, CommandSeparator } fro
 import { Skeleton } from "#/components/ui/skeleton";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { environmentTree } from "#/modules/project/environment-tree";
+import { useBranchReviews } from "#/modules/branches/use-branch-review";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
@@ -150,6 +151,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
 function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const { projects, environments, branches, isPending, isError, refetch } = useWorkspace(scope.organizationSlug);
   const { data: deployments } = useLiveQuery(getEnvironmentDeploymentsCollection(scope.organizationSlug, useCollectionScope()));
+  const reviewOf = useBranchReviews(scope.organizationSlug);
   const navigate = useNavigate();
   const section = useDashboardSection();
   const [open, setOpen] = useState(false);
@@ -161,16 +163,20 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <CrumbTrigger label="Environment" name={current?.name ?? scope.environmentSlug} current />
-      <PopoverContent padding="none" align="start" className="w-[min(18rem,calc(100vw-2rem))]">
+      <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch environment</PopoverTitle>
         <SwitcherLoading isPending={isPending} retry={isError ? () => void refetch() : undefined}>
           <Command tabIndex={0} label="Environments" defaultValue={current?.id}>
             <CommandList className="max-h-[min(20rem,45dvh)]">
               <CommandGroup heading="Environments">
                 {tree.map(({ environment, depth, parent }) => {
+                  // Computed only while the switcher is open: core compares each Branch with its Parent.
+                  const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
+                    !!review?.changes && `${review.changes} ${review.changes === 1 ? "change" : "changes"}`,
+                    !!review?.updates && `${review.updates} ${review.updates === 1 ? "update" : "updates"}`,
                   ].filter((note) => note !== false);
                   return (
                     <CommandItem key={environment.id} value={environment.id} keywords={[environment.name]}
@@ -189,6 +195,14 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
+                {current && branches.some((branch) => branch.environmentId === current.id) && <CommandItem value="review" onSelect={() => {
+                  setOpen(false);
+                  const { organizationSlug, projectSlug, environmentSlug } = scope;
+                  void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review",
+                    params: { organizationSlug, projectSlug, environmentSlug } });
+                }}>
+                  <GitCompareArrowsIcon />Review {current.name}
+                </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);
                   const { organizationSlug, projectSlug, environmentSlug } = scope;

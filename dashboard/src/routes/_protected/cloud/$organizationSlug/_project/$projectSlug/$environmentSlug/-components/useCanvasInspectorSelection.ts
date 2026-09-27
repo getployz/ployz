@@ -10,6 +10,8 @@ const NEW_BRANCH_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/new-branch";
 const LIVE_NODE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId";
+const BRANCH_REVIEW_ROUTE_ID =
+  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/review";
 const ENVIRONMENT_RESOURCE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
 
@@ -28,6 +30,8 @@ export type CanvasInspectorSelection = {
   deploymentList: boolean;
   /** The New branch panel is open over the Parent's canvas, opened on `focus` (a lineage) if anything. */
   newBranch: { focus: string | null } | null;
+  /** A Branch's review page is open over its canvas. */
+  branchReview: boolean;
   isInspectorOpen: boolean;
 };
 
@@ -63,6 +67,10 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: LIVE_NODE_ROUTE_ID,
     shouldThrow: false,
   });
+  const branchReviewMatch = useMatch({
+    from: BRANCH_REVIEW_ROUTE_ID,
+    shouldThrow: false,
+  });
   const selectedServiceId = serviceMatch?.params.serviceId ?? null;
   const selectedLiveLineageId = liveMatch?.params.lineageId ?? null;
   const selectedResourceId = resourceMatch?.params.resourceId ?? null;
@@ -77,6 +85,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
     deploymentList: deploymentListMatch != null,
     newBranch: newBranchMatch ? { focus: newBranchMatch.search.focus ?? null } : null,
+    branchReview: branchReviewMatch != null,
     isInspectorOpen: selectedNodeId != null,
   };
 }

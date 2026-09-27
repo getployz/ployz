@@ -6,6 +6,7 @@ import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import { reviewedEnvironmentPublicationSchema } from "#/modules/environment-design/working-state-review";
 import {
@@ -170,6 +171,10 @@ export type EnvironmentChangeStateProjection = {
   applied: {
     token: string;
     nodes: EnvironmentChangeStateNodeProjection[];
+    /** When each Applied node last deployed, by node lineage. */
+    deployedAt: Record<string, Date>;
+    /** Applied State in authored form, redacted; null before the first deploy. */
+    intent: SavedEnvironmentIntent | null;
   };
   deploymentEvidence: {
     id: string;

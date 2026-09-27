@@ -8,6 +8,8 @@ import {
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as branchCollections from "#/modules/branches/branch.collection";
 import * as deploymentCollections from "#/modules/deployments/deployment.collection";
+import * as branchReviews from "#/modules/branches/use-branch-review";
+import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { asTestDouble } from "#/lib/test-double";
 import { BottomBar, BottomBarSlot } from "./BottomBar";
@@ -27,12 +29,20 @@ const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
+let branch: branchReviews.BranchReviewView | null = null;
+const imageRow = (from: string): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict: false, base: "web:1", from, into: "web:1" });
+const branchReview = (merge: ChangeRow[], updates: number) => asTestDouble<branchReviews.BranchReviewView>()({
+  parent: { id: "env-0", name: "production", namespace: "shop-production" },
+  merge, changes: merge.length, updates, nameOf: () => "web",
+});
 
 beforeEach(() => {
   attempts = [];
   startingPoint = undefined;
+  branch = null;
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
+  vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
     asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
   vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
@@ -143,4 +153,33 @@ it("shows a starting point's state over its staged nodes, with New branch and no
   fireEvent.click(shown.getByRole("link", { name: "New branch" }));
   await screen.findByText("New branch panel");
   expect(router.state.location.href).toBe(`${canvasUrl}/new-branch`);
+});
+
+it("on a Branch, then shows what would merge into its Parent, else what's new there, after the staged and running states", async () => {
+  branch = branchReview([imageRow("web:2"), imageRow("web:3")], 1);
+  attempts = [attempt(running, "deploying", "Add worker")];
+  open(canvasUrl, [replicas], 1);
+  // Staged changes come first, and Review opens the Branch's review page.
+  expect((await bar()).getByRole("link", { name: "Review" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
+  cleanup();
+  open(canvasUrl);
+  expect((await bar()).getByText("Deploying · Add worker")).toBeTruthy();
+  cleanup();
+  attempts = [];
+  open(canvasUrl);
+  const changes = await bar();
+  expect(changes.getByText("2 changes for production")).toBeTruthy();
+  expect(changes.getByText("web · Container image web:1 → web:2")).toBeTruthy();
+  expect(changes.getByRole("link", { name: "Review and merge" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
+  cleanup();
+  branch = branchReview([], 1);
+  open(canvasUrl);
+  const updates = await bar();
+  expect(updates.getByText("1 update from production")).toBeTruthy();
+  expect(updates.getByRole("link", { name: "Review" })).toBeTruthy();
+  cleanup();
+  branch = branchReview([], 0);
+  open(canvasUrl);
+  await act(async () => {});
+  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });

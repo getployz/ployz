@@ -64,7 +64,7 @@ function deferred<T>() {
 }
 
 function comparison(token: string): EnvironmentChangeStateProjection[] {
-  return [{ environmentId: "env", saved: null, applied: { token, nodes: [] }, deploymentEvidence: null }];
+  return [{ environmentId: "env", saved: null, applied: { token, nodes: [], deployedAt: {}, intent: null }, deploymentEvidence: null }];
 }
 
 async function editorFixture() {

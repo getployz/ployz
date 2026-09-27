@@ -54,6 +54,8 @@ export type EnvironmentExplicitStateProjection = {
   applied: {
     token: string;
     nodes: EnvironmentExplicitStateProjectionNode[];
+    /** When the attempt each Applied node came from was created, by node lineage. */
+    deployedAt: Record<string, Date>;
   };
   deploymentEvidence: {
     id: string;
@@ -400,6 +402,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
     return privateDns;
   };
 
+  const createdAtByDeploymentId = new Map([...appliedHeads, ...partialHeads].map((head) => [head.id, head.createdAt]));
   const liveNodesByKey = new Map<string, LoadedNode>();
   const appliedCreatedAtByEnvironment = new Map<string, Date>();
   for (const head of appliedHeads) {
@@ -535,6 +538,10 @@ function projectSnapshotHeads(scope: SnapshotScope) {
             config: node.config,
             revisionId: null,
           })),
+          deployedAt: Object.fromEntries(appliedEntries.map(([, node]) => [
+            node.nodeLineageId,
+            requiredMapValue(createdAtByDeploymentId, node.environmentDeploymentId, "Applied deployment is missing."),
+          ])),
         },
         deploymentEvidence: activeDeployment
           ? {

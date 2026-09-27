@@ -31,7 +31,7 @@ import {
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
-import { BottomBarSlot } from "./canvas/BottomBar";
+import { BottomBarSlot, StagedReviewSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
@@ -220,20 +220,23 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch } = useCanvasInspectorSelection();
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, branchReview } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
+  const [stagedReviewSlot, setStagedReviewSlot] = useState<HTMLElement | null>(null);
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
     <BranchPickingProvider open={newBranch !== null} focus={newBranch?.focus ?? null}>
+    <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
       } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
-        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true } : null}
+        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
+        : branchReview ? { key: `${canvasKey}/review`, nodeId: "review" } : null}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
@@ -246,6 +249,7 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
+    </StagedReviewSlot.Provider>
     </BranchPickingProvider>
     </BottomBarSlot.Provider>
   );
