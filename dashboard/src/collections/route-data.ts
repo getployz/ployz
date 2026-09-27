@@ -59,10 +59,16 @@ export async function prefetchRemote(context: RouteDataContext, ...reads: Array<
   if (environmentManager.isServer()) await ready;
 }
 
-/** The build tails of the Environment's active attempts that build images, which the canvas's bottom bar and list read. */
+/**
+ * The build tails of the Environment's active attempts that build images, which the canvas's bottom bar and list read.
+ * Finding them waits for the Org Store, so the client starts it in the background, like `prefetchOrgStore`.
+ */
 export async function prefetchActiveBuildTails(context: RouteDataContext, input: EnvironmentBySlug) {
-  const environment = await requireEnvironment(context, input);
-  await prefetchRemote(context, ...await activeBuildTailReads(input.organizationSlug, environment.id, scopeOf(context)));
+  const ready = requireEnvironment(context, input)
+    .then((environment) => activeBuildTailReads(input.organizationSlug, environment.id, scopeOf(context)))
+    .then((reads) => prefetchRemote(context, ...reads));
+  if (environmentManager.isServer()) await ready;
+  else void ready.catch(() => {});
 }
 
 /** `prefetchRemote` for a paged read: its first page. */
