@@ -13,7 +13,7 @@ import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
-import { NotFound } from "#/server/public-error";
+import { Conflict, NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
 /** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
@@ -56,24 +56,49 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
     : Effect.logWarning(why, { environmentId, cause }).pipe(Effect.as(false))),
 );
 
-/** Closes a merged Branch; false when it couldn't, and the Merge stands. */
-export const tryCloseBranch = (environmentId: string) => tryClose(environmentId, "A merged Branch did not close.",
-  closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => close.admit)));
+/**
+ * Holds a closing Branch in lock order (lockProjectDefault): its Project, then its Branch row, which Keep also takes. Null
+ * when the Branch is gone.
+ */
+const lockClosingBranch = Effect.fn("Branches.lockClosing")(function* (projectId: string, environmentId: string) {
+  yield* lockProjectDefault(projectId);
+  const [row] = yield* (yield* Database).drizzle.select({ kept: schemaEnvironmentBranch.kept }).from(schemaEnvironmentBranch)
+    .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
+  return row ?? null;
+});
 
-/** A kept Branch stays after merging and never closes for being idle. */
+/** Closes a merged Branch unless it was kept meanwhile; false when it doesn't close, and the Merge stands. */
+export const tryCloseBranch = (environmentId: string) => Effect.gen(function* () {
+  const database = yield* Database;
+  return yield* tryClose(environmentId, "A merged Branch did not close.",
+    closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
+      const row = yield* lockClosingBranch(close.projectId, environmentId);
+      return !row || row.kept ? null : yield* close.admit;
+    })))));
+});
+
+/**
+ * A kept Branch stays after merging and never closes for being idle. Under its Branch row, which a close holds while it
+ * admits, so Keep never reports success for a Branch already closing.
+ */
 export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Actor, input: SetBranchKept) {
   const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
   const database = yield* Database;
-  const [row] = yield* database.drizzle
-    .update(schemaEnvironmentBranch)
-    .set({ kept: input.kept })
-    .where(and(
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const where = and(
       eq(schemaEnvironmentBranch.environmentId, input.environmentId),
       eq(schemaEnvironmentBranch.organizationId, organization.id),
-    ))
-    .returning();
-  if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
-  return { ...row, base: withoutSealedCiphertext(row.base) };
+    );
+    const [locked] = yield* drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch).where(where).for("update");
+    if (locked === undefined) return yield* new NotFound({ message: "The branch was not found." });
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
+      return yield* new Conflict({ message: "This branch is already closing." });
+    }
+    const [row] = yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where).returning();
+    if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
+    return { ...row, base: withoutSealedCiphertext(row.base) };
+  }));
 });
 
 /**
@@ -89,9 +114,7 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
       // the Branch row (Keep, Merge and Update wait), then its queue (a deploy waits).
-      yield* lockProjectDefault(close.projectId);
-      yield* (yield* Database).drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch)
-        .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
+      yield* lockClosingBranch(close.projectId, environmentId);
       yield* lockEnvironmentDeploymentQueue(environmentId);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
       return yield* close.admit;

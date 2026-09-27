@@ -11,7 +11,7 @@ import { admitSystemTeardown, confirmTeardown, loadTeardownDataLoss, prepareSyst
 import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { closeBranch, sweepIdleBranches } from "./branch-close.server";
+import { closeBranch, setBranchKept, sweepIdleBranches, tryCloseBranch } from "./branch-close.server";
 import { createBranch } from "./branch-operations.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
@@ -119,6 +119,19 @@ describe("closing a Branch", () => {
     const environments = await harness.pool.query<{ name: string }>("select name from environment order by name");
     expect(environments.rows.map((row) => row.name)).toEqual(["fix-staging", "production", "staging"]);
     expect((await harness.pool.query("select * from environment_branch")).rowCount).toBe(1);
+  });
+
+  it("leaves a Branch kept after its Merge read it open, and Keep refuses a Branch already closing", async () => {
+    // Kept between the Merge's read and the close: the close re-reads it under the Branch row and starts nothing.
+    await harness.pool.query("update environment_branch set kept = true where environment_id = $1", [fixWebId]);
+    expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(false);
+    expect(await attemptRows()).toEqual([]);
+
+    // Once a close is admitted, Keep can't report success for it.
+    await harness.pool.query("update environment_branch set kept = false where environment_id = $1", [fixWebId]);
+    expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(true);
+    const refused = await run(provide(setBranchKept({ userId }, { organizationSlug: "acme", environmentId: fixWebId, kept: true }).pipe(Effect.flip)));
+    expect(refused).toMatchObject({ _tag: "Conflict", message: "This branch is already closing." });
   });
 
   it("refuses the Default Environment, whoever asks, even as a Branch's descendant", async () => {

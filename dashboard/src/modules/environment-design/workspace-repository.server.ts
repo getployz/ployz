@@ -233,7 +233,7 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  * Lock order. Every path takes these locks in this order, skipping any it doesn't need, so none waits on another in a
  * cycle: Project rows (by id when several: `lockOrganizationProjects`), then Branch rows (`environment_branch`), then
  * Environment deployment queues (`lockEnvironmentDeploymentQueue`). Create Branch: Project, Parent's Branch row. Idle
- * sweep: Project, Branch row, queue. Merge and Update: Branch row, then queues. Teardown admission and Default
+ * sweep: Project, Branch row, queue. Merge's close: Project, Branch row. Keep: Branch row. Merge and Update: Branch row, then queues. Teardown admission and Default
  * selection: Project(s) only.
  */
 export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
