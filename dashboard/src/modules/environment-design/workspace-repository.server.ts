@@ -3,8 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { environment, project, userProjectPreference } from "#/modules/project/tables";
-import { organizationIdForProject } from "#/db/scope-values.server";
+import { environment, project } from "#/modules/project/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -239,35 +238,20 @@ export const getEnvironmentByIdForProject = Effect.fn(
   return rows[0] ?? null;
 });
 
-export const upsertUserProjectPreference = Effect.fn(
-  "EnvironmentDesign.upsertUserProjectPreference",
-)(function* (input: {
-  readonly userId: string;
-  readonly projectId: string;
-  readonly environmentId: string;
-}) {
+export const setDefaultEnvironment = Effect.fn(
+  "EnvironmentDesign.setDefaultEnvironment",
+)(function* (projectId: string, environmentId: string) {
   const database = yield* Database;
   const rows = yield* database.drizzle
-    .insert(userProjectPreference)
-    .values({
-      organizationId: organizationIdForProject(input.projectId),
-      userId: input.userId,
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-    })
-    .onConflictDoUpdate({
-      target: [userProjectPreference.userId, userProjectPreference.projectId],
-      set: { environmentId: input.environmentId, updatedAt: new Date() },
-    })
-    .returning({
-      id: userProjectPreference.id, userId: userProjectPreference.userId,
-      projectId: userProjectPreference.projectId, environmentId: userProjectPreference.environmentId,
-    });
-  const preference = rows[0];
-  if (preference === undefined) {
-    return yield* Effect.die("PostgreSQL did not return the project preference.");
+    .update(project)
+    .set({ defaultEnvironmentId: environmentId })
+    .where(eq(project.id, projectId))
+    .returning();
+  const updated = rows[0];
+  if (updated === undefined) {
+    return yield* Effect.die("PostgreSQL did not return the updated project.");
   }
-  return preference;
+  return updated;
 });
 
 export const getProjectContextForActor = Effect.fn(

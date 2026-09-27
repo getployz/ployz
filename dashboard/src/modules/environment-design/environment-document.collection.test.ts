@@ -13,7 +13,7 @@ it("reconciles an unobserved collection, updates joined documents, and isolates 
   const client = new QueryClient();
   const otherClient = new QueryClient();
   const scope = { queryClient: client, sessionId: "session", userId: "user" };
-  const project: typeof projectTable.$inferSelect = { id: crypto.randomUUID(), organizationId: crypto.randomUUID(), name: "Project", slug: "project", createdAt: new Date() };
+  const project: typeof projectTable.$inferSelect = { id: crypto.randomUUID(), organizationId: crypto.randomUUID(), name: "Project", slug: "project", defaultEnvironmentId: null, createdAt: new Date() };
   const environment: EnvironmentDocument = { id: crypto.randomUUID(), projectId: project.id, organizationId: project.organizationId,
     name: "Production", namespace: "production", revision: crypto.randomUUID(), createdAt: new Date(), updatedAt: new Date(),
     intent: { version: 1, environmentSlug: "production", services: [], volumes: [] } };

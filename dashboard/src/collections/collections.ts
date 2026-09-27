@@ -62,10 +62,8 @@ export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary 
   const { id, projectId, organizationId, name, namespace, createdAt } = row;
   return { id, projectId, organizationId, name, namespace, createdAt };
 }
-export type ProjectPreference = { id: string; environmentId: string };
 
 export const getEnvironmentSummariesCollection = changeCollection<EnvironmentSummary>("environment_summary", (row) => row.id);
-export const getProjectPreferencesCollection = changeCollection<ProjectPreference>("project_preference", (row) => row.id);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
@@ -75,7 +73,6 @@ export const orgStoreTables = {
   project: getProjectsCollection,
   environment: getEnvironmentsCollection,
   environment_summary: getEnvironmentSummariesCollection,
-  project_preference: getProjectPreferencesCollection,
   service: getRawServicesCollection,
   resource_lineage: getResourceLineagesCollection,
   environment_resource: getRawEnvironmentResourcesCollection,
