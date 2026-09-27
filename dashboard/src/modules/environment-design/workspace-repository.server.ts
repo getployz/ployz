@@ -236,7 +236,8 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  * service, a volume, an Environment) takes a KEY SHARE on the Project row through its foreign key, so a path that locks
  * a Branch row and then inserts must hold the Project first: every Branch row lock goes through `lockBranchScope`.
  * Create Branch, Merge, Update, Own Copy, Merge's close, Keep and the idle sweep: Project, Branch row (then queues).
- * Teardown admission and Default selection: Project(s) only.
+ * Teardown admission: Project(s), then the queue of each Environment it removes (by id). Default selection: Project only.
+ * Deployment admission: its queue only.
  */
 export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
   const { drizzle } = yield* Database;

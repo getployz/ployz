@@ -13,6 +13,8 @@ import { setProjectDefaultEnvironment } from "#/modules/environment-design/works
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { closeBranch, setBranchKept, sweepIdleBranches, tryCloseBranch } from "./branch-close.server";
 import { createBranch } from "./branch-operations.server";
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
+import * as schema from "#/db/schema";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const creatorId = "00000000-0000-4000-8000-000000000902";
@@ -132,6 +134,18 @@ describe("closing a Branch", () => {
     expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(true);
     const refused = await run(provide(setBranchKept({ userId }, { organizationSlug: "acme", environmentId: fixWebId, kept: true }).pipe(Effect.flip)));
     expect(refused).toMatchObject({ _tag: "Conflict", message: "This branch is already closing." });
+  });
+
+  it("refuses a deployment of a Branch whose close is admitted", async () => {
+    expect(await run(provide(tryCloseBranch(fixStagingId)))).toBe(true);
+    const [saved] = await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+      organizationId, environmentId: fixStagingId, actorId: userId, volumeDeletionAuthorizations: [],
+      intent: { version: 1, environmentSlug: "app-fix-staging", services: [], volumes: [] },
+    }).returning();
+    const refused = await run(provide(admitEnvironmentDeployment({
+      environmentId: fixStagingId, savedStateSnapshotId: saved?.id ?? "", triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }).pipe(Effect.flip)));
+    expect(refused).toMatchObject({ _tag: "Conflict", message: "This environment is being torn down." });
   });
 
   it("refuses the Default Environment, whoever asks, even as a Branch's descendant", async () => {
