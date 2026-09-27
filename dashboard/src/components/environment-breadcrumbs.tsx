@@ -7,12 +7,13 @@ import { getEnvironmentsCollection, getEnvironmentSummariesCollection, environme
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
   getDashboardDestination,
+  getDashboardSectionLabel,
   type DashboardDestination,
   type DashboardScope,
   type DashboardSection,
 } from "#/components/dashboard-navigation-model";
 import { useDashboardSection } from "#/components/use-dashboard-section";
-import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
+import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -31,24 +32,16 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
-import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
-/** The Environment page's top bar: where you are, each crumb a switcher. */
-export function EnvironmentTopBar({ scope }: { scope: EnvironmentScope }) {
-  return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
-      <EnvironmentCrumbs scope={scope} />
-      <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu /></div>
-    </header>
-  );
-}
-
+/** `project / environment`, each crumb a switcher; places other than Canvas add their name. */
 export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
+  const section = useDashboardSection();
   return <Crumbs items={[
     <ProjectCrumb key="project" scope={scope} />,
     <EnvironmentCrumb key="environment" scope={scope} />,
+    ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-2 font-medium">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }
 
@@ -141,7 +134,7 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
-                <CommandItem value="all-projects" onSelect={() => go(getDashboardDestination({ kind: "all", organizationSlug: scope.organizationSlug }, "overview"))}>
+                <CommandItem value="all-projects" onSelect={() => go(getDashboardDestination({ kind: "all", organizationSlug: scope.organizationSlug }, "projects"))}>
                   <LayoutGridIcon />All projects
                 </CommandItem>
               </CommandGroup>

@@ -1,155 +1,87 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createDashboardNavItems,
+  createDashboardNavigation,
   getDashboardDestination,
   getDashboardSectionFromRouteId,
 } from "#/components/dashboard-navigation-model";
 
-describe("dashboard navigation model", () => {
-  it("shows only organization destinations at organization scope", () => {
-    const items = createDashboardNavItems({
-      kind: "all",
-      organizationSlug: "acme",
-    }, { billingEnabled: true });
+const environment = {
+  kind: "environment",
+  organizationSlug: "acme",
+  projectSlug: "storefront",
+  environmentSlug: "production",
+} as const;
+const organization = { kind: "all", organizationSlug: "acme" } as const;
 
-    expect(items.map((item) => item.label)).toEqual([
-      "Projects",
-      "Servers",
-      "Server Settings",
-      "Billing",
+describe("dashboard navigation model", () => {
+  it("gives an Environment its four places, with the current one marked", () => {
+    const { places } = createDashboardNavigation(environment, { section: "logs" });
+
+    expect(places.map((place) => place.label)).toEqual(["Canvas", "Deployments", "Logs", "Settings"]);
+    expect(places.map((place) => place.to)).toEqual([
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
     ]);
-    expect(items.map((item) => item.to)).toEqual([
+    expect(places.filter((place) => place.current).map((place) => place.label)).toEqual(["Logs"]);
+    expect(places[2]).toMatchObject({
+      params: { organizationSlug: "acme", projectSlug: "storefront", environmentSlug: "production" },
+      search: {},
+    });
+  });
+
+  it("offers no Environment places on organization pages", () => {
+    expect(createDashboardNavigation(organization, { section: "servers" }).places).toEqual([]);
+  });
+
+  it("lists the organization destinations, with Billing only when billing is configured", () => {
+    const withBilling = createDashboardNavigation(environment, { section: "canvas", billingEnabled: true }).organization;
+    expect(withBilling.map((item) => item.label)).toEqual(["Projects", "Servers", "Server Settings", "Billing"]);
+    expect(withBilling.map((item) => item.to)).toEqual([
       "/cloud/$organizationSlug/~",
       "/cloud/$organizationSlug/~/servers",
       "/cloud/$organizationSlug/~/settings",
       "/cloud/$organizationSlug/~/billing",
     ]);
+    expect(withBilling.every((item) => !item.current && item.params.organizationSlug === "acme")).toBe(true);
+
+    const selfHosted = createDashboardNavigation(organization, { section: "servers" }).organization;
+    expect(selfHosted.map((item) => item.label)).toEqual(["Projects", "Servers", "Server Settings"]);
+    expect(selfHosted.find((item) => item.current)?.label).toBe("Servers");
   });
 
-  it("shows Architecture and only environment destinations in an environment", () => {
-    const items = createDashboardNavItems({
-      kind: "environment",
-      organizationSlug: "acme",
-      projectSlug: "storefront",
-      environmentSlug: "production",
-    });
-
-    expect(items.map((item) => item.label)).toEqual([
-      "Architecture",
-      "Logs",
-      "Settings",
-    ]);
-    expect(items[1]).toMatchObject({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
-      params: {
-        organizationSlug: "acme",
-        projectSlug: "storefront",
-        environmentSlug: "production",
-      },
-    });
-    expect(items.every((item) => item.search && Object.keys(item.search).length === 0)).toBe(true);
-  });
-
-  it("preserves compatible sections and clears detail search when switching scope", () => {
-    expect(
-      getDashboardDestination(
-        { kind: "all", organizationSlug: "acme" },
-        "logs",
-      ),
-    ).toEqual({
+  it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {
+    expect(getDashboardDestination(organization, "logs")).toEqual({
       to: "/cloud/$organizationSlug/~",
       params: { organizationSlug: "acme" },
       search: {},
     });
-
-    expect(
-      getDashboardDestination(
-        { kind: "all", organizationSlug: "acme" },
-        "environment-settings",
-      ),
-    ).toEqual({
-      to: "/cloud/$organizationSlug/~",
-      params: { organizationSlug: "acme" },
-      search: {},
-    });
-
-    expect(
-      getDashboardDestination(
-        {
-          kind: "environment",
-          organizationSlug: "acme",
-          projectSlug: "storefront",
-          environmentSlug: "production",
-        },
-        "environment-settings",
-      ),
-    ).toEqual({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
-      params: {
-        organizationSlug: "acme",
-        projectSlug: "storefront",
-        environmentSlug: "production",
-      },
-      search: {},
-    });
-
-    expect(
-      getDashboardDestination(
-        {
-          kind: "environment",
-          organizationSlug: "acme",
-          projectSlug: "storefront",
-          environmentSlug: "production",
-        },
-        "servers",
-      ),
-    ).toEqual({
-      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
-      params: {
-        organizationSlug: "acme",
-        projectSlug: "storefront",
-        environmentSlug: "production",
-      },
-      search: {},
-    });
-  });
-
-  it("preserves organization destinations across organizations without environment params", () => {
     expect(getDashboardDestination({ kind: "all", organizationSlug: "other" }, "servers")).toEqual({
       to: "/cloud/$organizationSlug/~/servers",
       params: { organizationSlug: "other" },
       search: {},
     });
-  });
-
-  it("derives active sections from route IDs rather than URL positions", () => {
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_org/~/settings",
-      ),
-    ).toBe("server-settings");
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
-      ),
-    ).toBe("environment-settings");
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_org/~/servers/",
-      ),
-    ).toBe(
-      "servers",
+    expect(getDashboardDestination(environment, "billing").to).toBe(
+      "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
     );
-    expect(
-      getDashboardSectionFromRouteId(
-        "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
-      ),
-    ).toBe("overview");
+    expect(getDashboardDestination({ ...environment, environmentSlug: "staging" }, "settings")).toEqual({
+      to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
+      params: { organizationSlug: "acme", projectSlug: "storefront", environmentSlug: "staging" },
+      search: {},
+    });
   });
 
-  it("drops Billing on Self-hosted Cloud", () => {
-    const items = createDashboardNavItems({ kind: "all", organizationSlug: "acme" });
-    expect(items.map((item) => item.section)).not.toContain("billing");
+  it("reads the current place from the route", () => {
+    const environmentRoute = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/logs`)).toBe("logs");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/settings`)).toBe("settings");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/deployments`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/$deploymentId`)).toBe("deployments");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("canvas");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("canvas");
+    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/")).toBe("projects");
+    expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/billing")).toBe("billing");
   });
 });

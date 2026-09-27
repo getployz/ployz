@@ -11,12 +11,10 @@ import { InspectorPresentation } from "./CanvasInspectorHeader";
 export function CanvasInspectorOverlay({
   children,
   canvas,
-  header,
   selection,
 }: {
   children: ReactNode;
   canvas: ReactNode;
-  header: ReactNode;
   /** `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear. */
   selection: { key: string; nodeId: string; lit?: boolean } | null;
 }) {
@@ -65,11 +63,10 @@ export function CanvasInspectorOverlay({
     <div
       ref={workspaceRef}
       role="region"
-      aria-label="Architecture"
+      aria-label="Canvas"
       tabIndex={-1}
       className="environment-canvas-scene"
     >
-      <div className="canvas-workspace-header">{header}</div>
       {canvas}
       {selection ? <>
         <button
@@ -77,7 +74,7 @@ export function CanvasInspectorOverlay({
           data-clear={selection.lit || undefined}
           type="button"
           tabIndex={-1}
-          aria-label="Close inspector and return to Architecture"
+          aria-label="Close inspector and return to Canvas"
           onClick={closeInspector}
         />
         <section
