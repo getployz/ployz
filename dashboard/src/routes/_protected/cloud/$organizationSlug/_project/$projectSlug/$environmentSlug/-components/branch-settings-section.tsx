@@ -29,7 +29,7 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
         <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
         <ItemContent className="min-w-0">
           <ItemTitle>From {parent.name}</ItemTitle>
-          <ItemDescription className="truncate">
+          <ItemDescription>
             {branch.prNumber === null
               ? `Its changes land in ${parent.name}.`
               : `PR environment for #${branch.prNumber} · ${branch.prTitle} · ${removedOnClose ? "removed when it closes" : "stays 7 days after its last deploy"}`}
