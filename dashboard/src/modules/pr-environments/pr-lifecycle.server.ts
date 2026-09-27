@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import { closePrEnvironment } from "#/modules/branches/branch-close.server";
 import { createPrEnvironment } from "#/modules/branches/branch-operations.server";
@@ -8,7 +8,7 @@ import { environment, environmentBranch } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
 import { fromRepository } from "./pull-request";
-import { prEnvironmentPlan } from "./tables";
+import { conditionalSave, prEnvironmentPlan } from "./tables";
 
 /** The old PR Environment is still being torn down; its namespace frees up once it's gone, so the delivery retries. */
 export class PrEnvironmentStillClosing extends Data.TaggedError("PrEnvironmentStillClosing")<{ environmentId: string }> {
@@ -37,6 +37,12 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     prTitle: live.title, prAuthor: live.author.login,
     prHeadBranch: live.headBranch, prHeadSha: live.headSha, prTargetBranch: live.targetBranch,
   }).where(ofPullRequest).returning({ environmentId: environmentBranch.environmentId, projectId: environmentBranch.projectId });
+  // A new target Git branch withdraws every approval of the PR Environment.
+  if (existing.length) {
+    yield* drizzle.delete(conditionalSave).where(and(
+      inArray(conditionalSave.prEnvironmentId, existing.map((row) => row.environmentId)), ne(conditionalSave.targetBranch, live.targetBranch),
+    ));
+  }
   const closing = yield* activeTeardownFor(existing.map((row) => row.environmentId));
 
   if (!live.open) {

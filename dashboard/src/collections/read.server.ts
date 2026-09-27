@@ -11,6 +11,7 @@ import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modul
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
 import type { BuildOrderRow } from "#/modules/deployments/build-order";
+import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
@@ -64,6 +65,17 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           .where(scoped(tables.environmentBranch))).map((row) => ({ ...row, base: withoutSealedCiphertext(row.base) }));
       case "pr_environment_plan":
         return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
+      // Sealed picks, the Destination's values and the landing copy stay on the server.
+      case "conditional_save": {
+        const save = tables.conditionalSave;
+        const rows: ConditionalSaveRow[] = yield* database.drizzle.select({
+          id: save.id, organizationId: save.organizationId, projectId: save.projectId, prEnvironmentId: save.prEnvironmentId,
+          repositoryId: save.repositoryId, prNumber: save.prNumber, destinationEnvironmentId: save.destinationEnvironmentId,
+          rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
+          approvedBy: tables.user.name, approvedAt: save.approvedAt,
+        }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save));
+        return rows;
+      }
       case "service":
         return yield* database.drizzle.select().from(tables.service).where(scoped(tables.service));
       case "resource_lineage":

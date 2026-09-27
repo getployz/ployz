@@ -17,7 +17,7 @@ import {
   environment as schemaEnvironment,
   environmentBranch as schemaEnvironmentBranch,
 } from "#/modules/project/tables";
-import { prEnvironmentPlan as schemaPrEnvironmentPlan } from "#/modules/pr-environments/tables";
+import { prEnvironmentPlan as schemaPrEnvironmentPlan, type ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import {
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
 } from "#/modules/runtime/tables";
@@ -52,6 +52,7 @@ export const getEnvironmentsCollection = changeCollection<EnvironmentRow>("envir
 export const getBranchesCollection = changeCollection<BranchRow>("environment_branch", (row) => row.environmentId);
 export const prEnvironmentPlanKey = (row: { projectId: string; repositoryId: number }) => `${row.projectId}:${row.repositoryId}`;
 export const getPrEnvironmentPlansCollection = changeCollection<PrEnvironmentPlanRow>("pr_environment_plan", prEnvironmentPlanKey);
+export const getConditionalSavesCollection = changeCollection<ConditionalSaveRow>("conditional_save", (row) => row.id);
 export const getRawServicesCollection = changeCollection<ServiceRow>("service", (row) => row.id);
 export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
   "environment_canvas_node_position", (row) => `${row.resourceType}:${row.resourceId}`);
@@ -82,6 +83,7 @@ export const orgStoreTables = {
   environment_summary: getEnvironmentSummariesCollection,
   environment_branch: getBranchesCollection,
   pr_environment_plan: getPrEnvironmentPlansCollection,
+  conditional_save: getConditionalSavesCollection,
   service: getRawServicesCollection,
   resource_lineage: getResourceLineagesCollection,
   environment_resource: getRawEnvironmentResourcesCollection,

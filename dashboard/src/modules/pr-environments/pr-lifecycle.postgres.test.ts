@@ -22,6 +22,13 @@ import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postg
 import { setPrEnvironmentPlan } from "./plan-operations.server";
 import type { PullRequestEffectRunner } from "./pr-lifecycle.server";
 import { prDestinations } from "./pr-environment.repository.server";
+import { readCollection } from "#/collections/read.server";
+import { createServiceVariable, updateServiceVariable } from "#/modules/environment-design/variable-operations.server";
+import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
+import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
+import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
+import { standing } from "./conditional-save";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
 const userId = "00000000-0000-4000-8000-000000001102";
@@ -349,5 +356,115 @@ describe("PR Environment lifecycle", () => {
     // Nothing deploys release: no Destinations.
     await pullRequest("edited-again", "edited", 142, { base: { ref: "release" } });
     expect(await destinationsNow()).toEqual([]);
+  });
+
+  describe("approving for a Destination", () => {
+    const organizationSlug = "acme";
+    const environmentOf = async (id: string) => (await harness.db.select().from(schema.environment).where(eq(schema.environment.id, id)))[0];
+    const scope = async (environmentId: string) => {
+      const row = await environmentOf(environmentId);
+      const serviceId = row?.intent.services.find((node) => node.lineageId === apiLineage)?.id ?? "";
+      return { organizationSlug, environmentId, revision: row?.revision ?? "", serviceId };
+    };
+
+    /** The review of what goes to staging, computed as the browser does from Org Store rows. */
+    async function review(prId: string) {
+      const branch = await prEnvironment(142);
+      const [pr, staging] = [await environmentOf(prId), await environmentOf(stagingId)];
+      if (!branch || !pr || !staging) throw new Error("missing rows");
+      return goesTo({
+        base: withoutSealedCiphertext(branch.base), kept: false, branch: pr.intent, parent: staging.intent, parentApplied: null,
+        hostnames: { branch: branchHostnameSuffix("shop", pr.namespace, true), parent: branchHostnameSuffix("shop", staging.namespace, false) },
+      });
+    }
+    const approve = async (prId: string, picks: (keys: string[]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
+      const { rows, review: string } = await review(prId);
+      return harness.runEffect(approveConditionalSave({ userId }, {
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key)),
+      }));
+    };
+    const saves = () => harness.db.select().from(schema.conditionalSave);
+    const stands = async (prId: string) => {
+      const [save] = await saves();
+      const [pr, branch] = [await environmentOf(prId), await prEnvironment(142)];
+      return save !== undefined && standing(save, pr && { id: pr.id, revision: pr.revision, targetBranch: branch?.prTargetBranch ?? null });
+    };
+
+    beforeEach(async () => {
+      await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+        organizationId, environmentId: stagingId, actorId: userId, intent: stagingIntent as never, volumeDeletionAuthorizations: [],
+      });
+      await pullRequest("opened", "opened", 142);
+    });
+
+    it("holds the ticked rows on the Destination, sealed, until the PR Environment's settings change", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
+      const { rows } = await review(prId);
+      const flag = rows.find((row) => variableName(row) === "FLAG")?.key ?? "";
+      const stripe = rows.find((row) => variableName(row) === "STRIPE_KEY")?.key ?? "";
+      expect(rowLineage({ key: stripe })).toBe(apiLineage);
+
+      // A stale review is refused.
+      const stale = await harness.runEffect(approveConditionalSave({ userId }, {
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: "old", picks: [{ key: flag, value: "" }],
+      }).pipe(Effect.flip));
+      expect(stale).toMatchObject({ _tag: "Conflict", message: "Changes moved after this review. Review them again." });
+
+      // The browser's review string is the server's; a secret asks for staging's value, which can come later.
+      await approve(prId, () => [{ key: flag, option: "from", value: "" }, { key: stripe, option: "new", value: "" }]);
+      const [save] = await saves();
+      expect(save).toMatchObject({
+        prEnvironmentId: prId, prNumber: 142, repositoryId, destinationEnvironmentId: stagingId, targetBranch: "main", approvedByUserId: userId,
+        workingRevision: (await environmentOf(prId))?.revision,
+      });
+      expect(save?.rows.map((row) => [row.row.key, row.option, row.missing])).toEqual([[flag, "from", false], [stripe, "new", true]]);
+      expect(Object.keys(save?.approvedAgainst ?? {})).toEqual([flag, stripe]);
+      expect(save?.landing.identities.services.map((row) => row.lineageId)).toEqual([apiLineage]);
+      expect(await stands(prId)).toBe(true);
+
+      // A value given after approval is sealed and stored without withdrawing it; it never reaches the browser.
+      await harness.runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live_staging" }));
+      const [given] = await saves();
+      expect(JSON.stringify(given?.picks)).not.toContain("sk_live_staging");
+      expect(given?.picks.find((pick) => pick.key === stripe)?.choice).toMatchObject({ option: "new", value: { valueFingerprint: expect.any(String) } });
+      expect(given?.rows.find((row) => row.row.key === stripe)?.missing).toBe(false);
+      expect(await stands(prId)).toBe(true);
+      const read = await harness.runEffect(readCollection({ userId }, { table: "conditional_save", userId, organizationSlug }));
+      expect(read.rows).toEqual([expect.objectContaining({ id: given?.id, approvedBy: "Owner" })]);
+      expect(JSON.stringify(read.rows)).not.toMatch(/encryptedValue|landing|picks|approvedAgainst/u);
+
+      // An edit in the Destination and a new commit leave it standing.
+      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), key: "OTHER", description: null, exported: false, value: { type: "plain", value: "x" } }));
+      heads.set("feature-142", "d".repeat(40));
+      await deliver("push", "push-1", { ref: "refs/heads/feature-142", before: "c".repeat(40), after: "d".repeat(40), created: false, deleted: false, forced: false });
+      await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142", sha: "d".repeat(40), repo: { id: repositoryId } } });
+      expect(await stands(prId)).toBe(true);
+
+      // A settings change on the PR Environment withdraws it.
+      const flagId = (await environmentOf(prId))?.intent.services.find((node) => node.lineageId === apiLineage)?.variables.find((variable) => variable.key === "FLAG")?.id ?? "";
+      await harness.runEffect(updateServiceVariable({ userId }, { ...(await scope(prId)), variableId: flagId, value: { type: "plain", value: "off" } }));
+      expect(await stands(prId)).toBe(false);
+    });
+
+    it("is withdrawn by Undo, a new target Git branch, and the PR Environment closing", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      await harness.runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
+
+      await approve(prId, tickAll);
+      await harness.runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
+      expect(await saves()).toEqual([]);
+
+      await approve(prId, tickAll);
+      await pullRequest("edited", "edited", 142, { base: { ref: "dev" } });
+      expect(await saves()).toEqual([]);
+
+      await pullRequest("edited-back", "edited", 142, { base: { ref: "main" } });
+      await approve(prId, tickAll);
+      await harness.db.delete(schema.environment).where(eq(schema.environment.id, prId));
+      expect(await saves()).toEqual([]);
+    });
   });
 });

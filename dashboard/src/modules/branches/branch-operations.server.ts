@@ -169,7 +169,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   });
 
   // 3–4. Identity rows under core's fresh ids, the Working State, then each node's Node Introduction.
-  const written = yield* landChanges({ project, from: parent.id, document, into: emptyEnvironmentIntent(namespace), next, picks: [] });
+  const written = yield* landChanges({ project, sources: yield* loadIdentitySources(parent.id), document, into: emptyEnvironmentIntent(namespace), next, picks: [] });
 
   // 5. The Branch row, with the base core returned.
   if (!base) return yield* Effect.die("Core returned no base for a new Branch.");
@@ -193,12 +193,54 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
 });
 
 /**
- * Lands core's `next` in `document`, whose Working State is `into`: identity rows for the nodes arriving from `from`, the
- * Working State, then each arrival's Node Introduction. A picked `source.credentials` row of a service `into` already has
- * brings its registry credential along; an arriving service brings its own. With `advance`, the Branch's base moves too.
+ * What nodes arriving from an Environment copy from their lineage's node there: display name, Deployment Policy,
+ * registry credential (ciphertext) and canvas position. Read up front, so a copy can land after that Environment is gone.
  */
-export const landChanges = Effect.fn("Branches.landChanges")(function* ({ project, from, document, into, next, picks, advance }: {
-  project: ProjectRow; from: string; document: EnvironmentRow;
+export type IdentitySources = {
+  services: Array<{
+    lineageId: string; name: string; policy: ServiceRow["policy"]; hasRegistryCredential: boolean;
+    credential: { username: CredentialRow["encryptedRegistryUsername"]; secret: CredentialRow["encryptedRegistrySecret"] } | null;
+    position: Position | null;
+  }>;
+  volumes: Array<{ lineageId: string; position: Position | null }>;
+};
+type ServiceRow = typeof service.$inferSelect;
+type CredentialRow = typeof serviceRegistryCredential.$inferSelect;
+type Position = { resourceType: string; x: number; y: number };
+
+/** `environmentId`'s identity sources, for the lineages given or all of them. */
+export const loadIdentitySources = Effect.fn("Branches.loadIdentitySources")(function* (environmentId: string, lineages?: ReadonlySet<string>) {
+  const { drizzle } = yield* Database;
+  const wanted = (lineageId: string) => !lineages || lineages.has(lineageId);
+  const services = yield* drizzle.select({ service, credential: serviceRegistryCredential }).from(service)
+    .leftJoin(serviceRegistryCredential, eq(serviceRegistryCredential.serviceId, service.id))
+    .where(eq(service.environmentId, environmentId));
+  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, environmentId));
+  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, environmentId));
+  const positionOf = (resourceId: string) => {
+    const row = positions.find((candidate) => candidate.resourceId === resourceId);
+    return row ? { resourceType: row.resourceType, x: row.x, y: row.y } : null;
+  };
+  return {
+    services: services.filter((row) => wanted(row.service.lineageId)).map((row) => ({
+      lineageId: row.service.lineageId, name: row.service.name, policy: row.service.policy, hasRegistryCredential: row.service.hasRegistryCredential,
+      credential: row.credential
+        ? { username: row.credential.encryptedRegistryUsername, secret: row.credential.encryptedRegistrySecret } : null,
+      position: positionOf(row.service.id),
+    })),
+    volumes: resources.filter((row) => row.implementationType === "volume" && wanted(row.lineageId))
+      .map((row) => ({ lineageId: row.lineageId, position: positionOf(row.id) })),
+  } satisfies IdentitySources;
+});
+
+/**
+ * Lands core's `next` in `document`, whose Working State is `into`: identity rows for the nodes arriving (from
+ * `sources`), the Working State, then each arrival's Node Introduction. A picked `source.credentials` row of a service
+ * `into` already has brings its registry credential along; an arriving service brings its own. With `advance`, the
+ * Branch's base moves too.
+ */
+export const landChanges = Effect.fn("Branches.landChanges")(function* ({ project, sources, document, into, next, picks, advance }: {
+  project: ProjectRow; sources: IdentitySources; document: EnvironmentRow;
   into: SavedEnvironmentIntent; next: SavedEnvironmentIntent;
   picks: ReadonlyArray<{ key: string }>;
   advance?: { branchEnvironmentId: string; base: NonNullable<BranchChanges["base"]> };
@@ -206,11 +248,11 @@ export const landChanges = Effect.fn("Branches.landChanges")(function* ({ projec
   const { drizzle } = yield* Database;
   const services = next.services.filter((node) => !into.services.some((own) => own.id === node.id));
   const volumes = next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId));
-  yield* copyIdentities({ project, from, to: document.id, services, volumes });
+  yield* copyIdentities({ project, sources, to: document.id, services, volumes });
   const credentialLineages = picks.flatMap((pick) => pick.key.endsWith(":source.credentials") ? [rowLineage(pick)] : []);
   for (const lineageId of credentialLineages) {
     const receiver = into.services.find((node) => node.lineageId === lineageId);
-    if (receiver) yield* copyCredential({ organizationId: project.organizationId, from, lineageId, to: receiver.id });
+    if (receiver) yield* copyCredential({ organizationId: project.organizationId, source: sourceService(sources, lineageId), to: receiver.id });
   }
   const written = yield* writeEnvironmentDocument(document, next);
   yield* captureIntroductions(document.id, services, volumes);
@@ -221,59 +263,52 @@ export const landChanges = Effect.fn("Branches.landChanges")(function* ({ projec
   return written;
 });
 
-/** The registry credential of `lineageId`'s service in `from`, as the credential of service `to`. */
-const copyCredential = Effect.fn("Branches.copyCredential")(function* ({ organizationId, from, lineageId, to }: {
-  organizationId: string; from: string; lineageId: string; to: string;
+const sourceService = (sources: IdentitySources, lineageId: string) => sources.services.find((row) => row.lineageId === lineageId);
+
+/** The registry credential of `source`, as the credential of service `to`. */
+const copyCredential = Effect.fn("Branches.copyCredential")(function* ({ organizationId, source, to }: {
+  organizationId: string; source: IdentitySources["services"][number] | undefined; to: string;
 }) {
   const { drizzle } = yield* Database;
-  const [source] = yield* drizzle.select({ username: serviceRegistryCredential.encryptedRegistryUsername, secret: serviceRegistryCredential.encryptedRegistrySecret })
-    .from(serviceRegistryCredential).innerJoin(service, eq(service.id, serviceRegistryCredential.serviceId))
-    .where(and(eq(service.environmentId, from), eq(service.lineageId, lineageId)));
-  if (!source) return yield* Effect.die(`The registry credential for lineage ${lineageId} is missing.`);
-  const credential = { organizationId, serviceId: to, revision: randomUUID(), encryptedRegistryUsername: source.username, encryptedRegistrySecret: source.secret };
+  if (!source?.credential) return yield* Effect.die(`The registry credential for lineage ${source?.lineageId} is missing.`);
+  const credential = {
+    organizationId, serviceId: to, revision: randomUUID(),
+    encryptedRegistryUsername: source.credential.username, encryptedRegistrySecret: source.credential.secret,
+  };
   yield* drizzle.insert(serviceRegistryCredential).values(credential).onConflictDoUpdate({ target: serviceRegistryCredential.serviceId, set: credential });
   yield* drizzle.update(service).set({ hasRegistryCredential: true }).where(eq(service.id, to));
 });
 
-/**
- * Identity rows for nodes arriving in `to` under core's fresh ids, each from its lineage's node in `from`: lineage
- * reused; display name, Deployment Policy, registry credential and canvas position copied.
- */
-const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, from, to, services: arriving, volumes: arrivingVolumes }: {
-  project: ProjectRow; from: string; to: string;
+/** Identity rows for nodes arriving in `to` under core's fresh ids, each from its lineage's source: lineage reused. */
+const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, sources, to, services: arriving, volumes: arrivingVolumes }: {
+  project: ProjectRow; sources: IdentitySources; to: string;
   services: ReadonlyArray<{ id: string; lineageId: string }>;
   volumes: ReadonlyArray<{ resourceId: string; resourceLineageId: string }>;
 }) {
   const { drizzle } = yield* Database;
-  const services = yield* drizzle.select().from(service).where(eq(service.environmentId, from));
-  const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, from));
-  const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, from));
-  const copies: Array<{ from: string; to: string }> = [];
+  const positions: Array<Position & { resourceId: string }> = [];
   for (const node of arriving) {
-    const source = services.find((row) => row.lineageId === node.lineageId);
+    const source = sourceService(sources, node.lineageId);
     if (!source) return yield* Effect.die(`Source service for lineage ${node.lineageId} is missing.`);
     yield* drizzle.insert(service).values({
       id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId: to,
       lineageId: node.lineageId, name: source.name, policy: source.policy, hasRegistryCredential: source.hasRegistryCredential,
     });
-    if (source.hasRegistryCredential) {
-      yield* copyCredential({ organizationId: project.organizationId, from, lineageId: node.lineageId, to: node.id });
-    }
-    copies.push({ from: source.id, to: node.id });
+    if (source.hasRegistryCredential) yield* copyCredential({ organizationId: project.organizationId, source, to: node.id });
+    if (source.position) positions.push({ ...source.position, resourceId: node.id });
   }
   for (const node of arrivingVolumes) {
-    const source = resources.find((row) => row.lineageId === node.resourceLineageId);
+    const source = sources.volumes.find((row) => row.lineageId === node.resourceLineageId);
     if (!source) return yield* Effect.die(`Source volume for lineage ${node.resourceLineageId} is missing.`);
     yield* drizzle.insert(environmentResource).values({
       id: node.resourceId, organizationId: project.organizationId, projectId: project.id, environmentId: to,
       lineageId: node.resourceLineageId, implementationType: "volume",
     });
-    copies.push({ from: source.id, to: node.resourceId });
+    if (source.position) positions.push({ ...source.position, resourceId: node.resourceId });
   }
-  const copiedPositions = copies.flatMap((copy) => positions
-    .filter((row) => row.resourceId === copy.from)
-    .map((row) => ({ organizationId: project.organizationId, environmentId: to, resourceType: row.resourceType, resourceId: copy.to, x: row.x, y: row.y })));
-  if (copiedPositions.length) yield* drizzle.insert(environmentCanvasNodePosition).values(copiedPositions);
+  if (positions.length) {
+    yield* drizzle.insert(environmentCanvasNodePosition).values(positions.map((row) => ({ organizationId: project.organizationId, environmentId: to, ...row })));
+  }
 });
 
 /** Each arrived node's Node Introduction; call after writing the Working State. */
