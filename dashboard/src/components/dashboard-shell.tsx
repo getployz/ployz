@@ -1,21 +1,17 @@
 import { Suspense, type ReactNode } from "react";
-import { useMutation, useQueryErrorResetBoundary } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { authClient } from "#/auth/auth-client";
-import { useAuthSession } from "#/auth/auth.hooks";
-import { CatchBoundary, useMatch, type ErrorComponentProps } from "@tanstack/react-router";
+import { useQueryErrorResetBoundary } from "@tanstack/react-query";
+import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { AppSidebar } from "./app-sidebar";
-import type { DashboardScope } from "./dashboard-navigation-model";
-import { DashboardPageHeader } from "./dashboard-header";
-import { MobileDashboardNavigation } from "./dashboard-navigation";
+import { getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
+import { HomeLink, PhoneTabBar, Rail } from "./dashboard-rail";
+import { EnvironmentCrumbs } from "./environment-breadcrumbs";
 import { NavigationProgress } from "./navigation-progress";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
 import { RouteContentSkeleton } from "./route-content-skeleton";
 import { RouteErrorAlert } from "./route-error-alert";
-import { SidebarProvider, useSidebar } from "./ui/sidebar";
-import { cn } from "#/lib/utils";
+import { useDashboardNavigation, useDashboardSection } from "./use-dashboard-section";
+import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
 export function DashboardShell({
   scope,
@@ -24,73 +20,22 @@ export function DashboardShell({
   scope: DashboardScope;
   children: ReactNode;
 }) {
-  return <DashboardSidebarProvider><DashboardLayout scope={scope}>{children}</DashboardLayout></DashboardSidebarProvider>;
-}
-
-export function DashboardSidebarProvider({ children }: { children: ReactNode }) {
-  const { data: auth, refetch } = useAuthSession();
-  const preference = useMutation({
-    scope: { id: `sidebar-preference:${auth?.session.id}` },
-    mutationFn: async (sidebarOpen: boolean) => {
-      // Better Auth's client does not infer additional update-session fields yet.
-      const result = await authClient.updateSession({ fetchOptions: { method: "POST", body: { sidebarOpen } } });
-      if (result.error) throw new Error("Couldn't save sidebar preference. Try again.");
-      await refetch();
-      if (authClient.$store.atoms["session"]?.get().error) {
-        throw new Error("Sidebar preference saved, but session refresh failed. Reload to restore it.");
-      }
-    },
-    onError: (error) => toast.error(error.message),
-  });
-  const open = preference.isPending
-    ? preference.variables
-    : auth?.session.sidebarOpen ?? true;
-
-  return (
-    <SidebarProvider open={open} onOpenChange={(value) => preference.mutate(value)} className="h-dvh min-h-0 overflow-hidden">
-      {children}
-    </SidebarProvider>
-  );
-}
-
-function DashboardLayout({
-  scope,
-  children,
-}: {
-  scope: DashboardScope;
-  children: ReactNode;
-}) {
-  const { open, isMobile } = useSidebar();
   const collectionScope = useCollectionScope();
-  const canvas = useMatch({
-    from: "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
-    shouldThrow: false,
-  });
+  const section = useDashboardSection();
+  const { places } = useDashboardNavigation(scope);
   return (
-    <>
-      {!isMobile ? (
-        <aside
-          className={cn(
-            "group hidden shrink-0 border-r bg-sidebar motion-safe:transition-[width] motion-safe:duration-150 min-wf-nav:block",
-            open ? "w-64" : "w-12",
-          )}
-          data-state={open ? "expanded" : "collapsed"}
-          data-collapsible={open ? "" : "icon"}
-          aria-label="Dashboard navigation"
-        >
-          <AppSidebar scope={scope} />
-        </aside>
-      ) : null}
+    <div className="flex h-dvh min-h-0 overflow-hidden">
+      <Rail organizationSlug={scope.organizationSlug} places={places}
+        account={<DashboardAccountMenu scope={scope} side="right" />} />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-        <MobileDashboardNavigation
-          key={
-            scope.kind === "all"
-              ? scope.organizationSlug
-              : `${scope.organizationSlug}/${scope.projectSlug}/${scope.environmentSlug}`
-          }
-          scope={scope}
-        />
-        {!canvas ? <DashboardPageHeader scope={scope} /> : null}
+        {/* The one top bar: on phones it also carries the logo and the avatar, which live in the rail on desktop. */}
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b bg-background px-3 min-wf-nav:px-4">
+          <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
+          {scope.kind === "environment"
+            ? <EnvironmentCrumbs scope={scope} />
+            : <h1 className="truncate font-semibold">{getDashboardSectionLabel(section)}</h1>}
+          <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
+        </header>
         <NavigationProgress />
         <OrganizationCollectionRefreshNotice
           scope={collectionScope}
@@ -107,8 +52,9 @@ function DashboardLayout({
             </Suspense>
           </CatchBoundary>
         </div>
+        <PhoneTabBar places={places} />
       </main>
-    </>
+    </div>
   );
 }
 

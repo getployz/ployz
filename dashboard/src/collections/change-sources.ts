@@ -14,7 +14,6 @@ export const changeNameSources = {
   project: ["project"],
   environment: ["environment"],
   environment_summary: ["environment"],
-  project_preference: ["user_project_preference"],
   service: ["service"],
   resource_lineage: ["resource_lineage"],
   environment_resource: ["environment_resource"],

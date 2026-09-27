@@ -1,24 +1,69 @@
 import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
-  ActivityIcon,
   CreditCardIcon,
+  HistoryIcon,
   LayoutGridIcon,
   ServerCogIcon,
   ServerIcon,
-  Settings2Icon,
+  SlidersHorizontalIcon,
+  TerminalIcon,
+  WorkflowIcon,
 } from "lucide-react";
 
-const sectionOrder = [
-  "overview",
-  "logs",
-  "environment-settings",
-  "servers",
-  "server-settings",
-  "billing",
-] as const;
+type RegisteredPath =
+  RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["to"];
+type RegisteredRouteId =
+  RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["id"];
 
-export type DashboardSection = (typeof sectionOrder)[number];
+interface Destination {
+  label: string;
+  icon: LucideIcon;
+  path: RegisteredPath;
+}
+
+/** An Environment's four places, in rail order. */
+const environmentPlaceOrder = ["canvas", "deployments", "logs", "settings"] as const;
+type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
+const environmentPlaces = {
+  canvas: {
+    label: "Canvas",
+    icon: WorkflowIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
+  },
+  deployments: {
+    label: "Deployments",
+    icon: HistoryIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
+  },
+  logs: {
+    label: "Logs",
+    icon: TerminalIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
+  },
+  settings: {
+    label: "Settings",
+    icon: SlidersHorizontalIcon,
+    path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
+  },
+} satisfies Record<EnvironmentPlace, Destination>;
+
+/** The organization's pages, in avatar-menu order. */
+const organizationOrder = ["projects", "servers", "server-settings", "billing"] as const;
+type OrganizationDestination = (typeof organizationOrder)[number];
+const organizationDestinations = {
+  projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
+  servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
+  "server-settings": { label: "Server Settings", icon: ServerCogIcon, path: "/cloud/$organizationSlug/~/settings" },
+  // Only Ployz-hosted Cloud has billing.
+  billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
+} satisfies Record<OrganizationDestination, Destination>;
+
+export type DashboardSection = EnvironmentPlace | OrganizationDestination;
+
+function isEnvironmentPlace(section: DashboardSection): section is EnvironmentPlace {
+  return environmentPlaceOrder.some((place) => place === section);
+}
 
 export type DashboardScope =
   | {
@@ -32,86 +77,34 @@ export type DashboardScope =
       environmentSlug: string;
     };
 
-type RegisteredPath =
-  RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["to"];
-type RegisteredRouteId =
-  RegisteredRouter["routeTree"]["types"]["fileRouteTypes"]["id"];
-
 export type DashboardDestination = ReturnType<typeof getDashboardDestination>;
 
 export type DashboardNavItem = DashboardDestination & {
   section: DashboardSection;
   label: string;
   icon: LucideIcon;
+  current: boolean;
 };
 
-interface DashboardSectionDefinition {
-  label: string;
-  icon: LucideIcon;
-  allPath?: RegisteredPath;
-  environmentPath?: RegisteredPath;
-  /** Only Ployz-hosted Cloud has billing. */
-  requiresBilling?: true;
-}
-
-const sectionDefinitions = {
-  overview: {
-    label: "Projects",
-    icon: LayoutGridIcon,
-    allPath: "/cloud/$organizationSlug/~",
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
-  },
-  logs: {
-    label: "Logs",
-    icon: ActivityIcon,
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs",
-  },
-  "environment-settings": {
-    label: "Settings",
-    icon: Settings2Icon,
-    environmentPath:
-      "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
-  },
-  servers: {
-    label: "Servers",
-    icon: ServerIcon,
-    allPath: "/cloud/$organizationSlug/~/servers",
-  },
-  "server-settings": {
-    label: "Server Settings",
-    icon: ServerCogIcon,
-    allPath: "/cloud/$organizationSlug/~/settings",
-  },
-  billing: {
-    label: "Billing",
-    icon: CreditCardIcon,
-    allPath: "/cloud/$organizationSlug/~/billing",
-    requiresBilling: true,
-  },
-} satisfies Record<DashboardSection, DashboardSectionDefinition>;
-
+/** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Canvas or Projects). */
 export function getDashboardDestination(
   scope: DashboardScope,
   section: DashboardSection,
 ) {
-  const definition = sectionDefinitions[section];
-
   if (scope.kind === "all") {
     return linkOptions({
-      to: "allPath" in definition
-        ? definition.allPath
-        : sectionDefinitions.overview.allPath,
+      to: isEnvironmentPlace(section)
+        ? organizationDestinations.projects.path
+        : organizationDestinations[section].path,
       params: { organizationSlug: scope.organizationSlug },
       search: {},
     });
   }
 
   return linkOptions({
-    to: "environmentPath" in definition
-      ? definition.environmentPath
-      : sectionDefinitions.overview.environmentPath,
+    to: isEnvironmentPlace(section)
+      ? environmentPlaces[section].path
+      : environmentPlaces.canvas.path,
     params: {
       organizationSlug: scope.organizationSlug,
       projectSlug: scope.projectSlug,
@@ -121,56 +114,52 @@ export function getDashboardDestination(
   });
 }
 
-export function getDashboardSectionLabel(
+export function getDashboardSectionLabel(section: DashboardSection) {
+  return isEnvironmentPlace(section)
+    ? environmentPlaces[section].label
+    : organizationDestinations[section].label;
+}
+
+/**
+ * The only enumeration of destinations. `places` are the Environment's four places for the rail and the
+ * phone tab bar (none on organization pages); `organization` fills the avatar menu.
+ */
+export function createDashboardNavigation(
   scope: DashboardScope,
-  section: DashboardSection,
+  { section, billingEnabled = false }: { section: DashboardSection; billingEnabled?: boolean },
 ) {
-  return scope.kind === "environment" && section === "overview"
-    ? "Architecture"
-    : sectionDefinitions[section].label;
-}
-
-export function createDashboardNavItems(
-  scope: DashboardScope,
-  { billingEnabled = false }: { billingEnabled?: boolean } = {},
-): DashboardNavItem[] {
-  return sectionOrder.flatMap((section) => {
-    const definition = sectionDefinitions[section];
-
-    const available = (scope.kind === "all"
-      ? "allPath" in definition
-      : "environmentPath" in definition) &&
-      (billingEnabled || !("requiresBilling" in definition));
-
-    return !available
-      ? []
-      : [
-          {
-            section,
-            label: getDashboardSectionLabel(scope, section),
-            icon: definition.icon,
-            ...getDashboardDestination(scope, section),
-          },
-        ];
+  const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
+    section: key,
+    label,
+    icon,
+    current: key === section,
+    ...getDashboardDestination(target, key),
   });
+  const organizationScope = { kind: "all" as const, organizationSlug: scope.organizationSlug };
+  return {
+    places: scope.kind === "all"
+      ? []
+      : environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
+    organization: organizationOrder
+      .filter((key) => billingEnabled || key !== "billing")
+      .map((key) => item(organizationScope, key, organizationDestinations[key])),
+  };
 }
 
-interface SectionByRouteId {
-  readonly [routeId: string]: DashboardSection | undefined;
-}
+const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
+  ["/_protected/cloud/$organizationSlug/_org/~/", "projects"],
+  ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
+  ["/_protected/cloud/$organizationSlug/_org/~/settings", "server-settings"],
+  ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],
+]);
 
-const sectionByRouteId: SectionByRouteId = {
-  "/_protected/cloud/$organizationSlug/_org/~/billing": "billing",
-  "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
-  "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":
-    "logs",
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings":
-    "environment-settings",
-};
-
+/** The current place from the deepest route: the canvas and its panels are Canvas. */
 export function getDashboardSectionFromRouteId(
   routeId?: RegisteredRouteId,
 ): DashboardSection {
-  return routeId ? (sectionByRouteId[routeId] ?? "overview") : "overview";
+  return (routeId && sectionByRouteId.get(routeId)) || "canvas";
 }

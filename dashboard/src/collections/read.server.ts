@@ -54,10 +54,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,
           name: tables.environment.name, namespace: tables.environment.namespace, createdAt: tables.environment.createdAt,
         }).from(tables.environment).where(scoped(tables.environment));
-      case "project_preference":
-        return yield* database.drizzle.select({ id: tables.userProjectPreference.projectId, environmentId: tables.userProjectPreference.environmentId })
-          .from(tables.userProjectPreference)
-          .where(and(scoped(tables.userProjectPreference), eq(tables.userProjectPreference.userId, actor.userId)));
       case "project":
         return yield* database.drizzle.select().from(tables.project).where(scoped(tables.project));
       case "environment":

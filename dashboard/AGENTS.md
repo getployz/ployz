@@ -19,7 +19,6 @@ When framework guidance is needed:
 - **For dashboard code, build, or dependency changes, run `pnpm pr:check` as the final local gate.** Reuse passing results until relevant files change; documentation-only or PR metadata updates do not require a rerun. Keep the script aligned with the applicable PR CI checks when those change.
 - **Inngest workflows that own durable rows must not leave ambiguous active state.** If an Inngest function creates or manages a row with statuses like `pending`/`running`, persist the Inngest `runId` on that row and handle `inngest/function.cancelled` so manual cancellation marks the row `cancelled` or another terminal status. Runtime cancellation may not undo remote side effects, but the cloud row must not remain active forever.
 - **When changing shadcn components or their composition, use the `shadcn` skill first and follow its rules.** Prefer stock component composition, variants, and sizes before adding custom classes. Especially don't use custom text sizes, custom padding overrides like pb-2, and any colours like bg-primary/20.
-- **`SidebarProvider` inside `WireframeSidebar` needs layout overrides.** The shadcn `SidebarProvider` renders a wrapper div with `flex min-h-svh w-full` which breaks Wireframe's fixed/absolute positioning system. Always override with `className="block h-full min-h-0"` (or similar) when nesting `SidebarProvider` inside a `WireframeSidebar` or `Wireframe`.
 
 
 

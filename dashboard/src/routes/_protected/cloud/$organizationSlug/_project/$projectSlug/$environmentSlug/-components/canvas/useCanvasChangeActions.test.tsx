@@ -128,15 +128,16 @@ it("discards through the document save queue against the current revision", asyn
   }
 });
 
-it.each([true, false])("opens the queued attempt after a manual Deploy only while the preference is on (on=%s)", async (on) => {
+it.each([true, false])("opens the queued attempt's Deployment Page after a manual Deploy only while the preference is on (on=%s)", async (on) => {
   openStarted.mockReturnValue(on);
   const { result, unmount, queryClient, router } = renderActions([]);
   try {
     await act(() => result.current.requestDeploy());
     expect(mocks.submit).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(router.state.location.search).toEqual(on ? { deployment: "attempt-1" } : {}));
+    const page = on ? expect.stringMatching(/\/deployments\/attempt-1$/) : "/";
+    await vi.waitFor(() => expect(router.state.location.pathname).toEqual(page));
     await act(() => result.current.requestSave());
-    expect(router.state.location.search).toEqual(on ? { deployment: "attempt-1" } : {});
+    expect(router.state.location.pathname).toEqual(page);
   } finally {
     unmount();
     queryClient.clear();

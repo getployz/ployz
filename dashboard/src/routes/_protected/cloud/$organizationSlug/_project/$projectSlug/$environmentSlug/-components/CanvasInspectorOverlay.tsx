@@ -4,20 +4,22 @@ import {
 } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
-import { InspectorPresentation } from "./CanvasInspectorHeader";
+import { InspectorPresentation, inspectorExit } from "./CanvasInspectorHeader";
 
 export function CanvasInspectorOverlay({
   children,
   canvas,
-  header,
   selection,
 }: {
   children: ReactNode;
   canvas: ReactNode;
-  header: ReactNode;
-  selection: { key: string; nodeId: string } | null;
+  /**
+   * `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear.
+   * `returnTo`: the service whose panel opened this one; closing goes back to its Deployments tab.
+   */
+  selection: { key: string; nodeId: string; lit?: boolean; returnTo?: string | null } | null;
 }) {
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -51,31 +53,27 @@ export function CanvasInspectorOverlay({
     }
   }, [selectionKey, selection?.nodeId]);
 
+  const returnTo = selection?.returnTo ?? null;
   function closeInspector() {
-    void navigate({
-      to: ENVIRONMENT_INDEX_ROUTE_TO,
-      params,
-      search: (previous) => ({ ...previous, tab: undefined }),
-      viewTransition: { types: ["canvas-inspector-close"] },
-    });
+    void navigate(inspectorExit(params, returnTo));
   }
 
   return (
     <div
       ref={workspaceRef}
       role="region"
-      aria-label="Architecture"
+      aria-label="Canvas"
       tabIndex={-1}
       className="environment-canvas-scene"
     >
-      <div className="canvas-workspace-header">{header}</div>
       {canvas}
       {selection ? <>
         <button
           className="canvas-inspector-shade"
+          data-clear={selection.lit || undefined}
           type="button"
           tabIndex={-1}
-          aria-label="Close inspector and return to Architecture"
+          aria-label="Close inspector and return to Canvas"
           onClick={closeInspector}
         />
         <section
@@ -95,6 +93,7 @@ export function CanvasInspectorOverlay({
         >
           <InspectorPresentation value={{
             takeover,
+            returnTo,
             toggleFullscreen: () => setPreference({ key: selectionKey, full: !preference.full }),
           }}>
             <Suspense fallback={<CanvasInspectorPending />}>{children}</Suspense>

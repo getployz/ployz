@@ -9,8 +9,6 @@ import { requireWorkspace } from "#/collections/route-data";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections } from "#/modules/runtime/runtime.collection";
-import { useRuntimeStatus } from "#/providers/runtime-provider";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
@@ -22,6 +20,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
 import { ProjectCard } from "../-components/project-card";
+import { useRuntimeServices } from "../../-components/services-online";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
@@ -101,8 +100,8 @@ function RouteComponent() {
 
   return (
     <DashboardPage>
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl font-semibold">Projects</h1>
+      {/* The top bar names the page. */}
+      <div className="flex justify-end">
         <CreateProjectButton organizationSlug={organizationSlug} />
       </div>
       <div className="w-full sm:max-w-xs">
@@ -122,9 +121,7 @@ function RouteComponent() {
 function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
   const scope = useCollectionScope();
   const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
-  const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
-  const { lensStatus, incompleteIds } = useRuntimeStatus();
-  const runtimeStatus = incompleteIds.machines.length || incompleteIds.containers.length ? "unavailable" : lensStatus;
+  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
   const { projects } = useWorkspace(organizationSlug);
   const normalizedQuery = query.trim().toLowerCase();
   const filteredProjects = normalizedQuery

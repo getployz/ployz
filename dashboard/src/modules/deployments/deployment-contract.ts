@@ -89,11 +89,6 @@ export const deploymentAttemptQuerySchema = Schema.Struct({
   deploymentId: Uuid,
 });
 
-export const deploymentServiceVariablesQuerySchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  deploymentId: Uuid,
-  serviceId: Uuid,
-});
 
 /**
  * The attempt's target node list as plain facts, diffed against Applied State: provisional while the attempt is queued, frozen
@@ -113,6 +108,17 @@ export const targetNodeListSchema = Schema.Struct({
     source: Schema.NullOr(Schema.Struct({ kind: Schema.Literals(["git", "image"]), label: Schema.String })),
     /** The volume node ids a service mounts. */
     mounts: Schema.Array(Schema.String),
+    /**
+     * An updated node's setting changes, presented as the staged-changes review shows them (sealed values read "Secret
+     * value"). Absent when there is nothing to compare: a new or removed node, or an attempt recorded before settings were.
+     */
+    settings: Schema.optional(Schema.Array(Schema.Struct({
+      path: Schema.String,
+      kind: Schema.Literals(["add", "update", "remove"]),
+      label: Schema.String,
+      currentValue: Schema.String,
+      newValue: Schema.String,
+    }))),
   })),
 });
 export type TargetNodeList = typeof targetNodeListSchema.Type;
@@ -205,7 +211,6 @@ export type DeploymentOperationEvidencePageQueryInput =
 export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
 export type EnvironmentDeploymentsQueryInput = typeof environmentDeploymentsQuerySchema.Type;
 export type DeploymentAttemptQueryInput = typeof deploymentAttemptQuerySchema.Type;
-export type DeploymentServiceVariablesQueryInput = typeof deploymentServiceVariablesQuerySchema.Type;
 export type NodeDeploymentsQueryInput = typeof nodeDeploymentsQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,

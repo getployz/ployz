@@ -10,14 +10,14 @@ import {
   createEmptyProject,
   createEnvironment,
   getOrganizationState,
-  selectEnvironment,
+  setProjectDefaultEnvironment,
   syncOrganizationSlug,
 } from "./workspace-operations.server";
 import {
   CreateEnvironment,
-  EnvironmentBySlug,
   OrganizationSlug,
   ProjectList,
+  SetDefaultEnvironment,
   SyncOrganizationSlug,
 } from "./workspace-schemas";
 
@@ -55,9 +55,9 @@ export const createEnvironmentServerFn = createServerFn({ method: "POST" })
     runActor(context, createEnvironment(context.actor, data)),
   );
 
-export const selectEnvironmentServerFn = createServerFn({ method: "POST" })
+export const setDefaultEnvironmentServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
-  .validator(strictValidator(EnvironmentBySlug))
+  .validator(strictValidator(SetDefaultEnvironment))
   .handler(({ context, data }) =>
-    runActor(context, selectEnvironment(context.actor, data)),
+    runActor(context, setProjectDefaultEnvironment(context.actor, data)),
   );

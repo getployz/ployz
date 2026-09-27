@@ -1,13 +1,6 @@
-import {
-  BarChart3Icon,
-  BookOpenIcon,
-  ChevronsUpDownIcon,
-  CheckIcon,
-  LifeBuoyIcon,
-  LogOutIcon,
-  SunMoonIcon,
-  UserIcon,
-} from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { Building2Icon, LogOutIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   getSignOutErrorMessage,
@@ -21,14 +14,21 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "#/components/ui/dropdown-menu";
 import {
-  SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
-} from "#/components/ui/sidebar";
+  getDashboardDestination,
+  type DashboardScope,
+} from "#/components/dashboard-navigation-model";
+import { useDashboardNavigation, useDashboardSection } from "#/components/use-dashboard-section";
+import { organizationStateQueryOptions } from "#/modules/environment-design/workspace.queries";
 import { toast } from "sonner";
 import { Result } from "effect";
 
@@ -41,16 +41,27 @@ function getInitials(name: string) {
     .join("");
 }
 
+const themes = [
+  { value: "system", label: "System" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+] as const;
+
+/** The avatar menu: organization pages, switching organization, Theme and Log out. */
 export default function DashboardAccountMenu({
-  variant = "default",
-  collapsed = false,
+  scope,
+  side = "bottom",
 }: {
-  variant?: "default" | "sidebar";
-  collapsed?: boolean;
+  scope: DashboardScope;
+  side?: "bottom" | "right";
 }) {
   const auth = useAuth();
   const signOut = useSignOut();
+  const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
+  const { organization } = useDashboardNavigation(scope);
+  const section = useDashboardSection();
+  const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
 
   async function handleSignOut() {
     const result = await signOut();
@@ -69,75 +80,75 @@ export default function DashboardAccountMenu({
   const userInitials = getInitials(userName);
   const userImage = auth.user.image ?? undefined;
 
-  const menuContent = (
-    <DropdownMenuContent align="end" className="w-auto min-w-56">
-      <div className="flex items-center gap-3 p-2">
-        <Avatar size="lg">
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        aria-label="Open account menu"
+        title={userName}
+        render={<Button variant="ghost" size="icon-lg" />}
+      >
+        <Avatar>
           <AvatarImage src={userImage} alt={userName} />
           <AvatarFallback>{userInitials}</AvatarFallback>
         </Avatar>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-medium">{userName}</p>
-          <p className="truncate text-xs text-muted-foreground">{userEmail}</p>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent side={side} align="end" className="w-auto min-w-56">
+        <div className="flex items-center gap-3 p-2">
+          <Avatar size="lg">
+            <AvatarImage src={userImage} alt={userName} />
+            <AvatarFallback>{userInitials}</AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{userName}</p>
+            <p className="truncate text-xs text-muted-foreground">{userEmail}</p>
+          </div>
         </div>
-      </div>
 
-      <DropdownMenuSeparator />
+        <DropdownMenuSeparator />
 
-      <DropdownMenuGroup>
-        <DropdownMenuItem disabled>
-          <UserIcon />
-          Account settings
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <BarChart3Icon />
-          Project usage
-        </DropdownMenuItem>
-      </DropdownMenuGroup>
+        <DropdownMenuGroup>
+          {organization.map((item) => (
+            <DropdownMenuItem key={item.section}
+              render={<Link to={item.to} params={item.params} search={item.search}
+                activeOptions={{ exact: true }} aria-current={item.current ? "page" : undefined} />}>
+              <item.icon />
+              {item.label}
+            </DropdownMenuItem>
+          ))}
+          {organizations.length > 1 ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <Building2Icon />
+                Switch organization
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
+                  void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
+                }}>
+                  {organizations.map((candidate) => (
+                    <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                      {candidate.name}
+                    </DropdownMenuRadioItem>
+                  ))}
+                </DropdownMenuRadioGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : null}
+        </DropdownMenuGroup>
 
-      <DropdownMenuSeparator />
+        <DropdownMenuSeparator />
 
-      <DropdownMenuGroup>
-        <DropdownMenuItem disabled>
-          <BookOpenIcon />
-          Documentation
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled>
-          <LifeBuoyIcon />
-          Support
-        </DropdownMenuItem>
-      </DropdownMenuGroup>
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Theme</DropdownMenuLabel>
+          <DropdownMenuRadioGroup value={userTheme} onValueChange={setTheme}>
+            {themes.map((theme) => (
+              <DropdownMenuRadioItem key={theme.value} value={theme.value}>{theme.label}</DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuGroup>
 
-      <DropdownMenuSeparator />
+        <DropdownMenuSeparator />
 
-      <DropdownMenuGroup>
-        <DropdownMenuItem
-          onClick={() => {
-            setTheme("light");
-          }}
-        >
-          <SunMoonIcon />
-          Light
-          {userTheme === "light" ? <CheckIcon className="ml-auto" /> : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            setTheme("dark");
-          }}
-        >
-          <SunMoonIcon />
-          Dark
-          {userTheme === "dark" ? <CheckIcon className="ml-auto" /> : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            setTheme("system");
-          }}
-        >
-          <SunMoonIcon />
-          Auto
-          {userTheme === "system" ? <CheckIcon className="ml-auto" /> : null}
-        </DropdownMenuItem>
         <DropdownMenuItem
           variant="destructive"
           onClick={() => void handleSignOut()}
@@ -145,60 +156,7 @@ export default function DashboardAccountMenu({
           <LogOutIcon />
           Log out
         </DropdownMenuItem>
-      </DropdownMenuGroup>
-    </DropdownMenuContent>
-  );
-
-  if (variant === "sidebar") {
-    return (
-      <SidebarMenu>
-        <SidebarMenuItem>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              openOnHover={collapsed}
-              render={
-                <SidebarMenuButton
-                  size={collapsed ? "default" : "lg"}
-                  aria-label="Open account menu"
-                  className={collapsed ? "justify-center" : undefined}
-                />
-              }
-            >
-              <Avatar size={collapsed ? "sm" : undefined}>
-                <AvatarImage src={userImage} alt={userName} />
-                <AvatarFallback>{userInitials}</AvatarFallback>
-              </Avatar>
-              {!collapsed && (
-                <>
-                  <div className="grid min-w-0 flex-1 text-left text-xs leading-tight">
-                    <span className="truncate font-medium">{userName}</span>
-                    <span className="truncate text-sidebar-foreground/70">
-                      {userEmail}
-                    </span>
-                  </div>
-                  <ChevronsUpDownIcon />
-                </>
-              )}
-            </DropdownMenuTrigger>
-            {menuContent}
-          </DropdownMenu>
-        </SidebarMenuItem>
-      </SidebarMenu>
-    );
-  }
-
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label="Open account menu"
-        render={<Button variant="ghost" size="icon-lg" className="ml-auto" />}
-      >
-        <Avatar size="lg">
-          <AvatarImage src={userImage} alt={userName} />
-          <AvatarFallback>{userInitials}</AvatarFallback>
-        </Avatar>
-      </DropdownMenuTrigger>
-      {menuContent}
+      </DropdownMenuContent>
     </DropdownMenu>
   );
 }

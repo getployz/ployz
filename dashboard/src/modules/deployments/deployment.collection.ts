@@ -1,4 +1,4 @@
-import { reconcileCollection } from "#/collections/query-collection";
+import { preloadCollection, reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
 import { collectionOptions, eq, liveQueryCollectionOptions, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { useQuery, useSuspenseInfiniteQuery } from "@tanstack/react-query";
@@ -15,7 +15,8 @@ import {
   type EnvironmentDeploymentSummary,
 } from "#/modules/deployments/deployment-contract";
 import { parseSdkDeployPreview } from "#/modules/deployments/runtime-preview";
-import { useBuildTail } from "#/modules/deployments/deployment-build-log.queries";
+import { deploymentBuildTailQueryOptions, useBuildTail } from "#/modules/deployments/deployment-build-log.queries";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import {
   deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions, type DeploymentHistoryRow,
 } from "#/modules/deployments/deployment-history.queries";
@@ -93,7 +94,7 @@ export async function reconcileDeploymentCollections(organizationSlug: string, s
 }
 
 export type DeploymentAttempt = { deployment: EnvironmentDeploymentSummary; nodes: TargetNode[]; view: DeploymentView };
-/** The attempt Deployment Mode shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
+/** The attempt a Deployment Page shows. `buildPending`: the build tail is still on its way, so build nodes' stages are unknown yet. */
 export type ViewedAttempt = DeploymentAttempt & { buildPending: boolean };
 
 /** An environment's attempts in the Org Store, newest first. */
@@ -115,21 +116,37 @@ function viewAttempt(deployment: EnvironmentDeploymentSummary, buildLog?: BuildL
 }
 
 /**
- * The attempt Deployment Mode shows, through the deployment view projection; null when the environment has no such attempt.
+ * The attempt a Deployment Page shows, through the deployment view projection; null when the environment has no such attempt.
  * An attempt the Org Store holds needs no read; one outside it comes from its per-attempt Remote Read, `pending` until it
  * arrives. `buildLog` also reads the attempt's Build Steps and output tails (polled until it finishes) for per-image build
  * stages and tails.
  */
 export function useDeploymentAttempt(organizationSlug: string, environmentId: string, deploymentId: string | null, { buildLog = false } = {}) {
   const stored = useStoredAttempts(organizationSlug, environmentId).find((candidate) => candidate.id === deploymentId);
-  // useQuery, not useSuspenseQuery: the header, deploy bar and inspector read this attempt too and must stay mounted while
+  // useQuery, not useSuspenseQuery: the header and inspector read this attempt too and must stay mounted while
   // it loads, so only the canvas nodes wait (on `pending`). A failed read (not a missing attempt) still fails the route.
   const { data: read, isPending } = useQuery({ ...deploymentAttemptQueryOptions(organizationSlug, stored ? null : deploymentId), throwOnError: true });
   const deployment = stored ?? (read?.row.environmentId === environmentId ? deploymentSummary(read.row) : undefined);
-  const tailId = buildLog && deployment?.targetNodes.nodes.some((node) => node.needsBuild) ? deployment.id : null;
+  const tailId = buildLog && deployment && buildsImages(deployment) ? deployment.id : null;
   const tail = useBuildTail(organizationSlug, tailId);
   const attempt: ViewedAttempt | null = deployment ? { ...viewAttempt(deployment, tail.data), buildPending: tailId !== null && tail.isPending } : null;
   return { attempt, pending: !deployment && isPending };
+}
+
+/** Only an attempt that builds images has a build tail to read. */
+const buildsImages = (deployment: Pick<EnvironmentDeploymentSummary, "targetNodes">) =>
+  deployment.targetNodes.nodes.some((node) => node.needsBuild);
+
+/**
+ * The build tails the canvas reads for an Environment's active attempts: the bottom bar's attempt and the deployment list's
+ * active rows read theirs with `useDeploymentAttempt(…, { buildLog: true })`. Active attempts are always Org Store rows.
+ */
+export async function activeBuildTailReads(organizationSlug: string, environmentId: string, scope: CollectionScope) {
+  const deployments = getEnvironmentDeploymentsCollection(organizationSlug, scope);
+  await preloadCollection(deployments);
+  return [...deployments.values()]
+    .filter((deployment) => deployment.environmentId === environmentId && isActiveDeployment(deployment.status) && buildsImages(deployment))
+    .map((deployment) => deploymentBuildTailQueryOptions(organizationSlug, deployment.id));
 }
 
 /** The attempts of an environment the Org Store holds (active ones plus the latest) through the deployment view projection, newest first. */

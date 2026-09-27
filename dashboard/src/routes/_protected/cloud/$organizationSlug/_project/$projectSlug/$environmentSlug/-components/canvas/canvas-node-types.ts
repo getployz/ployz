@@ -1,6 +1,5 @@
 import type { Node } from "@xyflow/react";
 import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
-import { DeploymentNode } from "./DeploymentNode";
 import { LoadingNode, ServiceNode } from "./ServiceNode";
 import { VolumeNode } from "./VolumeNode";
 
@@ -17,5 +16,4 @@ export const canvasNodeTypes = {
   service: ServiceNode,
   volume: VolumeNode,
   loading: LoadingNode,
-  deployment: DeploymentNode,
 };

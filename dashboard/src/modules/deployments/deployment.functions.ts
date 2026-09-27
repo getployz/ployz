@@ -7,7 +7,6 @@ import {
   deploymentAttemptQuerySchema,
   deploymentBuildTailQuerySchema,
   environmentDeploymentsQuerySchema,
-  deploymentServiceVariablesQuerySchema,
   nodeDeploymentsQuerySchema,
   reviewedPublicationSchema,
   deploymentOperationEvidencePageQuerySchema,
@@ -21,7 +20,6 @@ import {
   listDeploymentBuildLog,
   listEnvironmentDeployments,
   listDeploymentBuildTail,
-  getDeploymentServiceVariables,
   listDeploymentProgressLogs,
   listLatestOrganizationEnvironmentChangeStates,
   listNodeDeployments,
@@ -109,11 +107,6 @@ export const listDeploymentBuildTailServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)
   .validator(strictValidator(deploymentBuildTailQuerySchema))
   .handler(({ context, data }) => runActor(context, listDeploymentBuildTail(context.actor, data)));
-
-export const getDeploymentServiceVariablesServerFn = createServerFn({ method: "GET" })
-  .middleware(deploymentMiddleware)
-  .validator(strictValidator(deploymentServiceVariablesQuerySchema))
-  .handler(({ context, data }) => runActor(context, getDeploymentServiceVariables(context.actor, data)));
 
 export const listDeploymentProgressLogsServerFn = createServerFn({ method: "GET" })
   .middleware(deploymentMiddleware)

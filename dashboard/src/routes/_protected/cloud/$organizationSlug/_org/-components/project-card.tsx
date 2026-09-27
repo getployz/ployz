@@ -6,6 +6,7 @@ import type { ServiceSource } from "#/modules/environment-design/services";
 import type { RuntimeLensStatus, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { cn } from "#/lib/utils";
+import { servicesOnline } from "../../-components/services-online";
 
 export function ProjectCard({
   name,
@@ -20,15 +21,7 @@ export function ProjectCard({
 }) {
   const backgroundId = useId();
   const services = environment?.services ?? [];
-  const onlineCount = runtimeStatus === "observed"
-    ? services.filter(service => runtimeServices.some(runtime =>
-      runtime.identity === `${environment?.namespace}/${service.slug}` &&
-      runtime.containers.some(container => container.runtime?.state === "running" &&
-        (container.runtime.health === "healthy" || container.runtime.health === "not_configured")),
-    )).length
-    : null;
-  const serviceCount = services.length;
-  const serviceLabel = serviceCount === 1 ? "service" : "services";
+  const { online, label } = environment ? servicesOnline(environment, runtimeServices, runtimeStatus) : { online: null, label: "No services" };
 
   return (
     <Card className="h-full transition-colors group-hover/project:ring-foreground/30">
@@ -50,13 +43,11 @@ export function ProjectCard({
           </div>
           <div className="relative flex flex-wrap items-center gap-x-2 gap-y-1 p-3 text-xs text-muted-foreground">
             {environment && <>
-              <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", onlineCount !== null && onlineCount > 0 ? "bg-success" : "bg-muted-foreground")} />
+              <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", online !== null && online > 0 ? "bg-success" : "bg-muted-foreground")} />
               <span className="min-w-0 truncate" title={environment.name}>{environment.name.toLowerCase()}</span>
               <span aria-hidden="true">·</span>
             </>}
-            <span>{serviceCount === 0 ? "No services" : onlineCount === null
-              ? `${serviceCount} ${serviceLabel}`
-              : `${onlineCount}/${serviceCount} ${serviceLabel} online`}</span>
+            <span>{label}</span>
           </div>
         </div>
       </CardContent>

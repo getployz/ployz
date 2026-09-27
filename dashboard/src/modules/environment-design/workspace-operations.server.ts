@@ -9,18 +9,17 @@ import {
   createCanonicalEnvironmentNamespace,
   DEFAULT_ENVIRONMENT_NAME,
   type CreateEnvironment,
-  type EnvironmentBySlug,
   type ProjectList,
+  type SetDefaultEnvironment,
   type SyncOrganizationSlug,
 } from "./workspace-schemas";
 import {
   createEnvironmentRecord,
   createProject,
-  getEnvironmentForProjectByNamespace,
   getProjectContextForActor,
   listOrganizationsForActor,
+  setDefaultEnvironment,
   updateActorSessionsOrganization,
-  upsertUserProjectPreference,
 } from "./workspace-repository.server";
 import { requireOrganizationForActor } from "./authoring-repository.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -83,54 +82,27 @@ export const createEmptyProject = Effect.fn(
   const organization = yield* requireOrganizationForActor(actor, input.organizationSlug);
   return yield* withMutationResult(
     Effect.gen(function* () {
-      const project = yield* createProject({
+      const created = yield* createProject({
         organizationId: organization.id,
         name: generateEmptyProjectName(),
       });
       const environment = yield* createEnvironmentRecord({
-        projectId: project.id,
+        projectId: created.id,
         organizationId: organization.id,
         name: DEFAULT_ENVIRONMENT_NAME,
         namespace: createCanonicalEnvironmentNamespace({
-          projectSlug: project.slug,
+          projectSlug: created.slug,
           environmentName: DEFAULT_ENVIRONMENT_NAME,
         }),
       });
-      yield* upsertUserProjectPreference({
-        userId: actor.userId,
-        projectId: project.id,
-        environmentId: environment.id,
-      });
+      const project = yield* setDefaultEnvironment(created.id, environment.id);
+      if (project === null) {
+        return yield* Effect.die("PostgreSQL did not return the updated project.");
+      }
       return { project, environment };
     }),
   );
 });
-
-export const getEnvironmentBySlug = Effect.fn(
-  "EnvironmentDesign.getEnvironmentBySlug",
-)(function* (actor: Actor, input: EnvironmentBySlug) {
-  const context = yield* requireProjectContext(actor, input);
-  const environment = yield* getEnvironmentForProjectByNamespace(
-    context.project.id,
-    input.environmentSlug,
-  );
-  if (environment === null) {
-    return yield* new NotFound({ message: "Environment not found." });
-  }
-  return environment;
-});
-
-export const selectEnvironment = Effect.fn("EnvironmentDesign.selectEnvironment")(
-  function* (actor: Actor, input: EnvironmentBySlug) {
-    const environment = yield* getEnvironmentBySlug(actor, input);
-    yield* upsertUserProjectPreference({
-      userId: actor.userId,
-      projectId: environment.projectId,
-      environmentId: environment.id,
-    });
-    return environment;
-  },
-);
 
 export const createEnvironment = Effect.fn(
   "EnvironmentDesign.createEnvironment",
@@ -154,4 +126,15 @@ export const createEnvironment = Effect.fn(
       }),
     ),
   );
+});
+
+export const setProjectDefaultEnvironment = Effect.fn(
+  "EnvironmentDesign.setProjectDefaultEnvironment",
+)(function* (actor: Actor, input: SetDefaultEnvironment) {
+  const context = yield* requireProjectContext(actor, input);
+  const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
+  if (project === null) {
+    return yield* new NotFound({ message: "Environment not found in this project." });
+  }
+  return project;
 });

@@ -1,4 +1,5 @@
 import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
+import type { JsonObject } from "#/db/tables";
 import type { EnvironmentResourceNodeConfigByType } from "./environment-resource-node";
 import type { ServiceDeploymentConfig } from "./services";
 
@@ -41,17 +42,26 @@ export type DashboardReviewChangeSet = {
 };
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
-function changes(type: EnvironmentNodeIdentity["type"], current: EnvironmentNodeProjection["config"], baseline: EnvironmentNodeProjection["config"]): ServiceSettingChange[] {
-  if (!current || !baseline) return [];
-  if (type === "service") return compareServiceSettings(parseServiceConfig(current), parseServiceConfig(baseline));
-  return compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));
+type NodeConfig = NonNullable<EnvironmentNodeProjection["config"]> | JsonObject;
+/** A node's current and baseline configs through today's config schema; throws when either no longer parses. */
+export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: NodeConfig, baseline: NodeConfig) {
+  return type === "service"
+    ? { type, current: parseServiceConfig(current), baseline: parseServiceConfig(baseline) }
+    : { type, current: parseResourceConfig("volume", current), baseline: parseResourceConfig("volume", baseline) };
+}
+/** A node's setting changes from baseline to current, as the review lists them; the Deployment Page's rows reuse it. */
+export function compareNodeSettings(configs: ReturnType<typeof parseNodeConfigs>): ServiceSettingChange[] {
+  const settings = configs.type === "service" ? compareServiceSettings(configs.current, configs.baseline)
+    : compareResourceSettings("volume", configs.current, configs.baseline);
+  return settings.filter((row) => row.path !== "node");
 }
 function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, intro: ReturnType<typeof nodeMap>) {
   const before = nodeMap(baseline); const after = nodeMap(working); const groups: DashboardReviewChangeSet["groups"] = [];
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key);
     if (!entry) continue;
-    const settings = changes(entry.node.type, next, previous ?? intro.get(key)?.config ?? null).filter((row) => row.path !== "node");
+    const baseline = previous ?? intro.get(key)?.config ?? null;
+    const settings = next && baseline ? compareNodeSettings(parseNodeConfigs(entry.node.type, next, baseline)) : [];
     const lifecycle = !previous && next ? "create" : previous && !next ? "delete" : previous && settings.length ? "update" : null;
     if (lifecycle) groups.push({ node: entry.node, lifecycle, settings,
       comparison: previous ? "head" : intro.get(key)?.config ? "introduction" : null });
