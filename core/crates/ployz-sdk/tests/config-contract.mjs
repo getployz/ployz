@@ -120,9 +120,9 @@ const branchEnv = (startCommand, seed) => ({
   }],
 });
 // Same input and review string as core's branch_changes::contract_review_string.
-const changes = api.branchChanges({
+const branchReview = api.branchChanges({
   base: branchEnv('a', 1), from: branchEnv('b', 2), into: branchEnv('a', 3), provided: [],
   hostnames: { from: '', into: '' }, fromKept: false,
 });
-assert.equal(changes.review, '[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]');
+assert.equal(branchReview.review, '[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]');
 console.log('SDK config runs on WASM; napi carries RPC only.');

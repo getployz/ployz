@@ -9,9 +9,35 @@ export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "s
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
 
+export type BranchChanges = { rows: Array<BranchRow>, next: SavedEnvironmentIntent, base: SavedEnvironmentIntent | null,
+/**
+ * Canonical, id-free rendering of the rows; callers hash it.
+ */
+review: string, };
+
+export type BranchChangesInput = {
+/**
+ * Null when creating: nothing is shared yet.
+ */
+base: SavedEnvironmentIntent | null, from: SavedEnvironmentIntent, into: SavedEnvironmentIntent,
+/**
+ * The Parent, when the caller can offer its values as a variable choice.
+ */
+parent?: SavedEnvironmentIntent,
+/**
+ * Lineages `into` may use live.
+ */
+provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean, };
+
+export type BranchChoice = { default: BranchOption, options: Array<BranchOption>, secret: boolean, };
+
+export type BranchHostnames = { from: string, into: string, };
+
 export type BranchNodeReason = "picked" | "used" | "parent_not_deployed";
 
 export type BranchNodeRole = "own" | "live" | "left_out";
+
+export type BranchOption = "from" | "parent" | "new" | "leave_out";
 
 export type BranchPicks = { preset: BranchPreset, } | { own: Array<string>, };
 
@@ -20,6 +46,22 @@ export type BranchPlan = { nodes: Array<BranchPlanNode>, preset: BranchPreset | 
 export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType, role: BranchNodeRole, because: BranchNodeReason | null, };
 
 export type BranchPreset = "only" | "uses" | "all";
+
+export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data";
+
+export type BranchRow = {
+/**
+ * `<lineageId>:<path>`.
+ */
+key: string, base: JsonValue, from: JsonValue, into: JsonValue, } & ({ "role": "move",
+/**
+ * `into` also changed since `base`; shown into → from.
+ */
+conflict: boolean,
+/**
+ * Present only on variable rows.
+ */
+choice?: BranchChoice, } | { "role": "differ", why: BranchReason, });
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
