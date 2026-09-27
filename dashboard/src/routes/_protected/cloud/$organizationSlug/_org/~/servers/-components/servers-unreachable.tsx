@@ -2,7 +2,7 @@ import { WifiOffIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
 
-/** The evidence is uncertain (the watch dropped or its observation is incomplete) and there is nothing to show. */
+/** There is nothing to show: Cloud can't reach the cluster, or the watch dropped or came back incomplete with no Servers. */
 export function ServersUnreachable() {
   return (
     <Empty variant="first-run">
