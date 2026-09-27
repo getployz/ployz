@@ -26,7 +26,7 @@ import { WhatComesAlongSection } from "./WhatComesAlongSection";
  * "New branch of X": pick what gets an Own Copy, name it, create and deploy. Core plans every pick over the Parent's
  * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes.
  */
-export function NewBranchPanel({ focus: initialFocus }: { focus: readonly string[] }) {
+export function NewBranchPanel({ focus: initialFocus }: { focus: string | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
@@ -41,7 +41,7 @@ export function NewBranchPanel({ focus: initialFocus }: { focus: readonly string
   const intent = document?.intent;
   const owned = new Set([...(intent?.services.map((node) => node.lineageId) ?? []), ...(intent?.volumes.map((node) => node.resourceLineageId) ?? [])]);
 
-  const [focus, setFocus] = useState(() => initialFocus.filter((lineage) => owned.has(lineage)));
+  const [focus, setFocus] = useState(() => initialFocus && owned.has(initialFocus) ? [initialFocus] : []);
   const [picks, setPicks] = useState<BranchPicks>({ preset: "only" });
   const [name, setName] = useState(() => defaultBranchName(params.projectSlug, "new-branch", taken));
   const [keep, setKeep] = useState(false);

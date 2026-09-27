@@ -9,7 +9,6 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { buttonVariants } from "#/components/ui/button-variants";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
@@ -144,13 +143,13 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
         </Field>
       </section>
       <section aria-labelledby="project-environments-heading" className="flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
           <div className="flex gap-2">
-            <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
-              params={{ organizationSlug, projectSlug: project.slug, environmentSlug }} className={buttonVariants({ variant: "outline" })}>
+            <Button variant="outline" nativeButton={false} render={<Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
+              params={{ organizationSlug, projectSlug: project.slug, environmentSlug }} />}>
               <GitBranchPlusIcon data-icon="inline-start" />New branch
-            </Link>
+            </Button>
             <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
           </div>
         </div>

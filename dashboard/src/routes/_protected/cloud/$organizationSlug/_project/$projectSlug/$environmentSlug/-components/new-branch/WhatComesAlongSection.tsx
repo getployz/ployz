@@ -1,4 +1,4 @@
-import { CheckIcon } from "lucide-react";
+import { SquareCheckIcon, SquareIcon } from "lucide-react";
 import { FieldContent, FieldDescription, FieldLabel, FieldLegend, FieldSet, FieldTitle, Field } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
@@ -63,11 +63,8 @@ export function WhatComesAlongSection({ parentName, plan, presets, nameOf, owned
             <Item key={node.lineageId} size="xs" variant="outline"
               render={<button type="button" aria-pressed={isOwn} disabled={fixed} onClick={() => onToggle(node.lineageId)} />}
               className={cn("text-left", fixed ? "cursor-default" : "hover:bg-muted")}>
-              <ItemMedia>
-                <span aria-hidden="true" className={cn("flex size-4 items-center justify-center rounded-sm border",
-                  isOwn && "border-primary bg-primary text-primary-foreground", fixed && "opacity-50")}>
-                  {isOwn && <CheckIcon className="size-3" />}
-                </span>
+              <ItemMedia className={cn(isOwn ? "text-foreground" : "text-muted-foreground", fixed && "opacity-50")}>
+                {isOwn ? <SquareCheckIcon aria-hidden="true" /> : <SquareIcon aria-hidden="true" />}
               </ItemMedia>
               <ItemContent>
                 <ItemTitle>{nameOf(node.lineageId)}</ItemTitle>

@@ -56,7 +56,7 @@ export const createBranch = Effect.fn("Branches.createBranch")(function* (actor:
   }), { isolationLevel: "read committed" }).pipe(
     Effect.catchIf(isUniqueViolation, () => new Conflict({ message: `${input.name} is taken in this organization.` })),
   );
-  // A failed dispatch leaves the attempt queued; the Deployment Page can dispatch it again.
+  // A dispatch failure fails the attempt; the Branch stays and deploys again from its canvas.
   yield* dispatchEnvironmentDeployment({
     environmentDeploymentId: created.data.deploymentId, environmentId: created.data.environment.id,
   }).pipe(Effect.catchTag("InngestEventSendError", () => Effect.void));
