@@ -3,13 +3,7 @@ import { FieldContent, FieldDescription, FieldLabel, FieldLegend, FieldSet, Fiel
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
 import { cn } from "#/lib/utils";
-import { listNames, pickFixed, presetSummary, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
-
-const presetTitles = {
-  only: "Only what changes",
-  uses: "Plus what it uses",
-  all: "Everything",
-} satisfies Record<BranchPreset, string>;
+import { listNames, pickFixed, presetSummary, presetTitles, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
 
 type PlanNode = BranchPlan["nodes"][number];
 

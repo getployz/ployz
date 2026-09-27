@@ -11,6 +11,12 @@ export type { BranchPicks, BranchPlan, BranchPreset };
 
 type PlanNode = BranchPlan["nodes"][number];
 
+export const presetTitles = {
+  only: "Only what changes",
+  uses: "Plus what it uses",
+  all: "Everything",
+} satisfies Record<BranchPreset, string>;
+
 /** Picking can't toggle it: the Parent doesn't own it (`owned`), or another copy needs it. */
 export const pickFixed = (node: PlanNode, owned: ReadonlySet<string>) =>
   !owned.has(node.lineageId) || (node.role === "own" && node.because !== "picked");
