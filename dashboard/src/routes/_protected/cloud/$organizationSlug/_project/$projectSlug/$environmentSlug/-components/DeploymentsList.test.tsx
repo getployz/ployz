@@ -16,10 +16,14 @@ import { asTestDouble } from "#/lib/test-double";
 const showMore = vi.fn();
 vi.spyOn(deploymentCollections, "useDeploymentList").mockReturnValue(asTestDouble<ReturnType<typeof deploymentCollections.useDeploymentList>>()({
   attempts: [
-    { deployment: { id: "aaaa2222-uuid", message: "Update nginx", createdAt: new Date() }, view: { status: "queued", deployed: 0, changed: 1, nodes: [] } },
+    { deployment: { id: "aaaa2222-uuid", status: "queued", message: "Update nginx", createdAt: new Date() }, view: { status: "queued", deployed: 0, changed: 1, nodes: [] } },
     { deployment: { id: "aaaa1111-uuid", message: "Bump api", createdAt: new Date() }, view: { status: "failed", deployed: 1, changed: 2, nodes: [] } },
   ],
   hasMore: true, loadingMore: false, showMore,
+}));
+// With its build tail, the queued attempt turns out to be building its images.
+vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockReturnValue(asTestDouble<ReturnType<typeof deploymentCollections.useDeploymentAttempt>>()({
+  attempt: { view: { status: "building", deployed: 0, changed: 1, nodes: [] } }, pending: false,
 }));
 vi.spyOn(history, "useNodeDeployments").mockReturnValue(asTestDouble<ReturnType<typeof history.useNodeDeployments>>()({
   data: { pages: [{ running: null, next: null, items: [{ id: "aaaa1111-uuid", message: "Bump api", createdAt: new Date(), outcome: "deployed" }] }] },
@@ -54,11 +58,11 @@ function open(url: string) {
   return router;
 }
 
-it("lists every attempt newest first, reads the next page, and opens a row's page with Back returning", async () => {
+it("lists every attempt newest first, active ones read like their page, reads the next page, and opens a row's page with Back returning", async () => {
   const router = open("/cloud/acme/shop/production/deployments");
   const rows = within(await screen.findByRole("navigation", { name: "Deployments" })).getAllByRole("link");
   expect(rows.map((row) => row.textContent)).toEqual([
-    expect.stringMatching(/^Update nginxQueued · aaaa2222/),
+    expect.stringMatching(/^Update nginxBuilding · aaaa2222/),
     expect.stringMatching(/^Bump apiFailed · 1 of 2 deployed · aaaa1111/),
   ]);
   fireEvent.click(screen.getByRole("button", { name: "Show more" }));
