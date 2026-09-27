@@ -403,10 +403,14 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     let savedStateSnapshotId = target.savedStateSnapshotId;
     if ((yield* landCarried(trigger.conditionalSaveIds, document)).landed) {
       const landed = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
-      const added = (yield* savedStateCandidates({ ...landed, environmentId: trigger.environmentId }, trigger))
-        .filter(row => !candidates.some(candidate => candidate.serviceId === row.serviceId)).map(row => row.serviceId);
-      serviceIds = [...serviceIds, ...added].sort();
+      // Recomputed from the landed snapshot: a service the changes delete or point elsewhere drops out.
+      const landedIds = (yield* savedStateCandidates({ ...landed, environmentId: trigger.environmentId }, trigger)).map(row => row.serviceId);
+      serviceIds = landedIds.filter(id => serviceIds.includes(id) || !candidates.some(candidate => candidate.serviceId === id)).sort();
       savedStateSnapshotId = landed.savedStateSnapshotId;
+      if (!serviceIds.length) {
+        yield* supersede();
+        return null;
+      }
       yield* drizzle.update(schemaGithubEnvironmentTrigger).set({ serviceIds: [...serviceIds] })
         .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
     }

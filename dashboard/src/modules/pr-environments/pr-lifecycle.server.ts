@@ -9,6 +9,7 @@ import { fetchInstallationPullRequest } from "#/modules/github/github-observatio
 import { environment, project } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
+import { Validation } from "#/server/public-error";
 import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { carryInWaitingTriggers, landAtMerge, settleAtClose } from "./land.server";
 import { fromRepository, prEnvironmentIntent } from "./pull-request";
@@ -124,7 +125,8 @@ export const createPrEnvironment = Effect.fn("PrEnvironments.createPrEnvironment
   const [row] = yield* drizzle.select({ environment, project }).from(environment)
     .innerJoin(project, eq(project.id, environment.projectId))
     .where(eq(environment.id, parentEnvironmentId));
-  if (!row) return;
+  // Torn down since the plan was read: nothing to make, recorded like a refused plan.
+  if (!row) return yield* new Validation({ message: "The environment PR environments start from is gone." });
   const { repositoryId } = pullRequest;
   const name = `pr-${pullRequest.number}`;
   return yield* writeAndDeploy({

@@ -831,6 +831,34 @@ describe("PR Environment lifecycle", () => {
           expect(await saves()).toEqual([]);
         });
 
+        it("admits the merge commit's push without a Git service the approval points at another repository", async () => {
+          const worker = await runEffect(createService({ userId }, {
+            organizationSlug, environmentId: stagingId, name: "Worker", x: 5, y: 6,
+            source: createGitServiceSource({ repository: "acme/app", repositoryId, access: { type: "github-installation", installationId } }),
+            preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
+          }));
+          const workerId = worker.data.service.id;
+          await harness.db.update(schema.service).set({ policy: { ...policy, autoDeploy: true, imageUpdate: { type: "off" as const } } }).where(eq(schema.service.id, workerId));
+          await harness.db.insert(schema.environmentSavedStateSnapshot).values({
+            organizationId, environmentId: stagingId, actorId: userId, intent: (await environmentOf(stagingId))?.intent ?? stagingIntent, volumeDeletionAuthorizations: [],
+          });
+          await pullRequest("opened-150", "opened", 150);
+          const prId = (await prEnvironment(150))?.environmentId ?? "";
+          // Its Worker is pointed at another repository.
+          const intent = (await environmentOf(prId))?.intent;
+          const prWorker = intent?.services.find((node) => node.lineageId === worker.data.service.lineageId);
+          if (prWorker) prWorker.config.source = createGitServiceSource({ repository: "acme/other", repositoryId: 43, access: { type: "github-installation", installationId } });
+          await harness.db.update(schema.environment).set({ intent }).where(eq(schema.environment.id, prId));
+          await approve(prId, (_, rows) => rows.map((row) => row.role === "move" && row.choice ? { key: row.key, option: "from" as const, value: "" } : { key: row.key, value: "" }));
+          await pullRequest("merged-150", "closed", 150, merged);
+
+          await push(mergeSha, ["api/main.ts"]);
+          const { attempt, saved } = await attemptAt(mergeSha);
+          expect(Object.keys(attempt?.sourcePins ?? {})).toEqual([apiId]);
+          expect((saved?.services.find((node) => node.id === workerId) as { config?: { source?: unknown } } | undefined)?.config?.source).toMatchObject({ repository: "acme/other" });
+          expect(await saves()).toEqual([]);
+        });
+
         it("ships two pull requests' approvals in one deployment, with a new secret the same in both states", async () => {
           await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
           await pullRequest("opened-150", "opened", 150);
