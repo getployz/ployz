@@ -1,8 +1,5 @@
 import { useState } from "react";
-import { useLiveQuery } from "@tanstack/react-db";
 import { useLoaderData, useParams } from "@tanstack/react-router";
-import { getRawServicesCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
@@ -13,7 +10,8 @@ import { useEnvironmentDocument } from "#/modules/environment-design/environment
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { ancestors } from "#/modules/project/environment-tree";
 import { useCreateBranch } from "#/modules/branches/branch-commands";
-import { branchHostnameSuffix, branchNameError, branchNamespace, defaultBranchName, ownLineages } from "#/modules/branches/branch-plan";
+import { useLineageNames } from "#/modules/branches/use-lineage-names";
+import { branchHostnameSuffix, branchNameError, branchSetupCommands, branchNamespace, defaultBranchName, ownLineages } from "#/modules/branches/branch-plan";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useBranchPicking } from "./branch-picking";
@@ -29,11 +27,10 @@ import { WhatComesAlongSection } from "./WhatComesAlongSection";
 export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | null; fix: string | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const scope = useCollectionScope();
   const picking = useBranchPicking();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
   const { environments, branches } = useWorkspace(params.organizationSlug);
-  const { data: services } = useLiveQuery(getRawServicesCollection(params.organizationSlug, scope));
+  const lineageName = useLineageNames(params.organizationSlug);
   const clusterDomain = useClusterDomainName(params.organizationSlug);
   const create = useCreateBranch(params.projectSlug);
   const failedAttempt = useDeploymentAttempt(params.organizationSlug, environmentId, fix).attempt?.deployment;
@@ -46,10 +43,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
 
   const { parent, intent, plan, presets, focus, picks, owned } = picking;
   const own = ownLineages(plan);
-  // Services a Branch uses live may belong to an ancestor, so names come from any Environment with that lineage.
-  const nameOf = (lineage: string) => services.find((row) => row.lineageId === lineage && row.environmentId === environmentId)?.name
-    ?? services.find((row) => row.lineageId === lineage)?.name
-    ?? intent.volumes.find((node) => node.resourceLineageId === lineage)?.name ?? "a service";
+  const nameOf = (lineage: string) => lineageName(lineage, environmentId);
   const rootId = ancestors(parent.id, branches).at(-1);
   const root = environments.find((environment) => environment.id === rootId) ?? parent;
 
@@ -74,14 +68,11 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
     <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
       event.preventDefault();
       if (blocked || nameError || create.isPending) return;
-      // Only a Branch with an Own Copy of data shows Then run; a command for a service that isn't own is dropped.
-      const ownData = plan.nodes.some((node) => node.role === "own" && node.nodeType === "volume");
-      const commands = ownData ? setupCommands.filter((setup) => setup.command.trim() && own.includes(setup.lineageId)
-        && intent.services.some((node) => node.lineageId === setup.lineageId)) : [];
       create.mutate({
         organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
         fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
-        setupCommands: commands.map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() })),
+        // Only a Branch with an Own Copy of data shows Then run; a command for a service that isn't own is dropped.
+        setupCommands: branchSetupCommands(plan, setupCommands),
       });
     }}>
       <CanvasInspectorHeader params={params}>
@@ -94,7 +85,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
       <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
         <WhatComesAlongSection plan={plan} presets={presets} nameOf={nameOf} owned={owned} parentName={parent.name}
           ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle} />
-        <DataSection intent={intent} plan={plan} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
+        <DataSection plan={plan} liveOwner={picking.liveOwner} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
           setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
         <NameSection name={branchName} onName={setName} error={nameError} addresses={addresses} />
         <FieldSet>

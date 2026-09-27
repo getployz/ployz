@@ -3,18 +3,18 @@ import { Badge } from "#/components/ui/badge";
 import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemMedia } from "#/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
-import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import type { SetupCommand } from "#/modules/project/tables";
 import { listNames, type BranchPlan } from "#/modules/branches/branch-plan";
+import type { LiveNodeOwner } from "#/modules/branches/use-live-nodes";
 import { SetupCommandsField } from "./SetupCommandsField";
 
 /**
  * Where the Branch's data comes from: Own Copies of Volumes start empty (copying data is Soon), and a Live Node that owns
- * data is the Parent's real data. Setup Commands then run in the Branch's own services.
+ * data, by its owner's Applied State, is that owner's real data. Setup Commands then run in the Branch's own services.
  */
-export function DataSection({ intent, plan, parentName, rootName, nameOf, setupCommands, onSetupCommands }: {
-  intent: SavedEnvironmentIntent;
+export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, setupCommands, onSetupCommands }: {
   plan: BranchPlan;
+  liveOwner: (lineage: string) => LiveNodeOwner | null;
   parentName: string;
   /** The root the Parent was branched from, when the Parent is itself a Branch. */
   rootName: string | null;
@@ -23,9 +23,12 @@ export function DataSection({ intent, plan, parentName, rootName, nameOf, setupC
   onSetupCommands: (next: SetupCommand[]) => void;
 }) {
   const own = plan.nodes.filter((node) => node.role === "own" && node.nodeType === "volume").map((node) => nameOf(node.lineageId));
-  const liveData = plan.nodes.filter((node) => node.role === "live"
-    && intent.services.some((service) => service.lineageId === node.lineageId && service.volumeAttachments.length > 0))
-    .map((node) => nameOf(node.lineageId));
+  // Each owner's Live Nodes that keep data, by owner name.
+  const liveData = new Map<string, string[]>();
+  for (const node of plan.nodes) {
+    const owner = node.role === "live" ? liveOwner(node.lineageId) : null;
+    if (owner?.ownsData) liveData.set(owner.environment.name, [...liveData.get(owner.environment.name) ?? [], nameOf(node.lineageId)]);
+  }
   const ownServices = plan.nodes.filter((node) => node.role === "own" && node.nodeType === "service")
     .map((node) => ({ lineageId: node.lineageId, name: nameOf(node.lineageId) }));
   const soon = [parentName, ...(rootName ? [rootName] : [])];
@@ -55,17 +58,17 @@ export function DataSection({ intent, plan, parentName, rootName, nameOf, setupC
           </Field>
         )}
       </>}
-      {liveData.length > 0 && (
-        <Item variant="outline" state="warning" size="sm" role="note">
+      {[...liveData].map(([owner, names]) => (
+        <Item key={owner} variant="outline" state="warning" size="sm" role="note">
           <ItemMedia><TriangleAlertIcon className="text-warning" /></ItemMedia>
           <ItemContent>
             <ItemDescription className="text-foreground">
-              {listNames(liveData)} {liveData.length === 1 ? "is" : "are"} {parentName}'s, live. This branch reads and writes {liveData.length === 1 ? "its" : "their"} real data.
+              {listNames(names)} {names.length === 1 ? "is" : "are"} {owner}'s, live. This branch reads and writes {names.length === 1 ? "its" : "their"} real data.
             </ItemDescription>
           </ItemContent>
         </Item>
-      )}
-      {own.length === 0 && liveData.length === 0 && <FieldDescription>Nothing here keeps data.</FieldDescription>}
+      ))}
+      {own.length === 0 && liveData.size === 0 && <FieldDescription>Nothing here keeps data.</FieldDescription>}
     </FieldSet>
   );
 }

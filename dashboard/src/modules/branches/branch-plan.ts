@@ -9,6 +9,23 @@ import { createCanonicalEnvironmentNamespace } from "#/modules/environment-desig
 
 export type { BranchPicks, BranchPlan, BranchPreset };
 
+type PlanNode = BranchPlan["nodes"][number];
+
+/** Picking can't toggle it: the Parent doesn't own it (`owned`), or another copy needs it. */
+export const pickFixed = (node: PlanNode, owned: ReadonlySet<string>) =>
+  !owned.has(node.lineageId) || (node.role === "own" && node.because !== "picked");
+
+/** The Branch gets an Own Copy of data, so its Setup Commands ("Then run") apply. */
+export const copiesData = (plan: BranchPlan) => plan.nodes.some((node) => node.role === "own" && node.nodeType === "volume");
+
+/** The Setup Commands a Branch keeps: none without an Own Copy of data, else each whole one in its own service. */
+export function branchSetupCommands(plan: BranchPlan, commands: ReadonlyArray<{ lineageId: string; command: string }>) {
+  if (!copiesData(plan)) return [];
+  const own = new Set(plan.nodes.filter((node) => node.role === "own" && node.nodeType === "service").map((node) => node.lineageId));
+  return commands.filter((setup) => setup.command.trim() && own.has(setup.lineageId))
+    .map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
+}
+
 export const ownLineages = (plan: BranchPlan) => plan.nodes.filter((node) => node.role === "own").map((node) => node.lineageId);
 export const liveLineages = (plan: BranchPlan) => plan.nodes.filter((node) => node.role === "live").map((node) => node.lineageId);
 
@@ -53,7 +70,7 @@ const names = new Intl.ListFormat("en-GB", { type: "conjunction" });
 /** "a", "a and b", "a, b and c". */
 export const listNames = (list: string[]) => names.format(list);
 
-const namesWith = (plan: BranchPlan, role: BranchPlan["nodes"][number]["role"], nameOf: (lineage: string) => string) =>
+const namesWith = (plan: BranchPlan, role: PlanNode["role"], nameOf: (lineage: string) => string) =>
   plan.nodes.filter((node) => node.role === role).map((node) => nameOf(node.lineageId));
 
 /** What a preset will do, in words, from its plan and the "Only what changes" plan it extends. */

@@ -1,11 +1,9 @@
 import { useState } from "react";
-import { useLiveQuery } from "@tanstack/react-db";
-import { getRawServicesCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { Badge } from "#/components/ui/badge";
 import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
 import { useBranchSetupDefaults } from "#/modules/branches/branch.collection";
+import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import type { SetupCommand } from "#/modules/project/tables";
 import { SetupCommandsField } from "./new-branch/SetupCommandsField";
@@ -13,22 +11,21 @@ import { SetupCommandsField } from "./new-branch/SetupCommandsField";
 /** What a new Branch of this Environment starts with. Saved at once, like Deployment Policy, never staged. */
 export function BranchDefaultsSection({ organizationSlug, environmentId }: { organizationSlug: string; environmentId: string }) {
   const document = useEnvironmentDocument(organizationSlug, environmentId);
-  const { data: services } = useLiveQuery(getRawServicesCollection(organizationSlug, useCollectionScope()));
+  const lineageName = useLineageNames(organizationSlug);
   const save = useBranchSetupDefaults(organizationSlug);
   const saved = document?.branchSetupCommands ?? [];
   const [draft, setDraft] = useState<SetupCommand[] | null>(null);
   if (!document) return null;
   const commands = draft ?? saved;
   // The Working State's services; a removed service keeps its row until deployed away.
-  const own = document.intent.services.map((node) => ({
-    lineageId: node.lineageId,
-    name: services.find((row) => row.id === node.id)?.name ?? node.slug,
-  }));
+  const own = document.intent.services.map((node) => ({ lineageId: node.lineageId, name: lineageName(node.lineageId, environmentId) }));
 
-  // Blank commands stay in the draft until typed; only whole ones save, and only when they changed.
+  // Blank commands stay in the draft until typed; only whole ones save, and only when they changed. A draft with nothing
+  // left unsaved goes, so the saved (optimistic) rows show again and a failed save's rollback shows too.
   function commit(next: SetupCommand[]) {
-    const whole = next.filter((setup) => setup.command.trim()).map((setup) => ({ ...setup, command: setup.command.trim() }));
+    const whole = next.filter((setup) => setup.command.trim()).map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
     if (JSON.stringify(whole) !== JSON.stringify(saved)) save(environmentId, whole);
+    if (whole.length === next.length) setDraft(null);
   }
 
   return (

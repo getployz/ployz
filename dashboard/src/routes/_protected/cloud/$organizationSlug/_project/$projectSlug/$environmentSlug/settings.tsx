@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "./-components/environment-route-paths";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
-import { ChevronRightIcon, GitBranchIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
+import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { Effect, Option, Schema } from "effect";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
@@ -18,6 +19,7 @@ import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { cn } from "#/lib/utils";
+import { BranchIndent } from "#/components/environment-tree";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
@@ -167,7 +169,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
         <div className="flex flex-wrap items-center justify-between gap-4">
           <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
           <div className="flex gap-2">
-            <Button variant="outline" nativeButton={false} render={<Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
+            <Button variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
               params={{ organizationSlug, projectSlug: project.slug, environmentSlug }} />}>
               <GitBranchPlusIcon data-icon="inline-start" />New branch
             </Button>
@@ -178,15 +180,13 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
           {environmentTree(environments, branches).map(({ environment, depth, parent }) => {
             const { online, label } = servicesOnline({ namespace: environment.namespace, services: environment.intent.services }, runtimeServices, runtimeStatus);
             return (
-              <Item key={environment.id} variant="outline" size="sm"
-                // Indented under its Parent, and narrower by as much so it still ends with the list.
-                className="w-auto" style={{ marginInlineStart: `${depth * 1.5}rem` }} render={
+              <Item key={environment.id} variant="outline" size="sm" render={
                 <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
                   params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
               }>
                 <ItemContent className="min-w-0">
                   <ItemTitle className="min-w-0">
-                    {parent && <GitBranchIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />}
+                    <BranchIndent depth={depth} />
                     <span className="truncate">{environment.name}</span>
                     {parent && <span className="sr-only">, branch of {parent.name}</span>}
                     {environment.id === defaultEnvironment?.id && <Badge variant="secondary">Default</Badge>}

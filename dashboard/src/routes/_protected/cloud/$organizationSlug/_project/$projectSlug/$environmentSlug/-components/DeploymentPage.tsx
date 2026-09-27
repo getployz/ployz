@@ -30,7 +30,7 @@ import { ApplyChangeRow } from "./canvas/ApplyChangeRow";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import type { deploymentPageSearchSchema } from "./deployment-page";
 import { useEnvironmentNavigationNodes } from "./environment-node-navigation";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 /** Past this many changed services the chips become a dropdown. */
 const MAX_CHIPS = 6;
@@ -234,7 +234,7 @@ function DeploymentActions({ deployment, failed }: { deployment: EnvironmentDepl
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
       {failedLineage ? (
-        <Button size="sm" variant="outline" nativeButton={false} render={<Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch"
+        <Button size="sm" variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
           params={params} search={{ focus: failedLineage, fix: deployment.id }} />}>
           <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
         </Button>

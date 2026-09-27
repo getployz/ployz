@@ -1,4 +1,5 @@
 import { Fragment, useState, type ReactNode } from "react";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
@@ -14,6 +15,8 @@ import { BranchIndent } from "#/components/environment-tree";
 import { useDashboardSection } from "#/components/use-dashboard-section";
 import { Breadcrumb, BreadcrumbItem, BreadcrumbList, BreadcrumbPage, BreadcrumbSeparator } from "#/components/ui/breadcrumb";
 import { Button } from "#/components/ui/button";
+import { buttonVariants } from "#/components/ui/button-variants";
+import { cn } from "#/lib/utils";
 import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
 import { Command, CommandGroup, CommandItem, CommandList, CommandSeparator } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
@@ -33,13 +36,13 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
   const current = findEnvironment(projects, environments, scope);
   const parentId = branches.find((branch) => branch.environmentId === current?.id)?.parentEnvironmentId;
   const parent = environments.find((environment) => environment.id === parentId);
-  return <Crumbs forkAt={parent ? 2 : undefined} items={[
+  return <Crumbs branchAt={parent ? 2 : undefined} items={[
     <ProjectCrumb key="project" scope={scope} />,
     ...parent ? [
-      <Button key="parent" variant="ghost" size="sm" className="min-w-0" title={parent.name} aria-label={`Parent: ${parent.name}`}
-        render={<Link {...getDashboardDestination({ ...scope, environmentSlug: parent.namespace }, section)} />}>
+      <Link key="parent" {...getDashboardDestination({ ...scope, environmentSlug: parent.namespace }, section)}
+        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "min-w-0")} title={parent.name} aria-label={`Parent: ${parent.name}`}>
         <span className="truncate">{parent.name}</span>
-      </Button>,
+      </Link>,
     ] : [],
     <EnvironmentCrumb key="environment" scope={scope} />,
     ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-2 font-medium">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
@@ -48,9 +51,9 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
 
 /**
  * On phones the path keeps its last two crumbs; the rest move into a "…" menu so the bar never wraps.
- * `forkAt` marks the crumb a Branch starts at: ⑂ separates it from its Parent instead of "/".
+ * `branchAt` marks the crumb a Branch starts at: ⑂ separates it from its Parent instead of "/".
  */
-export function Crumbs({ items, forkAt }: { items: ReactNode[]; forkAt?: number }) {
+export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: number }) {
   const collapsed = items.slice(0, -2);
   return (
     <Breadcrumb aria-label="Breadcrumb" className="min-w-0">
@@ -72,7 +75,7 @@ export function Crumbs({ items, forkAt }: { items: ReactNode[]; forkAt?: number 
         {items.map((item, index) => <Fragment key={index}>
           {/* The "…" menu brings its own separator, so the first visible crumb's is desktop-only too. */}
           {index > 0 ? <BreadcrumbSeparator className={index <= collapsed.length ? phonesHidden : undefined}>
-            {index === forkAt ? <GitBranchIcon /> : "/"}
+            {index === branchAt ? <GitBranchIcon /> : "/"}
           </BreadcrumbSeparator> : null}
           <BreadcrumbItem className={index < collapsed.length ? phonesHidden : "min-w-0"}>{item}</BreadcrumbItem>
         </Fragment>)}
@@ -198,7 +201,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 {current && branches.some((branch) => branch.environmentId === current.id) && <CommandItem value="review" onSelect={() => {
                   setOpen(false);
                   const { organizationSlug, projectSlug, environmentSlug } = scope;
-                  void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review",
+                  void navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
                   <GitCompareArrowsIcon />Review {current.name}
@@ -206,7 +209,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);
                   const { organizationSlug, projectSlug, environmentSlug } = scope;
-                  void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch",
+                  void navigate({ to: ENVIRONMENT_NEW_BRANCH_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
                   <GitBranchPlusIcon />New branch of {current.name}

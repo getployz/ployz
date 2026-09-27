@@ -15,3 +15,9 @@ export const ENVIRONMENT_RESOURCE_ROUTE_TO =
 
 export const ENVIRONMENT_LIVE_NODE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId";
+
+export const ENVIRONMENT_NEW_BRANCH_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch";
+
+export const ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";

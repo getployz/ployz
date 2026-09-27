@@ -1,4 +1,5 @@
 import { useMatch } from "@tanstack/react-router";
+import { liveNodeId } from "./canvas/nodes";
 
 const ENVIRONMENT_SERVICE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
@@ -74,7 +75,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
   const selectedServiceId = serviceMatch?.params.serviceId ?? null;
   const selectedLiveLineageId = liveMatch?.params.lineageId ?? null;
   const selectedResourceId = resourceMatch?.params.resourceId ?? null;
-  const selectedNodeId = selectedServiceId ?? selectedResourceId ?? (selectedLiveLineageId && `live:${selectedLiveLineageId}`);
+  const selectedNodeId = selectedServiceId ?? selectedResourceId ?? (selectedLiveLineageId && liveNodeId(selectedLiveLineageId));
 
   return {
     selectedServiceId,

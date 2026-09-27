@@ -1,5 +1,6 @@
 import { ClockIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
 import { useIdleClose, useKeepBranch } from "#/modules/branches/branch.collection";
 
@@ -13,10 +14,10 @@ export function IdleCloseWarning({ organizationSlug, environmentId, className }:
   const keepBranch = useKeepBranch(organizationSlug);
   if (idle.kind !== "warn") return null;
   return (
-    <div role="status" className={cn("pointer-events-auto flex h-8 w-fit items-center gap-2 rounded-lg border bg-background pl-2.5 text-sm shadow-xs", className)}>
-      <ClockIcon className="size-4 text-muted-foreground" />
-      Closes in {idle.daysLeft} {idle.daysLeft === 1 ? "day" : "days"}
-      <Button variant="ghost" size="sm" onClick={() => keepBranch(environmentId, true)}>Keep it</Button>
-    </div>
+    <Item role="status" variant="outline" size="xs" className={cn("pointer-events-auto w-fit bg-background", className)}>
+      <ItemMedia variant="icon"><ClockIcon /></ItemMedia>
+      <ItemContent><ItemTitle>Closes in {idle.daysLeft} {idle.daysLeft === 1 ? "day" : "days"}</ItemTitle></ItemContent>
+      <ItemActions><Button variant="ghost" size="sm" onClick={() => keepBranch(environmentId, true)}>Keep it</Button></ItemActions>
+    </Item>
   );
 }

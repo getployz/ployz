@@ -15,7 +15,7 @@ const cardVariants = cva(
         destructive: "bg-destructive-soft ring-destructive-border",
         // Branches: an Own Copy being picked is lit; a Live Node (another Environment's, used live) is dashed and translucent.
         own: "ring-2 ring-foreground",
-        live: "border border-dashed border-muted-foreground/60 bg-card/60 ring-0",
+        live: "border border-dashed border-live-border bg-live-soft ring-0",
       },
     },
   }

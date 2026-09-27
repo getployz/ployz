@@ -18,7 +18,7 @@ import { presentRow } from "#/modules/branches/branch-review";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview, StagedChanges } from "./EnvironmentChangesReview";
 
@@ -35,8 +35,6 @@ export const BottomBarSlot = createContext<HTMLElement | null>(null);
 export const StagedReviewSlot = createContext<{ slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void }>({
   slot: null, setSlot: () => {},
 });
-
-const BRANCH_REVIEW_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
 
 type BottomBarProps = {
   environmentId: string;
@@ -123,7 +121,7 @@ export function BottomBar({
 
   const bar = startingPoint ? (
     <Bar icon={<CircleDashedIcon className="size-4 text-muted-foreground" />} title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
-      <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch" params={params} className={buttonVariants({ size: "sm" })}>
+      <Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO} params={params} className={buttonVariants({ size: "sm" })}>
         <GitBranchPlusIcon data-icon="inline-start" />New branch
       </Link>
     </Bar>
@@ -201,7 +199,7 @@ function BranchState({ review }: { review: BranchReviewView }) {
 
 function ReviewLink({ label }: { label: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  return <Link to={BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
+  return <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
 }
 
 /**
