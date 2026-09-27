@@ -4,7 +4,6 @@ import {
   ActivityIcon,
   CreditCardIcon,
   LayoutGridIcon,
-  ServerCogIcon,
   ServerIcon,
   Settings2Icon,
 } from "lucide-react";
@@ -14,7 +13,7 @@ const sectionOrder = [
   "logs",
   "environment-settings",
   "servers",
-  "server-settings",
+  "organization-settings",
   "billing",
 ] as const;
 
@@ -79,9 +78,9 @@ const sectionDefinitions = {
     icon: ServerIcon,
     allPath: "/cloud/$organizationSlug/~/servers",
   },
-  "server-settings": {
-    label: "Server Settings",
-    icon: ServerCogIcon,
+  "organization-settings": {
+    label: "Settings",
+    icon: Settings2Icon,
     allPath: "/cloud/$organizationSlug/~/settings",
   },
   billing: {
@@ -161,8 +160,9 @@ interface SectionByRouteId {
 
 const sectionByRouteId: SectionByRouteId = {
   "/_protected/cloud/$organizationSlug/_org/~/billing": "billing",
-  "/_protected/cloud/$organizationSlug/_org/~/settings": "server-settings",
+  "/_protected/cloud/$organizationSlug/_org/~/settings": "organization-settings",
   "/_protected/cloud/$organizationSlug/_org/~/servers/": "servers",
+  "/_protected/cloud/$organizationSlug/_org/~/servers/$serverId": "servers",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs":
     "logs",
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings":

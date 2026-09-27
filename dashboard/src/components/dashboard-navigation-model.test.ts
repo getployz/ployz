@@ -16,7 +16,7 @@ describe("dashboard navigation model", () => {
     expect(items.map((item) => item.label)).toEqual([
       "Projects",
       "Servers",
-      "Server Settings",
+      "Settings",
       "Billing",
     ]);
     expect(items.map((item) => item.to)).toEqual([
@@ -128,7 +128,7 @@ describe("dashboard navigation model", () => {
       getDashboardSectionFromRouteId(
         "/_protected/cloud/$organizationSlug/_org/~/settings",
       ),
-    ).toBe("server-settings");
+    ).toBe("organization-settings");
     expect(
       getDashboardSectionFromRouteId(
         "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
@@ -141,6 +141,11 @@ describe("dashboard navigation model", () => {
     ).toBe(
       "servers",
     );
+    expect(
+      getDashboardSectionFromRouteId(
+        "/_protected/cloud/$organizationSlug/_org/~/servers/$serverId",
+      ),
+    ).toBe("servers");
     expect(
       getDashboardSectionFromRouteId(
         "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",

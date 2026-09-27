@@ -109,9 +109,9 @@ export function VolumeRemoveDataLossDialog(props: DataLossConfirmDialogProps) {
 export function MachineRemoveDataLossDialog(props: DataLossConfirmDialogProps) {
   return (
     <DataLossConfirmDialog
-      title="Remove this machine?"
-      description="Named Data Loss on this machine will be destroyed, then the machine will be reset."
-      actionLabel="Remove machine"
+      title="Remove this server?"
+      description="Named Data Loss on this server will be destroyed, then the server will be reset."
+      actionLabel="Remove server"
       pendingLabel="Removing..."
       {...props}
     />

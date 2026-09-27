@@ -63,23 +63,22 @@ export function AddServerDialog({
     <>
       <Button
         type="button"
-        variant="outline"
-        size="lg"
+        variant="ink"
         onClick={() => {
           setOpen(true);
           mintMutation.mutate();
         }}
       >
         <PlusIcon data-icon="inline-start" />
-        Add machine
+        Add server
       </Button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-xl">
           <div className="flex flex-col gap-3">
             <DialogHeader>
-              <DialogTitle>Add machine</DialogTitle>
+              <DialogTitle>Add a server</DialogTitle>
               <DialogDescription>
-                Run once as administrator · Expires{" "}
+                Run this as root on a fresh Linux server · Expires{" "}
                 {mintMutation.data
                   ? expiryFormatter.format(
                       new Date(mintMutation.data.expiresAt),

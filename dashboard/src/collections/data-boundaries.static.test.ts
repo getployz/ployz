@@ -56,7 +56,7 @@ const SERVER_FN_FILE = /[.-]functions\.ts$|\.server\.ts$/;
 const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "gather data-loss evidence before confirming teardown",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "gather data-loss evidence, then wait for the confirmed removal",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "gather data-loss evidence before confirming removal",
 };
 
@@ -84,7 +84,7 @@ const ON_DEMAND_READS = {
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
-  githubBuildRepositoriesQueryOptions: "calls GitHub per repository; the Servers page's secondary card fills in after hydration",
+  githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Settings › Builds fills it in after hydration",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
@@ -99,7 +99,7 @@ const COMMAND_FILES = {
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
-  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/server-list-rows.tsx": "removing a machine is destructive and waits on the runtime",
+  "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage",

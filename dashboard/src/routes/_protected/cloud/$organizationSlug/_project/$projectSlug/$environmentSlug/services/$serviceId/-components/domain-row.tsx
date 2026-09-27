@@ -60,7 +60,7 @@ export function DomainRowShell({
   );
 }
 
-type StatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "server_settings" | null };
+type StatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "settings" | null };
 
 /** The icon is the status; one short phrase and at most one link say what's next. */
 function statusView(status: PublicDomainStatus): StatusView {
@@ -93,7 +93,7 @@ function statusView(status: PublicDomainStatus): StatusView {
         action: null,
       };
     case "unreachable":
-      return { icon: warning, phrase: "Servers can’t receive traffic", action: "server_settings" };
+      return { icon: warning, phrase: "Servers can’t receive traffic", action: "settings" };
     case "https_down":
       return { icon: warning, phrase: "HTTPS is down · we’re fixing it", action: null };
   }
@@ -184,13 +184,13 @@ export function PublicDomainRow({
               {showDns ? "Hide DNS records" : "Show DNS records"}
             </Button>
           ) : null}
-          {action === "server_settings" ? (
+          {action === "settings" ? (
             <Link
               to="/cloud/$organizationSlug/~/settings"
               params={{ organizationSlug }}
               className={buttonVariants({ variant: "link", size: "sm" })}
             >
-              Server Settings
+              Settings
             </Link>
           ) : null}
         </div>

@@ -168,7 +168,7 @@ export function useCanvasChangeActions({
         action:
           deployTargetPreflight.action === "add_server"
             ? {
-                label: "Add machine",
+                label: "Add server",
                 onClick: () => {
                   void navigate({
                     to: "/cloud/$organizationSlug/~/servers",
