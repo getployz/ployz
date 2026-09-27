@@ -4,7 +4,7 @@ import {
 } from "react";
 import { useHydrated, useNavigate, useParams } from "@tanstack/react-router";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
 import { InspectorPresentation } from "./CanvasInspectorHeader";
 
@@ -15,8 +15,11 @@ export function CanvasInspectorOverlay({
 }: {
   children: ReactNode;
   canvas: ReactNode;
-  /** `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear. */
-  selection: { key: string; nodeId: string; lit?: boolean } | null;
+  /**
+   * `lit`: the panel lights up the canvas (a Deployment Page), so the shade stays clear.
+   * `returnTo`: the service whose panel opened this one; closing goes back to its Deployments tab.
+   */
+  selection: { key: string; nodeId: string; lit?: boolean; returnTo?: string | null } | null;
 }) {
   const navigate = useNavigate();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -50,13 +53,12 @@ export function CanvasInspectorOverlay({
     }
   }, [selectionKey, selection?.nodeId]);
 
+  const returnTo = selection?.returnTo ?? null;
   function closeInspector() {
-    void navigate({
-      to: ENVIRONMENT_INDEX_ROUTE_TO,
-      params,
-      search: (previous) => ({ ...previous, tab: undefined }),
-      viewTransition: { types: ["canvas-inspector-close"] },
-    });
+    const viewTransition = { types: ["canvas-inspector-close"] };
+    void (returnTo
+      ? navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: returnTo }, search: { tab: "deployments" }, viewTransition })
+      : navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: (previous) => ({ ...previous, tab: undefined }), viewTransition }));
   }
 
   return (
@@ -94,6 +96,7 @@ export function CanvasInspectorOverlay({
         >
           <InspectorPresentation value={{
             takeover,
+            returnTo,
             toggleFullscreen: () => setPreference({ key: selectionKey, full: !preference.full }),
           }}>
             <Suspense fallback={<CanvasInspectorPending />}>{children}</Suspense>

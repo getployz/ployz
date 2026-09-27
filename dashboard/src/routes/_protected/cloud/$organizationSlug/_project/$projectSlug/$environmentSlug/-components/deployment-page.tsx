@@ -14,9 +14,13 @@ export const DEPLOYMENT_LIST_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$
 export const DEPLOYMENT_PAGE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId";
 
-/** The Deployment Page's search: the focused service and the log tab the user picked. */
+/**
+ * The Deployment Page's search: the focused service, the log tab the user picked, and the service whose Deployments tab
+ * opened the page (closing returns there).
+ */
 export const deploymentPageSearchSchema = Schema.Struct({
   service: Schema.optional(Schema.String),
+  returnTo: Schema.optional(Schema.String),
   logs: Schema.optional(Schema.Literals(["build", "deploy"]).pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
 });
 

@@ -16,6 +16,8 @@ export type CanvasInspectorSelection = {
   selectedNodeId: string | null;
   /** The attempt whose Deployment Page is open over the canvas; it opens no node's inspector. */
   deploymentId: string | null;
+  /** The service whose Deployments tab opened that Deployment Page, if one did. */
+  deploymentReturnTo: string | null;
   /** The Environment's deployment list is open over the canvas. */
   deploymentList: boolean;
   isInspectorOpen: boolean;
@@ -54,6 +56,7 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     selectedResourceId,
     selectedNodeId,
     deploymentId: deploymentMatch?.params.deploymentId ?? null,
+    deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
     deploymentList: deploymentListMatch != null,
     isInspectorOpen: selectedNodeId != null,
   };

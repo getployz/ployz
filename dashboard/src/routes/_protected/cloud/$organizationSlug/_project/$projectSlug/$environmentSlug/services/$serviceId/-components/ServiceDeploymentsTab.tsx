@@ -47,7 +47,7 @@ function Deployments({ organizationSlug, serviceId }: { organizationSlug: string
   // History holds the Running attempt too; it shows once, as Running.
   const history = data.pages.flatMap((page) => page.items).filter((deployment) => deployment.id !== running?.id);
   const open = (deployment: NodeDeployment, logs?: "deploy") =>
-    <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} search={{ service: serviceId, logs }} />;
+    <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} search={{ service: serviceId, logs, returnTo: serviceId }} />;
 
   return (
     <>

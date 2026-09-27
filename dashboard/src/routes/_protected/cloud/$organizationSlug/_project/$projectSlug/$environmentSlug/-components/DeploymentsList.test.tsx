@@ -38,7 +38,7 @@ function open(url: string) {
   const projectGroup = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
   const environment = createRoute({
     getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug", loader: () => ({ environmentId: "env-1" }),
-    component: () => <InspectorPresentation value={{ takeover: false, toggleFullscreen: () => {} }}><Outlet /></InspectorPresentation>,
+    component: () => <InspectorPresentation value={{ takeover: false, toggleFullscreen: () => {}, returnTo: null }}><Outlet /></InspectorPresentation>,
   });
   const list = createRoute({
     getParentRoute: () => environment, path: "deployments",

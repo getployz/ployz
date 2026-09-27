@@ -42,10 +42,12 @@ function InspectorEditor() {
 function Architecture() {
   const routeParams = useParams({ strict: false });
   const nodeId = routeParams.serviceId ?? routeParams.resourceId ?? null;
+  const { returnTo } = useSearch({ strict: false });
   return <CanvasInspectorOverlay
     selection={nodeId ? {
       key: `${routeParams.organizationSlug}/${routeParams.projectSlug}/${routeParams.environmentSlug}/${nodeId}`,
       nodeId,
+      returnTo,
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
@@ -190,6 +192,16 @@ describe("canvas inspector presentation", () => {
     fireEvent.click(screen.getByRole("link", { name: /Database data/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/data"));
     expect(screen.getByRole("link", { name: /Database data/ }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("returns a panel opened from a service's Deployments tab to that tab", async () => {
+    const router = await openInspector();
+    await act(() => router.history.push("/cloud/acme/shop/production/resources/data?returnTo=worker"));
+    const serviceTab = "/cloud/acme/shop/production/services/worker?tab=deployments";
+    expect(screen.getByRole("link", { name: "Close inspector" }).getAttribute("href")).toBe(serviceTab);
+    expect(screen.getByRole("link", { name: "Back to service" }).getAttribute("href")).toBe(serviceTab);
+    fireEvent.keyDown(screen.getByLabelText("Draft setting"), { key: "Escape" });
+    await waitFor(() => expect(router.state.location.href).toBe(serviceTab));
   });
 
   it("closes on Escape inside the inspector after nested controls have handled it", async () => {

@@ -63,7 +63,7 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
     ?? services.find(({ view }) => needsAttention.has(view.outcome)) ?? services[0];
   const tab = focused ? deploymentLogTab(focused.view, search.logs) : "deploy";
   const git = gitSource(read?.serviceConfigs ?? [], focused?.node.nodeId, deployment.sourcePins);
-  const pageSearch = (service: string) => ({ service, logs: undefined });
+  const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
 
   return (
     <div className="flex h-full min-h-0 flex-col">
