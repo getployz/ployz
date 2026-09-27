@@ -4,7 +4,7 @@ import {
   type DashboardScope,
 } from "./dashboard-navigation-model";
 import { DashboardNavigation } from "./dashboard-navigation";
-import { NavigationSwitcher } from "./navigation-switcher";
+import { OrganizationSwitcher } from "./organization-switcher";
 import { PloyzLogo } from "./icons/ployz-logo";
 import {
   SidebarContent,
@@ -43,7 +43,7 @@ export function AppSidebar({ scope }: { scope: DashboardScope }) {
             title={open ? "Collapse sidebar" : "Expand sidebar"}
           />
         </div>
-        <NavigationSwitcher projection={open ? "desktop" : "rail"} />
+        <OrganizationSwitcher projection={open ? "desktop" : "rail"} />
       </SidebarHeader>
       <SidebarSeparator />
       <SidebarContent>

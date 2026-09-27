@@ -17,7 +17,7 @@ import {
   type DashboardNavItem,
 } from "./dashboard-navigation-model";
 import { useDashboardSection } from "./use-dashboard-section";
-import { NavigationSwitcher } from "./navigation-switcher";
+import { OrganizationSwitcher } from "./organization-switcher";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Empty, EmptyDescription } from "./ui/empty";
@@ -502,14 +502,18 @@ export function MobileDashboardNavigation({
   scope: DashboardScope;
 }) {
   const { isInspectorOpen } = useCanvasInspectorSelection();
+  // An Environment page's top bar already holds its crumbs and the account menu.
+  if (scope.kind === "environment" && isInspectorOpen) return null;
   return (
     <div data-mobile-navigation className="flex shrink-0 flex-col gap-2 border-b p-3 min-wf-nav:hidden">
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="min-w-0 flex-1">
-          <NavigationSwitcher projection="mobile" />
+      {scope.kind === "all" ? (
+        <div className="flex min-w-0 items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <OrganizationSwitcher projection="mobile" />
+          </div>
+          <DashboardAccountMenu />
         </div>
-        <DashboardAccountMenu />
-      </div>
+      ) : null}
       {!isInspectorOpen ? (
         <div className="flex min-w-0">
           <DashboardNavigationPicker scope={scope} />

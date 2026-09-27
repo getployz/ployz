@@ -246,6 +246,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 ### Navigation
 
 - The application uses a 64px top navigation and a 256px expanded sidebar, collapsing structurally on smaller viewports.
+- Every Environment page's top bar says where you are with breadcrumbs, `project / environment`. Each crumb opens its switcher, and switching keeps the current place. On phones the path keeps its last two crumbs and moves the rest into a "…" menu; the bar never wraps.
 - Items are 32px high with 10px corners. Active location uses a muted neutral surface and medium weight, not the staged-intent color.
 - Navigation labels remain visible whenever width permits; icon-only states always provide accessible names and either tooltips or labelled hover menus.
 

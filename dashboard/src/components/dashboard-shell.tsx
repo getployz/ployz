@@ -10,6 +10,7 @@ import { AppSidebar } from "./app-sidebar";
 import type { DashboardScope } from "./dashboard-navigation-model";
 import { DashboardPageHeader } from "./dashboard-header";
 import { MobileDashboardNavigation } from "./dashboard-navigation";
+import { EnvironmentTopBar } from "./environment-breadcrumbs";
 import { NavigationProgress } from "./navigation-progress";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
 import { RouteContentSkeleton } from "./route-content-skeleton";
@@ -82,6 +83,7 @@ function DashboardLayout({
         </aside>
       ) : null}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+        {scope.kind === "environment" ? <EnvironmentTopBar scope={scope} /> : null}
         <MobileDashboardNavigation
           key={
             scope.kind === "all"
