@@ -18,6 +18,7 @@ export const parseSavedVariable = value => request({ operation: 'parse_saved_var
 export const restoreEnvironmentNode = (current, baseline, node, path = null) => request({ operation: 'restore_environment', current, baseline, node_type: node.nodeType, node_id: node.nodeId, path });
 export const parseResourceConfig = (nodeType, value) => request({ operation: 'parse_resource', node_type: nodeType, value });
 export const compareResourceSettings = (nodeType, current, baseline) => request({ operation: 'compare_resource', node_type: nodeType, current, baseline });
+export const branchChanges = value => request({ operation: 'branch_changes', value });
 export const projectEnvironmentChanges = value => request({ operation: 'project_changes', value });
 export const publicationBasisMatches = (basis, latest) => request({ operation: 'publication_basis_matches', basis, latest });
 export const destructivePublication = value => request({ operation: 'destructive_publication', value });

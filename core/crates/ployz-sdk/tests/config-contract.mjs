@@ -110,4 +110,19 @@ const branch = api.planBranch({ parent: intent, deployed: [id(2)], focus: [id(2)
 assert.deepEqual(branch, { nodes: [{ lineageId: id(2), nodeType: 'service', role: 'own', because: 'picked' }], preset: 'only' });
 assert.equal(api.checkBranchName('shop-pr-12'), 'shop-pr-12');
 assert.throws(() => api.checkBranchName('ployz-system'));
+const branchEnv = (startCommand, seed) => ({
+  version: 1, environmentSlug: 'e', volumes: [], services: [{
+    id: `${String(seed).padStart(8, '0')}-0000-4000-8000-000000000001`, lineageId: 'a0000000-0000-4000-8000-000000000001',
+    slug: 'api', variables: [], volumeAttachments: [],
+    config: { version: 2, privateDns: 'api', preDeployCommand: null, startCommand,
+      healthcheck: { type: 'none' }, restartPolicy: 'unless-stopped',
+      source: { version: 1, type: 'image', image: 'api:1', credentials: { type: 'none' } } },
+  }],
+});
+// Same input and review string as core's branch_changes::contract_review_string.
+const changes = api.branchChanges({
+  base: branchEnv('a', 1), from: branchEnv('b', 2), into: branchEnv('a', 3), provided: [],
+  hostnames: { from: '', into: '' }, fromKept: false,
+});
+assert.equal(changes.review, '[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]');
 console.log('SDK config runs on WASM; napi carries RPC only.');

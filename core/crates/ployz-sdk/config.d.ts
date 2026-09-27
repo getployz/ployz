@@ -20,6 +20,7 @@ export function parseSavedVariable(value: unknown): import('./generated/payloads
 export function restoreEnvironmentNode(current: import('./generated/payloads').SavedEnvironmentIntent, baseline: import('./generated/payloads').SavedEnvironmentIntent | null, node: { nodeType: 'service' | 'volume'; nodeId: string }, path?: string): import('./generated/payloads').SavedEnvironmentIntent;
 export function parseResourceConfig(nodeType: 'volume', value: unknown): import('./generated/payloads').VolumeConfig;
 export function compareResourceSettings(nodeType: 'volume', current: import('./generated/payloads').VolumeConfig, baseline: import('./generated/payloads').VolumeConfig | null): ServiceSettingChange[];
+export function branchChanges(value: import('./generated/payloads').BranchChangesInput): import('./generated/payloads').BranchChanges;
 export function projectEnvironmentChanges(value: import('./generated/payloads').ChangeSetInput): import('./generated/payloads').ReviewChangeSet;
 export function publicationBasisMatches(basis: { kind: 'no_saved_state' } | { kind: 'saved_revision'; savedStateSnapshotId: string }, latest: string | null): boolean;
 export function destructivePublication(value: unknown): { serviceIds: string[]; volumeIds: string[] };
