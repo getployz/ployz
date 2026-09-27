@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import {
   project as schemaProject,
   environment as schemaEnvironment,
+  environmentBranch as schemaEnvironmentBranch,
 } from "#/modules/project/tables";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createTeardownRequestedEvent } from "#/modules/inngest/events";
@@ -158,6 +159,20 @@ const requireTeardownAccess = Effect.fn("Teardown.requireAccess")(
   },
 );
 
+/** A Parent outlives its Branches: closing them comes first. A project teardown takes both together. */
+const refuseOpenBranches = Effect.fn("Teardown.refuseOpenBranches")(function* (access: TeardownAccess) {
+  if (access.scope !== "environment") return;
+  const database = yield* Database;
+  const branches = yield* database.drizzle.select({ name: schemaEnvironment.name })
+    .from(schemaEnvironmentBranch)
+    .innerJoin(schemaEnvironment, eq(schemaEnvironment.id, schemaEnvironmentBranch.environmentId))
+    .where(eq(schemaEnvironmentBranch.parentEnvironmentId, access.environment.id));
+  if (branches.length === 0) return;
+  return yield* new Conflict({
+    message: `${access.environment.name} has open branches: ${branches.map((branch) => branch.name).join(", ")}. Close them first.`,
+  });
+});
+
 const loadTeardownGraph = Effect.fn("Teardown.loadGraph")(function* (
   access: TeardownAccess,
 ) {
@@ -293,6 +308,7 @@ function targetsFor(
 export const loadTeardownDataLoss = Effect.fn("Teardown.loadDataLoss")(
   function* (actor: Actor, input: TeardownTargetInput) {
     const access = yield* requireTeardownAccess(actor, input);
+    yield* refuseOpenBranches(access);
     const graph = yield* loadTeardownGraph(access);
     const catalog = yield* loadCatalog(
       graph.environments.map((environment) => environment.id),
@@ -363,6 +379,7 @@ export const dispatchTeardownRequested = Effect.fn("Teardown.dispatchRequested")
 export const confirmTeardown = Effect.fn("Teardown.confirm")(
   function* (actor: Actor, input: ConfirmTeardownInput) {
     const access = yield* requireTeardownAccess(actor, input);
+    yield* refuseOpenBranches(access);
     const graph = yield* loadTeardownGraph(access);
     const runtime = yield* inspectRuntime(access.organization.id);
     if (

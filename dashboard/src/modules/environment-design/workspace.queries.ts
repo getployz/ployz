@@ -3,7 +3,7 @@ import { environmentManager, queryOptions, type QueryClient } from "@tanstack/re
 import { createOptimisticAction, useLiveQuery } from "@tanstack/react-db";
 import { useSyncExternalStore } from "react";
 import { notFound } from "@tanstack/react-router";
-import { getProjectsCollection, getEnvironmentSummariesCollection, type EnvironmentSummary } from "#/collections/collections";
+import { getBranchesCollection, getProjectsCollection, getEnvironmentSummariesCollection, type EnvironmentSummary } from "#/collections/collections";
 import { observeFailure, preloadCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -87,6 +87,7 @@ export function useWorkspace(organizationSlug: string) {
   const collections = workspaceCollections(organizationSlug, scope);
   const projects = useLiveQuery(collections.projects);
   const environments = useLiveQuery(collections.environments);
+  const branches = useLiveQuery(getBranchesCollection(organizationSlug, scope));
   const isError = useSyncExternalStore(
     (onChange) => scope.queryClient.getQueryCache().subscribe(onChange),
     () => Object.values(collections).some((collection) => collection.utils.isError),
@@ -96,7 +97,8 @@ export function useWorkspace(organizationSlug: string) {
   return {
     projects: resolveProjects(projects.data, environmentRows),
     environments: environmentRows,
-    isPending: projects.isLoading || environments.isLoading,
+    branches: branches.data,
+    isPending: projects.isLoading || environments.isLoading || branches.isLoading,
     isError,
     refetch: () => Promise.all(Object.values(collections).map((collection) => collection.utils.refetch())),
   };

@@ -1,12 +1,14 @@
+import { useState } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
-import { ChevronRightIcon } from "lucide-react";
+import { ChevronRightIcon, GitBranchIcon, PlusIcon } from "lucide-react";
 import { Effect, Option, Schema } from "effect";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Badge } from "#/components/ui/badge";
+import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
@@ -14,8 +16,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { cn } from "#/lib/utils";
+import { environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
+import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
 const settingsTab = Schema.Literals(["environment", "project"]);
@@ -41,7 +45,7 @@ function RouteComponent() {
   const { scope: tab = "environment" } = Route.useSearch();
   const { environmentId } = EnvironmentLayoutRoute.useLoaderData();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { projects, environments } = useWorkspace(organizationSlug);
+  const { projects, environments, branches } = useWorkspace(organizationSlug);
   const project = projects.find((row) => row.slug === projectSlug);
   const environment = environments.find((row) => row.id === environmentId);
 
@@ -80,7 +84,7 @@ function RouteComponent() {
           />
         </TabsContent>
         <TabsContent value="project" className="mt-6 flex flex-col gap-8">
-          {project && <ProjectSettings organizationSlug={organizationSlug} project={project} />}
+          {project && <ProjectSettings organizationSlug={organizationSlug} project={project} branches={branches} />}
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="project"
@@ -98,10 +102,12 @@ function RouteComponent() {
   );
 }
 
-function ProjectSettings({ organizationSlug, project }: {
+function ProjectSettings({ organizationSlug, project, branches }: {
   organizationSlug: string;
   project: ReturnType<typeof useWorkspace>["projects"][number];
+  branches: ReturnType<typeof useWorkspace>["branches"];
 }) {
+  const [creating, setCreating] = useState(false);
   const scope = useCollectionScope();
   const { data: allEnvironments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
   const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
@@ -135,18 +141,25 @@ function ProjectSettings({ organizationSlug, project }: {
         </Field>
       </section>
       <section aria-labelledby="project-environments-heading" className="flex flex-col gap-4">
-        <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
+        <div className="flex items-center justify-between gap-4">
+          <h2 id="project-environments-heading" className="text-base font-semibold">Environments</h2>
+          <Button variant="outline" onClick={() => setCreating(true)}><PlusIcon data-icon="inline-start" />New environment</Button>
+        </div>
         <ItemGroup className="gap-2">
-          {environments.map((environment) => {
+          {environmentTree(environments, branches).map(({ environment, depth, parent }) => {
             const { online, label } = servicesOnline({ namespace: environment.namespace, services: environment.intent.services }, runtimeServices, runtimeStatus);
             return (
-              <Item key={environment.id} variant="outline" size="sm" render={
+              <Item key={environment.id} variant="outline" size="sm"
+                // Indented under its Parent, and narrower by as much so it still ends with the list.
+                className="w-auto" style={{ marginInlineStart: `${depth * 1.5}rem` }} render={
                 <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
                   params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
               }>
                 <ItemContent className="min-w-0">
                   <ItemTitle className="min-w-0">
+                    {parent && <GitBranchIcon aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />}
                     <span className="truncate">{environment.name}</span>
+                    {parent && <span className="sr-only">, branch of {parent.name}</span>}
                     {environment.id === defaultEnvironment?.id && <Badge variant="secondary">Default</Badge>}
                   </ItemTitle>
                   <ItemDescription className="flex items-center gap-2">
@@ -160,6 +173,7 @@ function ProjectSettings({ organizationSlug, project }: {
           })}
         </ItemGroup>
       </section>
+      {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={project.slug} />}
     </>
   );
 }

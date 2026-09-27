@@ -8,6 +8,7 @@ export const changeSources = {
   organization: { organizationColumn: "id", key: ["id"] },
   project: { key: ["id"] },
   environment: { key: ["id"] },
+  environment_branch: { key: ["environment_id"] },
   service: { key: ["id"] },
   resource_lineage: { key: ["id"] },
   environment_resource: { key: ["id"] },

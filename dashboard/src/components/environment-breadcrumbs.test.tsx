@@ -33,6 +33,16 @@ async function renderAt(path: string) {
     { createdAt: new Date(1), id: "store-staging", projectId: "store", namespace: "staging", name: "Staging" },
     { createdAt: new Date(1), id: "docs-production", projectId: "docs", namespace: "production", name: "Docs production" },
     { createdAt: new Date(0), id: "docs-preview", projectId: "docs", namespace: "preview", name: "Docs preview" },
+    { createdAt: new Date(2), id: "store-fix-web", projectId: "store", namespace: "fix-web", name: "fix-web" },
+  ]));
+  queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
+    { environmentId: "store-fix-web", parentEnvironmentId: "store-production" },
+  ]));
+  queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
+    { id: "attempt", environmentId: "store-production" },
+    { id: "attempt-staging", environmentId: "store-staging" },
+    { id: "attempt-docs", environmentId: "docs-preview" },
+    { id: "attempt-docs-production", environmentId: "docs-production" },
   ]));
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }), component: Outlet });
@@ -83,11 +93,27 @@ it("switches between this project's Environments and keeps the place", async () 
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/logs"));
 });
 
-it("opens the create dialog from New environment", async () => {
+it("lists Environments as a tree, each Branch under its Parent, noting the default and what was never deployed", async () => {
   await using _app = await renderAt("/cloud/acme/store/production/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
-  fireEvent.click(await screen.findByRole("option", { name: "New environment" }));
-  expect(await screen.findByRole("dialog", { name: "Add environment" })).toBeTruthy();
+  await screen.findByRole("option", { name: "Production, default" });
+  expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "Manage environments",
+  ]);
+  expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
+});
+
+it("reads project / Parent ⑂ Branch on a Branch, and the Parent's crumb opens the Parent in the same place", async () => {
+  await using app = await renderAt("/cloud/acme/store/fix-web/logs");
+  expect(screen.getByRole("button", { name: "Environment: fix-web" })).toBeTruthy();
+  // Phones fold all but the last two crumbs into a menu: the Branch's own crumb stays out of it.
+  fireEvent.click(screen.getByRole("button", { name: "More breadcrumbs" }));
+  const menu = await screen.findByRole("dialog", { name: "More breadcrumbs" });
+  expect(within(menu).getByRole("link", { name: "Parent: Production" })).toBeTruthy();
+  expect(within(menu).queryByRole("button", { name: "Environment: fix-web" })).toBeNull();
+  fireEvent.click(within(menu).getByRole("link", { name: "Parent: Production" }));
+  await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/production/logs"));
+  expect(screen.queryByRole("link", { name: /Parent/u })).toBeNull();
 });
 
 it("keeps every crumb but the last two in a More menu", async () => {
