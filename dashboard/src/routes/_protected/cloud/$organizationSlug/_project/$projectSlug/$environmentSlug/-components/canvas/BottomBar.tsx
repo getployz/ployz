@@ -111,7 +111,7 @@ export function BottomBar({
         {active.length > 0 ? "Deploy next" : "Deploy"}{isMobile ? null : <Kbd>⇧+Enter</Kbd>}
       </Button>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More change actions" />}>
+        <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More change actions" title="More change actions" />}>
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">

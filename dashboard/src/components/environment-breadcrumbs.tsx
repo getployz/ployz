@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
@@ -54,7 +54,7 @@ export function Crumbs({ items }: { items: ReactNode[] }) {
         {collapsed.length ? <>
           <BreadcrumbItem className="min-wf-nav:hidden">
             <Popover>
-              <PopoverTrigger render={<Button variant="ghost" size="icon-sm" aria-label="More breadcrumbs" />}>
+              <PopoverTrigger render={<Button variant="ghost" size="icon-sm" aria-label="More breadcrumbs" title="More breadcrumbs" />}>
                 <MoreHorizontalIcon />
               </PopoverTrigger>
               <PopoverContent align="start" className="w-auto">
@@ -65,29 +65,17 @@ export function Crumbs({ items }: { items: ReactNode[] }) {
           </BreadcrumbItem>
           <BreadcrumbSeparator className="min-wf-nav:hidden">/</BreadcrumbSeparator>
         </> : null}
-        {items.map((item, index) => (
-          // The "…" menu brings its own separator, so the first visible crumb's is desktop-only too.
-          <Crumb key={index} className={index < collapsed.length ? phonesHidden : undefined}
-            separator={index > 0} separatorClassName={index <= collapsed.length ? phonesHidden : undefined}>{item}</Crumb>
-        ))}
+        {items.map((item, index) => <Fragment key={index}>
+          {/* The "…" menu brings its own separator, so the first visible crumb's is desktop-only too. */}
+          {index > 0 ? <BreadcrumbSeparator className={index <= collapsed.length ? phonesHidden : undefined}>/</BreadcrumbSeparator> : null}
+          <BreadcrumbItem className={index < collapsed.length ? phonesHidden : "min-w-0"}>{item}</BreadcrumbItem>
+        </Fragment>)}
       </BreadcrumbList>
     </Breadcrumb>
   );
 }
 
 const phonesHidden = "hidden min-wf-nav:inline-flex";
-
-function Crumb({ className, separator, separatorClassName, children }: {
-  className?: string | undefined;
-  separator: boolean;
-  separatorClassName?: string | undefined;
-  children: ReactNode;
-}) {
-  return <>
-    {separator ? <BreadcrumbSeparator className={separatorClassName}>/</BreadcrumbSeparator> : null}
-    <BreadcrumbItem className={className ?? "min-w-0"}>{children}</BreadcrumbItem>
-  </>;
-}
 
 function CrumbTrigger({ label, name, current }: { label: string; name: string; current?: boolean }) {
   return (
