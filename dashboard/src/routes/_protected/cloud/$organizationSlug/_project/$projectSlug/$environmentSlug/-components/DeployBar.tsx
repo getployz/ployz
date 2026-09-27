@@ -1,5 +1,5 @@
 import { createContext, Suspense, useRef, type ReactNode } from "react";
-import { Link, useLoaderData, useMatch, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ChevronDownIcon, ChevronRightIcon, CircleDashedIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -16,7 +16,8 @@ import { environmentDeploymentsQueryOptions } from "#/modules/deployments/deploy
 import { deploymentStatusLabel, shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { RelativeTime } from "#/components/relative-time";
-import { DEPLOYMENT_PAGE_ROUTE_ID, DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
+import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 const CANVAS_ROUTE_ID = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";
@@ -32,7 +33,7 @@ export function DeployBar({ children }: { children?: ReactNode }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const listOpen = useSearch({ from: CANVAS_ROUTE_ID, select: (search) => search.deploymentList === true });
-  const viewedId = useMatch({ from: DEPLOYMENT_PAGE_ROUTE_ID, shouldThrow: false })?.params.deploymentId ?? null;
+  const viewedId = useCanvasInspectorSelection().deploymentId;
   const attempts = useEnvironmentDeployments(params.organizationSlug, environmentId);
   const navigate = useNavigate();
   const isMobile = useIsMobile();

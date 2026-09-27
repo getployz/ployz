@@ -10,7 +10,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { Outlet, useLoaderData, useMatch, useParams } from "@tanstack/react-router";
+import { Outlet, useLoaderData, useParams } from "@tanstack/react-router";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
   buildEnvironmentServicesViewQuery,
@@ -33,7 +33,7 @@ import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { ApplyZoneSlot, DeployBar } from "./DeployBar";
-import { DEPLOYMENT_PAGE_ROUTE_ID, DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
+import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -205,8 +205,7 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
-  const deploymentId = useMatch({ from: DEPLOYMENT_PAGE_ROUTE_ID, shouldThrow: false })?.params.deploymentId ?? null;
+  const { selectedNodeId, selectedServiceId, deploymentId } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
 

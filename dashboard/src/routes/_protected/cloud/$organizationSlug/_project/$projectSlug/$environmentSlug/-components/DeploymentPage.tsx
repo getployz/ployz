@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useLoaderData, useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import { CancelDeploymentDialog } from "#/components/cancel-deployment-dialog";
@@ -24,7 +24,7 @@ import {
 } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
-import { DEPLOYMENT_PAGE_ROUTE_ID } from "./deployment-page";
+import type { deploymentPageSearchSchema } from "./deployment-page";
 import { useEnvironmentNavigationNodes } from "./environment-node-navigation";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
@@ -36,10 +36,9 @@ const inFlight = new Set<DeploymentNodeView["outcome"]>(["failed", "building", "
  * One Cloud Deployment Attempt as a panel over the live canvas: its header and actions, a chip per changed service,
  * and that service's Build | Deploy logs. The canvas underneath lights up what it changed (useOpenDeployment).
  */
-export function DeploymentPage({ deploymentId }: { deploymentId: string }) {
+export function DeploymentPage({ deploymentId, search }: { deploymentId: string; search: typeof deploymentPageSearchSchema.Type }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const search = useSearch({ from: DEPLOYMENT_PAGE_ROUTE_ID });
   const navigate = useNavigate();
   // The loader prefetched this read; it names who started the attempt and the configs it deployed.
   const { data: read } = useSuspenseQuery(deploymentAttemptQueryOptions(params.organizationSlug, deploymentId));

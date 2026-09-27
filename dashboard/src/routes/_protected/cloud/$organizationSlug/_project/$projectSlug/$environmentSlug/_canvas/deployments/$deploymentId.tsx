@@ -28,5 +28,5 @@ export const Route = createFileRoute(
 });
 
 function RouteComponent() {
-  return <DeploymentPage deploymentId={Route.useParams().deploymentId} />;
+  return <DeploymentPage deploymentId={Route.useParams().deploymentId} search={Route.useSearch()} />;
 }

@@ -1,5 +1,5 @@
 import { createContext, use, useEffect, useRef } from "react";
-import { useLoaderData, useMatch, useParams, type ParsedLocation } from "@tanstack/react-router";
+import { useLoaderData, useParams, type ParsedLocation } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { openStartedDeploymentsChange, setOpenStartedDeployments } from "#/auth/open-started-deployments";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -8,9 +8,8 @@ import { useDeploymentAttempt, type ViewedAttempt } from "#/modules/deployments/
 import { deploymentLighting, type DeploymentNodeView, type LogTab } from "#/modules/deployments/deployment-view";
 import { Uuid } from "#/modules/environment-design/schema";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 
-export const DEPLOYMENT_PAGE_ROUTE_ID =
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId";
 export const DEPLOYMENT_PAGE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId";
 
@@ -54,9 +53,9 @@ export function useNodeLighting(nodeId: string) {
 export function useOpenDeployment(): Lighting {
   const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const matched = useMatch({ from: DEPLOYMENT_PAGE_ROUTE_ID, shouldThrow: false })?.params.deploymentId;
+  const matched = useCanvasInspectorSelection().deploymentId;
   // A malformed id is no attempt; the page itself says so.
-  const deploymentId = matched !== undefined && Schema.is(Uuid)(matched) ? matched : null;
+  const deploymentId = matched !== null && Schema.is(Uuid)(matched) ? matched : null;
   const { attempt } = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
   useOpenStartedDeploymentsSync(attempt, deploymentId);
   if (!attempt) return null;
