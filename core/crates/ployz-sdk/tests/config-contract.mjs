@@ -100,4 +100,19 @@ const savedCreation = api.projectEnvironmentChanges({
 assert.equal(savedCreation.groups[0].comparison, null);
 assert.deepEqual(savedCreation.groups[0].settings, []);
 assert.equal(savedCreation.totalCount, 1);
+const branchEnv = (startCommand, seed) => ({
+  version: 1, environmentSlug: 'e', volumes: [], services: [{
+    id: `${String(seed).padStart(8, '0')}-0000-4000-8000-000000000001`, lineageId: 'a0000000-0000-4000-8000-000000000001',
+    slug: 'api', variables: [], volumeAttachments: [],
+    config: { version: 2, privateDns: 'api', preDeployCommand: null, startCommand,
+      healthcheck: { type: 'none' }, restartPolicy: 'unless-stopped',
+      source: { version: 1, type: 'image', image: 'api:1', credentials: { type: 'none' } } },
+  }],
+});
+// Same input and review string as core's branch_changes::contract_review_string.
+const branch = api.branchChanges({
+  base: branchEnv('a', 1), from: branchEnv('b', 2), into: branchEnv('a', 3), provided: [],
+  hostnames: { from: '', into: '' }, fromKept: false,
+});
+assert.equal(branch.review, '[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]');
 console.log('SDK config runs on WASM; napi carries RPC only.');

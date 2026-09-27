@@ -1,5 +1,6 @@
 //! Pure authored configuration rules used by native clients and Cloud's canvas.
 
+mod branch_changes;
 mod change_set;
 mod change_set_types;
 mod environment;
@@ -14,6 +15,7 @@ mod service_changes;
 mod validation;
 mod variables;
 
+pub use branch_changes::*;
 pub use change_set::*;
 pub use change_set_types::*;
 pub use environment::*;
@@ -121,6 +123,9 @@ enum ConfigRequest {
         baseline: serde_json::Value,
         path: String,
     },
+    BranchChanges {
+        value: Box<BranchChangesInput>,
+    },
 }
 
 /// The JSON ABI behind the SDK's WASM config export; it validates before policy.
@@ -227,5 +232,6 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
             let baseline = parse_service_config(baseline)?;
             serde_json::json!(restore_service_setting(current, &baseline, &path)?)
         }
+        ConfigRequest::BranchChanges { value } => serde_json::json!(branch_changes(*value)?),
     })
 }
