@@ -2,13 +2,18 @@ import { admitEnvironmentDeployment } from "#/modules/deployments/admission.serv
 import { persistDeploymentSourcePin } from "#/modules/deployments/source-pins.server";
 import { createRetryAttempt } from "#/modules/deployments/retry-repository.server";
 import { resumeGithubWaitingTriggers } from "./github-ingestion.branch.repository";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import { handleGithubWebhookRequest } from "#/routes/api/github/-webhook.handler";
+import { GithubApi, type GithubJsonRequest } from "#/modules/github/github-observation.api";
+import { executeProcessGithubCheckSuiteReceived, type GithubIngestionEffectRunner } from "#/modules/github/inngest-ingestion/process";
+import { AppConfig } from "#/server/config.server";
+import { testConfigEnvironment } from "#/test/config-environment";
 import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { Inngest } from "inngest";
 import * as schema from "#/db/schema";
-import { Effect, Result as EffectResult } from "effect";
+import { ConfigProvider, Effect, Layer, Result as EffectResult, Schema } from "effect";
 import { planGithubBranchEvaluation } from "#/modules/github/github-branch-evaluation";
 import type { GithubBranchCursor } from "#/modules/github/github-ingestion.repository";
 import {
@@ -16,7 +21,7 @@ import {
   startPostgresTestHarness,
 } from "#/test/postgres";
 import * as repository from "#/modules/github/github-ingestion.repository";
-import { InngestClient } from "#/modules/inngest/client";
+import { InngestClient, type PloyzStepTools } from "#/modules/inngest/client";
 import {
   createDefaultServiceHealthcheck,
   createDefaultServiceRestartPolicy,
@@ -141,7 +146,7 @@ describe("GitHub branch deployment admission", () => {
     if (!node) throw new Error("Working service missing.");
     node.variables = [{ id: variableId, key: "WORKING_ONLY", description: null, exported: false, valueFingerprint: "unfinished", value: { kind: "literal", value: "unfinished" } }];
     await harness.pool.query(`
-      truncate table github_environment_trigger, github_branch_projection, github_webhook_delivery, organization, "user" cascade;
+      truncate table github_environment_trigger, github_branch_projection, github_check_suite_projection, github_webhook_delivery, organization, "user" cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acceptance', 'acceptance');
       insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
       insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'GitHub', 'github');
@@ -294,6 +299,81 @@ describe("GitHub branch deployment admission", () => {
     await runGithubRepositoryResult(resumeGithubWaitingTriggers());
     expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
     expect((await harness.db.select().from(schema.githubEnvironmentTrigger))[0]?.admissionState).toBe("admitted");
+  });
+
+  it("waits for CI through the webhook while ignoring Ployz's own check suite", async () => {
+    const headSha = "d".repeat(40);
+    const ployzAppId = 4242;
+    await harness.db.update(schema.service).set({ policy: { autoDeploy: true, waitForCi: true, watchPaths: [], imageUpdate: { type: "off" } } }).where(eq(schema.service.id, serviceId));
+    await admitPush({ deliveryId: "wait-ci-own-suite", headSha, cursor: null });
+
+    const sent: unknown[] = [];
+    const webhookInngest = new Inngest({ id: "github-own-suite-webhook" });
+    webhookInngest.send = async (input) => {
+      sent.push(input);
+      return { ids: [] };
+    };
+    const github: string[] = [];
+    const suites = new Map<number, { status: string; conclusion: string | null }>();
+    const githubApi = {
+      archive: () => Effect.die("unused"),
+      json: <S extends Schema.ConstraintDecoder<unknown>>(request: GithubJsonRequest<S>) => {
+        github.push(request.url);
+        const suiteId = Number(request.url.split("/check-suites/")[1]);
+        const suite = suites.get(suiteId);
+        const response = suite
+          ? { id: suiteId, head_sha: headSha, updated_at: new Date().toISOString(), ...suite }
+          : { id: repositoryId, full_name: "acme/api" };
+        return Schema.decodeUnknownEffect(request.schema)(response).pipe(Effect.orDie);
+      },
+    };
+    const config = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({
+      env: { ...testConfigEnvironment(), DATABASE_URL: harness.databaseUrl, GITHUB_APP_ID: String(ployzAppId), GITHUB_APP_WEBHOOK_SECRET: "webhook-secret" },
+    }))));
+    const runEffect: GithubIngestionEffectRunner = (effect) => harness.runEffect(effect.pipe(
+      Effect.provide(config),
+      Effect.provideService(GithubApi, githubApi),
+      Effect.provideService(InngestClient, inngest),
+    ));
+    const run: PloyzStepTools["run"] = async (_id, operation, ...input) => {
+      const result = await operation(...input);
+      return result === undefined ? null : JSON.parse(JSON.stringify(result));
+    };
+    const step = { run, sendEvent: async () => ({ ids: [] }) };
+    const deliver = async (deliveryId: string, appId: number, checkSuiteId: number, status: string, conclusion: string | null) => {
+      suites.set(checkSuiteId, { status, conclusion });
+      const body = JSON.stringify({
+        action: status === "completed" ? "completed" : "requested",
+        installation: { id: installationId },
+        repository: { id: repositoryId },
+        check_suite: { id: checkSuiteId, head_sha: headSha, status, conclusion, updated_at: new Date().toISOString(), app: { id: appId } },
+      });
+      const signature = createHmac("sha256", "webhook-secret").update(body).digest("hex");
+      const response = await harness.runEffect(handleGithubWebhookRequest(new Request("http://localhost/api/github/webhook", {
+        method: "POST",
+        headers: { "x-hub-signature-256": `sha256=${signature}`, "x-github-event": "check_suite", "x-github-delivery": deliveryId },
+        body,
+      })).pipe(Effect.provide(config), Effect.provideService(InngestClient, webhookInngest)));
+      expect(response.status).toBe(200);
+      for (const event of sent.splice(0)) {
+        await executeProcessGithubCheckSuiteReceived({ event: event as never, step, runId: `run-${deliveryId}` }, runEffect);
+      }
+    };
+    const admissionState = async () => (await harness.db.select().from(schema.githubEnvironmentTrigger))[0]?.admissionState;
+
+    await deliver("ployz-suite", ployzAppId, 501, "queued", null);
+    expect(github).toEqual([]);
+    expect(await harness.db.select().from(schema.githubWebhookDelivery)
+      .where(eq(schema.githubWebhookDelivery.deliveryId, "ployz-suite"))).toEqual([]);
+    expect(await harness.db.select().from(schema.githubCheckSuiteProjection)).toEqual([]);
+
+    await deliver("ci-running", 15368, 502, "in_progress", null);
+    expect(await admissionState()).toBe("waiting");
+    expect(await harness.db.select().from(schema.environmentDeployment)).toEqual([]);
+
+    await deliver("ci-passed", 15368, 502, "completed", "success");
+    expect(await admissionState()).toBe("admitted");
+    expect(await harness.db.select().from(schema.environmentDeployment)).toHaveLength(1);
   });
 
   it("rechecks immediate policy before admitting a previously selected service", async () => {
