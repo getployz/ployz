@@ -6,15 +6,14 @@ import { ChangeRowItem } from "./ChangeRowItem";
 
 /** Settings each Environment keeps as its own, so they never move, each with its reason. */
 export function DifferSection({ review }: { review: BranchReviewView }) {
-  if (review.differ.length === 0) return null;
   return (
-    <ReviewSection title="Meant to differ" help="These never move in a merge or an update.">
-      <ItemGroup className="gap-1">
+    <ReviewSection title="Meant to differ" help={review.differ.length ? "These never move in a merge or an update." : undefined}>
+      {review.differ.length ? <ItemGroup className="gap-1">
         {review.differ.map((row) => (
           <ChangeRowItem key={row.key} row={presentRow(row, review.nameOf)}
             description={<ItemDescription>{row.role === "differ" ? DIFFER_REASONS[row.why] : null}</ItemDescription>} />
         ))}
-      </ItemGroup>
+      </ItemGroup> : <p className="text-sm text-muted-foreground">Nothing here is meant to differ.</p>}
     </ReviewSection>
   );
 }

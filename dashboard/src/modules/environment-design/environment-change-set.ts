@@ -1,5 +1,4 @@
 import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
-import type { JsonObject } from "#/db/tables";
 import type { EnvironmentResourceNodeConfigByType } from "./environment-resource-node";
 import type { ServiceDeploymentConfig } from "./services";
 
@@ -42,9 +41,8 @@ export type DashboardReviewChangeSet = {
 };
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
-type NodeConfig = NonNullable<EnvironmentNodeProjection["config"]> | JsonObject;
 /** A node's current and baseline configs through today's config schema; throws when either no longer parses. */
-export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: NodeConfig, baseline: NodeConfig) {
+export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: unknown, baseline: unknown) {
   return type === "service"
     ? { type, current: parseServiceConfig(current), baseline: parseServiceConfig(baseline) }
     : { type, current: parseResourceConfig("volume", current), baseline: parseResourceConfig("volume", baseline) };
@@ -80,6 +78,22 @@ export function buildEnvironmentChangeSet(input: EnvironmentChangeSetProjectionI
     totalCount: groups.reduce((n, group) => n + group.settings.length + (group.lifecycle === "update" ? 0 : 1), 0),
     headToken: head.token,
   };
+}
+
+/** One node's config as Working or Applied State holds it, before parsing. */
+export type StateNode = { nodeType: EnvironmentNodeIdentity["type"]; nodeId: string; config: unknown };
+
+/**
+ * Whether Working State differs from Applied State: `buildEnvironmentChangeSet(...).totalCount > 0` for the same states,
+ * without introductions or tokens. A Branch must have none before it merges or updates.
+ */
+export function hasUndeployedChanges(working: readonly StateNode[], applied: readonly StateNode[]): boolean {
+  const key = (node: StateNode) => `${node.nodeType}:${node.nodeId}`;
+  const before = new Map(applied.map((node) => [key(node), node]));
+  return working.length !== applied.length || working.some((node) => {
+    const baseline = before.get(key(node));
+    return !baseline || compareNodeSettings(parseNodeConfigs(node.nodeType, node.config, baseline.config)).length > 0;
+  });
 }
 
 /** The change group for one node, computed by the same rule as the whole set. */

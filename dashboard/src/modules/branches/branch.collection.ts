@@ -11,6 +11,10 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { hasUndeployedChanges } from "#/modules/environment-design/environment-change-set";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import type { SetupCommand } from "#/modules/project/tables";
 import { setBranchKeptServerFn } from "./branch-close.functions";
 import { setBranchSetupDefaultsServerFn, updateBranchServerFn } from "./branch-functions";
@@ -64,6 +68,20 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
   if (attempts.length > 0 || !branches.some((branch) => branch.environmentId === environmentId)) return undefined;
   return environments.find((environment) => environment.id === environmentId);
+}
+
+/**
+ * Why Merge, Update and Own Copy must wait, or null: a Branch moves only what it runs. Something staged (a starting point's
+ * nodes too) or an active attempt holds them; the server's gate, assertBranchSettled, is the same rule.
+ */
+export function useBranchUnsettled(organizationSlug: string, environmentId: string): string | null {
+  const document = useEnvironmentDocument(organizationSlug, environmentId);
+  const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
+  const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
+  if (attempts.length === 0) return "Deploy this starting point first.";
+  if (attempts.some(({ deployment }) => isActiveDeployment(deployment.status))) return "Wait for this branch's deployment to finish.";
+  return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? [])
+    ? "Deploy or discard the changes staged here first." : null;
 }
 
 const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, scope) => {

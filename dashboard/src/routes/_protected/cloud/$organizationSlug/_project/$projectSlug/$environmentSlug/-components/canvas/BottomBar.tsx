@@ -30,13 +30,11 @@ export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
 /**
  * Where a Branch's review page shows its staged changes ("Not deployed here yet"). The page sets the slot; the bar, which
- * owns the change actions, portals the staged-changes review into it. The bar also says why Merge and Update must wait
- * (`unsettled`): something staged or an active attempt; null when neither.
+ * owns the change actions, portals the staged-changes review into it.
  */
-export const StagedReviewSlot = createContext<{
-  slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void;
-  unsettled: string | null; setUnsettled: (reason: string | null) => void;
-}>({ slot: null, setSlot: () => {}, unsettled: null, setUnsettled: () => {} });
+export const StagedReviewSlot = createContext<{ slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void }>({
+  slot: null, setSlot: () => {},
+});
 
 const BRANCH_REVIEW_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
 
@@ -75,7 +73,7 @@ export function BottomBar({
   onDiscardRow,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
-  const { slot: reviewSlot, setUnsettled } = useContext(StagedReviewSlot);
+  const { slot: reviewSlot } = useContext(StagedReviewSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const review = useBranchReview(params.organizationSlug, environmentId);
   const viewedId = useCanvasInspectorSelection().deploymentId;
@@ -88,13 +86,10 @@ export function BottomBar({
   const active = useEnvironmentDeployments(params.organizationSlug, environmentId)
     .filter(({ deployment }) => isActiveDeployment(deployment.status)).reverse();
   const startingPoint = useStartingPoint(params.organizationSlug, environmentId);
-  const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
+  const staged = totalChanges > 0 || canSaveWithoutDeploying;
+  const hasChanges = !startingPoint && staged;
   const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
-  // The server's gate (assertBranchSettled) is the same: an empty Environment Change Set and no active attempt.
-  const unsettled = hasChanges ? "Deploy or discard the changes staged here first."
-    : active.length ? "Wait for this branch's deployment to finish." : null;
-  useEffect(() => setUnsettled(unsettled), [setUnsettled, unsettled]);
 
   function deploy() {
     setOpen(false);
@@ -166,7 +161,7 @@ export function BottomBar({
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
-      {reviewSlot ? createPortal(hasChanges ? <StagedChanges inline {...reviewProps} />
+      {reviewSlot ? createPortal(staged ? <StagedChanges inline {...reviewProps} />
         : <p className="text-sm text-muted-foreground">Nothing staged here.</p>, reviewSlot) : null}
     </>
   );

@@ -157,6 +157,8 @@ describe("mergeBranch", () => {
     const [branch] = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, branchId));
     const environments = await harness.db.select().from(schema.environment).where(inArray(schema.environment.id, [branchId, parentId]));
     const states = await provide(listLatestOrganizationEnvironmentChangeStates({ userId }, { organizationSlug: "acme" }));
+    // The Parent's Applied State reaches the browser redacted: its secret as a fingerprint only.
+    if (JSON.stringify(states).includes("ciphertext")) throw new Error("Sealed ciphertext reached the browser.");
     const own = environments.find((row) => row.id === branchId);
     const parent = environments.find((row) => row.id === parentId);
     if (!branch || !own || !parent) throw new Error("The Branch or its Parent is missing.");

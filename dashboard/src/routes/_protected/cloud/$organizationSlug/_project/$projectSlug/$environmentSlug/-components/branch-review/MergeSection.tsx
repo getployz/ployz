@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import type { BranchOption } from "@ployz/sdk/config";
 import { Button } from "#/components/ui/button";
@@ -10,10 +10,10 @@ import { NativeSelect, NativeSelectOption } from "#/components/ui/native-select"
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { useMergeBranch } from "#/modules/branches/branch-commands";
+import { useBranchUnsettled } from "#/modules/branches/branch.collection";
 import { presentRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { StagedReviewSlot } from "../canvas/BottomBar";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { ReviewSection } from "./BranchReviewPanel";
 import { ChangeRowItem } from "./ChangeRowItem";
@@ -28,7 +28,7 @@ type Pick = { ticked: boolean; option?: BranchOption; value: string };
 export function MergeSection({ review, branch }: { review: BranchReviewView; branch: { id: string; name: string } }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const destination = review.parent.name;
-  const { unsettled } = useContext(StagedReviewSlot);
+  const unsettled = useBranchUnsettled(params.organizationSlug, branch.id);
   const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branch.id);
   const merge = useMergeBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: branch.name, destination: review.parent });
   const [edits, setEdits] = useState<Record<string, Partial<Pick>>>({});
