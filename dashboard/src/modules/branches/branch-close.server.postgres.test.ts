@@ -12,6 +12,7 @@ import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { closeBranch, sweepIdleBranches } from "./branch-close.server";
+import { createBranch } from "./branch-operations.server";
 
 const organizationId = "00000000-0000-4000-8000-000000000901";
 const creatorId = "00000000-0000-4000-8000-000000000902";
@@ -161,8 +162,8 @@ describe("closing a Branch", () => {
     expect(manual).toMatchObject({ requestedByUserId: userId });
   });
 
-  it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
-    // Everything but production last deployed 8 days ago; fix-web still has try-cache open.
+  /** Everything but production last deployed 8 days ago; fix-web still has try-cache open, so only fix-staging is due. */
+  async function ageBranches() {
     for (const id of [fixWebId, tryCacheId, fixStagingId]) {
       await harness.pool.query(`
         with snapshot as (
@@ -172,6 +173,32 @@ describe("closing a Branch", () => {
         insert into environment_deployment (organization_id, environment_id, trigger_origin, saved_state_snapshot_id, created_at)
         select $1, $2, '{}', id, now() - interval '8 days' from snapshot`, [organizationId, id, creatorId]);
     }
+  }
+
+  it("runs the sweep and a new Branch of the Branch it closes side by side without a deadlock", async () => {
+    await ageBranches();
+    // Hold the Project so the create queues on it first and the sweep second; then let both go. Taking locks out of order
+    // (the sweep's Branch row before the Project) deadlocks here.
+    const holder = await harness.pool.connect();
+    await holder.query("begin");
+    await holder.query("select id from project where id = $1 for update", [projectId]);
+    const created = run(provide(createBranch({ userId }, {
+      organizationSlug: "acme", parentEnvironmentId: fixStagingId, name: "child", focus: [], picks: { preset: "only" },
+      keep: false, deployNow: false, setupCommands: [],
+    }).pipe(Effect.flip)));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const closed = run(provide(sweepIdleBranches(new Date()), "app-try-cache"));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await holder.query("commit");
+    holder.release();
+
+    expect(await closed).toEqual([fixStagingId]);
+    // fix-staging has nothing to copy, so the create is refused, or refused as closing; never a lock failure.
+    expect(["Validation", "Conflict"]).toContain((await created)._tag);
+  });
+
+  it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
+    await ageBranches();
 
     const closed = await run(provide(sweepIdleBranches(new Date()), "app-try-cache"));
 

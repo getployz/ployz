@@ -78,8 +78,10 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
 }) {
   const { drizzle } = yield* Database;
   // Under the Project lock teardown admission takes: a Parent that is being torn down gets no new Branch, and one torn
-  // down after this commits takes the new Branch with it.
+  // down after this commits takes the new Branch with it. Then the Parent's Branch row, shared, so an idle close of the
+  // Parent waits for this Branch and sees it (lock order: lockProjectDefault).
   yield* lockProjectDefault(project.id);
+  const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id)).for("share");
   if ((yield* activeTeardownFor([parent.id])).size > 0) {
     return yield* new Conflict({ message: `${parent.name} is being torn down.` });
   }
@@ -109,8 +111,6 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   const namespace = branchNamespace(project.slug, input.name);
   const nameError = branchNameError(project.slug, input.name, new Set());
   if (nameError) return yield* new Validation({ field: "name", message: nameError });
-  // Shares the Parent's Branch row, so an idle close of the Parent waits for this Branch, and sees it.
-  const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id)).for("share");
 
   // 1. Core derives the Branch's configuration: fresh ids, the Parent's lineages, secrets with their values.
   const create = (source: typeof from, picks: string[]) => core("picks", () => branchChanges({

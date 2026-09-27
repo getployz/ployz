@@ -37,7 +37,8 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
   const encryption = yield* SecretEncryption;
   const merged = yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    const [branch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, input.branchEnvironmentId));
+    // The Branch row before any queue (lock order: lockProjectDefault); its base advances below.
+    const [branch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, input.branchEnvironmentId)).for("update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
     const destinationId = branch.parentEnvironmentId;
 

@@ -10,6 +10,7 @@ import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
+import { lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -27,13 +28,17 @@ export type BranchCloseReason = "merged" | "idle";
 export const closeBranch = Effect.fn("Branches.close")(function* (environmentId: string, reason: BranchCloseReason) {
   const database = yield* Database;
   const [branch] = yield* database.drizzle
-    .select({ organizationId: schemaEnvironmentBranch.organizationId, createdByUserId: schemaEnvironmentBranch.createdByUserId })
+    .select({
+      organizationId: schemaEnvironmentBranch.organizationId, projectId: schemaEnvironmentBranch.projectId,
+      createdByUserId: schemaEnvironmentBranch.createdByUserId,
+    })
     .from(schemaEnvironmentBranch)
     .where(eq(schemaEnvironmentBranch.environmentId, environmentId));
   if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
   const requestedByUserId = branch.createdByUserId;
   const prepared = yield* prepareSystemTeardown({ organizationId: branch.organizationId, environmentId });
   return {
+    projectId: branch.projectId,
     admit: Effect.gen(function* () {
       const attempt = yield* admitSystemTeardown(prepared, requestedByUserId);
       yield* afterDatabaseCommit(Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id }));
@@ -82,10 +87,12 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     environmentId,
     "An idle Branch did not close; the next sweep retries it.",
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
-      // Under the Branch's queue lock (a deploy waits) and its row (Keep and a new Branch of it wait), the rule again.
-      yield* lockEnvironmentDeploymentQueue(environmentId);
+      // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
+      // the Branch row (Keep, Merge and Update wait), then its queue (a deploy waits).
+      yield* lockProjectDefault(close.projectId);
       yield* (yield* Database).drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch)
         .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
+      yield* lockEnvironmentDeploymentQueue(environmentId);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;
       return yield* close.admit;
     })))),
