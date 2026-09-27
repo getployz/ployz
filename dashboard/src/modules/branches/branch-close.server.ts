@@ -11,6 +11,8 @@ import { environmentBranch as schemaEnvironmentBranch, project as schemaProject 
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
+import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { branchUnsettled } from "./branch-guard.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -63,7 +65,13 @@ export const tryCloseBranch = (environmentId: string) => Effect.gen(function* ()
   return yield* tryClose(environmentId, "A merged Branch did not close.",
     closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       const row = yield* lockBranchScope(close.projectId, environmentId, "update");
-      return !row || row.kept ? null : yield* close.admit;
+      if (!row || row.kept) return null;
+      // Anything staged or deploying since the Merge stays: under the Branch's queue and document locks, which a deploy and
+      // an edit take, the Branch must still run exactly its Working State.
+      const { drizzle } = yield* Database;
+      yield* lockEnvironmentDeploymentQueue(environmentId);
+      yield* loadEnvironmentDocument(environmentId, true);
+      return (yield* branchUnsettled(drizzle, environmentId)) ? null : yield* close.admit;
     })))));
 });
 

@@ -18,6 +18,7 @@ import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { mergeBranch } from "./branch-merge.server";
+import { tryCloseBranch } from "./branch-close.server";
 import { createBranch } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
 import { mergeInput } from "./branch-review";
@@ -259,6 +260,22 @@ describe("mergeBranch", () => {
 
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
     expect(await teardowns()).toEqual([]);
+  });
+
+  it("doesn't close a merged Branch that has changes staged since the Merge", async () => {
+    const branch = await create("late-edit");
+    await settle(branch.id);
+    await edit(branch.id, setImage("web:6"));
+    await deploy(branch.id);
+    const seen = await review(branch.id);
+    // Merged without closing, then edited before the close runs: the close re-checks under the Branch's locks.
+    expect((await merge(branch.id, seen, defaults(seen.rows), false)).data.closed).toBe(false);
+    await edit(branch.id, setImage("web:7"));
+    expect(await provide(tryCloseBranch(branch.id))).toBe(false);
+    expect(await teardowns()).toEqual([]);
+    // Once it runs its Working State again, it closes.
+    await deploy(branch.id);
+    expect(await provide(tryCloseBranch(branch.id))).toBe(true);
   });
 
   it("keeps a Kept Branch, advancing its base; a close that can't start leaves the Merge standing", async () => {
