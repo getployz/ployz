@@ -11,6 +11,7 @@ import {
 } from "#/modules/deployments/environment-deployment.inngest";
 import {
   createProcessGithubCheckSuiteReceived,
+  createProcessGithubPullRequestReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
 import { createSweepGithubIngestionOutboxes } from "#/modules/github/inngest-ingestion/sweep";
@@ -52,6 +53,7 @@ describe("Inngest function policies", () => {
       createProcessGithubInstallationRepositoriesReceived(inngest),
       createProcessGithubPushReceived(inngest),
       createProcessGithubCheckSuiteReceived(inngest),
+      createProcessGithubPullRequestReceived(inngest),
       createSweepGithubIngestionOutboxes(inngest),
       createProcessEnvironmentDeployment(inngest),
       createMarkCancelledRowBackedWorkflow(inngest),
@@ -83,6 +85,7 @@ describe("Inngest function policies", () => {
       { id: "process-github-installation-repositories-received", retries: 3, concurrency: [{ key: "event.data.installation.id", limit: 1 }] },
       { id: "process-github-push-received", retries: 5, concurrency: [{ key: "event.data.branchKey", limit: 1 }] },
       { id: "process-github-check-suite-received", retries: 5, concurrency: [{ key: "event.data.checkSuiteKey", limit: 1 }] },
+      { id: "process-github-pull-request-received", retries: 5, concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }] },
       { id: "sweep-github-ingestion-outboxes", retries: 5, concurrency: [{ limit: 1 }] },
       { id: "process-environment-deployment", retries: 0, concurrency: [{ key: "event.data.environmentDeploymentId", limit: 32 }] },
       { id: "mark-cancelled-row-backed-workflow", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },

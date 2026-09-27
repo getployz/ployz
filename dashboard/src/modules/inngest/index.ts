@@ -1,6 +1,7 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import {
   createProcessGithubCheckSuiteReceived,
+  createProcessGithubPullRequestReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
 import { createSweepGithubIngestionOutboxes } from "#/modules/github/inngest-ingestion/sweep";
@@ -41,6 +42,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessGithubInstallationRepositoriesReceived(inngest),
     createProcessGithubPushReceived(inngest),
     createProcessGithubCheckSuiteReceived(inngest),
+    createProcessGithubPullRequestReceived(inngest),
     createSweepGithubIngestionOutboxes(inngest),
     createSyncGithubRepositories(inngest),
     createMarkCancelledRowBackedWorkflow(inngest),

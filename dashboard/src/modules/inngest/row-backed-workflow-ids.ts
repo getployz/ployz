@@ -7,6 +7,9 @@ export const PROCESS_GITHUB_PUSH_RECEIVED_FUNCTION_ID =
 export const PROCESS_GITHUB_CHECK_SUITE_RECEIVED_FUNCTION_ID =
   "process-github-check-suite-received";
 
+export const PROCESS_GITHUB_PULL_REQUEST_RECEIVED_FUNCTION_ID =
+  "process-github-pull-request-received";
+
 export const PROCESS_VOLUME_REMOVE_FUNCTION_ID = "process-volume-remove";
 
 export const PROCESS_MACHINE_REMOVE_FUNCTION_ID = "process-machine-remove";
