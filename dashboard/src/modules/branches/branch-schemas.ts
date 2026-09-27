@@ -38,3 +38,15 @@ export const SetBranchSetupDefaults = Schema.Struct({
   setupCommands: SetupCommands,
 });
 export type SetBranchSetupDefaults = typeof SetBranchSetupDefaults.Type;
+
+/**
+ * Update: stage the Parent's deployed changes in the Branch at `revision`. With `only`, turn that Live Node into an Own
+ * Copy, from the Environment that runs it.
+ */
+export const UpdateBranch = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+  revision: Uuid,
+  only: Schema.optional(Uuid),
+});
+export type UpdateBranch = typeof UpdateBranch.Type;

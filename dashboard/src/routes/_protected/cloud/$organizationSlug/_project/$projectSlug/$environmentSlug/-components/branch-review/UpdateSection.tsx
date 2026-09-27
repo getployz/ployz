@@ -1,16 +1,31 @@
+import { useContext, useState } from "react";
+import { useParams } from "@tanstack/react-router";
+import { Button } from "#/components/ui/button";
 import { ItemDescription, ItemGroup } from "#/components/ui/item";
+import { useUpdateBranch } from "#/modules/branches/branch.collection";
 import { RelativeTime } from "#/components/relative-time";
 import { presentRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
 import { ReviewSection } from "./BranchReviewPanel";
 import { ChangeRowItem } from "./ChangeRowItem";
+import { StagedReviewSlot } from "../canvas/BottomBar";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
  * The Parent's deployed changes the Branch doesn't have, then each Live Node its owner redeployed since the Branch last
- * deployed. Read-only; #1160 adds Update.
+ * deployed. Update stages the Parent's rows here; Live Nodes need only the Branch's next deploy.
  */
-export function UpdateSection({ review }: { review: BranchReviewView }) {
+export function UpdateSection({ review, environmentId }: { review: BranchReviewView; environmentId: string }) {
   const parent = review.parent.name;
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const update = useUpdateBranch(params.organizationSlug);
+  const { unsettled } = useContext(StagedReviewSlot);
+  const [updating, setUpdating] = useState(false);
+
+  function start() {
+    setUpdating(true);
+    void update(environmentId).isPersisted.promise.catch(() => {}).finally(() => setUpdating(false));
+  }
   return (
     <ReviewSection title={`New in ${parent}`} count={review.updates}
       help={review.live.length ? "This branch still runs on the values it captured from what it uses live. Deploying it picks up the new ones." : undefined}>
@@ -26,6 +41,14 @@ export function UpdateSection({ review }: { review: BranchReviewView }) {
           ))}
         </ItemGroup>
       ) : <p className="text-sm text-muted-foreground">Nothing new in {parent}.</p>}
+      {review.update.length ? (
+        <div className="flex flex-col items-start gap-2">
+          <Button onClick={start} disabled={updating || unsettled !== null}>Update from {parent}</Button>
+          <p className="text-sm text-muted-foreground">
+            {unsettled ?? `Stages ${parent}'s changes here, to deploy and test with this branch's own.`}
+          </p>
+        </div>
+      ) : null}
     </ReviewSection>
   );
 }

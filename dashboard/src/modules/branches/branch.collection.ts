@@ -1,15 +1,19 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { getBranchesCollection, getEnvironmentDeploymentsCollection, getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
-import { observeFailure } from "#/collections/query-collection";
+import {
+  getBranchesCollection, getCanvasPositionsCollection, getEnvironmentDeploymentsCollection, getEnvironmentNodeIntroductionsCollection,
+  getEnvironmentsCollection, getProjectsCollection, getRawEnvironmentResourcesCollection, getRawServicesCollection,
+} from "#/collections/collections";
+import { observeFailure, reconcileCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
 import type { SetupCommand } from "#/modules/project/tables";
 import { setBranchKeptServerFn } from "./branch-close.functions";
-import { setBranchSetupDefaultsServerFn } from "./branch-functions";
+import { setBranchSetupDefaultsServerFn, updateBranchServerFn } from "./branch-functions";
 import { idleClose } from "./idle-close";
 
 const getKeepBranchAction = cachedByCollectionScope((organizationSlug, scope) => {
@@ -81,4 +85,22 @@ const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, 
 export function useBranchSetupDefaults(organizationSlug: string) {
   const save = getBranchSetupDefaultsAction(organizationSlug, useCollectionScope());
   return (environmentId: string, setupCommands: SetupCommand[]) => observeFailure(save({ environmentId, setupCommands }));
+}
+
+/**
+ * Update a Branch from its Parent, or with `only` turn that Live Node into an Own Copy. Queued behind pending edits like
+ * Discard, so it saves against their revision; the queue toasts a failure. The rows it adds are read back before it counts as saved.
+ */
+export function useUpdateBranch(organizationSlug: string) {
+  const scope = useCollectionScope();
+  const queue = useEnvironmentDocumentQueue(organizationSlug);
+  return (environmentId: string, only?: string) => queue.enqueue({
+    environmentId,
+    failureMessage: only ? "Could not make it an own copy." : "Could not update this branch.",
+    save: (revision) => updateBranchServerFn({ data: { organizationSlug, environmentId, revision, only } }),
+    afterSave: async () => {
+      await Promise.all([getBranchesCollection, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getEnvironmentNodeIntroductionsCollection]
+        .map((get) => reconcileCollection(get(organizationSlug, scope))));
+    },
+  });
 }

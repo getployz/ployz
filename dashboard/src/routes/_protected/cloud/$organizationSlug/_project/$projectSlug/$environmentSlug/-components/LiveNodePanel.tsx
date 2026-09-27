@@ -1,27 +1,45 @@
+import { useContext, useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
-import { Link, useLoaderData, useParams } from "@tanstack/react-router";
+import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowUpRightIcon, TriangleAlertIcon } from "lucide-react";
 import { getRawServicesCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { cn } from "#/lib/utils";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { useLiveNodes } from "#/modules/branches/use-live-nodes";
+import { useUpdateBranch } from "#/modules/branches/branch.collection";
+import { StagedReviewSlot } from "./canvas/BottomBar";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
 import { nodeDestination } from "./environment-node-navigation";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 import { liveNodeLabel } from "./canvas/LiveServiceNode";
 
-/** A Live Node's panel: whose it is, which services here use it, and a way to open it in its own Environment. */
+/**
+ * A Live Node's panel: whose it is, which services here use it, a way to open it in its own Environment, and Make it an
+ * Own Copy, which stages it here from its owner under the same gate as Update.
+ */
 export function LiveNodePanel({ lineageId }: { lineageId: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const liveNode = useLiveNodes(params.organizationSlug, environmentId).find((node) => node.lineageId === lineageId);
   const { data: services } = useLiveQuery(getRawServicesCollection(params.organizationSlug, useCollectionScope()));
+  const update = useUpdateBranch(params.organizationSlug);
+  const { unsettled } = useContext(StagedReviewSlot);
+  const navigate = useNavigate();
+  const [copying, setCopying] = useState(false);
   if (!liveNode) return <CanvasInspectorError noun="Live service" />;
   const owner = liveNode.owner;
+
+  // Once staged it's no longer live here; the canvas shows it as a new node of this branch.
+  function makeOwnCopy() {
+    setCopying(true);
+    update(environmentId, lineageId).isPersisted.promise
+      .then(() => navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {} }), () => setCopying(false));
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -57,6 +75,17 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
             </Link>
           )}
         </FieldSet>
+        {owner && (
+          <FieldSet>
+            <FieldLegend>Own copy</FieldLegend>
+            <FieldDescription>
+              {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${liveNode.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
+            </FieldDescription>
+            <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={copying || unsettled !== null}>
+              Make it an Own Copy
+            </Button>
+          </FieldSet>
+        )}
         <FieldSet>
           <FieldLegend>Used here by</FieldLegend>
           <ItemGroup className="gap-1">

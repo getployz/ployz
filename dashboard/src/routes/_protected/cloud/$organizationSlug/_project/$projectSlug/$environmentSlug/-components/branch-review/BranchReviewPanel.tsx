@@ -34,7 +34,7 @@ export function BranchReviewPanel() {
             <div ref={setSlot} />
           </ReviewSection>
           <MergeSection review={review} />
-          <UpdateSection review={review} />
+          <UpdateSection review={review} environmentId={environmentId} />
           <DifferSection review={review} />
         </div>
       ) : (

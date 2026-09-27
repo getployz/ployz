@@ -224,11 +224,12 @@ export function EnvironmentCanvasScene() {
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
   const [stagedReviewSlot, setStagedReviewSlot] = useState<HTMLElement | null>(null);
+  const [unsettled, setUnsettled] = useState<string | null>(null);
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
     <BranchPickingProvider open={newBranch !== null} focus={newBranch?.focus ?? null}>
-    <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
+    <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot, unsettled, setUnsettled }}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
