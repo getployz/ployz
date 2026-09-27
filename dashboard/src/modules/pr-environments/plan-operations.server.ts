@@ -1,0 +1,52 @@
+import "@tanstack/react-start/server-only";
+import { and, eq } from "drizzle-orm";
+import { Effect } from "effect";
+import type { Actor } from "#/modules/identity/actor";
+import { getProjectContextForActor } from "#/modules/environment-design/workspace-repository.server";
+import { environment } from "#/modules/project/tables";
+import { Database } from "#/server/database.server";
+import { NotFound, Validation } from "#/server/public-error";
+import { planRepositories } from "./repositories";
+import type { SetPrEnvironmentPlan } from "./plan-schemas";
+import { prEnvironmentPlan } from "./tables";
+
+/**
+ * Saves a project's PR Environments plan for one repository its services deploy from. The start-from Environment must be
+ * one of the project's. Turning PR Environments on records the member they act as.
+ */
+export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function* (actor: Actor, input: SetPrEnvironmentPlan) {
+  const context = yield* getProjectContextForActor(actor, input);
+  if (context === null) return yield* new NotFound({ message: "Project not found." });
+  const projectId = context.project.id;
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    const environments = yield* drizzle.select({ id: environment.id, intent: environment.intent })
+      .from(environment).where(eq(environment.projectId, projectId));
+    const repository = planRepositories(environments).find((candidate) => candidate.repositoryId === input.repositoryId);
+    if (!repository) return yield* new Validation({ message: "No service in this project deploys from that repository." });
+    // ponytail: PR Environments aren't marked yet (#1166); refuse them here once they are.
+    if (input.startFromEnvironmentId !== null && !environments.some((row) => row.id === input.startFromEnvironmentId)) {
+      return yield* new Validation({ message: "Pick an environment of this project to start from." });
+    }
+    const key = and(eq(prEnvironmentPlan.projectId, projectId), eq(prEnvironmentPlan.repositoryId, input.repositoryId));
+    const [existing] = yield* drizzle.select().from(prEnvironmentPlan).where(key).for("update");
+    const values = {
+      installationId: repository.installationId,
+      repository: repository.repository,
+      enabled: input.enabled,
+      startFromEnvironmentId: input.startFromEnvironmentId,
+      picks: input.picks,
+      setupCommands: input.setupCommands,
+      removeOnClose: input.removeOnClose,
+      includeBots: input.includeBots,
+      enabledByUserId: !input.enabled ? null : existing?.enabled && existing.enabledByUserId ? existing.enabledByUserId : actor.userId,
+    };
+    const [row] = yield* drizzle.insert(prEnvironmentPlan)
+      .values({ organizationId: context.organization.id, projectId, repositoryId: input.repositoryId, ...values })
+      .onConflictDoUpdate({ target: [prEnvironmentPlan.projectId, prEnvironmentPlan.repositoryId], set: { ...values, updatedAt: new Date() } })
+      .returning();
+    if (!row) return yield* new NotFound({ message: "Project not found." });
+    return row;
+  }));
+});

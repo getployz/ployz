@@ -62,6 +62,8 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       case "environment_branch":
         return (yield* database.drizzle.select().from(tables.environmentBranch)
           .where(scoped(tables.environmentBranch))).map((row) => ({ ...row, base: withoutSealedCiphertext(row.base) }));
+      case "pr_environment_plan":
+        return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
       case "service":
         return yield* database.drizzle.select().from(tables.service).where(scoped(tables.service));
       case "resource_lineage":

@@ -258,6 +258,8 @@ describe("every Org Store collection reads its changes from the Organization cha
     await sql(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, setup_commands, created_by_user_id)
       values ($1, $2, $3, $4, $5, '[{"lineageId": "web", "command": "pnpm seed"}]', $6)`,
     [branchId, organizationId, projectId, environmentId, JSON.stringify(sealedBase), userId]);
+    await sql(`insert into pr_environment_plan (organization_id, project_id, repository_id, installation_id, repository, start_from_environment_id)
+      values ($1, $2, 42, 7, 'acme/app', $3)`, [organizationId, projectId, environmentId]);
     await sql("insert into resource_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, $3, 'data', 'data')",
       [lineageId, organizationId, projectId]);
     await sql("insert into environment_resource (organization_id, project_id, environment_id, lineage_id, implementation_type) values ($1, $2, $3, $4, 'volume')",

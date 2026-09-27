@@ -53,7 +53,8 @@ export type GithubObservationOperation =
   | "fetch_workflow"
   | "dispatch_workflow"
   | "cancel_run"
-  | "fetch_run";
+  | "fetch_run"
+  | "fetch_installation";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -149,6 +150,8 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   url: string;
   operation: GithubObservationOperation;
   schema: S;
+  /** `app` calls as the GitHub App itself (`/app/...` endpoints), not as an installation; `installationId` is ignored. */
+  auth?: "app";
   /** A POST sends `body` as JSON; an empty response reads as `{}`. */
   method?: "POST";
   body?: unknown;
@@ -402,22 +405,23 @@ export const GithubApiLive = Layer.effect(
   Effect.gen(function* () {
     const config = yield* AppConfig;
 
+    const appJwt = (operation: GithubObservationOperation) => Effect.try({
+      try: () =>
+        createGithubAppJwt({
+          appId: config.github.appId,
+          privateKey: Redacted.value(config.github.appPrivateKey),
+        }),
+      catch: () =>
+        githubObservationError({
+          code: "request_failed",
+          operation,
+          retriable: false,
+        }),
+    });
+
     const fetchInstallationToken = Effect.fn("GithubApi.fetchInstallationToken")(
       function* (installationId: number) {
-        const { appId, appPrivateKey } = config.github;
-        const jwt = yield* Effect.try({
-          try: () =>
-            createGithubAppJwt({
-              appId,
-              privateKey: Redacted.value(appPrivateKey),
-            }),
-          catch: () =>
-            githubObservationError({
-              code: "request_failed",
-              operation: "installation_token",
-              retriable: false,
-            }),
-        });
+        const jwt = yield* appJwt("installation_token");
         const response = yield* Effect.tryPromise({
           try: (signal) =>
             fetch(
@@ -506,7 +510,7 @@ export const GithubApiLive = Layer.effect(
       function* <S extends Schema.ConstraintDecoder<unknown>>(
         input: GithubJsonRequest<S>,
       ) {
-        if (input.installationId !== null && !isValidGithubId(input.installationId)) {
+        if (input.auth !== "app" && input.installationId !== null && !isValidGithubId(input.installationId)) {
           return yield* githubObservationError({
             code: "invalid_input",
             operation: input.operation,
@@ -514,7 +518,8 @@ export const GithubApiLive = Layer.effect(
           });
         }
 
-        const token = input.installationId === null ? null : yield* installationToken(input.installationId);
+        const token = input.auth === "app" ? yield* appJwt(input.operation)
+          : input.installationId === null ? null : yield* installationToken(input.installationId);
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({

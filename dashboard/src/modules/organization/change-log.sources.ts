@@ -9,6 +9,7 @@ export const changeSources = {
   project: { key: ["id"] },
   environment: { key: ["id"] },
   environment_branch: { key: ["environment_id"] },
+  pr_environment_plan: { key: ["project_id", "repository_id"] },
   service: { key: ["id"] },
   resource_lineage: { key: ["id"] },
   environment_resource: { key: ["id"] },
