@@ -13,16 +13,17 @@ export type PullRequestFacts = {
   targetBranch: string;
 };
 
-export function pullRequestColumns(pullRequest: PullRequestFacts) {
+/** The Branch row's pull request columns: all null on a Branch without one. */
+export function pullRequestColumns(pullRequest: PullRequestFacts | undefined) {
   return {
-    prRepositoryId: pullRequest.repositoryId,
-    prRepository: pullRequest.repository,
-    prNumber: pullRequest.number,
-    prTitle: pullRequest.title,
-    prAuthor: pullRequest.author,
-    prHeadBranch: pullRequest.headBranch,
-    prHeadSha: pullRequest.headSha,
-    prTargetBranch: pullRequest.targetBranch,
+    prRepositoryId: pullRequest?.repositoryId ?? null,
+    prRepository: pullRequest?.repository ?? null,
+    prNumber: pullRequest?.number ?? null,
+    prTitle: pullRequest?.title ?? null,
+    prAuthor: pullRequest?.author ?? null,
+    prHeadBranch: pullRequest?.headBranch ?? null,
+    prHeadSha: pullRequest?.headSha ?? null,
+    prTargetBranch: pullRequest?.targetBranch ?? null,
   };
 }
 
@@ -48,4 +49,12 @@ export function prEnvironmentIntent(intent: SavedEnvironmentIntent, pullRequest:
       };
     }),
   };
+}
+
+type PrBranch = { projectId: string; prRepositoryId: number | null; prNumber: number | null };
+
+/** The project's open PR Environments for one repository, by pull request number. */
+export function openPrEnvironments<B extends PrBranch>(branches: ReadonlyArray<B>, projectId: string, repositoryId: number) {
+  return branches.filter((branch) => branch.projectId === projectId && branch.prRepositoryId === repositoryId)
+    .sort((a, b) => (a.prNumber ?? 0) - (b.prNumber ?? 0));
 }

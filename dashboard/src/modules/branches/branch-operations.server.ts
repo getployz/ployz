@@ -175,7 +175,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     base: parseDashboardEnvironmentIntent(base),
     setupCommands: input.setupCommands,
     createdByUserId: actor.userId,
-    ...(pullRequest ? pullRequestColumns(pullRequest) : {}),
+    ...pullRequestColumns(pullRequest),
   }).returning();
   if (!branch) return yield* Effect.die("PostgreSQL did not return the Branch row.");
   // The repository's services deploy on push whatever the Parent's Deployment Policy says; Wait for CI and watch paths stay.

@@ -58,6 +58,12 @@ const stagingIntent = {
 
 type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; draft: boolean };
 
+type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
+type PullRequestDelivery = {
+  action: string;
+  pull_request: PullRequest & { title: string; base: { ref: string }; merged: boolean; merge_commit_sha: null; commits: number };
+};
+
 describe("PR Environment lifecycle", () => {
   let harness: PostgresTestHarness;
   const sent: Array<{ name: string }> = [];
@@ -118,7 +124,7 @@ describe("PR Environment lifecycle", () => {
   const step = { run, sendEvent: async () => ({ ids: [] }) };
 
   /** A signed delivery through the webhook, then the Inngest function it queues. */
-  async function deliver(event: "pull_request" | "push", deliveryId: string, payload: object) {
+  async function deliver(event: "pull_request" | "push", deliveryId: string, payload: PushDelivery | PullRequestDelivery) {
     const body = JSON.stringify({ installation: { id: installationId }, repository: { id: repositoryId }, ...payload });
     const signature = createHmac("sha256", secret).update(body).digest("hex");
     const response = await harness.runEffect(handleGithubWebhookRequest(new Request("http://localhost/api/github/webhook", {
@@ -266,7 +272,7 @@ describe("PR Environment lifecycle", () => {
     expect(await pullRequest("off", "opened", 9)).toBe("ignored_pull_request");
 
     await setPlan({ enabled: true });
-    await harness.db.update(schema.environment).set({ intent: { ...stagingIntent, services: [stagingIntent.services[1]!] } as never })
+    await harness.db.update(schema.environment).set({ intent: { ...stagingIntent, services: stagingIntent.services.filter((node) => node.lineageId === dbLineage) } as never })
       .where(eq(schema.environment.id, stagingId));
     expect(await pullRequest("nothing", "opened", 10)).toBe("ignored_nothing_from_repository");
     expect((await prEnvironments()).map((row) => row.prNumber)).toEqual([8]);
@@ -298,8 +304,8 @@ describe("PR Environment lifecycle", () => {
     expect(await prEnvironment(142)).toBeDefined();
 
     // An opened delivery processed after the pull request closed creates nothing.
-    pulls.set(143, { number: 143, state: "closed", user: { login: "maya", type: "User" }, head: { ref: "late", sha: "c".repeat(40), repo: { id: repositoryId } }, draft: false });
-    const late = pulls.get(143)!;
+    const late: PullRequest = { number: 143, state: "closed", user: { login: "maya", type: "User" }, head: { ref: "late", sha: "c".repeat(40), repo: { id: repositoryId } }, draft: false };
+    pulls.set(143, late);
     expect(await deliverPullRequest("late-opened", "opened", { ...late, state: "open" })).toBe("ignored_pull_request");
     expect(await prEnvironment(143)).toBeUndefined();
     expect(await harness.db.select().from(schema.environmentBranch)
