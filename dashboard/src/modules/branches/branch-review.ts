@@ -92,7 +92,7 @@ export function latestDeploy(deployedAt: Record<string, Date> | undefined): Date
   return times.length ? new Date(Math.max(...times.map((time) => time.getTime()))) : null;
 }
 
-export const rowLineage = (row: ChangeRow) => row.key.slice(0, row.key.indexOf(":"));
+export const rowLineage = (row: { key: string }) => row.key.slice(0, row.key.indexOf(":"));
 const rowPath = (row: ChangeRow) => row.key.slice(row.key.indexOf(":") + 1);
 
 /** A row in words: which setting of which node, and its value on each side. */

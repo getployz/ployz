@@ -62,8 +62,8 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
 
   const branchName = name ?? defaultBranchName(params.projectSlug, failedNode ? `fix-${failedNode.name}` : "new-branch", taken);
   const nameError = branchNameError(params.projectSlug, branchName, taken);
-  const fromSuffix = branches.some((row) => row.environmentId === parent.id) ? branchHostnameSuffix(params.projectSlug, parent.namespace) : "";
-  const intoSuffix = branchHostnameSuffix(params.projectSlug, branchNamespace(params.projectSlug, branchName));
+  const fromSuffix = branchHostnameSuffix(params.projectSlug, parent.namespace, branches.some((row) => row.environmentId === parent.id));
+  const intoSuffix = branchHostnameSuffix(params.projectSlug, branchNamespace(params.projectSlug, branchName), true);
   // ponytail: mirrors core's suffix swap for the preview only; the server's addresses come from core's branchChanges.
   const addresses = intent.services.filter((node) => own.includes(node.lineageId))
     .flatMap((node) => node.config.managedHostnames.map(({ prefix }) =>
@@ -81,7 +81,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
       create.mutate({
         organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
         fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
-        setupCommands: commands.map((setup) => ({ ...setup, command: setup.command.trim() })),
+        setupCommands: commands.map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() })),
       });
     }}>
       <CanvasInspectorHeader params={params}>

@@ -38,7 +38,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
   const hostnameSuffix = (environmentId: string) => {
     const environment = environmentById.get(environmentId);
     const project = projects.find((candidate) => candidate.id === environment?.projectId);
-    return environment && project && branchById.has(environmentId) ? branchHostnameSuffix(project.slug, environment.namespace) : "";
+    return environment && project ? branchHostnameSuffix(project.slug, environment.namespace, branchById.has(environmentId)) : "";
   };
   const nameOf = (lineage: string) => services.find((row) => row.lineageId === lineage)?.name
     ?? environments.flatMap((environment) => environment.intent.volumes).find((node) => node.resourceLineageId === lineage)?.name

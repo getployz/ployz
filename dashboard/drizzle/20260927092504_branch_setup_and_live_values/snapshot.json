@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "53e134dc-0bc5-4f4c-9a06-c398be036e27",
+  "id": "0881770c-d0e9-4be0-ac7a-cd3afb37ea97",
   "prevIds": [
     "9c5133e9-1a02-43ce-a162-337843f00edd"
   ],
@@ -1227,6 +1227,19 @@
       "table": "environment"
     },
     {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "branch_setup_commands",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment"
+    },
+    {
       "type": "timestamp with time zone",
       "typeSchema": null,
       "notNull": true,
@@ -2353,6 +2366,32 @@
       "generated": null,
       "identity": null,
       "name": "variable_producers",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'{}'",
+      "generated": null,
+      "identity": null,
+      "name": "setup_commands",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "environment_deployment"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'[]'",
+      "generated": null,
+      "identity": null,
+      "name": "missing_live_values",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_deployment"
@@ -4212,19 +4251,6 @@
       "generated": null,
       "identity": null,
       "name": "targets",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "teardown_attempt"
-    },
-    {
-      "type": "text",
-      "typeSchema": null,
-      "notNull": false,
-      "dimensions": 0,
-      "default": null,
-      "generated": null,
-      "identity": null,
-      "name": "close_reason",
       "entityType": "columns",
       "schema": "public",
       "table": "teardown_attempt"
@@ -10640,13 +10666,6 @@
     {
       "value": "\"status\" in ('pending','running','completed','partial','failed','cancelled')",
       "name": "teardown_attempt_status_check",
-      "entityType": "checks",
-      "schema": "public",
-      "table": "teardown_attempt"
-    },
-    {
-      "value": "\"close_reason\" in ('manual','merged','idle')",
-      "name": "teardown_attempt_close_reason_check",
       "entityType": "checks",
       "schema": "public",
       "table": "teardown_attempt"

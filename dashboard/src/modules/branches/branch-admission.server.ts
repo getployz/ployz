@@ -1,32 +1,62 @@
 import "@tanstack/react-start/server-only";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { Effect } from "effect";
 import { liveValues } from "@ployz/sdk/config";
 import { Database } from "#/server/database.server";
 import { environment, environmentBranch } from "#/modules/project/tables";
 import { service, serviceLineage } from "#/modules/environment-design/tables";
-import type { CompiledSavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { environmentDeployment, type MissingLiveValue } from "#/modules/deployments/tables";
-import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
+import type { SavedDeploymentTarget } from "#/modules/deployments/admission.server";
+import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
+import { ancestors } from "#/modules/project/environment-tree";
 import { liveOwner } from "./live-owner";
 
-type Producers = CompiledSavedEnvironmentIntent["variableProducers"];
+type Producers = SavedDeploymentTarget["variableProducers"];
 
 /**
- * What admission adds to a Branch's attempt, captured fresh on every attempt: each never-deployed Own Copy's Setup Commands
- * by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. A root gets nothing added.
+ * A Branch's attempt as admission writes it, captured fresh on every attempt: plus each never-deployed Own Copy's Setup
+ * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. A
+ * root's comes back unchanged.
  */
 export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
   environmentId: string,
-  target: CompiledSavedEnvironmentIntent,
+  target: SavedDeploymentTarget,
 ) {
-  return { ...(yield* liveValuesOf(environmentId, target)), setupCommands: yield* setupCommandsOf(environmentId) };
+  const live = yield* liveValuesOf(environmentId, target);
+  return { ...target, ...live, setupCommands: yield* setupCommandsOf(environmentId) } satisfies SavedDeploymentTarget;
 });
+
+/**
+ * A Branch's ancestors, nearest first, each with its namespace and, per Applied lineage, the attempt that applied that
+ * node. Per node, so a node a partly failed attempt deployed counts. No ancestors for a root.
+ */
+export const loadAncestorApplied = Effect.fn("Branches.loadAncestorApplied")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [self] = yield* drizzle.select({ projectId: environmentBranch.projectId, parentId: environmentBranch.parentEnvironmentId })
+    .from(environmentBranch).where(eq(environmentBranch.environmentId, environmentId));
+  if (!self) return { parentId: null, branches: [], applied: new Map<string, AncestorApplied>() };
+  const branches = yield* drizzle.select({ environmentId: environmentBranch.environmentId, parentEnvironmentId: environmentBranch.parentEnvironmentId })
+    .from(environmentBranch).where(eq(environmentBranch.projectId, self.projectId));
+  const ids = ancestors(self.parentId, branches);
+  const namespaces = new Map((yield* drizzle.select({ id: environment.id, namespace: environment.namespace })
+    .from(environment).where(inArray(environment.id, ids))).map((row) => [row.id, row.namespace]));
+  const applied = new Map<string, AncestorApplied>();
+  for (const id of ids) {
+    const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: id });
+    const nodes = [...projection.appliedSavedNodeByKey.values()].filter((node) => node.environmentId === id);
+    applied.set(id, {
+      namespace: namespaces.get(id) ?? "",
+      lineages: new Map(nodes.map((node) => [node.nodeLineageId, node.environmentDeploymentId])),
+    });
+  }
+  return { parentId: self.parentId, branches, applied };
+});
+type AncestorApplied = { namespace: string; lineages: Map<string, string> };
 
 /** From the nearest ancestor that runs each Live Node its Own Copies reference, and the ones no ancestor provides. */
 const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
   environmentId: string,
-  target: CompiledSavedEnvironmentIntent,
+  target: SavedDeploymentTarget,
 ) {
   const { drizzle } = yield* Database;
   const variableProducers: Producers = [...target.variableProducers];
@@ -44,50 +74,35 @@ const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
   }
   if (uses.size === 0) return { variableProducers, missingLiveValues };
 
-  const missing: { lineageId: string; key: string }[] = [];
-  const [self] = yield* drizzle.select({ projectId: environmentBranch.projectId, parentId: environmentBranch.parentEnvironmentId })
-    .from(environmentBranch).where(eq(environmentBranch.environmentId, environmentId));
-  const branches = self
-    ? yield* drizzle.select({ environmentId: environmentBranch.environmentId, parentEnvironmentId: environmentBranch.parentEnvironmentId })
-      .from(environmentBranch).where(eq(environmentBranch.projectId, self.projectId))
-    : [];
-  // Each ancestor's latest applied attempt and which of the Live lineages it runs.
-  const parentOf = new Map(branches.map((row) => [row.environmentId, row.parentEnvironmentId]));
-  const attempts = new Map<string, { namespace: string; producers: Producers }>();
-  const applied = new Map<string, Set<string>>();
-  for (let at = self?.parentId; at && !attempts.has(at); at = parentOf.get(at)) {
-    const [ancestor] = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.id, at));
-    const [attempt] = yield* drizzle.select({ id: environmentDeployment.id, producers: environmentDeployment.variableProducers })
-      .from(environmentDeployment)
-      .where(and(eq(environmentDeployment.environmentId, at), eq(environmentDeployment.status, "applied")))
-      .orderBy(desc(environmentDeployment.createdAt), desc(environmentDeployment.id))
-      .limit(1);
-    attempts.set(at, { namespace: ancestor?.namespace ?? "", producers: attempt?.producers ?? [] });
-    if (!ancestor || !attempt) continue;
-    applied.set(at, new Set((yield* drizzle.select({ lineageId: environmentNodeConfigSnapshot.nodeLineageId })
-      .from(environmentNodeConfigSnapshot)
-      .where(and(
-        eq(environmentNodeConfigSnapshot.environmentDeploymentId, attempt.id),
-        inArray(environmentNodeConfigSnapshot.nodeLineageId, [...uses.keys()]),
-      ))).map((row) => row.lineageId)));
-  }
-  // The owner of a Live lineage is the nearest ancestor whose latest applied attempt runs it.
+  // The owner of a Live lineage is the nearest ancestor whose Applied State runs it; its values come from the attempt
+  // that applied it there.
+  const { parentId, branches, applied } = yield* loadAncestorApplied(environmentId);
+  const runs = new Map([...applied].map(([id, at]) => [id, at.lineages]));
   const byOwner = new Map<string, string[]>();
-  const pending: string[] = [];
+  const missing: { lineageId: string; key: string }[] = [];
   for (const lineageId of uses.keys()) {
-    const owner = self ? liveOwner(self.parentId, lineageId, branches, applied) : null;
+    const owner = parentId ? liveOwner(parentId, lineageId, branches, runs) : null;
     if (owner) byOwner.set(owner, [...byOwner.get(owner) ?? [], lineageId]);
-    else pending.push(lineageId);
+    else for (const key of uses.get(lineageId)?.keys() ?? []) missing.push({ lineageId, key });
   }
+  // Each owner's values: every node it runs, from the attempt that applied that node there (a Live Node's own values
+  // may read the owner's other nodes).
+  const attemptIds = [...new Set([...byOwner.keys()].flatMap((owner) => [...applied.get(owner)?.lineages.values() ?? []]))];
+  const producersOf = new Map(attemptIds.length ? (yield* drizzle.select({ id: environmentDeployment.id, producers: environmentDeployment.variableProducers })
+    .from(environmentDeployment).where(inArray(environmentDeployment.id, attemptIds))).map((row) => [row.id, row.producers]) : []);
   for (const [owner, lineages] of byOwner) {
+    const at = applied.get(owner);
     const result = liveValues({
-      owner: attempts.get(owner) ?? { namespace: "", producers: [] },
+      owner: {
+        namespace: at?.namespace ?? "",
+        producers: [...at?.lineages ?? []].flatMap(([lineage, attemptId]) => (producersOf.get(attemptId) ?? [])
+          .filter((producer) => producer.ownerLineageId === lineage)),
+      },
       lineages: lineages.map((lineageId) => ({ lineageId, keys: [...uses.get(lineageId)?.keys() ?? []] })),
     });
     variableProducers.push(...result.producers);
     missing.push(...result.missing);
   }
-  for (const lineageId of pending) for (const key of uses.get(lineageId)?.keys() ?? []) missing.push({ lineageId, key });
   if (missing.length === 0) return { variableProducers, missingLiveValues };
 
   const names = new Map((yield* drizzle.select({ id: serviceLineage.id, name: serviceLineage.canonicalName }).from(serviceLineage)

@@ -3,7 +3,8 @@ import { useLoaderData, useParams } from "@tanstack/react-router";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { offeredPresets, ownLineages, planBranchOf, type BranchPicks, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
+import { planBranch } from "@ployz/sdk/config";
+import { offeredPresets, ownLineages, type BranchPicks, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
 import { useLiveOwner } from "#/modules/branches/use-live-nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
@@ -29,11 +30,11 @@ function usePickingState(open: boolean, initialFocus: string | null) {
   const owned = new Set([...intent.services.map((node) => node.lineageId), ...intent.volumes.map((node) => node.resourceLineageId)]);
   const focus = state.focus.filter((lineage) => owned.has(lineage));
   const planned = { parent: intent, deployed: applied.map((node) => node.nodeLineageId), focus };
-  const plan = planBranchOf({ ...planned, picks: state.picks });
+  const plan = planBranch({ ...planned, picks: state.picks });
   const own = ownLineages(plan);
   return {
     parent, intent, plan, focus, picks: state.picks, owned,
-    presets: offeredPresets(planned).map((preset) => ({ preset, plan: planBranchOf({ ...planned, picks: { preset } }) })),
+    presets: offeredPresets(planned).map((preset) => ({ preset, plan: planBranch({ ...planned, picks: { preset } }) })),
     /** The Environment a Live Node here comes from: the Parent, or the ancestor the Parent itself uses it from. */
     ownerName: (lineage: string) => ownerOf(parent.id, lineage)?.environment.name ?? parent.name,
     setPreset: (preset: BranchPreset) => setState({ ...state, picks: { preset } }),

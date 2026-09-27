@@ -1,7 +1,8 @@
 import { useParams } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
 import { ItemDescription, ItemGroup } from "#/components/ui/item";
-import { useBranchUnsettled, useUpdateBranch } from "#/modules/branches/branch.collection";
+import { useBranchUnsettled } from "#/modules/branches/branch.collection";
+import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import { RelativeTime } from "#/components/relative-time";
 import { presentRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
@@ -16,7 +17,7 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 export function UpdateSection({ review, environmentId }: { review: BranchReviewView; environmentId: string }) {
   const parent = review.parent.name;
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const update = useUpdateBranch(params.organizationSlug);
+  const { update } = useUpdateBranch(params.organizationSlug);
   const unsettled = useBranchUnsettled(params.organizationSlug, environmentId);
   return (
     <ReviewSection title={`New in ${parent}`} count={review.updates}

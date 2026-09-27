@@ -12,7 +12,7 @@ export function liveOwner(
   parentId: string,
   lineageId: string,
   branches: Iterable<BranchRow>,
-  appliedByEnvironment: ReadonlyMap<string, ReadonlySet<string>>,
+  appliedByEnvironment: ReadonlyMap<string, { has(lineageId: string): boolean }>,
 ): string | null {
   return ancestors(parentId, branches).find((at) => appliedByEnvironment.get(at)?.has(lineageId)) ?? null;
 }

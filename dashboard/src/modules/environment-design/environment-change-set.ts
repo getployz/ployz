@@ -1,3 +1,4 @@
+import type { JsonObject } from "#/db/tables";
 import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
 import type { EnvironmentResourceNodeConfigByType } from "./environment-resource-node";
 import type { ServiceDeploymentConfig } from "./services";
@@ -41,8 +42,9 @@ export type DashboardReviewChangeSet = {
 };
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
+type NodeConfig = NonNullable<EnvironmentNodeProjection["config"]> | JsonObject;
 /** A node's current and baseline configs through today's config schema; throws when either no longer parses. */
-export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: unknown, baseline: unknown) {
+export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: NodeConfig, baseline: NodeConfig) {
   return type === "service"
     ? { type, current: parseServiceConfig(current), baseline: parseServiceConfig(baseline) }
     : { type, current: parseResourceConfig("volume", current), baseline: parseResourceConfig("volume", baseline) };
@@ -92,7 +94,11 @@ export function hasUndeployedChanges(working: readonly StateNode[], applied: rea
   const before = new Map(applied.map((node) => [key(node), node]));
   return working.length !== applied.length || working.some((node) => {
     const baseline = before.get(key(node));
-    return !baseline || compareNodeSettings(parseNodeConfigs(node.nodeType, node.config, baseline.config)).length > 0;
+    if (!baseline) return true;
+    const configs = node.nodeType === "service"
+      ? { type: node.nodeType, current: parseServiceConfig(node.config), baseline: parseServiceConfig(baseline.config) }
+      : { type: node.nodeType, current: parseResourceConfig("volume", node.config), baseline: parseResourceConfig("volume", baseline.config) };
+    return compareNodeSettings(configs).length > 0;
   });
 }
 

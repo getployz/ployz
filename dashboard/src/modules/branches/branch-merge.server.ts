@@ -1,16 +1,16 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { Cause, Effect } from "effect";
+import { Effect } from "effect";
 import { branchChanges, type BranchPick } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
-import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { Conflict, NotFound } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { environmentBranch } from "#/modules/project/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
-import { loadCurrentEnvironmentState, loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { loadCurrentEnvironmentState, loadEnvironmentDocument, requireDocumentRevision } from "#/modules/environment-design/working-state-repository.server";
 import { parseDashboardEnvironmentIntent, savedVariableIntent } from "#/modules/environment-design/saved-intent";
 import { environmentVariableReferences } from "#/modules/environment-design/variable-document";
 import { variableValueColumnsForWrite } from "#/modules/environment-design/variable-repository.server";
@@ -18,10 +18,10 @@ import { loadAppliedIntent } from "#/modules/environment-design/saved-state-oper
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
 import { assertBranchSettled } from "./branch-guard.server";
-import { closeBranch } from "./branch-close.server";
-import { copyIdentities, captureIntroductions } from "./branch-operations.server";
+import { tryCloseBranch } from "./branch-close.server";
+import { core, landChanges } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
-import { mergeInput } from "./branch-review";
+import { mergeInput, rowLineage } from "./branch-review";
 import type { MergeBranch } from "./branch-schemas";
 
 /**
@@ -58,8 +58,8 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
       base: branch.base, kept: branch.kept, branch: from, parent: into,
       parentApplied: deployed ? yield* loadAppliedIntent(destinationId, document.namespace, projection) : null,
       hostnames: {
-        branch: branchHostnameSuffix(project.slug, context.environment.namespace),
-        parent: destinationBranch ? branchHostnameSuffix(project.slug, document.namespace) : "",
+        branch: branchHostnameSuffix(project.slug, context.environment.namespace, true),
+        parent: branchHostnameSuffix(project.slug, document.namespace, destinationBranch !== undefined),
       },
     });
     const rows = branchChanges(compare);
@@ -77,10 +77,11 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
       });
       return { key: pick.key, choice: { option: "new", value: { value: variable.value, valueFingerprint: variable.valueFingerprint } } };
     });
-    const changes = yield* Effect.try({
-      try: () => branchChanges({ ...compare, picks }),
-      catch: (error) => new Validation({ field: "picks", message: error instanceof Error ? error.message : String(error) }),
-    });
+    // An unticked variable of a ticked new service stays in the Branch; left unpicked, core would land its default.
+    const newServices = new Set(picks.flatMap((pick) => pick.key.endsWith(":node") ? [rowLineage(pick)] : []));
+    const leftOut = rows.rows.flatMap((row): BranchPick[] => row.role === "move" && row.choice && newServices.has(rowLineage(row))
+      && !picks.some((pick) => pick.key === row.key) ? [{ key: row.key, choice: { option: "leave_out" } }] : []);
+    const changes = yield* core("picks", () => branchChanges({ ...compare, picks: [...picks, ...leftOut] }));
     const next = parseDashboardEnvironmentIntent(changes.next);
     const kept = (ids: string[], nextIds: string[]) => ids.every((id) => nextIds.includes(id));
     if (!kept(into.services.map((node) => node.id), next.services.map((node) => node.id))
@@ -89,28 +90,15 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     }
 
     // 5. Identity rows for what arrives, then the Destination's Working State; the base advances by what landed.
-    const arriving = {
-      services: next.services.filter((node) => !into.services.some((own) => own.id === node.id)),
-      volumes: next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId)),
-    };
-    yield* copyIdentities({ project, from: input.branchEnvironmentId, to: destinationId, ...arriving });
-    const written = yield* writeEnvironmentDocument(document, next);
-    yield* captureIntroductions(destinationId, arriving.services, arriving.volumes);
-    if (changes.base) {
-      yield* drizzle.update(environmentBranch).set({ base: parseDashboardEnvironmentIntent(changes.base) })
-        .where(eq(environmentBranch.environmentId, input.branchEnvironmentId));
-    }
+    const written = yield* landChanges({
+      project, from: input.branchEnvironmentId, document, into, next, picks,
+      advance: changes.base ? { branchEnvironmentId: input.branchEnvironmentId, base: changes.base } : undefined,
+    });
     return { environment: written, kept: branch.kept };
   }));
 
   // 6. The Merge stands whether or not the close starts; the user is told the Branch is still open.
   const { environment, kept } = merged.data;
-  const closed = kept || !input.thenClose ? false : yield* closeBranch({ environmentId: input.branchEnvironmentId, reason: "merged" }).pipe(
-    Effect.scoped,
-    Effect.as(true),
-    Effect.catchCause((cause) => Cause.hasInterrupts(cause)
-      ? Effect.failCause(cause)
-      : Effect.logWarning("A merged Branch did not close.", { environmentId: input.branchEnvironmentId, cause }).pipe(Effect.as(false))),
-  );
+  const closed = kept || !input.thenClose ? false : yield* tryCloseBranch(input.branchEnvironmentId);
   return { data: { environment, closed } };
 });

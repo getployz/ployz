@@ -72,6 +72,8 @@ export type EnvironmentSnapshotProjection = {
     string,
     {
       environmentId: string;
+      /** The attempt that applied this node. */
+      environmentDeploymentId: string;
       nodeType: "service" | "volume";
       nodeId: string;
       nodeLineageId: string;
@@ -564,6 +566,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
         key,
         {
           environmentId: node.environmentId,
+          environmentDeploymentId: node.environmentDeploymentId,
           nodeType: node.nodeType,
           nodeId: node.nodeId,
           nodeLineageId: node.nodeLineageId,

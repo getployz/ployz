@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { branchChanges } from "@ployz/sdk/config";
+import { branchChanges, planBranch } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
@@ -12,7 +13,7 @@ import { getEnvironmentContextForActorById } from "#/modules/environment-design/
 import { createEnvironmentRecord } from "#/modules/environment-design/workspace-repository.server";
 import { loadCurrentEnvironmentSnapshotProjection, loadCurrentEnvironmentState, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { captureEnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introduction.repository.server";
-import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { emptyEnvironmentIntent, parseDashboardEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { environmentDeployment } from "#/modules/deployments/tables";
@@ -20,14 +21,14 @@ import { loadEnvironmentSavedIntentById } from "#/modules/environment-design/sav
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { createManualEnvironmentDeployment } from "#/modules/deployments/deployment-command.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
-import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages, planBranchOf } from "./branch-plan";
+import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages } from "./branch-plan";
 import type { CreateBranch, SetBranchSetupDefaults } from "./branch-schemas";
 
 type EnvironmentRow = typeof environment.$inferSelect;
 type ProjectRow = typeof project.$inferSelect;
 
 /** A core refusal (a ConfigError thrown through WebAssembly) as a field error. */
-const core = <A>(field: string, run: () => A) => Effect.try({
+export const core = <A>(field: string, run: () => A) => Effect.try({
   try: run,
   catch: (error) => new Validation({ field, message: error instanceof Error ? error.message : String(error) }),
 });
@@ -77,7 +78,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   const { intent: working } = yield* loadCurrentEnvironmentState(parent.id);
   const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: parent.id });
   const applied = projection.explicitStates.find((state) => state.environmentId === parent.id)?.applied.nodes ?? [];
-  const plan = yield* core("picks", () => planBranchOf({
+  const plan = yield* core("picks", () => planBranch({
     parent: working, deployed: applied.map((node) => node.nodeLineageId), focus: input.focus, picks: input.picks,
   }));
   const own = ownLineages(plan);
@@ -100,7 +101,8 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   const namespace = branchNamespace(project.slug, input.name);
   const nameError = branchNameError(project.slug, input.name, new Set());
   if (nameError) return yield* new Validation({ field: "name", message: nameError });
-  const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id));
+  // Shares the Parent's Branch row, so an idle close of the Parent waits for this Branch, and sees it.
+  const [parentBranch] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, parent.id)).for("share");
 
   // 1. Core derives the Branch's configuration: fresh ids, the Parent's lineages, secrets with their values.
   const create = (source: typeof from, picks: string[]) => core("picks", () => branchChanges({
@@ -108,7 +110,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     from: source,
     into: emptyEnvironmentIntent(namespace),
     provided: liveLineages(plan),
-    hostnames: { from: parentBranch ? branchHostnameSuffix(project.slug, parent.namespace) : "", into: branchHostnameSuffix(project.slug, namespace) },
+    hostnames: { from: branchHostnameSuffix(project.slug, parent.namespace, parentBranch !== undefined), into: branchHostnameSuffix(project.slug, namespace, true) },
     fromKept: false,
     picks: picks.map((lineage) => ({ key: `${lineage}:node` })),
   }));
@@ -124,12 +126,8 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     projectId: project.id, organizationId: project.organizationId, name: input.name.trim(), namespace,
   });
 
-  // 3. Identity rows under core's fresh ids: lineage reused; names, policy, credentials and positions copied.
-  yield* copyIdentities({ project, from: parent.id, to: document.id, services: next.services, volumes: next.volumes });
-
-  // 4. Working State, then each node's Node Introduction.
-  const written = yield* writeEnvironmentDocument(document, next);
-  yield* captureIntroductions(document.id, next.services, next.volumes);
+  // 3–4. Identity rows under core's fresh ids, the Working State, then each node's Node Introduction.
+  const written = yield* landChanges({ project, from: parent.id, document, into: emptyEnvironmentIntent(namespace), next, picks: [] });
 
   // 5. The Branch row, with the base core returned.
   if (!base) return yield* Effect.die("Core returned no base for a new Branch.");
@@ -145,10 +143,53 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
 });
 
 /**
+ * Lands core's `next` in `document`, whose Working State is `into`: identity rows for the nodes arriving from `from`, the
+ * Working State, then each arrival's Node Introduction. A picked `source.credentials` row of a service `into` already has
+ * brings its registry credential along; an arriving service brings its own. With `advance`, the Branch's base moves too.
+ */
+export const landChanges = Effect.fn("Branches.landChanges")(function* ({ project, from, document, into, next, picks, advance }: {
+  project: ProjectRow; from: string; document: EnvironmentRow;
+  into: SavedEnvironmentIntent; next: SavedEnvironmentIntent;
+  picks: ReadonlyArray<{ key: string }>;
+  advance?: { branchEnvironmentId: string; base: unknown };
+}) {
+  const { drizzle } = yield* Database;
+  const services = next.services.filter((node) => !into.services.some((own) => own.id === node.id));
+  const volumes = next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId));
+  yield* copyIdentities({ project, from, to: document.id, services, volumes });
+  const credentialLineages = picks.flatMap((pick) => pick.key.endsWith(":source.credentials") ? [pick.key.slice(0, pick.key.indexOf(":"))] : []);
+  for (const lineageId of credentialLineages) {
+    const receiver = into.services.find((node) => node.lineageId === lineageId);
+    if (receiver) yield* copyCredential({ organizationId: project.organizationId, from, lineageId, to: receiver.id });
+  }
+  const written = yield* writeEnvironmentDocument(document, next);
+  yield* captureIntroductions(document.id, services, volumes);
+  if (advance) {
+    yield* drizzle.update(environmentBranch).set({ base: parseDashboardEnvironmentIntent(advance.base) })
+      .where(eq(environmentBranch.environmentId, advance.branchEnvironmentId));
+  }
+  return written;
+});
+
+/** The registry credential of `lineageId`'s service in `from`, as the credential of service `to`. */
+const copyCredential = Effect.fn("Branches.copyCredential")(function* ({ organizationId, from, lineageId, to }: {
+  organizationId: string; from: string; lineageId: string; to: string;
+}) {
+  const { drizzle } = yield* Database;
+  const [source] = yield* drizzle.select({ username: serviceRegistryCredential.encryptedRegistryUsername, secret: serviceRegistryCredential.encryptedRegistrySecret })
+    .from(serviceRegistryCredential).innerJoin(service, eq(service.id, serviceRegistryCredential.serviceId))
+    .where(and(eq(service.environmentId, from), eq(service.lineageId, lineageId)));
+  if (!source) return yield* Effect.die(`The registry credential for lineage ${lineageId} is missing.`);
+  const credential = { organizationId, serviceId: to, revision: randomUUID(), encryptedRegistryUsername: source.username, encryptedRegistrySecret: source.secret };
+  yield* drizzle.insert(serviceRegistryCredential).values(credential).onConflictDoUpdate({ target: serviceRegistryCredential.serviceId, set: credential });
+  yield* drizzle.update(service).set({ hasRegistryCredential: true }).where(eq(service.id, to));
+});
+
+/**
  * Identity rows for nodes arriving in `to` under core's fresh ids, each from its lineage's node in `from`: lineage
  * reused; display name, Deployment Policy, registry credential and canvas position copied.
  */
-export const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, from, to, services: arriving, volumes: arrivingVolumes }: {
+const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project, from, to, services: arriving, volumes: arrivingVolumes }: {
   project: ProjectRow; from: string; to: string;
   services: ReadonlyArray<{ id: string; lineageId: string }>;
   volumes: ReadonlyArray<{ resourceId: string; resourceLineageId: string }>;
@@ -190,7 +231,7 @@ export const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ 
 });
 
 /** Each arrived node's Node Introduction; call after writing the Working State. */
-export const captureIntroductions = Effect.fn("Branches.captureIntroductions")(function* (
+const captureIntroductions = Effect.fn("Branches.captureIntroductions")(function* (
   environmentId: string,
   services: ReadonlyArray<{ id: string }>,
   volumes: ReadonlyArray<{ resourceId: string }>,

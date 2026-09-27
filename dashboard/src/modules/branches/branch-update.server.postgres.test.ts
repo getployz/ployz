@@ -14,7 +14,7 @@ import type { Database, ReportingDatabase } from "#/server/database.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { createBranch } from "./branch-operations.server";
-import { updateBranch } from "./branch-update.server";
+import { makeOwnCopy, updateBranch } from "./branch-update.server";
 import { updateInput } from "./branch-review";
 
 const organizationId = "00000000-0000-4000-8000-000000000501";
@@ -131,9 +131,10 @@ describe("updateBranch", () => {
 
   const documentOf = async (environmentId: string) =>
     (await harness.db.select().from(schema.environment).where(eq(schema.environment.id, environmentId)))[0];
-  const update = async (environmentId: string, only?: string) => provide(updateBranch({ userId }, {
-    organizationSlug: "acme", environmentId, revision: (await documentOf(environmentId))?.revision ?? "", only,
-  }));
+  const update = async (environmentId: string, ownCopyOf?: string) => {
+    const at = { organizationSlug: "acme", environmentId, revision: (await documentOf(environmentId))?.revision ?? "" };
+    return provide(ownCopyOf ? makeOwnCopy({ userId }, { ...at, lineageId: ownCopyOf }) : updateBranch({ userId }, at));
+  };
   const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: Error) => error);
 
   /** The Parent's deployed changes the Branch lacks, as the review page computes them. */

@@ -19,8 +19,8 @@ export const TEARDOWN_SCOPES = [
 export type TeardownScope = (typeof TEARDOWN_SCOPES)[number];
 
 /** Why a Branch was closed: by hand, after merging it, or idle for too long. */
-export const BRANCH_CLOSE_REASONS = ["manual", "merged", "idle"] as const;
-export type BranchCloseReason = (typeof BRANCH_CLOSE_REASONS)[number];
+/** Why an Environment that is its Project's Default Environment can't be torn down. */
+export const defaultEnvironmentRefusal = (name: string) => `${name} is the Default Environment. Choose another Default Environment first.`;
 
 export const TeardownTargetInput = Schema.Struct({
   organizationSlug: NonEmptyString,

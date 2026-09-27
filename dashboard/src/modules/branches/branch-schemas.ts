@@ -39,17 +39,30 @@ export const SetBranchSetupDefaults = Schema.Struct({
 });
 export type SetBranchSetupDefaults = typeof SetBranchSetupDefaults.Type;
 
-/**
- * Update: stage the Parent's deployed changes in the Branch at `revision`. With `only`, turn that Live Node into an Own
- * Copy, from the Environment that runs it.
- */
+/** Update: stage the Parent's deployed changes in the Branch at `revision`. */
 export const UpdateBranch = Schema.Struct({
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
   revision: Uuid,
-  only: Schema.optional(Uuid),
 });
 export type UpdateBranch = typeof UpdateBranch.Type;
+
+/** Own Copy: turn the Live Node `lineageId` into an Own Copy in the Branch at `revision`, from the Environment that runs it. */
+export const MakeOwnCopy = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+  revision: Uuid,
+  lineageId: Uuid,
+});
+export type MakeOwnCopy = typeof MakeOwnCopy.Type;
+
+/** A kept Branch stays after merging and never closes for being idle. */
+export const SetBranchKept = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+  kept: Schema.Boolean,
+});
+export type SetBranchKept = typeof SetBranchKept.Type;
 
 /**
  * One ticked merge row. A variable row names its option; `value` is a new value in plain text ("" for none), sealed on
@@ -66,7 +79,7 @@ export type MergePick = typeof MergePickSchema.Type;
 export const MergeBranch = Schema.Struct({
   organizationSlug: OrganizationSlug,
   branchEnvironmentId: Uuid,
-  destinationRevision: Schema.String,
+  destinationRevision: Uuid,
   review: Schema.String,
   picks: Schema.mutable(Schema.Array(MergePickSchema)),
   thenClose: Schema.Boolean,

@@ -14,6 +14,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
+import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { cn } from "#/lib/utils";
@@ -97,7 +98,7 @@ function RouteComponent() {
               ? "Deletes this branch and its own services and volumes. Services it uses live keep running. This cannot be undone."
               : "Deletes this environment and all of its services and volumes. This cannot be undone."}
             closes={closing.map((row) => row.name)}
-            disabledReason={defaultEnvironment && `${defaultEnvironment.name} is the Default Environment. Choose another Default Environment first.`}
+            disabledReason={defaultEnvironment && defaultEnvironmentRefusal(defaultEnvironment.name)}
             actionLabel={branch ? "Close branch" : "Tear down environment"}
             headingId="environment-teardown-heading"
             onCompleted={leaveDeletedTree}

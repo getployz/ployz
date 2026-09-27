@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
-import { branchNameError, defaultBranchName, offeredPresets, planBranchOf, presetSummary } from "./branch-plan";
+import { planBranch } from "@ployz/sdk/config";
+import { branchNameError, defaultBranchName, offeredPresets, presetSummary } from "./branch-plan";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [WEB, DB, CACHE, DATA] = [id(1), id(2), id(3), id(4)];
@@ -34,20 +35,20 @@ describe("branch plan", () => {
   it("describes each preset in words and offers Plus what it uses only when it adds something", () => {
     expect(offeredPresets(input)).toEqual(["only", "uses", "all"]);
     expect(offeredPresets({ ...input, focus: [CACHE] })).toEqual(["only", "all"]);
-    const only = planBranchOf({ ...input, picks: { preset: "only" } });
-    const uses = planBranchOf({ ...input, picks: { preset: "uses" } });
+    const only = planBranch({ ...input, picks: { preset: "only" } });
+    const uses = planBranch({ ...input, picks: { preset: "uses" } });
     expect(presetSummary("only", only, only, nameOf, "production"))
       .toBe("web gets its own copy. What it uses comes from production, live.");
     expect(presetSummary("uses", uses, only, nameOf, "production"))
       .toBe("postgres and postgres-data get copies too, so nothing touches production's data.");
     expect(presetSummary("all", uses, only, nameOf, "production")).toBe("A full copy of production.");
-    expect(presetSummary("only", planBranchOf({ ...input, focus: [], picks: { preset: "only" } }), only, nameOf, "production"))
+    expect(presetSummary("only", planBranch({ ...input, focus: [], picks: { preset: "only" } }), only, nameOf, "production"))
       .toBe("Pick what changes.");
   });
 
   it("reads hand picks that match no preset as picked by hand", () => {
-    expect(planBranchOf({ ...input, picks: { own: [WEB] } }).preset).toBe("only");
-    expect(planBranchOf({ ...input, picks: { own: [WEB, CACHE] } }).preset).toBeNull();
+    expect(planBranch({ ...input, picks: { own: [WEB] } }).preset).toBe("only");
+    expect(planBranch({ ...input, picks: { own: [WEB, CACHE] } }).preset).toBeNull();
   });
 
   it("flags a taken or too-long name and defaults to a free one", () => {
