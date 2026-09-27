@@ -1,3 +1,4 @@
+import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume";
@@ -25,9 +26,13 @@ export type CanvasVolumeNodeData = {
 
 export type CanvasVolumeNode = Node<CanvasVolumeNodeData, "volume">;
 
+/** A Branch's Live Node: another Environment's service its Own Copies use live. */
+export type CanvasLiveNode = Node<{ liveNode: LiveNode }, "live">;
+
 export type CanvasResourceNode =
   | CanvasServiceNode
-  | CanvasVolumeNode;
+  | CanvasVolumeNode
+  | CanvasLiveNode;
 
 export type FlowPosition = { x: number; y: number };
 export type CreatorPanel = "root" | "git" | "image";

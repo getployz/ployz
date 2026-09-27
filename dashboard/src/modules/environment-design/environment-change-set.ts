@@ -1,5 +1,5 @@
-import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
 import type { JsonObject } from "#/db/tables";
+import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
 import type { EnvironmentResourceNodeConfigByType } from "./environment-resource-node";
 import type { ServiceDeploymentConfig } from "./services";
 
@@ -41,8 +41,12 @@ export type DashboardReviewChangeSet = {
   headToken: string;
 };
 
-function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
 type NodeConfig = NonNullable<EnvironmentNodeProjection["config"]> | JsonObject;
+/** A state's nodes as `compare` reads them: any config it can parse. */
+type ComparedState = { nodes: ReadonlyArray<{ node: EnvironmentNodeIdentity; config: NodeConfig | null }> };
+function nodeMap(state: ComparedState) {
+  return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry]));
+}
 /** A node's current and baseline configs through today's config schema; throws when either no longer parses. */
 export function parseNodeConfigs(type: EnvironmentNodeIdentity["type"], current: NodeConfig, baseline: NodeConfig) {
   return type === "service"
@@ -55,7 +59,7 @@ export function compareNodeSettings(configs: ReturnType<typeof parseNodeConfigs>
     : compareResourceSettings("volume", configs.current, configs.baseline);
   return settings.filter((row) => row.path !== "node");
 }
-function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, intro: ReturnType<typeof nodeMap>) {
+function compare(baseline: ComparedState, working: ComparedState, intro: ReadonlyMap<string, ComparedState["nodes"][number]>) {
   const before = nodeMap(baseline); const after = nodeMap(working); const groups: DashboardReviewChangeSet["groups"] = [];
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key);
@@ -80,6 +84,18 @@ export function buildEnvironmentChangeSet(input: EnvironmentChangeSetProjectionI
     totalCount: groups.reduce((n, group) => n + group.settings.length + (group.lifecycle === "update" ? 0 : 1), 0),
     headToken: head.token,
   };
+}
+
+/** One node's config as Working or Applied State holds it. */
+export type StateNode = { nodeType: EnvironmentNodeIdentity["type"]; nodeId: string; config: NodeConfig };
+
+/**
+ * Whether Working State differs from Applied State, by the rule `buildEnvironmentChangeSet` counts with. A Branch must
+ * have none before it merges or updates; its review page shows them as staged.
+ */
+export function hasUndeployedChanges(working: readonly StateNode[], applied: readonly StateNode[]): boolean {
+  const state = (nodes: readonly StateNode[]) => ({ nodes: nodes.map((node) => ({ node: { type: node.nodeType, id: node.nodeId }, config: node.config })) });
+  return compare(state(applied), state(working), new Map()).length > 0;
 }
 
 /** The change group for one node, computed by the same rule as the whole set. */

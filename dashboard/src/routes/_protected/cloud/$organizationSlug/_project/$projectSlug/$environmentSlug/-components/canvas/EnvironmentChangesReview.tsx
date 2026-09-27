@@ -6,20 +6,7 @@ import type {
 } from "#/modules/environment-design/canvas-environment-change-state";
 import { ApplyChangeGroupCard } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeGroupCard";
 
-export function EnvironmentChangesReview({
-  groups,
-  totalChanges,
-  canDeploy,
-  commitMessage,
-  canSave,
-  onSave,
-  onDiscardAll,
-  onClose,
-  onCommitMessageChange,
-  onDeploy,
-  onDiscardNode,
-  onDiscardRow,
-}: {
+export type EnvironmentChangesReviewProps = {
   groups: CanvasEnvironmentChangeGroup[];
   totalChanges: number;
   canDeploy: boolean;
@@ -32,7 +19,10 @@ export function EnvironmentChangesReview({
   onDeploy: () => void;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
-}) {
+};
+
+export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
+  const { canSave, totalChanges, onClose } = props;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
@@ -44,7 +34,31 @@ export function EnvironmentChangesReview({
           </DialogDescription>
         </div>
       </div>
-      <div className="shrink-0 border-b px-6 py-3">
+      <StagedChanges {...props} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** The staged-changes review itself: commit message, the changes, Discard, Save and Deploy. A Branch's review page shows it inline. */
+export function StagedChanges({
+  groups,
+  totalChanges,
+  canDeploy,
+  commitMessage,
+  canSave,
+  onSave,
+  onDiscardAll,
+  onClose,
+  onCommitMessageChange,
+  onDeploy,
+  onDiscardNode,
+  onDiscardRow,
+  inline = false,
+}: EnvironmentChangesReviewProps & { inline?: boolean }) {
+  return (
+    <>
+      <div className={`shrink-0 ${inline ? "" : "border-b px-6 py-3"}`}>
         <InputGroup>
           <InputGroupInput
             aria-label="Commit message"
@@ -54,7 +68,7 @@ export function EnvironmentChangesReview({
           />
         </InputGroup>
       </div>
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+        <div className={inline ? "py-3" : "min-h-0 flex-1 overflow-y-auto px-6 py-6"}>
           <div className="flex flex-col gap-3">
             {groups.map((group) => (
               <ApplyChangeGroupCard
@@ -70,12 +84,11 @@ export function EnvironmentChangesReview({
           </div>
         </div>
 
-      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
+      <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${inline ? "" : "border-t px-6 py-4"}`}>
         {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" onClick={onDiscardAll}>Discard all changes</Button> : null}
         <Button variant="outline" disabled={!canSave} onClick={onSave}>Save without deploying</Button>
         {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}
       </div>
-      </DialogContent>
-    </Dialog>
+    </>
   );
 }

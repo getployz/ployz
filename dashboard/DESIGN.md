@@ -247,13 +247,20 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 - An Environment has four places: **Canvas**, **Deployments**, **Logs** and **Settings**. On desktop they sit in a slim rail, each an icon over its label; on phones the same four fill a bottom tab bar. The current place uses a muted neutral surface and medium weight, never the staged-intent color.
 - The logo tops the rail and opens Projects. The avatar sits at the bottom and holds the organization's pages (Projects, Servers, Server Settings, and Billing where billing exists), organization switching and Theme. Organization pages show only the logo and the avatar in the rail.
-- One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't the Canvas. Each crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
-- The Environment switcher notes the Default Environment and ends with **Manage environments**, which opens Settings → Project.
-- Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environments (each with its services-online summary and a Default chip, opening that Environment) and project teardown. Environment holds this Environment's teardown.
+- One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't the Canvas. On a Branch the path reads `project / parent ⑂ branch`: ⑂ marks what the Branch was made from, and the Parent's crumb opens the Parent. Each switcher crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
+- Wherever Environments are listed, they form one tree: root Environments first, each Branch indented under its Parent and marked ⑂.
+- The Environment switcher shows that tree, notes "default" and "not deployed", and on a Branch "N changes" (what would merge into its Parent) and "N updates" (what's new there). On a Branch it offers **Review X**, which opens the Branch's review page. It ends with **New branch of X**, which opens the New branch panel over the current Environment's canvas, and **Manage environments**, which opens Settings → Project.
+- Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environment tree (each with its services-online summary and a Default chip, opening that Environment) with **New branch** (of the current Environment) and **New environment** (an empty root Environment) above it, and project teardown. Environment holds this Environment's teardown.
 - The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
 - Icon-only controls always have an accessible name and a tooltip.
 
 **The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
+
+### Branches
+
+- A Live Node is drawn dashed and translucent, labelled with the Environment it comes from ("production's, live"), and links into it are dashed; every other link is solid. Opening it says whose it is, which services here use it, and opens it in its own Environment.
+- A Live Node that owns data carries an amber "real data" line.
+- While a Branch is being picked, the canvas is the picker: clicking a card toggles its Own Copy. Own Copies are lit, Live Nodes dashed and left-out nodes faded, and the panel shows the legend. Phones pick with a tick list.
 
 ### Apply Changes
 
@@ -270,9 +277,16 @@ Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt
 
 One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It shows one thing at a time, the first that applies:
 
-1. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
-2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
-3. Otherwise, no bar.
+1. **A starting point:** "X isn't deployed" and **New branch**. Its staged nodes are what Branches of it copy, not pending work, so the bar doesn't count them; its review page still lists them under **Not deployed here yet**.
+2. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
+3. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
+4. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**.
+5. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
+6. Otherwise, no bar.
+
+On a Branch, Review opens the Branch's review page instead of a dialog: a panel over its canvas with the whole relationship to its Parent, in order: **Not deployed here yet** (the staged-changes review), **Merge into X**, **New in X** (including Live Nodes their owner redeployed since this Branch last deployed), and **Meant to differ**, each with a plain reason. A conflict, a setting the Parent also changed since branching, reads old → new with a marker.
+
+Merge never deploys. Each change under **Merge into X** has a tick, and each variable a value choice: this Branch's, the Parent's, a new one, or leave it out; a new secret asks for X's value. Merge stays disabled, with the reason, while anything is staged on the Branch (a starting point's nodes too) or an attempt of it is active, so only what runs there merges. It stages the ticked changes in X and lands on X's canvas, whose bottom bar shows them; X's own Review → Deploy ships them. **Then close** says Merge closes the Branch; a Kept Branch doesn't show it, and the Default Environment can't turn it on.
 
 Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 

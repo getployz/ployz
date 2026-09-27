@@ -228,6 +228,11 @@ it.live(
           ...yield* Effect.forEach(collectionNames, (table) => readCollection(actor, { table, userId: actor.userId, organizationSlug: "acme" })),
         ];
         assert.ok(!JSON.stringify(clientPayloads).includes("ciphertext"));
+        // Only a Parent of Branches carries its Applied State in authored form; every Environment says when each node deployed.
+        const applied = (yield* listLatestOrganizationEnvironmentChangeStates(actor, { organizationSlug: "acme" }))
+          .find((state) => state.environmentId === scope.environmentId)?.applied;
+        assert.strictEqual(applied?.intent, null);
+        assert.deepStrictEqual(Object.keys(applied?.deployedAt ?? {}).sort(), applied?.nodes.map((node) => node.nodeLineageId).sort());
         const attempt = yield* getDeploymentAttempt(actor, { organizationSlug: "acme", deploymentId: active.id });
         assert.ok(!JSON.stringify(attempt).includes("ciphertext"));
         assert.ok(JSON.stringify(attempt).includes(`"TOKEN":{"kind":"secret"`), "a sealed value still reads as sealed");

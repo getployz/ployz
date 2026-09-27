@@ -45,6 +45,8 @@
   --changed-foreground: hsl(0 0% 100%);
   --changed-soft: #fff0f7;
   --changed-border: #efb3ce;
+  --live-soft: color-mix(in srgb, var(--card) 60%, transparent);
+  --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #dedede;
   --input: #dedede;
   --ring: var(--changed);
@@ -101,6 +103,8 @@
   --changed-foreground: hsl(0 0% 100%);
   --changed-soft: hsl(330 28% 18%);
   --changed-border: hsl(330 32% 28%);
+  --live-soft: color-mix(in srgb, var(--card) 60%, transparent);
+  --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #333333;
   --input: #333333;
   --ring: var(--changed);
@@ -159,6 +163,8 @@
   --color-changed-foreground: var(--changed-foreground);
   --color-changed-soft: var(--changed-soft);
   --color-changed-border: var(--changed-border);
+  --color-live-soft: var(--live-soft);
+  --color-live-border: var(--live-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -259,6 +265,12 @@
   outline: none;
   view-transition-name: canvas-inspector;
   transition: width 220ms cubic-bezier(0.32, 0.72, 0, 1), margin 220ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 220ms ease;
+}
+/* Picking a Branch on the canvas: the panel narrows so the canvas stays readable. */
+@media (min-width: 861px) {
+  @container (min-width: 741px) {
+    .canvas-inspector-pane[data-picking]:not([data-takeover="true"]) { width: min(28rem, 40%); }
+  }
 }
 .canvas-inspector-pane[data-takeover="true"] {
   grid-row: 1 / 2;

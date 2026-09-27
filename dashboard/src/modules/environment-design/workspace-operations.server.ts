@@ -1,7 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { Effect } from "effect";
-import { isUniqueViolation } from "#/server/database.server";
+import { Database, isUniqueViolation } from "#/server/database.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Conflict, NotFound } from "#/server/public-error";
 import type { Actor } from "#/modules/identity/actor";
 import { withMutationResult } from "#/server/mutation-result.server";
@@ -18,6 +19,7 @@ import {
   createProject,
   getProjectContextForActor,
   listOrganizationsForActor,
+  lockProjectDefault,
   setDefaultEnvironment,
   updateActorSessionsOrganization,
 } from "./workspace-repository.server";
@@ -132,9 +134,15 @@ export const setProjectDefaultEnvironment = Effect.fn(
   "EnvironmentDesign.setProjectDefaultEnvironment",
 )(function* (actor: Actor, input: SetDefaultEnvironment) {
   const context = yield* requireProjectContext(actor, input);
-  const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
-  if (project === null) {
-    return yield* new NotFound({ message: "Environment not found in this project." });
-  }
-  return project;
+  const database = yield* Database;
+  // Under the Project row, so an idle close admitting this Environment's teardown either sees the new default or runs first.
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockProjectDefault(context.project.id);
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: "This environment is being torn down." });
+    const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
+    if (project === null) {
+      return yield* new NotFound({ message: "Environment not found in this project." });
+    }
+    return project;
+  }));
 });

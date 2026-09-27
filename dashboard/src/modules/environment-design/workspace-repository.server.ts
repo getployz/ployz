@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, eq, exists } from "drizzle-orm";
+import { asc, and, eq, exists } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { environment, project } from "#/modules/project/tables";
+import { environment, environmentBranch, project } from "#/modules/project/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -224,6 +224,58 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
     )
     .limit(1);
   return rows[0] ?? null;
+});
+
+/**
+ * Holds a Project's row for the transaction and returns its Default Environment as it is now. Choosing the Default
+ * Environment, admitting a teardown and every Branch operation take it, so none acts on what another is changing.
+ *
+ * Lock order. A transaction takes these locks in this order, skipping any it doesn't need, and never takes an earlier
+ * kind after a later one, so no two wait on each other in a cycle:
+ *   1. Project rows, FOR NO KEY UPDATE (several: `lockOrganizationProjects`, by id).
+ *   2. Branch rows (`environment_branch`), only through `lockBranchScope`, which takes the Project first.
+ *   3. Every Environment deployment queue the transaction will need, all of them before any document
+ *      (`lockEnvironmentDeploymentQueues` sorts several by id; re-taking a held queue doesn't wait).
+ *   4. Environment documents (`loadEnvironmentDocument(id, true)`).
+ * Per path:
+ * - Create Branch: Project, Parent's Branch row (share); with Deploy now, the new Environment's queue, after writing its
+ *   document: an exception that can't wait on anyone, since no other transaction can see the new Environment yet.
+ * - Merge: Project, Branch row, Destination's and Branch's queues, Destination's document.
+ * - Update and Own Copy: Project, Branch row, the Branch's queue, its document.
+ * - Merge's close: Project, Branch row, the queues of every Environment the teardown removes, the Branch's document.
+ * - Idle sweep: Project, Branch row, the queues of every Environment the teardown removes.
+ * - Keep: Project, Branch row. Default selection: Project.
+ * - Teardown admission: Project(s), then the queues of every Environment it removes.
+ * - Deployment admission, publish, discard and GitHub admission: the queue, then the document.
+ * - Edits: the document only.
+ * Inserting a row that references the Project (a service, a volume) takes a KEY SHARE on the Project row through its
+ * foreign key. FOR NO KEY UPDATE doesn't block that, so an edit holding its document never waits on a Project lock.
+ */
+export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ defaultEnvironmentId: project.defaultEnvironmentId }).from(project)
+    .where(eq(project.id, projectId)).for("no key update");
+  return row?.defaultEnvironmentId ?? null;
+});
+
+/**
+ * Holds a Branch in lock order: its Project, then its Branch row (`mode`: "update" to change it, "share" to
+ * keep it from closing). Null when `environmentId` is not a Branch; the Project is held either way.
+ */
+export const lockBranchScope = Effect.fn("EnvironmentDesign.lockBranchScope")(function* (
+  projectId: string, environmentId: string, mode: "update" | "share",
+) {
+  yield* lockProjectDefault(projectId);
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, environmentId)).for(mode);
+  return row ?? null;
+});
+
+/** Holds every Project row of an organization, by id: an organization teardown admits under all of them. */
+export const lockOrganizationProjects = Effect.fn("EnvironmentDesign.lockOrganizationProjects")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.select({ id: project.id }).from(project).where(eq(project.organizationId, organizationId))
+    .orderBy(asc(project.id)).for("no key update");
 });
 
 /** Null when the Environment belongs to another project: the FK alone doesn't enforce it. */

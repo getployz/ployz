@@ -5,6 +5,7 @@ export type ServiceDeploymentSurfaceState =
   | "success"
   | "changed"
   | "destructive"
+  | "warning"
   | undefined;
 
 /** Presentation based only on authored changes and Deployment Attempt history.
@@ -15,6 +16,8 @@ export type ServiceDeploymentSemanticInput = {
   currentDiffRowCount: number;
   hasRecordedTargetSnapshot: boolean;
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
+  /** The Live values the latest attempt deployed empty, as `service.KEY`. */
+  missingLiveValues: readonly string[];
 };
 
 export type ServiceDeploymentSemantics = {
@@ -66,6 +69,14 @@ export function getServiceDeploymentSemantics(
       statusText: `${input.currentDiffRowCount} ${
         input.currentDiffRowCount === 1 ? "change" : "changes"
       }`,
+      showNewBadge: false,
+    };
+  }
+
+  if (input.missingLiveValues.length > 0) {
+    return {
+      state: "warning",
+      statusText: `Missing ${input.missingLiveValues.join(", ")}`,
       showNewBadge: false,
     };
   }

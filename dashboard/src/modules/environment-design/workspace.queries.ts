@@ -1,9 +1,11 @@
+import type { VirtualRowProps } from "@tanstack/react-db";
+import { withoutVirtualProps } from "#/lib/tanstack-db";
 import { toast } from "sonner";
 import { environmentManager, queryOptions, type QueryClient } from "@tanstack/react-query";
 import { createOptimisticAction, useLiveQuery } from "@tanstack/react-db";
 import { useSyncExternalStore } from "react";
 import { notFound } from "@tanstack/react-router";
-import { getProjectsCollection, getEnvironmentSummariesCollection, type EnvironmentSummary } from "#/collections/collections";
+import { getBranchesCollection, getProjectsCollection, getEnvironmentSummariesCollection, type EnvironmentSummary } from "#/collections/collections";
 import { observeFailure, preloadCollection } from "#/collections/query-collection";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -36,6 +38,7 @@ export function workspaceCollections(organizationSlug: string, scope: Collection
   return {
     projects: getProjectsCollection(organizationSlug, scope),
     environments: getEnvironmentSummariesCollection(organizationSlug, scope),
+    branches: getBranchesCollection(organizationSlug, scope),
   };
 }
 
@@ -87,6 +90,7 @@ export function useWorkspace(organizationSlug: string) {
   const collections = workspaceCollections(organizationSlug, scope);
   const projects = useLiveQuery(collections.projects);
   const environments = useLiveQuery(collections.environments);
+  const branches = useLiveQuery(collections.branches);
   const isError = useSyncExternalStore(
     (onChange) => scope.queryClient.getQueryCache().subscribe(onChange),
     () => Object.values(collections).some((collection) => collection.utils.isError),
@@ -96,7 +100,9 @@ export function useWorkspace(organizationSlug: string) {
   return {
     projects: resolveProjects(projects.data, environmentRows),
     environments: environmentRows,
-    isPending: projects.isLoading || environments.isLoading,
+    // SAFETY: live-query rows carry TanStack's four virtual props at runtime, which the row type leaves out.
+    branches: branches.data.map((branch) => withoutVirtualProps(branch as VirtualRowProps & typeof branch)),
+    isPending: projects.isLoading || environments.isLoading || branches.isLoading,
     isError,
     refetch: () => Promise.all(Object.values(collections).map((collection) => collection.utils.refetch())),
   };

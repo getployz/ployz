@@ -2,6 +2,7 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
   queryOptions,
+  useQuery,
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
@@ -64,4 +65,9 @@ export function useEnvironmentChangeStates(organizationSlug: string, scope: Coll
   read: ReadChangeStates = listLatestOrganizationEnvironmentChangeStatesServerFn,
 ) {
   return useSuspenseQuery(environmentChangeStateOptions(organizationSlug, scope, read)).data;
+}
+
+/** The same read without suspending, for chrome above the Org Store gate: null until it lands. */
+export function useEnvironmentChangeStatesIfReady(organizationSlug: string) {
+  return useQuery(environmentChangeStateOptions(organizationSlug, useCollectionScope())).data ?? null;
 }

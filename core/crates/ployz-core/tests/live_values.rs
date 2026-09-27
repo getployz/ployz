@@ -137,3 +137,31 @@ fn owner_namespace_must_be_a_project_name() {
         assert_eq!(error.path, "owner.namespace");
     }
 }
+
+#[test]
+fn an_address_the_owner_uses_live_keeps_its_project() {
+    let live = config_request(json!({
+        "operation": "live_values",
+        "value": {
+            "owner": {"namespace": "shop-staging", "producers": [
+                producer("staging-api", "api", "PLOYZ_PRIVATE_DOMAIN", literal("api.internal")),
+                producer("prod-db", "db", "PLOYZ_PRIVATE_DOMAIN", literal("db.shop-production.internal")),
+            ]},
+            "lineages": [{"lineageId": "api", "keys": ["PLOYZ_PRIVATE_DOMAIN"]}]
+        }
+    }))
+    .unwrap();
+    let domains: Vec<&Value> = live["producers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| &p["value"]["value"])
+        .collect();
+    assert_eq!(
+        domains,
+        [
+            &json!("api.shop-staging.internal"),
+            &json!("db.shop-production.internal")
+        ]
+    );
+}

@@ -4,8 +4,8 @@ import { volumeRemoveAttempt } from "#/modules/runtime/tables";
 import { ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES } from "./runtime-contract";
 import { environmentDeployment, environmentDeploymentEvent } from "./tables";
 
-// The plan the runtime executes (manifest, producers, action policy) stays on the server; no view reads it.
-const { deployManifest: _manifest, variableProducers: _producers, serviceActionPolicy: _policy, ...deploymentColumns } =
+// The plan the runtime executes (manifest, producers, action policy, setup commands) stays on the server; no view reads it.
+const { deployManifest: _manifest, variableProducers: _producers, serviceActionPolicy: _policy, setupCommands: _setup, ...deploymentColumns } =
   getTableColumns(environmentDeployment);
 
 /** The deployment row every browser read returns: the Org Store collection and the history reads map it the same way. */

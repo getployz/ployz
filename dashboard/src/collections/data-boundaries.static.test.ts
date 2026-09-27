@@ -34,7 +34,10 @@ const SPINNER_FILES = {
   "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
-  "components/environment-breadcrumbs.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/MergeSection.tsx": "merge in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/starting-point-settings-section.tsx": "deploy in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
@@ -72,8 +75,9 @@ const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.wri
 const DOCUMENT_COMMAND_FILES = {
   "modules/environment-design/environment-document-edit.ts": "the editor itself",
   "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
-  "components/environment-breadcrumbs.tsx": "a created environment returns its first document",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "a created environment returns its first document",
   "components/service-create-command.tsx": "a created project returns its first document",
+  "modules/branches/branch.collection.ts": "Branches of X defaults: the server returns the whole committed Environment row",
 };
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
@@ -94,6 +98,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
   "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
+  "modules/branches/branch-commands.ts": "createBranch: the server assigns a new Branch's ids, and creating it deploys; mergeBranch is destructive",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
@@ -171,6 +176,11 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
+        /** `x.isPersisted.promise`, directly or under `.catch(...)` and the like. */
+        const persistenceChain = (node: Node): boolean => isPropertyAccessExpression(node)
+          ? (node.name.text === "promise" && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted")
+            || persistenceChain(node.expression)
+          : isCallExpression(node) && persistenceChain(node.expression);
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
           if (isIdentifier(node.expression)) return node.expression.text;
@@ -239,6 +249,11 @@ describe("data boundaries", () => {
               if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
+            }
+            // Chaining .then or .finally on a save waits for it just as `await` does.
+            if (isUi && isCallExpression(node) && isPropertyAccessExpression(node.expression)
+              && ["then", "finally"].includes(node.expression.name.text) && persistenceChain(node.expression.expression)) {
+              awaitingUi.add(relative(SRC, source.fileName));
             }
             const name = calleeName(node);
             if (name && isCallExpression(node)) {

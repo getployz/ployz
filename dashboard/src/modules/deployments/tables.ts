@@ -65,6 +65,9 @@ export type EnvironmentDeploymentPreview = {
   preserved_volumes: JsonValue[];
 };
 
+/** A value `serviceId` reads from a Live Node, `${from}.${key}`, that its owner didn't provide. */
+export type MissingLiveValue = { serviceId: string; from: string; key: string };
+
 export const environmentDeployment = pgTable(
   "environment_deployment",
   {
@@ -96,6 +99,10 @@ export const environmentDeployment = pgTable(
     variableProducers: jsonb("variable_producers").$type<
       EnvironmentSnapshotVariableProducer[] | null
     >(),
+    // Frozen at admission: each never-deployed Own Copy's Setup Commands, by service id.
+    setupCommands: jsonb("setup_commands").notNull().default({}).$type<Record<string, string[]>>(),
+    // A Branch's attempt: the Live values its Own Copies read that no ancestor provided, so they deployed empty.
+    missingLiveValues: jsonb("missing_live_values").notNull().default([]).$type<MissingLiveValue[]>(),
     deployManifest: jsonb("deploy_manifest").$type<RedactedDeployManifest>(),
     deployPreview:
       jsonb("deploy_preview").$type<EnvironmentDeploymentPreview>(),
