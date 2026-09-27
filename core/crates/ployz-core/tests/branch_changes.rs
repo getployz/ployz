@@ -663,3 +663,218 @@ fn review_reflects_picks_but_never_new_values_or_ids() {
     let compare_only = changes(Some(&parent()), &from, &parent(), &json!({}));
     assert_ne!(picked, compare_only["review"].as_str().unwrap());
 }
+
+const JOBS: &str = "a0000000-0000-4000-8000-000000000006";
+
+fn empty(slug: &str) -> Value {
+    json!({"version": 1, "environmentSlug": slug, "services": [], "volumes": []})
+}
+
+fn create(
+    parent: &Value,
+    picks: &[&str],
+    into_suffix: &str,
+) -> Result<Value, ployz_core::config::ConfigError> {
+    let picks: Vec<_> = picks
+        .iter()
+        .map(|l| json!({"key": format!("{l}:node")}))
+        .collect();
+    config_request(json!({"operation": "branch_changes", "value": {
+        "base": null, "from": parent, "into": empty("pr-7"), "provided": [WORKER],
+        "hostnames": {"from": "", "into": into_suffix}, "fromKept": false, "picks": picks}}))
+}
+
+fn find<'a>(list: &'a Value, field: &str, lineage: &str) -> &'a Value {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n[field] == lineage)
+        .unwrap()
+}
+
+#[test]
+fn create_copies_picked_nodes_with_fresh_ids_and_the_branch_naming() {
+    let parent = parent();
+    let result = create(&parent, &[API, WEB, DATA], "-pr-7").unwrap();
+    let next = &result["next"];
+    let api = find(&next["services"], "lineageId", API);
+    let volume = find(&next["volumes"], "resourceLineageId", DATA);
+    let mut ids: Vec<_> = next["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].clone())
+        .collect();
+    ids.extend(
+        api["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["id"].clone()),
+    );
+    ids.push(volume["resourceId"].clone());
+    let parent_text = parent.to_string();
+    for id in &ids {
+        assert!(
+            !parent_text.contains(id.as_str().unwrap()),
+            "{id} is not fresh"
+        );
+    }
+    ids.sort_by_key(ToString::to_string);
+    ids.dedup();
+    assert_eq!(ids.len(), 6);
+    assert_eq!(
+        next["services"].as_array().unwrap().len(),
+        2,
+        "worker is live, cache left out"
+    );
+    assert_eq!(api["config"]["routes"], json!([]));
+    assert_eq!(api["config"]["managedHostnames"][0]["prefix"], "api-pr-7");
+    assert_eq!(
+        api["config"]["source"]["credentials"]["credentialId"],
+        api["id"]
+    );
+    assert_eq!(
+        api["volumeAttachments"][0]["volumeResourceId"],
+        volume["resourceId"]
+    );
+    let token = find(&api["variables"], "key", "TOKEN");
+    assert_eq!(
+        token["value"]["encryptedValue"]["ciphertext"],
+        "parent-cipher"
+    );
+    let url = find(&api["variables"], "key", "WORKER_URL");
+    assert_eq!(url["value"]["parts"][0]["owner"]["lineageId"], WORKER);
+
+    let base = &result["base"];
+    let lineages: Vec<_> = base["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["lineageId"].as_str().unwrap())
+        .collect();
+    assert_eq!(lineages, [API, WEB, CACHE]);
+    assert!(!base.to_string().contains("cipher"));
+
+    let again = create(&parent, &[API, WEB, DATA], "-pr-7").unwrap();
+    assert_eq!(again["review"], result["review"]);
+    assert_ne!(again["next"]["services"][0]["id"], api["id"]);
+}
+
+#[test]
+fn a_new_branch_service_is_introduced_into_the_parent() {
+    let mut from = branch();
+    let mut jobs = service(
+        0xc000_0000,
+        50,
+        JOBS,
+        "jobs",
+        json!({"version": 1, "type": "image", "image": "jobs:1", "credentials": {"type": "none"}}),
+    );
+    jobs["config"]["managedHostnames"] = json!([{"prefix": "jobs-pr-7", "targetPort": null}]);
+    jobs["variables"] = json!([
+        variable(0xc000_0000, 51, "MODE", literal("test"), "fp-mode"),
+        variable(0xc000_0000, 52, "KEY", secret("test-cipher"), "fp-key"),
+    ]);
+    from["services"].as_array_mut().unwrap().push(jobs);
+    let compared = changes(Some(&parent()), &from, &parent(), &json!({}));
+    assert_eq!(row(&compared, &format!("{JOBS}:node"))["role"], "move");
+    assert_eq!(
+        row(&compared, &format!("{JOBS}:variables.KEY"))["choice"]["default"],
+        "new"
+    );
+    let result = with_picks(&from, &parent(), json!([{"key": format!("{JOBS}:node")}])).unwrap();
+    let jobs = find(&result["next"]["services"], "lineageId", JOBS);
+    assert_ne!(jobs["id"], id(0xc000_0000, 50));
+    assert_eq!(jobs["config"]["managedHostnames"][0]["prefix"], "jobs");
+    let keys: Vec<_> = jobs["variables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["MODE"], "the new secret waits for a value");
+    // Base now records the node, so it is not offered again.
+    let again = changes(Some(&result["base"]), &from, &result["next"], &json!({}));
+    assert!(
+        !summary(&again)
+            .iter()
+            .any(|r| r.contains(JOBS) && r.contains(" move ")),
+        "{:#?}",
+        summary(&again)
+    );
+
+    // A name `into` already uses is refused.
+    svc(&mut from, JOBS)["slug"] = json!("worker");
+    let error = with_picks(&from, &parent(), json!([{"key": format!("{JOBS}:node")}])).unwrap_err();
+    assert_eq!(error.path, "picks.key");
+}
+
+#[test]
+fn update_introduces_parent_services_with_the_branch_naming() {
+    let mut from = parent();
+    let mut mail = service(
+        0xb000_0000,
+        60,
+        JOBS,
+        "mail",
+        json!({"version": 1, "type": "image", "image": "mail:1", "credentials": {"type": "none"}}),
+    );
+    mail["config"]["managedHostnames"] = json!([{"prefix": "mail", "targetPort": null}]);
+    from["services"].as_array_mut().unwrap().push(mail);
+    // As create returns it: the Parent without the nodes the Branch uses live.
+    let mut base = parent();
+    base["services"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|s| s["lineageId"] != WORKER);
+    let update = |provided: Value, picks: Value| {
+        config_request(request(
+            Some(&base),
+            &from,
+            &branch(),
+            &json!({
+            "provided": provided, "hostnames": {"from": "", "into": "-pr-7"}, "picks": picks}),
+        ))
+    };
+    let result = update(json!([WORKER]), json!([{"key": format!("{JOBS}:node")}])).unwrap();
+    let mail = find(&result["next"]["services"], "lineageId", JOBS);
+    assert_eq!(mail["config"]["managedHostnames"][0]["prefix"], "mail-pr-7");
+    assert_eq!(row(&result, &format!("{CACHE}:node"))["why"], "left_out");
+    // Dropping a lineage from `provided` offers it as an introduction.
+    let result = update(json!([]), json!([{"key": format!("{WORKER}:node")}])).unwrap();
+    assert_eq!(row(&result, &format!("{WORKER}:node"))["role"], "move");
+    find(&result["next"]["services"], "lineageId", WORKER);
+}
+
+#[test]
+fn bad_introductions_are_refused() {
+    let parent = parent();
+    assert_eq!(
+        create(&parent, &[API], "-pr-7").unwrap_err().path,
+        "picks.key",
+        "mount without its Volume"
+    );
+    assert!(create(&parent, &[API, DATA], "-Bad_Label").is_err());
+    assert!(create(&parent, &[API, DATA], "-pr-7").is_ok());
+}
+
+/// The SDK contract test creates through WebAssembly and expects this review.
+#[test]
+fn contract_create_review_string() {
+    let parent = json!({"version": 1, "environmentSlug": "e", "volumes": [], "services": [{
+        "id": id(1, 1), "lineageId": API, "slug": "api", "variables": [], "volumeAttachments": [],
+        "config": {"version": 2, "privateDns": "api", "preDeployCommand": null, "startCommand": null,
+                   "healthcheck": {"type": "none"}, "restartPolicy": "unless-stopped",
+                   "source": {"version": 1, "type": "image", "image": "api:1", "credentials": {"type": "none"}}}}]});
+    let result = config_request(json!({"operation": "branch_changes", "value": {
+        "base": null, "from": parent, "into": empty("pr-7"), "provided": [],
+        "hostnames": {"from": "", "into": "-pr-7"}, "fromKept": false,
+        "picks": [{"key": format!("{API}:node")}]}}))
+    .unwrap();
+    assert_ne!(result["next"]["services"][0]["id"], id(1, 1));
+    assert_eq!(
+        result["review"],
+        r#"{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:node"}],"rows":[{"base":null,"conflict":false,"from":"api","into":null,"key":"a0000000-0000-4000-8000-000000000001:node","role":"move"}]}"#
+    );
+}

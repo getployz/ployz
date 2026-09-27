@@ -132,4 +132,11 @@ const branchPick = api.branchChanges({
 });
 assert.equal(branchPick.next.services[0].config.startCommand, 'b');
 assert.equal(branchPick.review, '{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:startCommand"}],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}');
+const branchCreate = api.branchChanges({
+  base: null, from: branchEnv(null, 1), into: { version: 1, environmentSlug: 'pr-7', services: [], volumes: [] },
+  provided: [], hostnames: { from: '', into: '-pr-7' }, fromKept: false,
+  picks: [{ key: 'a0000000-0000-4000-8000-000000000001:node' }],
+});
+assert.notEqual(branchCreate.next.services[0].id, branchEnv(null, 1).services[0].id);
+assert.equal(branchCreate.review, '{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:node"}],"rows":[{"base":null,"conflict":false,"from":"api","into":null,"key":"a0000000-0000-4000-8000-000000000001:node","role":"move"}]}');
 console.log('SDK config runs on WASM; napi carries RPC only.');
