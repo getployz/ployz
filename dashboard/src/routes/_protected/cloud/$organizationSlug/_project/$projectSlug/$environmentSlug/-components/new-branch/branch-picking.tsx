@@ -45,7 +45,11 @@ function usePickingState(newBranch: { focus: string | null } | null, prPlan: { r
   const own = ownLineages(branch);
   /** The repository's services in a plan: Own Copies running the pull request's code, never unpicked. */
   const fromPr = new Set(plan ? focus : []);
-  const setPicks = (next: BranchPicks, nextFocus: string[]) => plan ? savePlan(plan, { picks: next }) : setState({ session, focus: nextFocus, picks: next });
+  // A plan keeps hand picks this Environment lacks, for when it starts from one that has them again.
+  const elsewhere = plan && "own" in plan.picks ? plan.picks.own.filter((lineage) => !owned.has(lineage)) : [];
+  const setPicks = (next: BranchPicks, nextFocus: string[]) => plan
+    ? savePlan(plan, { picks: "own" in next ? { own: [...next.own, ...elsewhere] } : next })
+    : setState({ session, focus: nextFocus, picks: next });
   return {
     parent, intent, plan: branch, focus, picks, fromPr,
     presets: offeredPresets(planned).map((preset) => ({ preset, plan: planBranch({ ...planned, picks: { preset } }) })),
