@@ -13,6 +13,7 @@ import { buttonVariants } from "#/components/ui/button-variants";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
+import { Table, TableBody } from "#/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { useDeployQueuedNow, useRetryDeployment } from "#/modules/deployments/deployment-commands";
 import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deployment-contract";
@@ -23,6 +24,7 @@ import {
   type DeploymentNodeView, type TargetNode,
 } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
+import { ApplyChangeRow } from "./canvas/ApplyChangeRow";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import type { deploymentPageSearchSchema } from "./deployment-page";
 import { useEnvironmentNavigationNodes } from "./environment-node-navigation";
@@ -116,6 +118,8 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
           </nav>
         ) : null}
 
+        {focused ? <SettingChanges node={focused.node} /> : null}
+
         {focused ? (
           <Tabs value={tab} onValueChange={(value) => {
             if (value === "build" || value === "deploy") void navigate({ to: ".", search: (previous) => ({ ...previous, service: focused.node.nodeId, logs: value }), replace: true });
@@ -144,6 +148,21 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
         {offCanvas.length ? <OffCanvasNodes nodes={offCanvas} /> : null}
       </div>
     </div>
+  );
+}
+
+/** What the attempt set on the focused service, old → new; nothing for a new service or an attempt recorded before rows were. */
+function SettingChanges({ node }: { node: TargetNode }) {
+  if (!node.settings) return null;
+  if (!node.settings.length) {
+    return <p className="text-muted-foreground">{node.needsBuild ? "No setting changes, only a rebuild." : "No setting changes."}</p>;
+  }
+  return (
+    <Table aria-label={`${node.name} setting changes`}>
+      <TableBody>
+        {node.settings.map((row) => <ApplyChangeRow key={row.path} row={row} tone="applied" showCurrentValue showNewValue />)}
+      </TableBody>
+    </Table>
   );
 }
 

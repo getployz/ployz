@@ -41,17 +41,19 @@ export type DashboardReviewChangeSet = {
 };
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
-function changes(type: EnvironmentNodeIdentity["type"], current: EnvironmentNodeProjection["config"], baseline: EnvironmentNodeProjection["config"]): ServiceSettingChange[] {
+/** A node's setting changes from `baseline` to `current`, as the review lists them; the Deployment Page's rows reuse it. */
+export function compareNodeSettings(type: EnvironmentNodeIdentity["type"], current: EnvironmentNodeProjection["config"], baseline: EnvironmentNodeProjection["config"]): ServiceSettingChange[] {
   if (!current || !baseline) return [];
-  if (type === "service") return compareServiceSettings(parseServiceConfig(current), parseServiceConfig(baseline));
-  return compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));
+  const settings = type === "service" ? compareServiceSettings(parseServiceConfig(current), parseServiceConfig(baseline))
+    : compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));
+  return settings.filter((row) => row.path !== "node");
 }
 function compare(baseline: EnvironmentStateProjection, working: EnvironmentStateProjection, intro: ReturnType<typeof nodeMap>) {
   const before = nodeMap(baseline); const after = nodeMap(working); const groups: DashboardReviewChangeSet["groups"] = [];
   for (const key of [...new Set([...before.keys(), ...after.keys()])].sort()) {
     const previous = before.get(key)?.config ?? null; const next = after.get(key)?.config ?? null; const entry = after.get(key) ?? before.get(key);
     if (!entry) continue;
-    const settings = changes(entry.node.type, next, previous ?? intro.get(key)?.config ?? null).filter((row) => row.path !== "node");
+    const settings = compareNodeSettings(entry.node.type, next, previous ?? intro.get(key)?.config ?? null);
     const lifecycle = !previous && next ? "create" : previous && !next ? "delete" : previous && settings.length ? "update" : null;
     if (lifecycle) groups.push({ node: entry.node, lifecycle, settings,
       comparison: previous ? "head" : intro.get(key)?.config ? "introduction" : null });

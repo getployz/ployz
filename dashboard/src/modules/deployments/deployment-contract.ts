@@ -108,6 +108,17 @@ export const targetNodeListSchema = Schema.Struct({
     source: Schema.NullOr(Schema.Struct({ kind: Schema.Literals(["git", "image"]), label: Schema.String })),
     /** The volume node ids a service mounts. */
     mounts: Schema.Array(Schema.String),
+    /**
+     * An updated node's setting changes, presented as the staged-changes review shows them (sealed values read "Secret
+     * value"). Absent when there is nothing to compare: a new or removed node, or an attempt recorded before settings were.
+     */
+    settings: Schema.optional(Schema.Array(Schema.Struct({
+      path: Schema.String,
+      kind: Schema.Literals(["add", "update", "remove"]),
+      label: Schema.String,
+      currentValue: Schema.String,
+      newValue: Schema.String,
+    }))),
   })),
 });
 export type TargetNodeList = typeof targetNodeListSchema.Type;
