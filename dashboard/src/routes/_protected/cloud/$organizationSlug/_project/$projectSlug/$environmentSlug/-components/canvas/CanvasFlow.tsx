@@ -14,13 +14,14 @@ import type { VolumeResourceRecord } from "#/modules/environment-design/resource
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import { BottomBar } from "./BottomBar";
-import { SNAP_GRID } from "./constants";
+import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
+import { useLitNodeIds } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -104,6 +105,7 @@ export function CanvasFlow({
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
+    useLitNodeIds(),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
@@ -169,7 +171,7 @@ export function CanvasFlow({
               proOptions={{ hideAttribution: true }}
               snapToGrid
               snapGrid={SNAP_GRID}
-              minZoom={0.4}
+              minZoom={CANVAS_MIN_ZOOM}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
               onNodeClick={blurClickedNodeLink}

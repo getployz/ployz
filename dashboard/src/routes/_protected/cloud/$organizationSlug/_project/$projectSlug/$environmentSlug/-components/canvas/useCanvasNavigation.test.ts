@@ -5,6 +5,7 @@ import {
   blurClickedNodeLink,
   getNodePanDelta,
   shouldCenterSelectedNode,
+  viewportShowing,
 } from "./useCanvasNavigation";
 import type { CanvasServiceNode } from "./types";
 
@@ -84,4 +85,13 @@ describe("getNodePanDelta", () => {
     expect(getNodePanDelta(400, 200, 500)).toBe(-124);
     expect(getNodePanDelta(100, 300, 250)).toBe(-125);
   });
+});
+
+it("zooms out only as far as a box needs to fit beside the pane, then pans the least", () => {
+  const start = { x: 0, y: 0, zoom: 1 };
+  expect(viewportShowing(start, { x: 0, y: 0, width: 1000, height: 100 }, 548, 600, 0.4)).toEqual({ zoom: 0.5, x: 24, y: 24 });
+  // Already visible: nothing moves.
+  expect(viewportShowing(start, { x: 100, y: 100, width: 200, height: 100 }, 548, 600, 0.4)).toEqual(start);
+  // Too big even at the minimum zoom: centred.
+  expect(viewportShowing(start, { x: 0, y: 0, width: 5000, height: 100 }, 548, 600, 0.4)).toMatchObject({ zoom: 0.4, x: -726 });
 });
