@@ -9,7 +9,7 @@ import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock
 import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -119,13 +119,7 @@ const idleBranches = Effect.fn("Branches.idleBranches")(function* (now: Date, on
     .select({ environmentId: schemaProject.defaultEnvironmentId })
     .from(schemaProject)
     .where(and(isNotNull(schemaProject.defaultEnvironmentId), inArray(schemaProject.defaultEnvironmentId, branchIds)));
-  const closing = new Set((yield* drizzle
-    .select({ environmentId: schemaTeardownAttempt.environmentId })
-    .from(schemaTeardownAttempt)
-    .where(and(
-      inArray(schemaTeardownAttempt.environmentId, branchIds),
-      inArray(schemaTeardownAttempt.status, ["pending", "running"]),
-    ))).map((row) => row.environmentId));
+  const closing = yield* activeTeardownFor(branchIds);
   return dueForIdleClose({
     branches,
     latestAttemptAt: new Map(latest.flatMap((row) => (row.at === null ? [] : [[row.environmentId, row.at]]))),
