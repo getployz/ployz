@@ -1,0 +1,2 @@
+ALTER TABLE "teardown_attempt" ADD COLUMN "close_reason" text;--> statement-breakpoint
+ALTER TABLE "teardown_attempt" ADD CONSTRAINT "teardown_attempt_close_reason_check" CHECK ("close_reason" in ('manual','merged','idle'));
