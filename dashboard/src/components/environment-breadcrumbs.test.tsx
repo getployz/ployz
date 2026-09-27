@@ -24,7 +24,7 @@ async function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   const key = (table: string) => ["collections", "session", "user", "acme", table];
-  queryClient.setQueryData(key("project_preference"), orgStoreSeed([{ id: "docs", environmentId: "docs-preview" }]));
+  queryClient.setQueryData(key("project_preference"), orgStoreSeed([]));
   queryClient.setQueryData(key("project"), orgStoreSeed([
     { id: "store", slug: "store", name: "Store" },
     { id: "docs", slug: "docs", name: "Docs" },
@@ -32,8 +32,8 @@ async function renderAt(path: string) {
   queryClient.setQueryData(key("environment_summary"), orgStoreSeed([
     { createdAt: new Date(0), id: "store-production", projectId: "store", namespace: "production", name: "Production" },
     { createdAt: new Date(1), id: "store-staging", projectId: "store", namespace: "staging", name: "Staging" },
-    { createdAt: new Date(0), id: "docs-production", projectId: "docs", namespace: "production", name: "Docs production" },
-    { createdAt: new Date(1), id: "docs-preview", projectId: "docs", namespace: "preview", name: "Docs preview" },
+    { createdAt: new Date(1), id: "docs-production", projectId: "docs", namespace: "production", name: "Docs production" },
+    { createdAt: new Date(0), id: "docs-preview", projectId: "docs", namespace: "preview", name: "Docs preview" },
   ]));
   const root = createRootRoute({ component: Outlet });
   const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }), component: Outlet });
