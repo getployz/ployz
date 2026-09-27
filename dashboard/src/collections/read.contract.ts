@@ -4,7 +4,7 @@ import { Schema } from "effect";
 export const changeCursorSchema = Schema.String.check(Schema.isPattern(/^\d{1,20}$/u));
 
 export const collectionNames = [
-  "project", "environment_summary", "project_preference", "environment", "service", "resource_lineage",
+  "project", "environment_summary", "environment", "service", "resource_lineage",
   "environment_resource", "environment_canvas_node_position",
   "environment_deployment",
   "environment_node_introduction",

@@ -76,6 +76,13 @@ export const CreateEnvironment = Schema.Struct({
 });
 export type CreateEnvironment = typeof CreateEnvironment.Type;
 
+export const SetDefaultEnvironment = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  projectSlug: ProjectSlug,
+  environmentId: Uuid,
+});
+export type SetDefaultEnvironment = typeof SetDefaultEnvironment.Type;
+
 export const DEFAULT_ENVIRONMENT_NAME = "Production";
 
 export function createCanonicalEnvironmentNamespace(input: {

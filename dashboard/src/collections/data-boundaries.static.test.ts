@@ -34,7 +34,7 @@ const SPINNER_FILES = {
   "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
-  "components/navigation-switcher.tsx": "create in flight",
+  "components/environment-breadcrumbs.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
@@ -44,7 +44,6 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/DeploymentNode.tsx": "build or deploy stage running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "retry in flight",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
@@ -73,13 +72,12 @@ const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.wri
 const DOCUMENT_COMMAND_FILES = {
   "modules/environment-design/environment-document-edit.ts": "the editor itself",
   "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
-  "components/navigation-switcher.tsx": "a created environment returns its first document",
+  "components/environment-breadcrumbs.tsx": "a created environment returns its first document",
   "components/service-create-command.tsx": "a created project returns its first document",
 };
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */
 const ON_DEMAND_READS = {
-  deploymentServiceVariablesQueryOptions: "read when the user opens a deployed service's variables",
   githubFileSearchQueryOptions: "searches as the user types",
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",

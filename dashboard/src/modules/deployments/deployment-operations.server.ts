@@ -4,12 +4,10 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
 import { Effect, Schema } from "effect";
 
-import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type {
   DeploymentAttemptQueryInput,
   DeploymentBuildTailQueryInput,
   DeploymentOperationEvidencePageQueryInput,
-  DeploymentServiceVariablesQueryInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
   NodeDeploymentsQueryInput,
@@ -23,6 +21,7 @@ import { withoutSealedCiphertext } from "#/modules/environment-design/saved-inte
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
+import { user } from "#/modules/identity/tables";
 import { environment, project } from "#/modules/project/tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
@@ -32,7 +31,6 @@ import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-event
 import { viewTargetNodes, deploymentView } from "./deployment-view";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
-import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
   function* (actor: Actor, organizationSlug: string) {
@@ -166,26 +164,6 @@ export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(
   return yield* loadDeploymentEvents(yield* logCursor(actor, input));
 });
 
-/**
- * One service's variables as the attempt deployed them, recomputed through deploy's own loader
- * from the attempt's frozen snapshots and producers. Sealed values, and values resolving from them,
- * are null: never decrypted.
- */
-export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVariables")(function* (
-  actor: Actor,
-  input: DeploymentServiceVariablesQueryInput,
-) {
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  const context = yield* loadDeploymentContext(input.deploymentId);
-  if (context?.organization.id !== organization.id) {
-    return yield* new NotFound({ message: "The deployment was not found." });
-  }
-  // Deploy reserves the Cluster Domain; a read only looks. Once reserved it never changes.
-  const clusterDomain = needsClusterDomain(context) ? (yield* loadClusterDomain(organization.id))?.name ?? null : null;
-  const env = yield* loadDisplayedDeployEnv(context, clusterDomain);
-  return env.get(input.serviceId) ?? {};
-});
-
 /** Every paged deployment read's page size. */
 const PAGE_SIZE = 20;
 
@@ -271,8 +249,8 @@ export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironment
 });
 
 /**
- * One attempt: its row (with its Target Node List) and the service configs it deployed, for the service panel's Details.
- * Null when the organization has no such attempt.
+ * One attempt for its Deployment Page: its row (with its Target Node List), the name of the user who started a manual one,
+ * and the service configs it deployed. Null when the organization has no such attempt.
  */
 export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
   actor: Actor,
@@ -291,6 +269,8 @@ export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt"
       )),
   ]);
   if (!row) return null;
+  const actorId = row.triggerOrigin.origin === "manual" ? row.triggerOrigin.actorId : null;
+  const [starter] = actorId === null ? [] : yield* drizzle.select({ name: user.name }).from(user).where(eq(user.id, actorId));
   // Sealed variable ciphertext stays on the server.
-  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
+  return { row, actorName: starter?.name ?? null, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
 });

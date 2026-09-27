@@ -42,12 +42,13 @@ function InspectorEditor() {
 function Architecture() {
   const routeParams = useParams({ strict: false });
   const nodeId = routeParams.serviceId ?? routeParams.resourceId ?? null;
+  const { returnTo } = useSearch({ strict: false });
   return <CanvasInspectorOverlay
     selection={nodeId ? {
       key: `${routeParams.organizationSlug}/${routeParams.projectSlug}/${routeParams.environmentSlug}/${nodeId}`,
       nodeId,
+      returnTo,
     } : null}
-    header={<header>Architecture</header>}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
       <CanvasNodeList
@@ -118,7 +119,7 @@ describe("canvas inspector presentation", () => {
     expect(screen.getByRole("link", { name: "Close inspector" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Fill canvas" }));
     expect(screen.queryByRole("link", { name: "Close inspector" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Canvas" })).toBeTruthy();
     await act(() => router.navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
       params: { ...params, serviceId: "api" },
@@ -146,7 +147,7 @@ describe("canvas inspector presentation", () => {
     expect(screen.getByRole("button", { name: "Fill canvas" })).toBeTruthy();
   });
 
-  it("returns direct links to Architecture and restores focus and mobile-list scroll", async () => {
+  it("returns direct links to the Canvas and restores focus and mobile-list scroll", async () => {
     const router = await openInspector();
     const canvasNode = screen.getByText("API node");
     const list = screen.getByRole("region", { name: "Mobile architecture list" });
@@ -160,14 +161,12 @@ describe("canvas inspector presentation", () => {
     expect(document.activeElement).toBe(canvasNode);
   });
 
-  it("renders responsive return, rename, and page navigation without viewport measurement", async () => {
+  it("renders responsive return and rename without viewport measurement", async () => {
     vi.stubGlobal("innerWidth", 390);
     await openInspector();
     expect(screen.getByRole("button", { name: "Edit service name" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Close inspector" }).className).toContain("canvas-inspector-close");
-    expect(screen.getByRole("link", { name: "Back to Architecture" }).className).toContain("canvas-inspector-back");
-    expect(screen.getAllByRole("button", { name: "Project navigation" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Project navigation" }).textContent).toBe("Settings");
+    expect(screen.getByRole("link", { name: "Back to Canvas" }).className).toContain("canvas-inspector-back");
     expect(screen.getByRole("button", { name: "Fill canvas" }).hasAttribute("data-canvas-inspector-resize")).toBe(true);
   });
 
@@ -177,7 +176,7 @@ describe("canvas inspector presentation", () => {
     vi.stubGlobal("innerWidth", width);
     const router = await openInspector(state);
     const returnControl = screen.getByRole("link", {
-      name: width <= 860 ? "Back to Architecture" : "Close inspector",
+      name: width <= 860 ? "Back to Canvas" : "Close inspector",
     });
     expect(returnControl.getAttribute("href")).toBe("/cloud/acme/shop/production");
     fireEvent.click(returnControl);
@@ -186,13 +185,23 @@ describe("canvas inspector presentation", () => {
     expect(document.activeElement).toBe(screen.getByText("API node"));
   });
 
-  it("exposes the Volume editor in the mobile Architecture list", async () => {
+  it("exposes the Volume editor in the mobile Canvas list", async () => {
     vi.stubGlobal("innerWidth", 390);
     const router = await openInspector();
     expect(screen.getByText("Volume")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: /Database data/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/data"));
     expect(screen.getByRole("link", { name: /Database data/ }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("returns a panel opened from a service's Deployments tab to that tab", async () => {
+    const router = await openInspector();
+    await act(() => router.history.push("/cloud/acme/shop/production/resources/data?returnTo=worker"));
+    const serviceTab = "/cloud/acme/shop/production/services/worker?tab=deployments";
+    expect(screen.getByRole("link", { name: "Close inspector" }).getAttribute("href")).toBe(serviceTab);
+    expect(screen.getByRole("link", { name: "Back to service" }).getAttribute("href")).toBe(serviceTab);
+    fireEvent.keyDown(screen.getByLabelText("Draft setting"), { key: "Escape" });
+    await waitFor(() => expect(router.state.location.href).toBe(serviceTab));
   });
 
   it("closes on Escape inside the inspector after nested controls have handled it", async () => {

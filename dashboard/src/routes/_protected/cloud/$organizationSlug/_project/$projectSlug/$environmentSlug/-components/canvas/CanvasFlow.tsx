@@ -13,17 +13,20 @@ import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import { ApplyZone } from "./ApplyZone";
-import { SNAP_GRID } from "./constants";
+import { BottomBar } from "./BottomBar";
+import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
+import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
+import { CanvasFinder } from "./CanvasFinder";
+import { useEnvironmentNavigationNodes } from "../environment-node-navigation";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
@@ -77,6 +80,7 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const findableNodes = useEnvironmentNavigationNodes(params).nodes;
   const {
     canvasChangeState,
     diffGroups,
@@ -101,6 +105,7 @@ export function CanvasFlow({
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
+    useDeploymentFocus(),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(
@@ -166,7 +171,7 @@ export function CanvasFlow({
               proOptions={{ hideAttribution: true }}
               snapToGrid
               snapGrid={SNAP_GRID}
-              minZoom={0.4}
+              minZoom={CANVAS_MIN_ZOOM}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
               onNodeClick={blurClickedNodeLink}
@@ -189,6 +194,7 @@ export function CanvasFlow({
         volumeResourcesById={volumeResourcesById}
       />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"
           onClick={() => creator.openCreatorAtCenter()}
@@ -199,8 +205,9 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <ApplyZone
+      <BottomBar
           key={locationKey}
+          environmentId={environmentId}
           groups={diffGroups}
           totalChanges={totalChanges}
           canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}

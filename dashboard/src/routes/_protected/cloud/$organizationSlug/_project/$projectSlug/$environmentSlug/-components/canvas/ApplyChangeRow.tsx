@@ -3,71 +3,59 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
-import type { CanvasNodeDiffGroup } from "#/modules/environment-design/canvas-node-diff";
+import type { DiffRow } from "#/modules/services/service-deployment-diff/fields";
 import {
   getKindBadgeVariant,
   getKindIcon,
   getKindTextClassName,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/apply-changes-display";
-import { ApplyChangeValueCell as ValueCell } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeValueCell";
+import { ApplyChangeValueCell as ValueCell, type ApplyChangeTone } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeValueCell";
 
-type CanvasNodeDiffRow = CanvasNodeDiffGroup["rows"][number];
-
+/** One setting change. Staged rows carry Intent Pink and may be discarded; applied rows (what an attempt deployed) stay neutral. */
 export function ApplyChangeRow({
-  group,
   row,
-  totalChanges,
+  tone,
   showCurrentValue,
   showNewValue,
-  onCloseDialog,
-  onDiscardRow,
+  onDiscard,
 }: {
-  group: CanvasNodeDiffGroup;
-  row: CanvasNodeDiffRow;
-  totalChanges: number;
+  row: Pick<DiffRow, "kind" | "label" | "currentValue" | "newValue">;
+  tone: ApplyChangeTone;
   showCurrentValue: boolean;
   showNewValue: boolean;
-  onCloseDialog: () => void;
-  onDiscardRow: (group: CanvasNodeDiffGroup, path: string) => void;
+  onDiscard?: () => void;
 }) {
   return (
-    <TableRow className="bg-transparent hover:bg-transparent">
+    // On phones an applied row stacks old above new, so long values such as image refs get the full width.
+    <TableRow className={cn("bg-transparent hover:bg-transparent", tone === "applied" && "max-wf-nav:flex max-wf-nav:flex-col max-wf-nav:py-1")}>
       <TableCell>
         <div className="flex items-center gap-3">
-          <Badge variant={getKindBadgeVariant(row.kind)}>
+          <Badge variant={tone === "staged" ? getKindBadgeVariant(row.kind) : "outline"}>
             {getKindIcon(row.kind)}
           </Badge>
-          <span className={cn(getKindTextClassName(row.kind))}>{row.label}</span>
+          <span className={tone === "staged" ? getKindTextClassName(row.kind) : undefined}>{row.label}</span>
         </div>
       </TableCell>
       {showCurrentValue ? (
         <TableCell>
-          <ValueCell kind={row.kind} value={row.currentValue} tone="current" />
+          <ValueCell kind={row.kind} value={row.currentValue} tone={tone} side="current" />
         </TableCell>
       ) : null}
       {showNewValue ? (
         <TableCell>
-          <ValueCell kind={row.kind} value={row.newValue} tone="new" />
+          <ValueCell kind={row.kind} value={row.newValue} tone={tone} side="new" />
         </TableCell>
       ) : null}
-      <TableCell>
-        {row.canDiscard ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => {
-              if (totalChanges === 1) {
-                onCloseDialog();
-              }
-
-              onDiscardRow(group, row.path);
-            }}
-          >
-            <Trash2Icon />
-            <span className="sr-only">Discard {row.label}</span>
-          </Button>
-        ) : null}
-      </TableCell>
+      {tone === "staged" ? (
+        <TableCell>
+          {onDiscard ? (
+            <Button variant="ghost" size="icon-sm" onClick={onDiscard}>
+              <Trash2Icon />
+              <span className="sr-only">Discard {row.label}</span>
+            </Button>
+          ) : null}
+        </TableCell>
+      ) : null}
     </TableRow>
   );
 }

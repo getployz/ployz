@@ -1,10 +1,9 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, exists } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
-import { environment, project, userProjectPreference } from "#/modules/project/tables";
-import { organizationIdForProject } from "#/db/scope-values.server";
+import { environment, project } from "#/modules/project/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
@@ -227,47 +226,21 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
   return rows[0] ?? null;
 });
 
-export const getEnvironmentByIdForProject = Effect.fn(
-  "EnvironmentDesign.getEnvironmentByIdForProject",
+/** Null when the Environment belongs to another project: the FK alone doesn't enforce it. */
+export const setDefaultEnvironment = Effect.fn(
+  "EnvironmentDesign.setDefaultEnvironment",
 )(function* (projectId: string, environmentId: string) {
   const database = yield* Database;
   const rows = yield* database.drizzle
-    .select(environmentColumns)
-    .from(environment)
-    .where(and(eq(environment.projectId, projectId), eq(environment.id, environmentId)))
-    .limit(1);
+    .update(project)
+    .set({ defaultEnvironmentId: environmentId })
+    .where(and(
+      eq(project.id, projectId),
+      exists(database.drizzle.select({ id: environment.id }).from(environment)
+        .where(and(eq(environment.id, environmentId), eq(environment.projectId, projectId)))),
+    ))
+    .returning();
   return rows[0] ?? null;
-});
-
-export const upsertUserProjectPreference = Effect.fn(
-  "EnvironmentDesign.upsertUserProjectPreference",
-)(function* (input: {
-  readonly userId: string;
-  readonly projectId: string;
-  readonly environmentId: string;
-}) {
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .insert(userProjectPreference)
-    .values({
-      organizationId: organizationIdForProject(input.projectId),
-      userId: input.userId,
-      projectId: input.projectId,
-      environmentId: input.environmentId,
-    })
-    .onConflictDoUpdate({
-      target: [userProjectPreference.userId, userProjectPreference.projectId],
-      set: { environmentId: input.environmentId, updatedAt: new Date() },
-    })
-    .returning({
-      id: userProjectPreference.id, userId: userProjectPreference.userId,
-      projectId: userProjectPreference.projectId, environmentId: userProjectPreference.environmentId,
-    });
-  const preference = rows[0];
-  if (preference === undefined) {
-    return yield* Effect.die("PostgreSQL did not return the project preference.");
-  }
-  return preference;
 });
 
 export const getProjectContextForActor = Effect.fn(

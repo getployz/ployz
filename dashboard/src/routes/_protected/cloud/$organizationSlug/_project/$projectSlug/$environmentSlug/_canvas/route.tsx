@@ -1,38 +1,30 @@
 import { Suspense } from "react";
 import {
   createFileRoute,
+  redirect,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
-import { prefetchFromOrgStore, prefetchRemote, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
-import { deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
-import { deploymentAttemptQueryOptions, environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
+import { prefetchActiveBuildTails, prefetchFromOrgStore } from "#/collections/route-data";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
-import { canvasRouteSearch, viewedDeploymentId } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-mode";
+import { DEPLOYMENT_LIST_ROUTE_TO, DEPLOYMENT_PAGE_ROUTE_TO, legacyDeploymentLink } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  ...canvasRouteSearch,
-  loaderDeps: ({ search }) => ({ deployment: viewedDeploymentId(search), deploymentList: search.deploymentList }),
-  // Deployment Mode's nodes read the attempt and its build tail, and the open list its first page; all start together.
-  // SSR renders them and hover preload warms them.
-  loader: async ({ params, context, deps: { deployment, deploymentList } }) => {
-    const { organizationSlug } = params;
-    await prefetchFromOrgStore(context, organizationSlug, (scope) => [
-      deployment !== null && prefetchRemote(context, deploymentBuildTailQueryOptions(organizationSlug, deployment)),
-      // An attempt the Org Store holds draws from it alone.
-      deployment !== null && !getEnvironmentDeploymentsCollection(organizationSlug, scope).has(deployment)
-        && prefetchRemote(context, deploymentAttemptQueryOptions(organizationSlug, deployment)),
-      // The list is keyed by environment id, which the Org Store resolves.
-      deploymentList === true && requireEnvironment(context, params).then((environment) =>
-        prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id))),
-    ]);
+  // Old links: Deployment Mode's `?deployment=<id>` (on the canvas or a service) opens that attempt's Deployment Page, and
+  // the old deploy bar's `?deploymentList=true` opens the deployment list.
+  beforeLoad: ({ location, params }) => {
+    const legacy = legacyDeploymentLink(location);
+    if (legacy) throw redirect({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: legacy.deploymentId }, search: legacy.search, replace: true });
+    if (new URLSearchParams(location.searchStr).get("deploymentList") === "true") throw redirect({ to: DEPLOYMENT_LIST_ROUTE_TO, params, replace: true });
   },
+  // The canvas and every panel over it (the deployment list among them) show the bottom bar, whose running attempt, like
+  // the list's active rows, reads its build tail.
+  loader: ({ params, context }) => prefetchFromOrgStore(context, params.organizationSlug, () => [prefetchActiveBuildTails(context, params)]),
   errorComponent: CanvasError,
   component: CanvasLayout,
 });

@@ -417,5 +417,48 @@ export const nodeOutcomeLabels = {
   queued: "Queued", building: "Building", deploying: "Deploying",
 } satisfies Record<DeploymentNodeView["outcome"], string>;
 
+/**
+ * Where an active attempt is: the service it works on and its step there ("api · Checking health"), from the Engine's running
+ * row, else the first building or deploying service. Null while nothing has started.
+ */
+export function activeStep(progress: DeploymentProgress | null, nodes: readonly TargetNode[], view: DeploymentView) {
+  const row = progress?.rows.find((candidate) => candidate.status === "running");
+  if (row) return { nodeId: row.serviceId, text: [row.serviceName, progressRowLabel(row)].filter(Boolean).join(" · ") };
+  const node = view.nodes.find((candidate) => candidate.outcome === "building" || candidate.outcome === "deploying");
+  const name = node && nodes.find((target) => target.nodeId === node.nodeId)?.name;
+  return node && name ? { nodeId: node.nodeId, text: `${name} · ${nodeOutcomeLabels[node.outcome]}` } : null;
+}
+
 /** The first eight characters: how the UI names an attempt next to its message. */
 export const shortDeploymentId = (id: string) => id.slice(0, 8);
+
+/** The nodes an attempt changed, each with its view; unchanged nodes are left out. */
+export function changedNodes(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }) {
+  return attempt.nodes.flatMap((node) => {
+    const view = attempt.view.nodes.find((candidate) => candidate.nodeId === node.nodeId);
+    return view && view.outcome !== "unchanged" ? [{ node, view }] : [];
+  });
+}
+
+/**
+ * What an open Deployment Page lights on the canvas, which always draws the Environment as it is now: each node the
+ * attempt changed and did not remove, by Node Outcome. Every other canvas node dims.
+ */
+export function deploymentLighting(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }): ReadonlyMap<string, DeploymentNodeView["outcome"]> {
+  return new Map(changedNodes(attempt).filter(({ node }) => !node.removed).map(({ node, view }) => [node.nodeId, view.outcome]));
+}
+
+export type LogTab = "build" | "deploy";
+
+/** A prebuilt image has nothing to build, so its Build tab is disabled. */
+export const hasBuildLogs = (view: DeploymentNodeView) => view.build.state !== "none";
+
+/**
+ * The Deployment Page's log tab for the focused service: the tab the user picked, otherwise its current stage.
+ * That is Build while it waits for or runs its build, Deploy once deploying, and the failed stage on failure.
+ */
+export function deploymentLogTab(view: DeploymentNodeView, picked: LogTab | undefined): LogTab {
+  if (!hasBuildLogs(view)) return "deploy";
+  if (picked) return picked;
+  return view.build.state === "queued" || view.build.state === "running" || view.build.state === "failed" ? "build" : "deploy";
+}

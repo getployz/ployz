@@ -47,7 +47,6 @@ export function TeardownDangerSection({
   description,
   actionLabel,
   headingId,
-  showHeading = true,
   onCompleted,
 }: {
   organizationSlug: string;
@@ -59,7 +58,6 @@ export function TeardownDangerSection({
   description: string;
   actionLabel: string;
   headingId: string;
-  showHeading?: boolean;
   onCompleted?: () => void;
 }) {
   const loadDataLoss = useServerFn(loadTeardownDataLossServerFn);
@@ -119,16 +117,10 @@ export function TeardownDangerSection({
   return (
     <>
       <section aria-labelledby={headingId}>
-        {showHeading ? (
-          <h2 id={headingId} className="text-lg font-semibold text-destructive">
-            Danger
-          </h2>
-        ) : (
-          <h2 id={headingId} className="sr-only">
-            {title}
-          </h2>
-        )}
-        <div className={showHeading ? "mt-4 flex flex-col gap-4" : "flex flex-col gap-4"}>
+        <h2 id={headingId} className="text-lg font-semibold text-destructive">
+          Danger
+        </h2>
+        <div className="mt-4 flex flex-col gap-4">
           {attempt ? (
             <TeardownStatusAlert
               attempt={attempt}

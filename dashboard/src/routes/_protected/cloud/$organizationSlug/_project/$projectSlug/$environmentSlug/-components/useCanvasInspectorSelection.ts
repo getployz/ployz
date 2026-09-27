@@ -2,6 +2,10 @@ import { useMatch } from "@tanstack/react-router";
 
 const ENVIRONMENT_SERVICE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
+const DEPLOYMENT_PAGE_ROUTE_ID =
+  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId";
+const DEPLOYMENT_LIST_ROUTE_ID =
+  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/";
 const ENVIRONMENT_RESOURCE_ROUTE_ID =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId";
 
@@ -10,6 +14,12 @@ export type CanvasInspectorSelection = {
   selectedResourceId: string | null;
   /** Id of whichever node's inspector is open, regardless of node type. */
   selectedNodeId: string | null;
+  /** The attempt whose Deployment Page is open over the canvas; it opens no node's inspector. */
+  deploymentId: string | null;
+  /** The service whose Deployments tab opened that Deployment Page, if one did. */
+  deploymentReturnTo: string | null;
+  /** The Environment's deployment list is open over the canvas. */
+  deploymentList: boolean;
   isInspectorOpen: boolean;
 };
 
@@ -29,6 +39,14 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     from: ENVIRONMENT_RESOURCE_ROUTE_ID,
     shouldThrow: false,
   });
+  const deploymentMatch = useMatch({
+    from: DEPLOYMENT_PAGE_ROUTE_ID,
+    shouldThrow: false,
+  });
+  const deploymentListMatch = useMatch({
+    from: DEPLOYMENT_LIST_ROUTE_ID,
+    shouldThrow: false,
+  });
   const selectedServiceId = serviceMatch?.params.serviceId ?? null;
   const selectedResourceId = resourceMatch?.params.resourceId ?? null;
   const selectedNodeId = selectedServiceId ?? selectedResourceId;
@@ -37,6 +55,9 @@ export function useCanvasInspectorSelection(): CanvasInspectorSelection {
     selectedServiceId,
     selectedResourceId,
     selectedNodeId,
+    deploymentId: deploymentMatch?.params.deploymentId ?? null,
+    deploymentReturnTo: deploymentMatch?.search.returnTo ?? null,
+    deploymentList: deploymentListMatch != null,
     isInspectorOpen: selectedNodeId != null,
   };
 }
