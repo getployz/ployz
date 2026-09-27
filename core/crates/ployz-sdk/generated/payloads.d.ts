@@ -27,17 +27,29 @@ parent?: SavedEnvironmentIntent,
 /**
  * Lineages `into` may use live.
  */
-provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean, };
+provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean,
+/**
+ * Absent compares only; present moves the picked rows.
+ */
+picks?: Array<BranchPick>, };
 
 export type BranchChoice = { default: BranchOption, options: Array<BranchOption>, secret: boolean, };
 
 export type BranchHostnames = { from: string, into: string, };
+
+export type BranchNewValue = { value: SavedVariableValue, valueFingerprint: string, };
 
 export type BranchNodeReason = "picked" | "used" | "parent_not_deployed";
 
 export type BranchNodeRole = "own" | "live" | "left_out";
 
 export type BranchOption = "from" | "parent" | "new" | "leave_out";
+
+export type BranchPick = { key: string, choice?: BranchOption,
+/**
+ * The value for `new`, supplied by the caller (a secret's arrives sealed); never reviewed.
+ */
+newValue?: BranchNewValue, };
 
 export type BranchPicks = { preset: BranchPreset, } | { own: Array<string>, };
 

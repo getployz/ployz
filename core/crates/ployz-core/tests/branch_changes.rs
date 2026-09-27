@@ -435,4 +435,231 @@ fn contract_review_string() {
         result["review"],
         r#"[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]"#
     );
+    let picked = config_request(json!({"operation": "branch_changes", "value": {
+        "base": env("a", 1), "from": env("b", 2), "into": env("a", 3), "provided": [],
+        "hostnames": {"from": "", "into": ""}, "fromKept": false,
+        "picks": [{"key": format!("{API}:startCommand")}]}}))
+    .unwrap();
+    assert_eq!(picked["next"]["services"][0]["config"]["startCommand"], "b");
+    assert_eq!(
+        picked["review"],
+        r#"{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:startCommand"}],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}"#
+    );
+}
+
+/// `from` with setting, mount, Volume and variable changes for the pick table.
+fn changed_branch() -> Value {
+    let mut from = branch();
+    let api = svc(&mut from, API);
+    api["config"]["startCommand"] = json!("from-start");
+    api["config"]["preDeployCommand"] = json!("from-migrate");
+    api["volumeAttachments"][0]["mountPath"] = json!("/moved");
+    let vars = api["variables"].as_array_mut().unwrap();
+    vars.push(variable(0xc000_0000, 1, "NEW_PLAIN", literal("x"), "fp-x"));
+    vars.push(variable(
+        0xc000_0000,
+        2,
+        "NEW_SECRET",
+        secret("branch-cipher"),
+        "fp-new",
+    ));
+    vars.push(variable(
+        0xc000_0000,
+        3,
+        "UNSUPPLIED",
+        secret("branch-cipher"),
+        "fp-uns",
+    ));
+    var(&mut from, API, "PLAIN")["value"] = literal("b");
+    var(&mut from, API, "PLAIN")["valueFingerprint"] = json!("fp-plain-b");
+    from["volumes"][0]["name"] = json!("renamed");
+    from
+}
+
+fn with_picks(
+    from: &Value,
+    into: &Value,
+    picks: Value,
+) -> Result<Value, ployz_core::config::ConfigError> {
+    let mut parent_input = parent();
+    var(&mut parent_input, API, "PLAIN")["value"] = literal("p");
+    var(&mut parent_input, API, "PLAIN")["valueFingerprint"] = json!("fp-plain-p");
+    config_request(request(
+        Some(&parent()),
+        from,
+        into,
+        &json!({"parent": parent_input, "picks": picks}),
+    ))
+}
+
+fn table_picks() -> Value {
+    let server = json!({"kind": "secret", "encryptedValue": {"version": 1, "iv": "iv", "tag": "tag", "ciphertext": "server-cipher"}});
+    json!([
+        {"key": format!("{API}:startCommand")},
+        {"key": format!("{API}:mounts.{DATA}")},
+        {"key": format!("{API}:variables.PLAIN"), "choice": "parent"},
+        {"key": format!("{API}:variables.NEW_PLAIN"), "choice": "from"},
+        {"key": format!("{API}:variables.NEW_SECRET"), "choice": "new",
+         "newValue": {"value": server, "valueFingerprint": "fp-server"}},
+        {"key": format!("{API}:variables.UNSUPPLIED"), "choice": "new"},
+    ])
+}
+
+#[test]
+fn picks_land_in_next_and_advance_base_by_exactly_the_picks() {
+    let from = changed_branch();
+    let mut into = parent();
+    svc(&mut into, API)["config"]["startCommand"] = json!("into-start");
+    let result = with_picks(&from, &into, table_picks()).unwrap();
+    let next = &result["next"];
+    let api = next["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["lineageId"] == API)
+        .unwrap();
+    let value = |key: &str| {
+        api["variables"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["key"] == key)
+            .cloned()
+    };
+    // A picked conflict overrides `into`; an unpicked setting stays.
+    assert_eq!(api["config"]["startCommand"], "from-start");
+    assert_eq!(api["config"]["preDeployCommand"], Value::Null);
+    assert_eq!(api["volumeAttachments"][0]["mountPath"], "/moved");
+    assert_eq!(
+        api["volumeAttachments"][0]["volumeResourceId"],
+        into["volumes"][0]["resourceId"]
+    );
+    assert_eq!(next["volumes"][0]["name"], "data");
+    assert_eq!(value("PLAIN").unwrap()["value"], literal("p"));
+    let new_plain = value("NEW_PLAIN").unwrap();
+    assert_eq!(new_plain["value"], literal("x"));
+    assert_ne!(
+        new_plain["id"],
+        var(&mut from.clone(), API, "NEW_PLAIN")["id"]
+    );
+    let sealed = value("NEW_SECRET").unwrap();
+    assert_eq!(
+        sealed["value"]["encryptedValue"]["ciphertext"],
+        "server-cipher"
+    );
+    assert_eq!(sealed["valueFingerprint"], "fp-server");
+    assert!(value("UNSUPPLIED").is_none());
+    // Nothing `into` had is lost.
+    assert_eq!(
+        value("TOKEN").unwrap()["value"]["encryptedValue"]["ciphertext"],
+        "parent-cipher"
+    );
+    assert_eq!(next["services"].as_array().unwrap().len(), 4);
+
+    let base = &result["base"];
+    assert!(
+        !base.to_string().contains("cipher"),
+        "base holds sealed material"
+    );
+    let again = summary(&changes(Some(base), &from, next, &json!({})));
+    for settled in [
+        "startCommand",
+        "mounts.",
+        "variables.PLAIN",
+        "variables.NEW_PLAIN",
+        "variables.NEW_SECRET",
+        "variables.UNSUPPLIED",
+    ] {
+        assert!(
+            !again
+                .iter()
+                .any(|r| r.contains(&format!(":{settled}")) && r.contains(" move ")),
+            "{settled} in {again:#?}"
+        );
+    }
+    assert!(
+        again.contains(&format!(
+            "{API}:preDeployCommand move conflict=false default=-"
+        )),
+        "{again:#?}"
+    );
+    assert!(
+        again.contains(&format!("{DATA}:name move conflict=false default=-")),
+        "{again:#?}"
+    );
+}
+
+#[test]
+fn leaving_a_variable_out_keeps_into_own() {
+    let from = changed_branch();
+    let result = with_picks(
+        &from,
+        &parent(),
+        json!([{"key": format!("{API}:variables.PLAIN"), "choice": "leave_out"},
+               {"key": format!("{API}:variables.NEW_PLAIN"), "choice": "leave_out"}]),
+    )
+    .unwrap();
+    let api = &result["next"]["services"][0];
+    let keys: Vec<_> = api["variables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(keys, ["PLAIN", "TOKEN", "WORKER_URL"]);
+    assert_eq!(api["variables"][0]["value"], literal("a"));
+}
+
+#[test]
+fn bad_picks_are_refused() {
+    let from = changed_branch();
+    for (picks, path) in [
+        (json!([{"key": "nope"}]), "picks.key"),
+        (json!([{"key": format!("{API}:routes")}]), "picks.key"),
+        (
+            json!([{"key": format!("{API}:startCommand"), "choice": "from"}]),
+            "picks.choice",
+        ),
+        (
+            json!([{"key": format!("{API}:variables.PLAIN")}]),
+            "picks.choice",
+        ),
+        (
+            json!([{"key": format!("{API}:variables.NEW_PLAIN"), "choice": "parent"}]),
+            "picks.choice",
+        ),
+    ] {
+        let error = with_picks(&from, &parent(), picks.clone()).unwrap_err();
+        assert_eq!(error.path, path, "{picks}");
+    }
+}
+
+#[test]
+fn review_reflects_picks_but_never_new_values_or_ids() {
+    let from = changed_branch();
+    let review = |from: &Value, into: &Value, picks: Value| {
+        with_picks(from, into, picks).unwrap()["review"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let picked = review(&from, &parent(), table_picks());
+    assert!(
+        !picked.contains("server-cipher") && !picked.contains("fp-server"),
+        "{picked}"
+    );
+    assert!(picked.contains(r#""choice":"parent""#));
+    assert_eq!(
+        picked,
+        review(
+            &reid(from.clone(), 0xe000_0000),
+            &reid(parent(), 0xe100_0000),
+            table_picks()
+        )
+    );
+    let mut other = table_picks();
+    other[2]["choice"] = json!("from");
+    assert_ne!(picked, review(&from, &parent(), other));
+    let compare_only = changes(Some(&parent()), &from, &parent(), &json!({}));
+    assert_ne!(picked, compare_only["review"].as_str().unwrap());
 }
