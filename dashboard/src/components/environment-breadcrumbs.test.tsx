@@ -24,7 +24,6 @@ async function renderAt(path: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   const scope = { queryClient, sessionId: "session", userId: "user" };
   const key = (table: string) => ["collections", "session", "user", "acme", table];
-  queryClient.setQueryData(key("project_preference"), orgStoreSeed([]));
   queryClient.setQueryData(key("project"), orgStoreSeed([
     { id: "store", slug: "store", name: "Store" },
     { id: "docs", slug: "docs", name: "Docs" },
@@ -41,9 +40,10 @@ async function renderAt(path: string) {
   const projectGroup = createRoute({ getParentRoute: () => organizationRoute, id: "_project" });
   const environment = createRoute({ getParentRoute: () => projectGroup, path: "$projectSlug/$environmentSlug" });
   const logs = createRoute({ getParentRoute: () => environment, path: "logs" });
+  const settings = createRoute({ getParentRoute: () => environment, path: "settings" });
   const organizationGroup = createRoute({ getParentRoute: () => organizationRoute, id: "_org" });
   const organizationHome = createRoute({ getParentRoute: () => organizationGroup, path: "~" });
-  const routeTree = root.addChildren([protectedRoute.addChildren([organizationRoute.addChildren([projectGroup.addChildren([environment.addChildren([logs])]), organizationGroup.addChildren([organizationHome])])])]);
+  const routeTree = root.addChildren([protectedRoute.addChildren([organizationRoute.addChildren([projectGroup.addChildren([environment.addChildren([logs, settings])]), organizationGroup.addChildren([organizationHome])])])]);
   const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) });
   render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
   await screen.findByRole("button", { name: "Project: Store" });
@@ -95,4 +95,12 @@ it("keeps every crumb but the last two in a More menu", async () => {
   fireEvent.click(screen.getByRole("button", { name: "More breadcrumbs" }));
   const menu = await screen.findByRole("dialog", { name: "More breadcrumbs" });
   expect(within(menu).getAllByRole("link").map((link) => link.textContent)).toEqual(["First"]);
+});
+
+it("notes the Default Environment and opens the Project settings from Manage environments", async () => {
+  await using app = await renderAt("/cloud/acme/store/staging/logs");
+  fireEvent.click(screen.getByRole("button", { name: "Environment: Staging" }));
+  expect(await screen.findByRole("option", { name: "Production, default" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: "Manage environments" }));
+  await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
 });

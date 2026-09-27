@@ -1,14 +1,14 @@
 import { toast } from "sonner";
 import { environmentManager, queryOptions, type QueryClient } from "@tanstack/react-query";
-import { useLiveQuery } from "@tanstack/react-db";
+import { createOptimisticAction, useLiveQuery } from "@tanstack/react-db";
 import { useSyncExternalStore } from "react";
 import { notFound } from "@tanstack/react-router";
 import { getProjectsCollection, getEnvironmentSummariesCollection, type EnvironmentSummary } from "#/collections/collections";
-import { preloadCollection } from "#/collections/query-collection";
-import type { CollectionScope } from "#/collections/scope";
+import { observeFailure, preloadCollection } from "#/collections/query-collection";
+import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { EnvironmentBySlug } from "./workspace-schemas";
-import { getOrganizationStateServerFn, syncOrganizationSlugServerFn } from "./workspace-functions";
+import { getOrganizationStateServerFn, setDefaultEnvironmentServerFn, syncOrganizationSlugServerFn } from "./workspace-functions";
 
 export const organizationKeys = {
   all: ["organization"] as const,
@@ -100,6 +100,28 @@ export function useWorkspace(organizationSlug: string) {
     isError,
     refetch: () => Promise.all(Object.values(collections).map((collection) => collection.utils.refetch())),
   };
+}
+
+const getDefaultEnvironmentEditor = cachedByCollectionScope((organizationSlug, scope) => {
+  const projects = getProjectsCollection(organizationSlug, scope);
+  return createOptimisticAction<{ projectId: string; projectSlug: string; environmentId: string }>({
+    onMutate: ({ projectId, environmentId }) => projects.update(projectId, (draft) => { draft.defaultEnvironmentId = environmentId; }),
+    mutationFn: async ({ projectSlug, environmentId }) => {
+      try {
+        await projects.writeCommitted(await setDefaultEnvironmentServerFn({ data: { organizationSlug, projectSlug, environmentId } }));
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not change the default environment.");
+        throw error;
+      }
+    },
+  });
+});
+
+/** Sets the Environment a project opens for everyone; applies at once and rolls back on failure. */
+export function useSetDefaultEnvironment(organizationSlug: string) {
+  const edit = getDefaultEnvironmentEditor(organizationSlug, useCollectionScope());
+  return (project: { id: string; slug: string }, environmentId: string) =>
+    observeFailure(edit({ projectId: project.id, projectSlug: project.slug, environmentId }));
 }
 
 /** Route lifecycle runs on the server too. Only committed browser navigation stores preferences. */
