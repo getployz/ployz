@@ -32,3 +32,7 @@ export function redactEnvironmentIntent(value: import('./generated/payloads').Sa
 
 export function parseRuntimePreview(value: unknown): import('./generated/payloads').DeployPreview;
 export function projectRuntimeOutcome(preview: unknown, value: unknown): import('./generated/payloads').RuntimeOutcomeProjection;
+
+export function planBranch(input: { parent: import('./generated/payloads').SavedEnvironmentIntent; deployed: string[]; focus: string[]; picks: import('./generated/payloads').BranchPicks }): import('./generated/payloads').BranchPlan;
+/** Returns the accepted Project name; throws a ConfigError saying why a name would fail at deploy. */
+export function checkBranchName(name: string): string;

@@ -9,6 +9,18 @@ export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "s
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
 
+export type BranchNodeReason = "picked" | "used" | "parent_not_deployed";
+
+export type BranchNodeRole = "own" | "live" | "left_out";
+
+export type BranchPicks = { preset: BranchPreset, } | { own: Array<string>, };
+
+export type BranchPlan = { nodes: Array<BranchPlanNode>, preset: BranchPreset | null, };
+
+export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType, role: BranchNodeRole, because: BranchNodeReason | null, };
+
+export type BranchPreset = "only" | "uses" | "all";
+
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
 export type BuildConcurrency = number;

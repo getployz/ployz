@@ -100,4 +100,8 @@ const savedCreation = api.projectEnvironmentChanges({
 assert.equal(savedCreation.groups[0].comparison, null);
 assert.deepEqual(savedCreation.groups[0].settings, []);
 assert.equal(savedCreation.totalCount, 1);
+const branch = api.planBranch({ parent: intent, deployed: [id(2)], focus: [id(2)], picks: { preset: 'only' } });
+assert.deepEqual(branch, { nodes: [{ lineageId: id(2), nodeType: 'service', role: 'own', because: 'picked' }], preset: 'only' });
+assert.equal(api.checkBranchName('shop-pr-12'), 'shop-pr-12');
+assert.throws(() => api.checkBranchName('ployz-system'));
 console.log('SDK config runs on WASM; napi carries RPC only.');
