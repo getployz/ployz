@@ -134,7 +134,7 @@ describe("updateBranch", () => {
   const update = async (environmentId: string, only?: string) => provide(updateBranch({ userId }, {
     organizationSlug: "acme", environmentId, revision: (await documentOf(environmentId))?.revision ?? "", only,
   }));
-  const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: unknown) => error);
+  const failure = (promise: Promise<unknown>) => promise.then(() => null, (error: Error) => error);
 
   /** The Parent's deployed changes the Branch lacks, as the review page computes them. */
   async function updateRows(branchId: string) {
