@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
@@ -22,9 +22,12 @@ const ACTIVE_TEARDOWN_STATUSES = ["pending", "running"] as const;
 export const activeTeardownFor = Effect.fn("TeardownRepository.activeFor")(function* (environmentIds: readonly string[]) {
   if (environmentIds.length === 0) return new Set<string>();
   const { drizzle } = yield* Database;
-  const active = yield* drizzle.select({ targets: schemaTeardownAttempt.targets }).from(schemaTeardownAttempt)
-    .where(inArray(schemaTeardownAttempt.status, [...ACTIVE_TEARDOWN_STATUSES]));
-  const targeted = new Set(active.flatMap((attempt) => attempt.targets.environments.map((target) => target.environmentId)));
+  const active = yield* drizzle.select().from(schemaTeardownAttempt).where(and(
+    inArray(schemaTeardownAttempt.status, [...ACTIVE_TEARDOWN_STATUSES]),
+    or(...environmentIds.map((environmentId) =>
+      sql`${schemaTeardownAttempt.targets} -> 'environments' @> ${JSON.stringify([{ environmentId }])}::jsonb`)),
+  ));
+  const targeted = new Set(active.map(parsedAttempt).flatMap((attempt) => attempt.targets.environments.map((target) => target.environmentId)));
   return new Set(environmentIds.filter((id) => targeted.has(id)));
 });
 
