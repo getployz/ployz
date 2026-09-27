@@ -151,7 +151,7 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
   ["/_protected/cloud/$organizationSlug/_org/~/settings", "server-settings"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
-  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/deployments", "deployments"],
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],

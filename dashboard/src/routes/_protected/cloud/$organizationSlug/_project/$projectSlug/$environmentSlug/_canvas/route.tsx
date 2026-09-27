@@ -4,34 +4,22 @@ import {
   redirect,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-import { Schema } from "effect";
-import { prefetchFromOrgStore, prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
-import { environmentDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   EnvironmentCanvasScene,
   PendingCanvas,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/EnvironmentCanvasScene";
-import { DEPLOYMENT_PAGE_ROUTE_TO, legacyDeploymentLink } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
+import { DEPLOYMENT_LIST_ROUTE_TO, DEPLOYMENT_PAGE_ROUTE_TO, legacyDeploymentLink } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deployment-page";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas",
 )({
-  // `deploymentList=true` opens the deploy bar's deployment list; it is not retained.
-  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ deploymentList: Schema.optional(Schema.Boolean) })),
-  // Old Deployment Mode links (`?deployment=<id>`, on the canvas or a service) open that attempt's Deployment Page.
+  // Old links: Deployment Mode's `?deployment=<id>` (on the canvas or a service) opens that attempt's Deployment Page, and
+  // the deploy bar's `?deploymentList=true` opens the deployment list.
   beforeLoad: ({ location, params }) => {
     const legacy = legacyDeploymentLink(location);
     if (legacy) throw redirect({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: legacy.deploymentId }, search: legacy.search, replace: true });
-  },
-  loaderDeps: ({ search }) => ({ deploymentList: search.deploymentList }),
-  // The open list's first page; the list is keyed by environment id, which the Org Store resolves.
-  loader: async ({ params, context, deps: { deploymentList } }) => {
-    const { organizationSlug } = params;
-    await prefetchFromOrgStore(context, organizationSlug, () => [
-      deploymentList === true && requireEnvironment(context, params).then((environment) =>
-        prefetchRemotePages(context, environmentDeploymentsQueryOptions(organizationSlug, environment.id))),
-    ]);
+    if (new URLSearchParams(location.searchStr).get("deploymentList") === "true") throw redirect({ to: DEPLOYMENT_LIST_ROUTE_TO, params, replace: true });
   },
   errorComponent: CanvasError,
   component: CanvasLayout,
