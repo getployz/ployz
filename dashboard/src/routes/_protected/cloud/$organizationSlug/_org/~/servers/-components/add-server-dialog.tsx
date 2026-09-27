@@ -78,7 +78,7 @@ export function AddServerDialog({
             <DialogHeader>
               <DialogTitle>Add a server</DialogTitle>
               <DialogDescription>
-                Run this as root on a fresh Linux server · Expires{" "}
+                Run once as administrator · Expires{" "}
                 {mintMutation.data
                   ? expiryFormatter.format(
                       new Date(mintMutation.data.expiresAt),

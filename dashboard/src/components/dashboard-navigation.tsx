@@ -16,7 +16,7 @@ import {
   type DashboardScope,
   type DashboardNavItem,
 } from "./dashboard-navigation-model";
-import { useDashboardSection } from "./use-dashboard-section";
+import { useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
 import { NavigationSwitcher } from "./navigation-switcher";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -510,6 +510,7 @@ export function MobileDashboardNavigation({
   scope: DashboardScope;
 }) {
   const { isInspectorOpen } = useCanvasInspectorSelection();
+  const Crumb = useRouteCrumb();
   return (
     <div data-mobile-navigation className="flex shrink-0 flex-col gap-2 border-b p-3 min-wf-nav:hidden">
       <div className="flex min-w-0 items-center gap-2">
@@ -519,8 +520,9 @@ export function MobileDashboardNavigation({
         <DashboardAccountMenu />
       </div>
       {!isInspectorOpen ? (
-        <div className="flex min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
           <DashboardNavigationPicker scope={scope} />
+          {Crumb ? <><span aria-hidden="true" className="text-muted-foreground">/</span><Crumb /></> : null}
         </div>
       ) : null}
     </div>

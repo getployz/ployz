@@ -17,6 +17,7 @@ import {
 import { Skeleton } from "#/components/ui/skeleton";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
 import { useRuntimeService } from "#/providers/runtime-provider";
+import { runtimeServiceIdentity } from "#/modules/runtime/runtime.collection";
 import { cn } from "#/lib/utils";
 import { useCanvasService } from "./CanvasServicesContext";
 import {
@@ -61,9 +62,7 @@ export function ServiceNode({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const serviceState = useCanvasService(data.serviceId);
-  const runtimeIdentity = serviceState
-    ? `${serviceState.serviceView.service.environmentSlug}/${serviceState.serviceView.service.privateDns}`
-    : "";
+  const runtimeIdentity = serviceState ? runtimeServiceIdentity(serviceState.serviceView.service) : "";
   const { runtime } = useRuntimeService(runtimeIdentity);
 
   if (!serviceState) {

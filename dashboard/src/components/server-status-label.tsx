@@ -5,10 +5,11 @@ import type { ServerStatus } from "#/modules/machines/server-status";
 const LABELS = {
   online: { word: "Online", dot: "bg-success" },
   building: { word: "Building", dot: "bg-info" },
-  not_responding: { word: "Not responding", dot: "bg-warning" },
   offline: { word: "Offline", dot: "bg-destructive" },
   unknown: { word: "Unknown", dot: "bg-muted-foreground" },
 } satisfies Record<ServerStatus, { word: string; dot: string }>;
+
+export const serverStatusWord = (status: ServerStatus) => LABELS[status].word;
 
 /** A Server's status: a dot and one word. A stale observation keeps the word and greys the dot. */
 export function ServerStatusLabel({ status, stale = false, children }: { status: ServerStatus; stale?: boolean; children?: ReactNode }) {

@@ -15,6 +15,6 @@ describe("servicesOnServers", () => {
     );
     expect(web).toMatchObject({ name: "Web", cloud: { name: "Web" } });
     expect([...(web?.machineIds ?? [])]).toEqual(["m1", "m2"]);
-    expect(cli).toMatchObject({ identity: "ops/grafana", name: "grafana", cloud: null });
+    expect(cli).toMatchObject({ identity: "ops/grafana", name: "ops/grafana", cloud: null });
   });
 });

@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { Link } from "@tanstack/react-router";
-import { CheckIcon, ChevronRightIcon, ServerIcon } from "lucide-react";
+import { CheckIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
@@ -9,7 +8,8 @@ import { BUILD_ORDERS, BUILD_ORDER_LABELS, defaultBuildOrder } from "#/modules/d
 import { useBuildOrder } from "#/modules/deployments/build-order.collection";
 import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepository } from "#/modules/github/github-build-workflow";
 import { useGithubBuildRepositories } from "#/modules/github/github.queries";
-import { useServers, type Server } from "#/modules/machines/use-servers";
+import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
+import { ServerLinkItem } from "./server-link-item";
 
 /** Where the Organization's Image Builds run: the Build Order, GitHub setup per repository, and which Servers build. */
 export function BuildsSettings({ organizationSlug }: { organizationSlug: string }) {
@@ -119,7 +119,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
   );
 }
 
-function buildSummary({ machine }: Server) {
+function buildSummary({ machine }: ServerListItem) {
   if (!machine.acceptsBuilds) return "Doesn’t run builds";
   if (machine.runningBuilds > 0) return `Building ${machine.runningBuilds} now`;
   return `Up to ${machine.effectiveBuildConcurrency} at once`;
@@ -127,7 +127,7 @@ function buildSummary({ machine }: Server) {
 
 /** Which Servers take builds, read-only: each Server's own page holds its switch. */
 function BuildServers({ organizationSlug }: { organizationSlug: string }) {
-  const { servers } = useServers(organizationSlug);
+  const { servers } = useServerList(organizationSlug);
   if (servers.length === 0) return null;
   const building = servers.filter((server) => server.machine.acceptsBuilds).length;
   return (
@@ -140,21 +140,7 @@ function BuildServers({ organizationSlug }: { organizationSlug: string }) {
           <ItemDescription>{building} of {servers.length} run builds. Turn builds on or off on each server’s page.</ItemDescription>
         </ItemContent>
         {servers.map((server) => (
-          <Item
-            key={server.machine.id}
-            variant="outline"
-            size="sm"
-            render={<Link to="/cloud/$organizationSlug/~/servers/$serverId" params={{ organizationSlug, serverId: server.machine.id }} />}
-          >
-            <ItemMedia variant="icon"><ServerIcon /></ItemMedia>
-            <ItemContent className="min-w-0">
-              <ItemTitle>{server.name}</ItemTitle>
-              <ItemDescription>{buildSummary(server)}</ItemDescription>
-            </ItemContent>
-            <ItemActions>
-              <ChevronRightIcon className="size-4 text-muted-foreground" />
-            </ItemActions>
-          </Item>
+          <ServerLinkItem key={server.machine.id} organizationSlug={organizationSlug} server={server} description={buildSummary(server)} />
         ))}
       </ItemGroup>
     </section>

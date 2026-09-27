@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import { initializeAuthSession } from "./auth/auth-client";
 import type { AuthSession } from "./auth/auth";
 import {
@@ -96,5 +97,9 @@ export function getRouter() {
 declare module "@tanstack/react-router" {
   interface Register {
     router: ReturnType<typeof getRouter>;
+  }
+  interface StaticDataRouteOption {
+    /** A detail page's crumb, shown after its section's name in the header: Servers / hel-1 ⌄. */
+    crumb?: ComponentType;
   }
 }

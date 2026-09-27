@@ -7,3 +7,8 @@ export function useDashboardSection() {
       getDashboardSectionFromRouteId(matches.at(-1)?.routeId),
   });
 }
+
+/** The deepest route's crumb, if it declares one in `staticData`. */
+export function useRouteCrumb() {
+  return useMatches({ select: (matches) => matches.at(-1)?.staticData.crumb });
+}

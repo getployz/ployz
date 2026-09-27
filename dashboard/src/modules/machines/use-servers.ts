@@ -4,29 +4,29 @@ import { getRuntimeCollections, projectRuntimeServiceRecord } from "#/modules/ru
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useServicesCollection } from "#/modules/services/services.collection";
 import { servicesOnServers } from "./server-services";
-import { sortServers, useServerStatuses } from "./server-status";
+import { serverListState, serverStatus, sortServers } from "./server-status";
 
-/**
- * The Organization's Servers as the Servers pages show them: a status each, the Services running on it, problems first.
- * Reads the Org Store synchronously, so only pages below the Org Store gate may call it.
- */
-export function useServers(organizationSlug: string) {
+/** The Organization's Servers from the Runtime alone, problems first. Safe in chrome above the Org Store gate. */
+export function useServerList(organizationSlug: string) {
   const runtime = useRuntimeLens(organizationSlug);
-  const statusOf = useServerStatuses(runtime.machines);
+  const servers = sortServers(runtime.machines.map((machine) => ({ machine, name: machine.name, status: serverStatus(machine) })));
+  return { state: serverListState(runtime.status, servers.length), servers };
+}
+
+export type ServerListItem = ReturnType<typeof useServerList>["servers"][number];
+
+/** Each Server with the Services running on it. Reads the Org Store, so only pages below its gate may call it. */
+export function useServers(organizationSlug: string) {
+  const list = useServerList(organizationSlug);
   const { data: runtimeServices = [] } = useLiveQuery(getRuntimeCollections(organizationSlug, useCollectionScope()).services);
   const { data: cloudServices } = useLiveSuspenseQuery(useServicesCollection(organizationSlug));
   const services = servicesOnServers(runtimeServices.map(projectRuntimeServiceRecord), cloudServices);
-  const servers = sortServers(runtime.machines.map((machine) => ({
-    machine,
-    name: machine.name,
-    status: statusOf(machine),
-    services: services.filter((service) => service.machineIds.has(machine.id)),
-  })));
   return {
-    lens: runtime.status,
-    /** The last observation is shown while the Runtime Watch is down. */
-    stale: runtime.status === "unavailable",
-    servers,
+    state: list.state,
+    servers: list.servers.map((server) => ({
+      ...server,
+      services: services.filter((service) => service.machineIds.has(server.machine.id)),
+    })),
   };
 }
 

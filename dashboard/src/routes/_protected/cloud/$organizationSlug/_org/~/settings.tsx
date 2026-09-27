@@ -45,6 +45,7 @@ function RouteComponent() {
     <DashboardPage width="content">
       <h1 className="text-xl font-semibold">Settings</h1>
       <Tabs
+        className="gap-4"
         value={section}
         onValueChange={(value) => {
           if (Schema.is(settingsSectionSchema)(value)) {
@@ -56,7 +57,7 @@ function RouteComponent() {
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="builds">Builds</TabsTrigger>
         </TabsList>
-        <TabsContent value="general" className="flex flex-col gap-8 pt-4">
+        <TabsContent value="general" className="flex flex-col gap-8">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
           <TeardownDangerSection
@@ -72,7 +73,7 @@ function RouteComponent() {
             }}
           />
         </TabsContent>
-        <TabsContent value="builds" className="pt-4">
+        <TabsContent value="builds">
           <BuildsSettings organizationSlug={organizationSlug} />
         </TabsContent>
       </Tabs>

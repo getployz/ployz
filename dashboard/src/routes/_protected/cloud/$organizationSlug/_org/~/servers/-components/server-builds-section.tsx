@@ -79,10 +79,6 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
           <ItemTitle>
             <h2 id="server-builds-heading">Builds</h2>
           </ItemTitle>
-          <ItemDescription>
-            Which builders go first is set in{" "}
-            <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Settings › Builds</Link>.
-          </ItemDescription>
         </ItemContent>
         <Item variant="outline">
           <ItemContent>
@@ -127,6 +123,10 @@ export function ServerBuildsSection({ machine, organizationSlug }: { machine: Ru
             </ItemActions>
           </Item>
         ) : null}
+        <ItemDescription>
+          Which builders go first is set in{" "}
+          <Link to="/cloud/$organizationSlug/~/settings" params={{ organizationSlug }} search={{ section: "builds" }}>Settings › Builds</Link>.
+        </ItemDescription>
       </ItemGroup>
     </section>
   );
