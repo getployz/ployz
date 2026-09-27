@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { branchChanges, type BranchPick, type BranchRow as ChangeRow } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
+import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
 import { environment, environmentBranch, type project } from "#/modules/project/tables";
@@ -78,8 +79,9 @@ const onSettledBranch = <E, R>(
   if (context === null) return yield* new NotFound({ message: "The environment was not found." });
   return yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
-    // The Branch row before its queue (lock order: lockProjectDefault); its base advances when the changes land.
-    const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, input.environmentId)).for("update");
+    // The Project, then the Branch row, before its queue (lock order: lockProjectDefault); its base advances when the
+    // changes land.
+    const row = yield* lockBranchScope(context.project.id, input.environmentId, "update");
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
     const document = yield* loadEnvironmentDocument(input.environmentId, true);
     yield* requireDocumentRevision(document, input.revision);

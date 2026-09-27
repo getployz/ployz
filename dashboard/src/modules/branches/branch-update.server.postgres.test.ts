@@ -174,6 +174,27 @@ describe("updateBranch", () => {
     expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: "Nothing new in production." });
   });
 
+  it("makes an Own Copy and a Branch of the same Branch side by side without a deadlock", async () => {
+    const branchId = await branchOfWeb();
+    // Hold the Project so the create queues on it first and the Own Copy second; then let both go. An Own Copy that
+    // locked the Branch row before the Project would deadlock here: its new service's foreign key waits on the Project.
+    const holder = await harness.pool.connect();
+    await holder.query("begin");
+    await holder.query("select id from project where id = $1 for update", [projectId]);
+    const created = provide(createBranch({ userId }, {
+      organizationSlug: "acme", parentEnvironmentId: branchId, name: "child",
+      focus: [webLineage], picks: { preset: "only" }, keep: false, deployNow: false, setupCommands: [],
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const copied = update(branchId, dbLineage);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await holder.query("commit");
+    holder.release();
+
+    await Promise.all([created, copied]);
+    expect((await documentOf(branchId))?.intent.services.map((node) => node.lineageId).sort()).toEqual([dbLineage, webLineage].sort());
+  });
+
   it("is refused while the Branch has an active attempt", async () => {
     const branchId = await branchOfWeb();
     await deploy(branchId, "queued");
