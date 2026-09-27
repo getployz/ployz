@@ -59,7 +59,7 @@ export type BranchKind = {
   plan: (parent: SavedEnvironmentIntent, deployed: string[]) => Parameters<typeof planBranch>[0];
   setupCommands: (plan: BranchPlan) => SetupCommand[];
   derive: (intent: SavedEnvironmentIntent) => SavedEnvironmentIntent;
-  /** Its name, picked under the Project lock from the project's taken namespaces; a plain Branch takes the one asked for. */
+  /** Its name, picked under the Project lock from the organization's taken namespaces; a plain Branch takes the one asked for. */
   name: (taken: ReadonlySet<string>) => string;
   finish: (written: { branch: typeof environmentBranch.$inferSelect; next: SavedEnvironmentIntent }) => Effect.Effect<void, EffectDrizzleQueryError, Database>;
 };
@@ -140,7 +140,7 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     : working;
 
   // The browser checks these first; the unique index settles a race.
-  const taken = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.projectId, project.id));
+  const taken = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.organizationId, project.organizationId));
   const name = kind.name(new Set(taken.map((row) => row.namespace)));
   const namespace = branchNamespace(project.slug, name);
   const nameError = branchNameError(project.slug, name, new Set());

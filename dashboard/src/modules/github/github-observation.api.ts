@@ -481,13 +481,18 @@ export const postInstallationCheckRun = Effect.fn(
   }
   const api = yield* GithubApi;
   const repository = `https://api.github.com/repositories/${repositoryId}`;
-  const { check_runs: runs } = yield* api.json({
-    installationId,
-    url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}`,
-    operation: "list_check_runs",
-    schema: checkRunsResponseSchema,
-  });
-  const existing = runs.find((run) => run.external_id === input.externalId);
+  // Every run of that name, not only the latest one GitHub shows by default, page by page until it's found.
+  let existing: { id: number } | undefined;
+  for (let page = 1; !existing; page++) {
+    const { check_runs: runs } = yield* api.json({
+      installationId,
+      url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}&filter=all&per_page=100&page=${page}`,
+      operation: "list_check_runs",
+      schema: checkRunsResponseSchema,
+    });
+    existing = runs.find((run) => run.external_id === input.externalId);
+    if (runs.length < 100) break;
+  }
   const body = {
     name: input.name, external_id: input.externalId, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
     output: { title: input.title, summary: input.summary },

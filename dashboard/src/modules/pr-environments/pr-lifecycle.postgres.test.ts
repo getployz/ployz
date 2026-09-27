@@ -31,6 +31,7 @@ import { closePrEnvironment } from "#/modules/branches/branch-close.server";
 import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
 import { standing } from "./conditional-save";
 import { executePostPrCheck } from "./pr-check.inngest";
+import { postPrCheck } from "./pr-check.server";
 import { createService } from "#/modules/environment-design/service-operations.server";
 import { createImageServiceSource } from "#/modules/environment-design/services";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
@@ -130,7 +131,9 @@ describe("PR Environment lifecycle", () => {
           case "list_commit_pulls": return commitPulls.get(request.url.split("/commits/")[1]?.split("/")[0] ?? "") ?? [];
           case "list_check_runs": {
             const sha = request.url.split("/commits/")[1]?.split("/")[0];
-            return { check_runs: checkRuns.filter((run) => run.headSha === sha).map((run) => ({ id: run.id, external_id: run.body.external_id })) };
+            const runs = checkRuns.filter((run) => run.headSha === sha);
+            // As GitHub does: only the newest run of a name unless asked for all.
+            return { check_runs: (request.url.includes("filter=all") ? runs : runs.slice(-1)).map((run) => ({ id: run.id, external_id: run.body.external_id })) };
           }
           case "create_check_run": {
             const run = { id: checkRuns.length + 1, headSha: String(body.head_sha), body };
@@ -333,6 +336,17 @@ describe("PR Environment lifecycle", () => {
       picks: { preset: "only" }, setupCommands: [], removeOnClose: true, includeBots: false,
     }).pipe(Effect.flip));
     expect(asStart).toMatchObject({ _tag: "Validation", message: "A PR environment can't be where PR environments start from." });
+  });
+
+  it("names it past a namespace another project of the organization took", async () => {
+    await harness.pool.query(`
+      insert into project (id, organization_id, name, slug) values (gen_random_uuid(), '${organizationId}', 'Shop PR', 'shop-pr');
+      insert into environment (id, project_id, organization_id, name, namespace, intent)
+        select gen_random_uuid(), id, '${organizationId}', '142', 'shop-pr-142', '{}' from project where slug = 'shop-pr';
+    `);
+    expect(await pullRequest("opened", "opened", 142)).toBe("pull_request_projected");
+    const [created] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, (await prEnvironment(142))?.environmentId ?? ""));
+    expect(created).toMatchObject({ name: "pr-142-2", namespace: "shop-pr-142-2" });
   });
 
   it("keeps picks and Then run commands the start-from lacks out of the PR Environment's plan", async () => {
@@ -576,7 +590,7 @@ describe("PR Environment lifecycle", () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       const [first, second] = ["c".repeat(40), "d".repeat(40)];
       const runOn = (sha: string) => {
-        const runs = checkRuns.filter((run) => run.headSha === sha);
+        const runs = checkRuns.filter((run) => run.headSha === sha && run.body.external_id === `${repositoryId}:142`);
         expect(runs).toHaveLength(1);
         const body = runs[0]?.body;
         return { conclusion: body?.conclusion, reason: body?.output.title, detailsUrl: body?.details_url, summary: body?.output.summary };
@@ -621,19 +635,25 @@ describe("PR Environment lifecycle", () => {
       await postChecks();
       expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
 
+      // Another pull request from the same head posts its own run after ours: ours is still found, not duplicated.
+      const ours = checkRuns.find((run) => run.headSha === second);
+      if (ours) checkRuns.push({ id: checkRuns.length + 1, headSha: second, body: { ...ours.body, external_id: `${repositoryId}:999` } });
+      expect(await runEffect(postPrCheck({ repositoryId, number: 142 }))).toBe("posted");
+      expect(runOn(second)).toMatchObject({ reason: "Review and approve 1 change for staging" });
+
       // Without Checks: write nothing is posted, and nothing fails.
       checksForbidden = true;
       await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "" })));
       expect(await postChecks()).toEqual(["forbidden"]);
       expect(runOn(second)).toMatchObject({ reason: "Review and approve 1 change for staging" });
-      expect(checkRuns).toHaveLength(2);
+      expect(checkRuns).toHaveLength(3);
 
       // A pull request without a PR Environment gets none.
       checksForbidden = false;
       await setPlan({ enabled: false });
       expect(await pullRequest("other", "opened", 9, { head: { ref: "other", sha: "e".repeat(40), repo: { id: repositoryId } } })).toBe("ignored_pull_request");
       expect(await postChecks()).toEqual([]);
-      expect(checkRuns).toHaveLength(2);
+      expect(checkRuns).toHaveLength(3);
     });
 
     describe("when the pull request closes", () => {
@@ -857,6 +877,29 @@ describe("PR Environment lifecycle", () => {
           await ciPasses("f".repeat(40));
           expect((await triggers()).filter((row) => row.headSha === mergeSha).map((row) => row.admissionState)).toEqual(["superseded"]);
           expect(variableIn((await attemptAt("f".repeat(40))).saved, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
+
+        it("saves at close past an older trigger still waiting for CI, when the processed head has the merge commit", async () => {
+          await waitForCi();
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await push("b".repeat(40), ["api/main.ts"]);
+          await push(mergeSha, ["docs/readme.md"]);
+          expect((await triggers()).find((row) => row.headSha === "b".repeat(40))?.admissionState).toBe("waiting");
+          await pullRequest("merged", "closed", 142, merged);
+          expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toEqual(plain("on"));
+          expect(await saves()).toEqual([]);
+        });
+
+        it("freezes nothing of a PR Environment being torn down at a merge push, and drops its approvals when retired", async () => {
+          const prId = (await prEnvironment(142))?.environmentId ?? "";
+          await approve(prId, tickAll);
+          await runEffect(closePrEnvironment(prId));
+          commitPulls.set(mergeSha, [{ number: 142, base: { ref: "main" }, merged_at: new Date().toISOString(), merge_commit_sha: mergeSha }]);
+          await push(mergeSha, ["api/main.ts"]);
+          expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toBeUndefined();
+          expect((await saves()).map((row) => row.state)).toEqual(["standing"]);
+          await pullRequest("synchronize", "synchronize", 142);
           expect(await saves()).toEqual([]);
         });
 

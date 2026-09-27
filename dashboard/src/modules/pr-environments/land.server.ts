@@ -17,6 +17,7 @@ import { loadCurrentEnvironmentState, loadEnvironmentDocument } from "#/modules/
 import { loadLatestEnvironmentSavedState } from "#/modules/environment-design/saved-state-repository.server";
 import { publishLandedSavedState } from "#/modules/environment-design/saved-state-operations.server";
 import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { core, landChanges } from "#/modules/branches/branch-operations.server";
 import { withEmptyValues } from "#/modules/branches/branch-merge.server";
 import { rowLineage, usedLive } from "#/modules/branches/branch-review";
@@ -198,8 +199,10 @@ export const freezeMergedBy = Effect.fn("PrEnvironments.freezeMergedBy")(functio
   for (const pull of yield* listInstallationCommitMergedPullRequests(push.installationId, push.repositoryId, push.headSha)) {
     if (pull.targetBranch !== targetBranch) continue;
     const prEnvironments = yield* drizzle.select({ id: prEnvironment.environmentId }).from(prEnvironment)
-      .where(and(eq(prEnvironment.repositoryId, push.repositoryId), eq(prEnvironment.number, pull.number)));
-    yield* settleAtClose(prEnvironments.map((row) => row.id), { commitSha: pull.mergeCommitSha, targetBranch });
+      .where(and(eq(prEnvironment.repositoryId, push.repositoryId), eq(prEnvironment.number, pull.number), eq(prEnvironment.retired, false)));
+    // One being torn down is being retired: its approvals drop rather than freeze.
+    const closing = yield* activeTeardownFor(prEnvironments.map((row) => row.id));
+    yield* settleAtClose(prEnvironments.map((row) => row.id).filter((id) => !closing.has(id)), { commitSha: pull.mergeCommitSha, targetBranch });
   }
 });
 
@@ -277,12 +280,14 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
     return yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), sha);
   });
   for (const save of saves) {
+    // A trigger still waiting for an older commit: admitted, it deploys without the merge commit, so it can't carry them.
+    let older: string | undefined;
     // ponytail: a few looks, as triggers are admitted or superseded meanwhile; past that the next push carries them.
     for (let look = 0; look < 3; look++) {
       const latest = yield* latestTriggerFor(save);
       if (latest?.conditionalSaveIds.includes(save.id)) break;
-      if (latest?.admissionState === "waiting") {
-        if (!(yield* hasMerge(save, latest.headSha))) break;
+      if (latest?.admissionState === "waiting" && latest.id !== older && !(yield* hasMerge(save, latest.headSha))) older = latest.id;
+      if (latest?.admissionState === "waiting" && latest.id !== older) {
         const [attached] = yield* drizzle.update(githubEnvironmentTrigger)
           .set({ conditionalSaveIds: sql`array_append(${githubEnvironmentTrigger.conditionalSaveIds}, ${save.id}::uuid)` })
           .where(and(eq(githubEnvironmentTrigger.id, latest.id), eq(githubEnvironmentTrigger.admissionState, "waiting")))
@@ -294,9 +299,9 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
         eq(githubBranchProjection.installationId, pullRequest.installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
         eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
       if (!branch?.head || !(yield* hasMerge(save, branch.head))) break;
-      // Under the queue lock nothing may wait for CI there by now, or that trigger carries them instead.
+      // Under the queue lock nothing newer may wait for CI there by now, or that trigger carries them instead.
       if (yield* landNow(save.id, save.destinationEnvironmentId, () => latestTriggerFor(save).pipe(
-        Effect.map((now) => now?.admissionState !== "waiting")))) break;
+        Effect.map((now) => now?.admissionState !== "waiting" || now.id === older)))) break;
     }
   }
 });

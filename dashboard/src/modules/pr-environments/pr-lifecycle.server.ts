@@ -9,6 +9,7 @@ import { fetchInstallationPullRequest } from "#/modules/github/github-observatio
 import { environment, project } from "#/modules/project/tables";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
+import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { carryInWaitingTriggers, landAtMerge, settleAtClose } from "./land.server";
 import { fromRepository, prEnvironmentIntent } from "./pull-request";
 import { actingMember } from "./plan-operations.server";
@@ -39,9 +40,15 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
   // One being torn down is done with: retired, it keeps its facts and loses its approvals, and a new one can start
   // beside it.
   const closing = [...yield* activeTeardownFor(all.map((row) => row.environmentId))];
-  if (closing.length) {
-    yield* drizzle.update(prEnvironment).set({ retired: true }).where(inArray(prEnvironment.environmentId, closing));
-    yield* drizzle.delete(conditionalSave).where(and(inArray(conditionalSave.prEnvironmentId, closing), eq(conditionalSave.state, "standing")));
+  const database = yield* Database;
+  for (const environmentId of closing) {
+    // Together, under its document as settlement takes it: no approval freezes in between.
+    yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* loadEnvironmentDocument(environmentId, true);
+      yield* drizzle.update(prEnvironment).set({ retired: true }).where(eq(prEnvironment.environmentId, environmentId));
+      yield* drizzle.delete(conditionalSave).where(and(eq(conditionalSave.prEnvironmentId, environmentId), eq(conditionalSave.state, "standing")));
+    }));
   }
   const existing = all.filter((row) => !closing.includes(row.environmentId));
   if (existing.length) {
@@ -91,8 +98,9 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     }
     yield* createPrEnvironment(plan, plan.startFromEnvironmentId, { userId }, { ...live, repositoryId: input.repositoryId, number: input.number }).pipe(
       Effect.map(() => { created = true; }),
-      // A refused plan: nothing to retry until someone changes it.
-      Effect.catchTags({ Conflict: logNotCreated(plan), Validation: logNotCreated(plan) }),
+      // A refused plan: nothing to retry until someone changes it. A conflict (a name taken meanwhile, a start-from
+      // being torn down) fails the delivery, which retries and, past its retries, is recorded as failed.
+      Effect.catchTag("Validation", logNotCreated(plan)),
     );
   }
   if (created || existing.length > 0) return "pull_request_projected" as const;
