@@ -100,7 +100,7 @@ function ServiceListItem({
               >
                 <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
               </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={semantics.statusText}>
                 {semantics.statusText}
                 {observedContainers ? ` · ${observedContainers}` : null}
               </span>

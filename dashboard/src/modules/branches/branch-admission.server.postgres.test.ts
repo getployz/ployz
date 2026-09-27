@@ -110,9 +110,9 @@ describe("branchAdmission", () => {
       insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, created_by_user_id)
         values ('${branchId}', '${organizationId}', '${projectId}', '${productionId}', '{}', '${userId}');
       insert into service_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values
-        ('${webLineage}', '${organizationId}', '${projectId}', 'Web', 'web'),
-        ('${dbLineage}', '${organizationId}', '${projectId}', 'DB', 'db'),
-        ('${cacheLineage}', '${organizationId}', '${projectId}', 'Cache', 'cache');
+        ('${webLineage}', '${organizationId}', '${projectId}', 'web', 'web-1'),
+        ('${dbLineage}', '${organizationId}', '${projectId}', 'db', 'db-1'),
+        ('${cacheLineage}', '${organizationId}', '${projectId}', 'cache', 'cache-1');
       insert into service (id, project_id, environment_id, organization_id, lineage_id, name) values
         ('${prodWeb}', '${projectId}', '${productionId}', '${organizationId}', '${webLineage}', 'web'),
         ('${prodDb}', '${projectId}', '${productionId}', '${organizationId}', '${dbLineage}', 'db'),

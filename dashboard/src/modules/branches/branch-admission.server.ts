@@ -68,11 +68,11 @@ export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
   for (const lineageId of pending) for (const key of uses.get(lineageId)?.keys() ?? []) missing.push({ lineageId, key });
   if (missing.length === 0) return { variableProducers, missingLiveValues };
 
-  const slugs = new Map((yield* drizzle.select({ id: serviceLineage.id, slug: serviceLineage.canonicalSlug }).from(serviceLineage)
-    .where(inArray(serviceLineage.id, missing.map((value) => value.lineageId)))).map((row) => [row.id, row.slug]));
+  const names = new Map((yield* drizzle.select({ id: serviceLineage.id, name: serviceLineage.canonicalName }).from(serviceLineage)
+    .where(inArray(serviceLineage.id, missing.map((value) => value.lineageId)))).map((row) => [row.id, row.name]));
   for (const { lineageId, key } of missing) {
     for (const serviceId of uses.get(lineageId)?.get(key) ?? []) {
-      missingLiveValues.push({ serviceId, from: slugs.get(lineageId) ?? lineageId, key });
+      missingLiveValues.push({ serviceId, from: names.get(lineageId) ?? lineageId, key });
     }
   }
   return { variableProducers, missingLiveValues };

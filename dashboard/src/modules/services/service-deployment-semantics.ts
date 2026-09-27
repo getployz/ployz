@@ -76,7 +76,7 @@ export function getServiceDeploymentSemantics(
   if (input.missingLiveValues.length > 0) {
     return {
       state: "warning",
-      statusText: `Missing live ${input.missingLiveValues.length === 1 ? "value" : "values"} ${input.missingLiveValues.join(", ")}`,
+      statusText: `Missing ${input.missingLiveValues.join(", ")}`,
       showNewBadge: false,
     };
   }

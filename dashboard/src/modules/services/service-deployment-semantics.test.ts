@@ -88,7 +88,7 @@ describe("getServiceDeploymentSemantics", () => {
       getServiceDeploymentSemantics({ ...deployed, missingLiveValues: ["db.PLOYZ_PRIVATE_DOMAIN"] }),
     ).toEqual({
       state: "warning",
-      statusText: "Missing live value db.PLOYZ_PRIVATE_DOMAIN",
+      statusText: "Missing db.PLOYZ_PRIVATE_DOMAIN",
       showNewBadge: false,
     });
   });

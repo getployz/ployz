@@ -162,7 +162,7 @@ export function ServiceNode({
               >
                 <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
               </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              <span className="min-w-0 flex-1 line-clamp-2 break-words text-muted-foreground" title={statusCopy}>
                 {statusCopy}
               </span>
             </div>
