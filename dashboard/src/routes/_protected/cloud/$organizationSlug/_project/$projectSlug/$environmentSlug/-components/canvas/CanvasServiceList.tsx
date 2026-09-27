@@ -50,6 +50,7 @@ function ServiceListItem({
     currentDiffRowCount: serviceState.diffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
+    missingLiveValues: serviceState.missingLiveValues,
   });
   const observedContainers = runtime
     ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`

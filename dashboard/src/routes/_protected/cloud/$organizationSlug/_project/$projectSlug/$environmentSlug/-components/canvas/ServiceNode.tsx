@@ -83,6 +83,7 @@ export function ServiceNode({
     currentDiffRowCount: serviceState.diffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
+    missingLiveValues: serviceState.missingLiveValues,
   });
   const state = semantics.state;
   const observedContainers = runtime

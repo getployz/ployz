@@ -1,0 +1,1 @@
+ALTER TABLE "environment_deployment" ADD COLUMN "missing_live_values" jsonb DEFAULT '[]' NOT NULL;

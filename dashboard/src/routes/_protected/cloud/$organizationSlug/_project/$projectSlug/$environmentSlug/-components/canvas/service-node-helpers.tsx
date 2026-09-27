@@ -40,6 +40,13 @@ export function getServiceStatusClasses(state: ServiceDeploymentSurfaceState) {
     };
   }
 
+  if (state === "warning") {
+    return {
+      dot: "bg-warning-soft",
+      innerDot: "bg-warning",
+    };
+  }
+
   if (state === "destructive") {
     return {
       dot: "bg-destructive-soft",

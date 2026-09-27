@@ -74,6 +74,7 @@ function deploymentSummary(deployment: DeploymentHistoryRow): EnvironmentDeploym
     runtimeProgress: deployment.runtimeProgress,
     sourcePins: deployment.sourcePins,
     targetNodes: deployment.targetNodes,
+    missingLiveValues: deployment.missingLiveValues,
     canRetry: deployment.canRetry,
     failureCode: deployment.failureCode,
     dispatchRequestedAt: deployment.dispatchRequestedAt,

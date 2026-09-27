@@ -1,0 +1,165 @@
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
+import { parseServiceConfig } from "@ployz/sdk/config";
+import * as schema from "#/db/schema";
+import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
+import { loadDeploymentContext } from "#/modules/deployments/runtime-repository.server";
+import { compileRuntimeIntent } from "#/modules/deployments/runtime-session.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
+import { Effect } from "effect";
+import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
+
+const organizationId = "00000000-0000-4000-8000-000000000a01";
+const userId = "00000000-0000-4000-8000-000000000a02";
+const projectId = "00000000-0000-4000-8000-000000000a03";
+const productionId = "00000000-0000-4000-8000-000000000a04";
+const branchId = "00000000-0000-4000-8000-000000000a05";
+const webLineage = "00000000-0000-4000-8000-000000000a11";
+const dbLineage = "00000000-0000-4000-8000-000000000a12";
+const cacheLineage = "00000000-0000-4000-8000-000000000a13";
+const prodWeb = "00000000-0000-4000-8000-000000000a21";
+const prodDb = "00000000-0000-4000-8000-000000000a22";
+const branchWeb = "00000000-0000-4000-8000-000000000a31";
+const encryption = makeSecretEncryption("test-encryption-secret");
+
+const config = (slug: string) => {
+  const { env: _env, mounts: _mounts, ...parsed } = parseServiceConfig({
+    version: 2, source: { version: 1, type: "image", image: `${slug}:1`, credentials: { type: "none" } },
+    healthcheck: { type: "none" }, restartPolicy: "unless-stopped", privateDns: slug, managedHostnames: [],
+  });
+  return parsed;
+};
+const ref = (lineageId: string, key: string) => ({ kind: "template" as const, parts: [{ kind: "ref" as const, owner: { scope: "service" as const, lineageId }, key }] });
+const variable = (id: string, key: string, value: SavedEnvironmentIntent["services"][number]["variables"][number]["value"]) =>
+  ({ id, key, description: null, exported: false, valueFingerprint: `fp-${key}`, value });
+const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+/** production runs web and db; db reads web's address and holds a sealed password. */
+const production = (): SavedEnvironmentIntent => ({
+  version: 1, environmentSlug: "shop-production", volumes: [],
+  services: [
+    { id: prodWeb, lineageId: webLineage, slug: "web", config: config("web"), variables: [], volumeAttachments: [] },
+    { id: prodDb, lineageId: dbLineage, slug: "db", config: config("db"), volumeAttachments: [], variables: [
+      variable(id(1), "WEB_ORIGIN", ref(webLineage, "PLOYZ_PRIVATE_DOMAIN")),
+      variable(id(2), "PASSWORD", { kind: "secret", encryptedValue: encryption.encrypt("hunter2") }),
+    ] },
+  ],
+});
+/** The Branch owns web; db is live from production; nothing runs cache. */
+const branch = (): SavedEnvironmentIntent => ({
+  version: 1, environmentSlug: "shop-fix-web", volumes: [],
+  services: [{ id: branchWeb, lineageId: webLineage, slug: "web", config: config("web"), volumeAttachments: [], variables: [
+    variable(id(3), "DB_HOST", ref(dbLineage, "PLOYZ_PRIVATE_DOMAIN")),
+    variable(id(4), "DB_SEES_WEB", ref(dbLineage, "WEB_ORIGIN")),
+    variable(id(5), "DB_PASSWORD", ref(dbLineage, "PASSWORD")),
+    variable(id(6), "DB_MISSING", ref(dbLineage, "NOPE")),
+    variable(id(7), "CACHE_HOST", ref(cacheLineage, "PLOYZ_PRIVATE_DOMAIN")),
+  ] }],
+});
+
+describe("branchAdmission", () => {
+  let harness: PostgresTestHarness;
+  beforeAll(async () => {
+    harness = await startPostgresTestHarness();
+  }, 60_000);
+  afterAll(async () => {
+    await harness?.stop();
+  });
+
+  async function saved(environmentId: string, intent: SavedEnvironmentIntent) {
+    const [row] = await harness.db.insert(schema.environmentSavedStateSnapshot)
+      .values({ organizationId, environmentId, actorId: userId, intent, volumeDeletionAuthorizations: [] }).returning();
+    return row?.id ?? "";
+  }
+  /** production's latest applied attempt: what the Branch's Live values come from. */
+  async function applyProduction(intent: SavedEnvironmentIntent) {
+    const compiled = compileSavedEnvironmentIntent({ environmentId: productionId, intent });
+    const [attempt] = await harness.db.insert(schema.environmentDeployment).values({
+      organizationId, environmentId: productionId, savedStateSnapshotId: await saved(productionId, intent), status: "applied",
+      triggerOrigin: { origin: "manual", actorId: userId }, variableProducers: compiled.variableProducers,
+    }).returning();
+    await harness.db.insert(schema.environmentNodeConfigSnapshot).values(compiled.nodeSnapshots.map((node) => ({
+      organizationId, environmentDeploymentId: attempt?.id ?? "", environmentId: productionId, nodeType: node.nodeType,
+      nodeId: node.nodeId, nodeLineageId: node.nodeLineageId, configVersion: node.configVersion, config: node.config,
+    })));
+  }
+  type TriggerOrigin = Parameters<typeof admitEnvironmentDeployment>[0]["triggerOrigin"];
+  async function admitBranch(triggerOrigin: TriggerOrigin = { origin: "manual", actorId: userId }) {
+    const savedStateSnapshotId = await saved(branchId, branch());
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId: branchId, savedStateSnapshotId, triggerOrigin, message: null,
+    }));
+    const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    const input = await harness.runEffect(loadDeploymentContext(admitted.id).pipe(
+      Effect.flatMap(compileRuntimeIntent), Effect.provideService(SecretEncryption, encryption),
+    ));
+    return { row, env: input.snapshots.find((snapshot) => snapshot.serviceId === branchWeb)?.resolvedEnv, dependencies: input.dependencies };
+  }
+
+  beforeEach(async () => {
+    const env = (envId: string, name: string, namespace: string) =>
+      `('${envId}', '${projectId}', '${organizationId}', '${name}', '${namespace}', '{"version":1,"environmentSlug":"${namespace}","services":[],"volumes":[]}')`;
+    await harness.pool.query(`
+      truncate table organization, "user" cascade;
+      insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
+      insert into "user" (id, email, name) values ('${userId}', 'owner@example.com', 'Owner');
+      insert into project (id, organization_id, name, slug) values ('${projectId}', '${organizationId}', 'Shop', 'shop');
+      insert into environment (id, project_id, organization_id, name, namespace, intent) values
+        ${env(productionId, "production", "shop-production")}, ${env(branchId, "fix-web", "shop-fix-web")};
+      insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, created_by_user_id)
+        values ('${branchId}', '${organizationId}', '${projectId}', '${productionId}', '{}', '${userId}');
+      insert into service_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values
+        ('${webLineage}', '${organizationId}', '${projectId}', 'Web', 'web'),
+        ('${dbLineage}', '${organizationId}', '${projectId}', 'DB', 'db'),
+        ('${cacheLineage}', '${organizationId}', '${projectId}', 'Cache', 'cache');
+      insert into service (id, project_id, environment_id, organization_id, lineage_id, name) values
+        ('${prodWeb}', '${projectId}', '${productionId}', '${organizationId}', '${webLineage}', 'web'),
+        ('${prodDb}', '${projectId}', '${productionId}', '${organizationId}', '${dbLineage}', 'db'),
+        ('${branchWeb}', '${projectId}', '${branchId}', '${organizationId}', '${webLineage}', 'web');
+    `);
+  });
+
+  it("resolves Live references to the owner's values at its private addresses, adding no ordering", async () => {
+    await applyProduction(production());
+    const { row, env, dependencies } = await admitBranch();
+
+    expect(env).toMatchObject({
+      DB_HOST: "db.shop-production.internal",
+      // db's own reference follows production's web, not the Branch's copy.
+      DB_SEES_WEB: "web.shop-production.internal",
+      DB_PASSWORD: "hunter2",
+      DB_MISSING: "",
+      CACHE_HOST: "",
+    });
+    // Sealed values stay sealed in the frozen producers until apply time.
+    expect(JSON.stringify(row?.variableProducers)).not.toContain("hunter2");
+    expect(dependencies).toEqual({});
+    expect(row?.missingLiveValues).toEqual(expect.arrayContaining([
+      { serviceId: branchWeb, from: "db", key: "NOPE" },
+      { serviceId: branchWeb, from: "cache", key: "PLOYZ_PRIVATE_DOMAIN" },
+    ]));
+    expect(row?.missingLiveValues).toHaveLength(2);
+  });
+
+  it("deploys every Live reference empty when the Parent stopped running the service, and records them", async () => {
+    await applyProduction({ ...production(), services: production().services.filter((service) => service.lineageId !== dbLineage) });
+    const { row, env } = await admitBranch();
+
+    expect(env).toMatchObject({ DB_HOST: "", DB_SEES_WEB: "", DB_PASSWORD: "", CACHE_HOST: "" });
+    expect(row?.missingLiveValues.map((value) => `${value.from}.${value.key}`).sort()).toEqual([
+      "cache.PLOYZ_PRIVATE_DOMAIN", "db.NOPE", "db.PASSWORD", "db.PLOYZ_PRIVATE_DOMAIN", "db.WEB_ORIGIN",
+    ]);
+  });
+
+  it("captures fresh values on each admission, so the flag clears once the owner runs the service again", async () => {
+    await applyProduction({ ...production(), services: production().services.filter((service) => service.lineageId !== dbLineage) });
+    expect((await admitBranch()).row?.missingLiveValues).toHaveLength(5);
+    await applyProduction(production());
+    // A Git push goes through the same admission.
+    const push: TriggerOrigin = { origin: "github", deliveryId: "d1", branchEvaluationRevision: 1, installationId: 17, repositoryId: 42 };
+    const pushed = await admitBranch(push);
+    expect(pushed.env).toMatchObject({ DB_HOST: "db.shop-production.internal" });
+    expect(pushed.row?.missingLiveValues.map((value) => value.key).sort()).toEqual(["NOPE", "PLOYZ_PRIVATE_DOMAIN"]);
+  });
+});

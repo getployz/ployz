@@ -7,6 +7,7 @@ const deployed = {
   currentDiffRowCount: 0,
   hasRecordedTargetSnapshot: true,
   latestDeploymentStatus: "applied" as const,
+  missingLiveValues: [],
 };
 
 describe("getServiceDeploymentSemantics", () => {
@@ -80,5 +81,15 @@ describe("getServiceDeploymentSemantics", () => {
         latestDeploymentStatus: null,
       }),
     ).toMatchObject({ statusText: "Deployed" });
+  });
+
+  it("flags Live values the latest attempt deployed empty, naming them", () => {
+    expect(
+      getServiceDeploymentSemantics({ ...deployed, missingLiveValues: ["db.PLOYZ_PRIVATE_DOMAIN"] }),
+    ).toEqual({
+      state: "warning",
+      statusText: "Missing live value db.PLOYZ_PRIVATE_DOMAIN",
+      showNewBadge: false,
+    });
   });
 });

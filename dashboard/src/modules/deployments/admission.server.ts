@@ -27,7 +27,8 @@ import {
   volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 import type { EncryptedSecretValue } from "#/db/tables";
-import type { EnvironmentDeploymentServiceActionPolicy } from "#/modules/deployments/tables";
+import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
+import { branchAdmission } from "#/modules/branches/branch-admission.server";
 import {
   organizationIdForDeployment,
   organizationIdForEnvironment,
@@ -341,7 +342,7 @@ function stageReviewedVolumeRemoveAttempt(input: {
 
 function writeQueuedSavedTarget(
   input: DeploymentAdmissionInput,
-  target: SavedDeploymentTarget,
+  target: SavedDeploymentTarget & { missingLiveValues: MissingLiveValue[] },
 ) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -378,6 +379,7 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
             updatedAt: now,
@@ -399,6 +401,7 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
           })
@@ -498,6 +501,7 @@ export const admitEnvironmentDeployment = Effect.fn(
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
     const target = yield* loadExactSavedDeploymentTarget(input);
-    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    const branch = yield* branchAdmission(input.environmentId, target);
+    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, { ...target, ...branch });
   }));
 });
