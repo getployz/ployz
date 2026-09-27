@@ -147,7 +147,7 @@ async function show(ssr = false, orgStore: "ready" | "pending" | "failed" = "rea
   const view = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>, options);
   if (orgStore !== "ready") return { ...view, router, markup, onRecoverableError, resolveOrgStore };
   await screen.findByRole("heading", { name: "Logs" });
-  if (!ssr) await waitFor(() => expect(screen.getAllByRole("button", { name: "Project and environment: Store / Production" }).length).toBeGreaterThan(0));
+  if (!ssr) await waitFor(() => expect(screen.getAllByRole("button", { name: "Environment: Production" }).length).toBeGreaterThan(0));
   return { ...view, router, markup, onRecoverableError, resolveOrgStore };
 }
 
@@ -173,6 +173,7 @@ it("renders real scope queries and retains named navigation when collapsed", asy
   const { router } = await show();
   const sidebar = screen.getByRole("complementary", { name: "Dashboard navigation" });
   expect(within(sidebar).getByRole("button", { name: "Organization: Acme" })).toBeTruthy();
+  expect(within(sidebar).queryByRole("button", { name: /^(Project|Environment):/ })).toBeNull();
   fireEvent.click(within(sidebar).getByRole("button", { name: "Collapse sidebar" }));
   await within(sidebar).findByRole("button", { name: "Expand sidebar" });
   expect(within(sidebar).getByRole("button", { name: "Expand sidebar" })).toBeTruthy();
@@ -256,7 +257,7 @@ it("uses the mobile picker for the same scoped destinations and closes it after 
   vi.stubGlobal("innerWidth", 390);
   const { router } = await show();
   const main = screen.getByRole("main");
-  expect(within(main).getByRole("button", { name: "Organization: Acme" })).toBeTruthy();
+  expect(within(main).getByRole("button", { name: "Project: Store" })).toBeTruthy();
   fireEvent.click(within(main).getByRole("button", { name: "Project navigation" }));
   const picker = await screen.findByRole("dialog", { name: "Project navigation" });
   const settings = within(picker).getByRole("link", { name: "Settings" });

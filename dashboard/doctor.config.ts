@@ -15,9 +15,9 @@ export default {
       },
       // Client-only app-shell dialog: creating an environment requires the
       // mounted router/query client so it can invalidate and navigate to the
-      // created environment inside the current project switcher.
+      // created environment from the Environment crumb.
       {
-        files: ["src/components/navigation-switcher.tsx"],
+        files: ["src/components/environment-breadcrumbs.tsx"],
         rules: ["react-doctor/no-prevent-default"],
       },
       // Public app error/result surfaces documented in AGENTS.md. Keeping these
