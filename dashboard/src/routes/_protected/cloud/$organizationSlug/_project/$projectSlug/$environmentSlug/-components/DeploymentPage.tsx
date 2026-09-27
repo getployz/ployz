@@ -20,7 +20,7 @@ import type { EnvironmentDeploymentSummary } from "#/modules/deployments/deploym
 import { deploymentAttemptQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import {
-  deploymentLighting, deploymentLogTab, deploymentStatusLabel, hasBuildLogs, nodeOutcomeLabels, shortDeploymentId,
+  changedNodes, deploymentLogTab, deploymentStatusLabel, hasBuildLogs, nodeOutcomeLabels, shortDeploymentId,
   type DeploymentNodeView, type TargetNode,
 } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
@@ -32,7 +32,8 @@ import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 /** Past this many changed services the chips become a dropdown. */
 const MAX_CHIPS = 6;
-const inFlight = new Set<DeploymentNodeView["outcome"]>(["failed", "building", "deploying"]);
+/** Outcomes the page opens on before the first service: where the attempt is working or failed. */
+const needsAttention = new Set<DeploymentNodeView["outcome"]>(["failed", "building", "deploying"]);
 
 /**
  * One Cloud Deployment Attempt as a panel over the live canvas: its header and actions, a chip per changed service,
@@ -54,18 +55,14 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
     </>;
   }
   const { deployment, view } = attempt;
-  const { offCanvas } = deploymentLighting(attempt, onCanvas);
-  const services = attempt.nodes.flatMap((node) => {
-    const nodeView = view.nodes.find((candidate) => candidate.nodeId === node.nodeId);
-    return node.nodeType === "service" && nodeView && nodeView.outcome !== "unchanged" ? [{ node, view: nodeView }] : [];
-  });
+  const changed = changedNodes(attempt);
+  // Nodes the canvas no longer draws: the attempt removed them, or they were deleted since. Only the page lists them.
+  const offCanvas = changed.filter(({ node }) => node.removed || !onCanvas.has(node.nodeId));
+  const services = changed.filter(({ node }) => node.nodeType === "service");
   const focused = services.find(({ node }) => node.nodeId === search.service)
-    ?? services.find(({ view }) => inFlight.has(view.outcome)) ?? services[0];
+    ?? services.find(({ view }) => needsAttention.has(view.outcome)) ?? services[0];
   const tab = focused ? deploymentLogTab(focused.view, search.logs) : "deploy";
-  const config = focused ? read?.serviceConfigs.find((row) => row.nodeId === focused.node.nodeId) : undefined;
-  const source = config ? parseServiceConfig(config.config).source : null;
-  const branch = source?.type === "git" ? (source.branch.type === "connected" ? source.branch.name : source.branch.previousName) : null;
-  const commit = focused ? deployment.sourcePins[focused.node.nodeId]?.commitSha.slice(0, 7) : undefined;
+  const git = gitSource(read?.serviceConfigs ?? [], focused?.node.nodeId, deployment.sourcePins);
   const pageSearch = (service: string) => ({ service, logs: undefined });
 
   return (
@@ -89,7 +86,7 @@ export function DeploymentPage({ deploymentId, search }: { deploymentId: string;
             <span className="inline-flex items-center gap-1 text-foreground"><DeploymentStatusIcon status={view.status} />{deploymentStatusLabel(view)}</span>
             <Duration deployment={deployment} />
             <RelativeTime date={deployment.createdAt} />
-            {branch ? <span className="font-mono">{branch}{commit ? ` @ ${commit}` : null}</span> : null}
+            {git ? <span className="font-mono">{git.branch}{git.commit ? ` @ ${git.commit}` : null}</span> : null}
           </p>
         </header>
 
@@ -184,6 +181,18 @@ function OffCanvasNodes({ nodes }: { nodes: { node: TargetNode; view: Deployment
       </ItemGroup>
     </section>
   );
+}
+
+/** The attempt's Git branch and commit: the focused service's when it builds from Git, else the first Git service's. */
+function gitSource(configs: readonly { nodeId: string; config: Parameters<typeof parseServiceConfig>[0] }[], focusedId: string | undefined,
+  pins: EnvironmentDeploymentSummary["sourcePins"]) {
+  const sources = configs.flatMap(({ nodeId, config }) => {
+    const source = parseServiceConfig(config).source;
+    if (source?.type !== "git") return [];
+    const branch = source.branch.type === "connected" ? source.branch.name : source.branch.previousName;
+    return [{ nodeId, branch, commit: pins[nodeId]?.commitSha.slice(0, 7) }];
+  });
+  return sources.find(({ nodeId }) => nodeId === focusedId) ?? sources[0] ?? null;
 }
 
 function triggerLabel(deployment: EnvironmentDeploymentSummary, actorName: string | null) {

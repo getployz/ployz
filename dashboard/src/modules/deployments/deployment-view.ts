@@ -432,21 +432,20 @@ export function activeStep(progress: DeploymentProgress | null, nodes: readonly 
 /** The first eight characters: how the UI names an attempt next to its message. */
 export const shortDeploymentId = (id: string) => id.slice(0, 8);
 
-/**
- * What an open Deployment Page does to the canvas, which always draws the Environment as it is now.
- * `lit`: the canvas nodes the attempt changed, by Node Outcome; every other canvas node dims.
- * `offCanvas`: nodes it changed that the canvas no longer draws (it removed them, or they were deleted since); only the page lists them.
- */
-export function deploymentLighting(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }, onCanvas: ReadonlySet<string>) {
-  const lit = new Map<string, DeploymentNodeView["outcome"]>();
-  const offCanvas: { node: TargetNode; view: DeploymentNodeView }[] = [];
-  for (const node of attempt.nodes) {
+/** The nodes an attempt changed, each with its view; unchanged nodes are left out. */
+export function changedNodes(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }) {
+  return attempt.nodes.flatMap((node) => {
     const view = attempt.view.nodes.find((candidate) => candidate.nodeId === node.nodeId);
-    if (!view || view.outcome === "unchanged") continue;
-    if (node.removed || !onCanvas.has(node.nodeId)) offCanvas.push({ node, view });
-    else lit.set(node.nodeId, view.outcome);
-  }
-  return { lit, offCanvas };
+    return view && view.outcome !== "unchanged" ? [{ node, view }] : [];
+  });
+}
+
+/**
+ * What an open Deployment Page lights on the canvas, which always draws the Environment as it is now: each node the
+ * attempt changed and did not remove, by Node Outcome. Every other canvas node dims.
+ */
+export function deploymentLighting(attempt: { nodes: readonly TargetNode[]; view: DeploymentView }): ReadonlyMap<string, DeploymentNodeView["outcome"]> {
+  return new Map(changedNodes(attempt).filter(({ node }) => !node.removed).map(({ node, view }) => [node.nodeId, view.outcome]));
 }
 
 export type LogTab = "build" | "deploy";

@@ -63,8 +63,7 @@ export function useOpenDeployment(): Lighting {
   useOpenStartedDeploymentsSync(attempt, deploymentId);
   if (!attempt) return null;
   // Nodes the canvas no longer draws are simply never matched; the page lists them.
-  const { lit } = deploymentLighting(attempt, new Set(attempt.nodes.map((node) => node.nodeId)));
-  return { lit, pending: attempt.buildPending };
+  return { lit: deploymentLighting(attempt), pending: attempt.buildPending };
 }
 
 function useOpenStartedDeploymentsSync(attempt: ViewedAttempt | null, deploymentId: string | null) {

@@ -3,7 +3,7 @@ import type { ContainerId, DeployOperation, MachineId, OperationRow } from "@plo
 import { resolvedServiceSpecFixture } from "#/modules/runtime/runtime-watch-frame.test-fixture";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import {
-  viewTargetNodes, buildLogSections, deploymentLighting, deploymentLogTab, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, hasBuildLogs,
+  viewTargetNodes, buildLogSections, changedNodes, deploymentLighting, deploymentLogTab, deploymentProgressForEvent, deploymentStatusLabel, deploymentView, hasBuildLogs,
   type TargetNode, type DeploymentViewInput,
 } from "./deployment-view";
 
@@ -210,15 +210,14 @@ describe("deployment view projection", () => {
     expect(progress?.rows.map((r) => r.serviceId)).toEqual(["api", "old"]);
   });
 
-  it("lights the canvas nodes an attempt changed and lists the ones the canvas no longer draws", () => {
+  it("lights the nodes an attempt changed and did not remove", () => {
     const remove = row(0, { type: "remove_container", machine_id: "machine-0" as MachineId, container_id: "gone" as ContainerId });
     const progress = deploymentProgressForEvent({ type: "outcome", outcome: engineOrdered({ type: "success", completed: [remove.operation] } as const) }, [remove], context);
     const nodes = [node({ nodeId: "svc-0", changed: true, removed: true }), node({ nodeId: "web", changed: true }), node({ nodeId: "gone", changed: true }), node({ nodeId: "db", changed: false })];
     const view = deploymentView({ deployment: deployment("applied"), progress, nodes });
-    // "gone" was deleted since; "db" is unchanged, so it dims like any canvas node the attempt did not change.
-    const { lit, offCanvas } = deploymentLighting({ nodes, view }, new Set(["web", "db", "added-later"]));
-    expect([...lit]).toEqual([["web", "deployed"]]);
-    expect(offCanvas.map(({ node, view }) => [node.nodeId, view.outcome])).toEqual([["svc-0", "removed"], ["gone", "deployed"]]);
+    // "db" is unchanged, so it dims like any canvas node the attempt did not change.
+    expect(changedNodes({ nodes, view }).map(({ node, view }) => [node.nodeId, view.outcome])).toEqual([["svc-0", "removed"], ["web", "deployed"], ["gone", "deployed"]]);
+    expect([...deploymentLighting({ nodes, view })]).toEqual([["web", "deployed"], ["gone", "deployed"]]);
   });
 
   it("opens the log tab on the focused service's stage and follows it until the user picks one", () => {
