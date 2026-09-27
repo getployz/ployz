@@ -61,7 +61,7 @@ export const landConditionalSave = Effect.fn("PrEnvironments.landConditionalSave
   const approvedAgainst = new Map(save.rows.map(({ row }) => [row.key, row.into]));
   const unchanged = (key: string) => same(inSaved.get(key), approvedAgainst.get(key)) || same(inWorking.get(key), approvedAgainst.get(key));
 
-  // A missing new value arrives empty; the service shows it as missing, and nothing blocks.
+  // A missing new value arrives empty (`isEmptyValue`); the service shows it as missing, and nothing blocks.
   const held = save.rows.map(({ row }) => row);
   const picks = save.picks.map((pick): BranchPick => pick.choice?.option === "new" && !pick.choice.value
     ? { key: pick.key, choice: { option: "new", value: sealValue(encryption, held, working, pick.key, "") } } : pick);

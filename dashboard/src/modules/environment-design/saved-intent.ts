@@ -30,6 +30,13 @@ const savedVariableSchema = Schema.Struct({
   ]),
 });
 export type SavedVariableIntent = DeepMutable<typeof savedVariableSchema.Type>;
+
+/**
+ * Whether a variable holds an empty value, as a value landed without one does: an empty literal, or a secret sealing ""
+ * (AES-GCM ciphertext is as long as its plaintext). Such a value shows as missing, and never blocks a deploy.
+ */
+export const isEmptyValue = (value: SavedVariableIntent["value"]) => value.kind === "literal" ? value.value === ""
+  : value.kind === "secret" && value.encryptedValue?.ciphertext === "";
 export type SavedServiceIntent = Omit<CoreServiceIntent, "variables"> & {
   variables: SavedVariableIntent[];
 };
