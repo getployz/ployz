@@ -8,6 +8,7 @@ export const compareServiceSettings = (current, baseline) => request({ operation
 export const restoreServiceSetting = (current, baseline, path) => request({ operation: 'restore_service', current, baseline, path });
 
 export const resolveVariables = value => request({ operation: 'resolve_variables', value });
+export const liveValues = value => request({ operation: 'live_values', value });
 
 export const parseEnvironmentIntent = value => request({ operation: 'parse_environment', value });
 export const canonicalizeEnvironmentIntent = value => request({ operation: 'canonicalize_environment', value });
@@ -17,6 +18,7 @@ export const parseSavedVariable = value => request({ operation: 'parse_saved_var
 export const restoreEnvironmentNode = (current, baseline, node, path = null) => request({ operation: 'restore_environment', current, baseline, node_type: node.nodeType, node_id: node.nodeId, path });
 export const parseResourceConfig = (nodeType, value) => request({ operation: 'parse_resource', node_type: nodeType, value });
 export const compareResourceSettings = (nodeType, current, baseline) => request({ operation: 'compare_resource', node_type: nodeType, current, baseline });
+export const branchChanges = value => request({ operation: 'branch_changes', value });
 export const projectEnvironmentChanges = value => request({ operation: 'project_changes', value });
 export const publicationBasisMatches = (basis, latest) => request({ operation: 'publication_basis_matches', basis, latest });
 export const destructivePublication = value => request({ operation: 'destructive_publication', value });
@@ -30,3 +32,6 @@ export const redactEnvironmentIntent = value => request({ operation: 'redact_env
 
 export const parseRuntimePreview = value => request({ operation: 'parse_runtime_preview', value });
 export const projectRuntimeOutcome = (preview, value) => request({ operation: 'project_runtime_outcome', preview, value });
+
+export const planBranch = input => request({ operation: 'plan_branch', ...input });
+export const checkBranchName = name => request({ operation: 'check_branch_name', name });

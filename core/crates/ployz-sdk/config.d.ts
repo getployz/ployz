@@ -10,6 +10,7 @@ export function compareServiceSettings(current: ServiceConfig, baseline: Service
 export function restoreServiceSetting(current: ServiceConfig, baseline: ServiceConfig, path: string): ServiceConfig;
 
 export function resolveVariables(value: import('./generated/payloads').ResolveVariablesInput): import('./generated/payloads').ResolveVariablesResult;
+export function liveValues(value: import('./generated/payloads').LiveValuesInput): import('./generated/payloads').LiveValues;
 
 export function parseEnvironmentIntent(value: unknown): import('./generated/payloads').SavedEnvironmentIntent;
 export function canonicalizeEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
@@ -19,6 +20,7 @@ export function parseSavedVariable(value: unknown): import('./generated/payloads
 export function restoreEnvironmentNode(current: import('./generated/payloads').SavedEnvironmentIntent, baseline: import('./generated/payloads').SavedEnvironmentIntent | null, node: { nodeType: 'service' | 'volume'; nodeId: string }, path?: string): import('./generated/payloads').SavedEnvironmentIntent;
 export function parseResourceConfig(nodeType: 'volume', value: unknown): import('./generated/payloads').VolumeConfig;
 export function compareResourceSettings(nodeType: 'volume', current: import('./generated/payloads').VolumeConfig, baseline: import('./generated/payloads').VolumeConfig | null): ServiceSettingChange[];
+export function branchChanges(value: import('./generated/payloads').BranchChangesInput): import('./generated/payloads').BranchChanges;
 export function projectEnvironmentChanges(value: import('./generated/payloads').ChangeSetInput): import('./generated/payloads').ReviewChangeSet;
 export function publicationBasisMatches(basis: { kind: 'no_saved_state' } | { kind: 'saved_revision'; savedStateSnapshotId: string }, latest: string | null): boolean;
 export function destructivePublication(value: unknown): { serviceIds: string[]; volumeIds: string[] };
@@ -26,9 +28,13 @@ export function destructivePublicationMismatch(value: { expected: { serviceIds: 
 export function canonicalWorkingReview(value: unknown): string;
 export function parsePublicationBasis(value: unknown): import('./generated/payloads').PublicationBasis;
 export function reusePublication(input: { policy: 'always_create' | 'reuse_latest_if_equivalent'; current: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown }; latest: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null }): boolean;
-export function lowerDeployment(value: { projectName: string; dependencies?: import('./generated/payloads').DeployIntent['dependencies']; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string> }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
+export function lowerDeployment(value: { projectName: string; dependencies?: import('./generated/payloads').DeployIntent['dependencies']; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 
 export function redactEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
 
 export function parseRuntimePreview(value: unknown): import('./generated/payloads').DeployPreview;
 export function projectRuntimeOutcome(preview: unknown, value: unknown): import('./generated/payloads').RuntimeOutcomeProjection;
+
+export function planBranch(input: { parent: import('./generated/payloads').SavedEnvironmentIntent; deployed: string[]; focus: string[]; picks: import('./generated/payloads').BranchPicks }): import('./generated/payloads').BranchPlan;
+/** Returns the accepted Project name; throws a ConfigError saying why a name would fail at deploy. */
+export function checkBranchName(name: string): string;

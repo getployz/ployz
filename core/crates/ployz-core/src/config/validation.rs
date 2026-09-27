@@ -224,7 +224,7 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
     }
 }
 
-fn trimmed(value: &mut String, path: &str, max: usize) -> Result<(), ConfigError> {
+pub(super) fn trimmed(value: &mut String, path: &str, max: usize) -> Result<(), ConfigError> {
     *value = value.trim().into();
     range(
         !value.is_empty() && value.chars().count() <= max,
