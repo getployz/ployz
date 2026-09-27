@@ -30,8 +30,8 @@ import {
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
+import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
-import { ApplyZoneSlot, DeployBar } from "./DeployBar";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildEdges, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -206,10 +206,10 @@ export function EnvironmentCanvasScene() {
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
   const { selectedNodeId, selectedServiceId, deploymentId, deploymentList } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
-  const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
+  const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
 
   return (
-    <ApplyZoneSlot.Provider value={applyZoneSlot}>
+    <BottomBarSlot.Provider value={bottomBarSlot}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
@@ -223,11 +223,11 @@ export function EnvironmentCanvasScene() {
             <CanvasWithData key={canvasKey} />
           </Suspense>
         </DeploymentLightingProvider>
-        <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
+        <div ref={setBottomBarSlot} className="contents" />
       </>}
     >
       <Outlet />
     </CanvasInspectorOverlay>
-    </ApplyZoneSlot.Provider>
+    </BottomBarSlot.Provider>
   );
 }

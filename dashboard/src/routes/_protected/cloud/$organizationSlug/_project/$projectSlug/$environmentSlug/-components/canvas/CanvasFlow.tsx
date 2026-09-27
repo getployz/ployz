@@ -13,7 +13,7 @@ import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import { ApplyZone } from "./ApplyZone";
+import { BottomBar } from "./BottomBar";
 import { SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
@@ -203,8 +203,9 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <ApplyZone
+      <BottomBar
           key={locationKey}
+          environmentId={environmentId}
           groups={diffGroups}
           totalChanges={totalChanges}
           canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}
