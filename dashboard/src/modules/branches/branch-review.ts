@@ -2,6 +2,7 @@ import { branchChanges, type BranchReason, type BranchRow as ChangeRow } from "@
 import { asRecord, asString } from "#/lib/json";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { presentSettingChange } from "#/modules/services/service-deployment-diff/fields";
+import { liveOwner } from "./live-owner";
 
 export type { ChangeRow };
 type RowValue = ChangeRow["from"];
@@ -63,20 +64,21 @@ export function usedLive(intent: SavedEnvironmentIntent): string[] {
 }
 
 /**
- * Each Live Node the owner redeployed after the Branch's latest deploy. The owner is the nearest ancestor that deployed the
- * lineage. `deployedAt` holds each Environment's Applied lineages and when they last deployed.
+ * Each Live Node the owner redeployed after the Branch's latest deploy. The owner is `liveOwner` of the Branch's Parent.
+ * `deployedAt` holds each Environment's Applied lineages and when they last deployed.
  */
 export function liveUpdates(input: {
   live: string[];
-  /** The Branch's ancestors, nearest first. */
-  ancestors: string[];
+  parentId: string;
+  branches: Iterable<{ environmentId: string; parentEnvironmentId: string }>;
   branchDeployedAt: Date | null;
   deployedAt: ReadonlyMap<string, Record<string, Date>>;
 }): LiveUpdate[] {
   const since = input.branchDeployedAt;
   if (!since) return [];
+  const applied = new Map([...input.deployedAt].map(([id, at]) => [id, new Set(Object.keys(at))]));
   return input.live.flatMap((lineageId) => {
-    const ownerEnvironmentId = input.ancestors.find((id) => input.deployedAt.get(id)?.[lineageId]);
+    const ownerEnvironmentId = liveOwner(input.parentId, lineageId, input.branches, applied);
     const deployedAt = ownerEnvironmentId ? input.deployedAt.get(ownerEnvironmentId)?.[lineageId] : undefined;
     return ownerEnvironmentId && deployedAt && deployedAt > since ? [{ lineageId, ownerEnvironmentId, deployedAt }] : [];
   });

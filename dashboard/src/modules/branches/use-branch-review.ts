@@ -54,9 +54,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       parentApplied: stateById.get(parent.id)?.applied.intent ?? null,
       hostnames: { branch: hostnameSuffix(branch.id), parent: hostnameSuffix(parent.id) },
     });
-    const ancestors: string[] = [];
-    for (let up = branchById.get(environmentId); up; up = branchById.get(up.parentEnvironmentId)) ancestors.push(up.parentEnvironmentId);
-    const live = liveUpdates({ live: usedLive(branch.intent), ancestors, branchDeployedAt: latestDeploy(deployedAt.get(environmentId)), deployedAt });
+    const live = liveUpdates({ live: usedLive(branch.intent), parentId: parent.id, branches, branchDeployedAt: latestDeploy(deployedAt.get(environmentId)), deployedAt });
     return {
       ...review, live, parent, kept: row.kept,
       changes: review.merge.length, updates: review.update.length + live.length,

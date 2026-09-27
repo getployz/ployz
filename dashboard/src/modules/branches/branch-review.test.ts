@@ -101,7 +101,7 @@ describe("branch review", () => {
     const at = (day: number) => new Date(Date.UTC(2026, 8, day));
     const deployedAt = new Map([["prod", { [DB]: at(5) }], ["staging", { [DB]: at(3), [SEARCH]: at(9) }]]);
     const updates = (branchDeployedAt: Date | null) => liveUpdates({
-      live: [DB, SEARCH], ancestors: ["staging", "prod"], branchDeployedAt, deployedAt,
+      live: [DB, SEARCH], parentId: "staging", branches: [{ environmentId: "staging", parentEnvironmentId: "prod" }], branchDeployedAt, deployedAt,
     });
     // The nearest ancestor that deployed it owns it: staging owns both here.
     expect(updates(at(4))).toEqual([{ lineageId: SEARCH, ownerEnvironmentId: "staging", deployedAt: at(9) }]);
