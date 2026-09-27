@@ -168,11 +168,11 @@ _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" i
 
 **Node Outcome**:
 One Environment Node's result within a Cloud Deployment Attempt: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
-_Avoid_: Applied, Skipped, Succeeded, Live (Editor Mode is the current view, not an outcome)
+_Avoid_: Applied, Skipped, Succeeded, Live (the Environment as it is now is not an outcome)
 
-**Deployment Mode**:
-The canvas viewing one Cloud Deployment Attempt: it draws that attempt's Environment Nodes with their Node Outcomes, including nodes since deleted or removed by the attempt, and omits nodes created afterwards. **Editor Mode** is the default canvas, drawing the Environment as it is now; it is the only mode that edits.
-_Avoid_: Deployment page, deployment detail screen, Live Mode (for Editor Mode)
+**Deployment Page**:
+The page for one Cloud Deployment Attempt: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only in its list. The canvas never enters an attempt; it always draws the Environment as it is now.
+_Avoid_: Deployment Mode, Editor Mode, deployment view of the canvas
 
 **Attempt Target**:
 The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
@@ -201,6 +201,54 @@ _Avoid_: Persisted diff, mutation log, deployment snapshot
 **Discard**:
 One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
+
+**Default Environment**:
+The Environment a project opens, chosen in the project's settings. There is no per-user remembered Environment.
+_Avoid_: Remembered environment, primary environment, main environment
+
+**Branch**:
+An Environment made from another Environment, its Parent, that runs Own Copies of the nodes picked when it was made and uses what they need from its Parent as Live Nodes. A Branch closes, by teardown, when it merges unless it is a Kept Branch, and after 7 days without a deploy unless it is kept or was never deployed.
+_Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
+
+**Parent**:
+The Environment a Branch was made from. An Environment without one, such as production, is a root.
+_Avoid_: Base, upstream, source environment
+
+**Destination**:
+Where a Branch's changes land: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch.
+_Avoid_: Target, merge target
+
+**Kept Branch**:
+A Branch that stays after merging and never closes on its own, such as staging.
+_Avoid_: Long-lived environment, permanent branch
+
+**Own Copy**:
+An Environment Node a Branch runs itself, made from its Parent's configuration. An Own Copy of a Volume starts empty.
+_Avoid_: Clone (a copy of data), fork
+
+**Live Node**:
+An Environment Node a Branch uses from another Environment while it keeps running there, drawn dashed. The Branch deploys nothing for it, captures its values each time the Branch deploys, and reads and writes its real data.
+_Avoid_: Portal, shared node, borrowed node; Live as a Node Outcome
+
+**Setup Command**:
+A command a Branch runs in one Own Copy's new image before that service first starts, after the nodes it uses are running. It runs again on later deploys until it succeeds once. It prepares the Own Copy's data, for example by seeding it.
+_Avoid_: Seed script, data hook, post-deploy hook
+
+**Merge**:
+Staging the changes a Branch has deployed, chosen change by change, in its Destination's Working State, where the Destination's own Review and Deploy ship them. Merging closes the Branch unless it is kept.
+_Avoid_: Promote, deploy to parent
+
+**Update**:
+Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
+_Avoid_: Pull, sync, rebase
+
+**PR Environment**:
+A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only through a Conditional Save.
+_Avoid_: Preview, preview deployment, review app
+
+**Conditional Save**:
+A PR Environment's approved changes, held on its Destination and saved there in the same step that admits the deployment of the pull request's merge commit, so code and settings go out together. A setting lands only if the Destination still has the value it was approved against; otherwise it is staged instead. Changing the PR Environment's settings withdraws the approval, and a pull request closed without merging drops it.
+_Avoid_: Auto-promote, deferred deploy, merge queue
 
 **Cloud Deployment Stage**:
 The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
