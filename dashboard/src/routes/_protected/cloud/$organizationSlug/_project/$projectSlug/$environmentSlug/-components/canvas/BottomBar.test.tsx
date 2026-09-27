@@ -43,6 +43,7 @@ beforeEach(() => {
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);
+  vi.spyOn(branchCollections, "useHasStagedChanges").mockImplementation(() => false);
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
     asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
   vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
