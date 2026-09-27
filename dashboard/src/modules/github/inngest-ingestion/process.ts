@@ -55,6 +55,7 @@ import {
   planGithubBranchEvaluation,
 } from "#/modules/github/github-branch-evaluation";
 import { runInngestEffect } from "#/server/run.server";
+import { heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
@@ -215,6 +216,19 @@ async function processPushAttempt(input: {
         ),
       )
     : [];
+  const carried = liveBranch.state === "present" && needsCandidates
+    ? await step.run(`list-carried-held-changes-${attempt}`, () =>
+        runEffect(
+          heldChangesCarriedBy({
+            installationId: payload.installationId,
+            repository,
+            repositoryId: payload.repositoryId,
+            ref: payload.ref,
+            headSha: liveBranch.headSha,
+          }),
+        ),
+      )
+    : [];
   const plan = await step.run(`plan-branch-evaluation-${attempt}`, () => {
     const planned = planGithubBranchEvaluation({
       cursor,
@@ -242,6 +256,7 @@ async function processPushAttempt(input: {
         processingRunId,
         expectedCursor: cursor,
         plan,
+        carried,
       }).pipe(
         Effect.map(
           (value): BranchApplyOutcome => ({ kind: "applied", value }),
