@@ -5,7 +5,11 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { parseServiceConfig, type ServiceManagedHostname, type ServiceSource } from "@ployz/sdk/config";
 import * as schema from "#/db/schema";
+import { submitReviewedPublication } from "#/modules/deployments/deployment-command.server";
+import { loadCurrentEnvironmentSnapshotProjection } from "#/modules/environment-design/working-state-repository.server";
+import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { createBranch } from "./branch-operations.server";
@@ -101,12 +105,15 @@ describe("createBranch", () => {
   function create(input: Partial<CreateBranch> = {}) {
     return harness.runEffect(createBranch({ userId }, {
       organizationSlug: "acme", parentEnvironmentId: parentId, name: "fix-web",
-      focus: [webLineage], picks: { preset: "only" }, keep: false, ...input,
+      focus: [webLineage], picks: { preset: "only" }, keep: false, deployNow: true, ...input,
     }).pipe(
       Effect.provideService(SecretEncryption, makeSecretEncryption("test-encryption-secret")),
       Effect.provideService(InngestClient, inngest),
     ));
   }
+
+  const attemptsOf = (environmentId: string) =>
+    harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.environmentId, environmentId));
 
   it("copies the picked nodes under fresh ids, stores the base and admits the first deployment", async () => {
     const { data } = await create({ keep: true });
@@ -156,7 +163,7 @@ describe("createBranch", () => {
     expect(introductions.map((row) => row.nodeId)).toEqual(expect.arrayContaining([...serviceIds, ...volumeIds]));
 
     // Its first deployment is admitted and dispatched.
-    const attempts = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.environmentId, branchId));
+    const attempts = await attemptsOf(branchId);
     expect(attempts.map((attempt) => attempt.id)).toEqual([data.deploymentId]);
     expect(inngest.send).toHaveBeenCalledTimes(1);
   });
@@ -218,5 +225,34 @@ describe("createBranch", () => {
     await expect(create({ name: "x".repeat(60) })).rejects.toMatchObject({ _tag: "Validation", field: "name" });
     await expect(create({ name: "empty", focus: [] })).rejects.toMatchObject({ _tag: "Validation", field: "picks" });
     expect(await harness.db.select().from(schema.environment)).toHaveLength(2);
+  });
+
+  it("makes a starting point without admitting anything, which Branches copy from and which deploys from its settings", async () => {
+    const { data } = await create({ name: "template", deployNow: false });
+    expect(data.deploymentId).toBeNull();
+    expect(await attemptsOf(data.environment.id)).toEqual([]);
+    expect(inngest.send).not.toHaveBeenCalled();
+
+    // It runs nothing to lend, so a Branch of it gets Own Copies of what its copy uses: web brings db and its Volume.
+    const { data: child } = await create({ parentEnvironmentId: data.environment.id, name: "try-web", deployNow: false,
+      focus: [data.environment.intent.services.find((node) => node.lineageId === webLineage)?.lineageId ?? ""] });
+    expect(child.environment.intent.services.map((node) => node.lineageId)).toEqual(expect.arrayContaining([webLineage, dbLineage]));
+    expect(child.environment.intent.volumes.map((node) => node.resourceLineageId)).toEqual([dataLineage]);
+
+    // "Deploy this environment" is the manual deploy path over its Working State.
+    const projection = await harness.runEffect(loadCurrentEnvironmentSnapshotProjection(data.environment.id));
+    const outcome = await harness.runEffect(submitReviewedPublication({ userId }, {
+      organizationSlug: "acme", projectSlug: "shop", environmentSlug: data.environment.namespace, intent: "manual_deploy",
+      review: {
+        savedStateBasis: { kind: "no_saved_state" }, workingStateFingerprint: fingerprintReviewedEnvironmentWorkingStateSync(projection),
+        destructiveServiceIds: [], destructiveVolumeReviews: [],
+      },
+    }).pipe(
+      Effect.provideService(SecretEncryption, makeSecretEncryption("test-encryption-secret")),
+      Effect.provideService(InngestClient, inngest),
+      Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.die("Unexpected runtime call") }),
+    ));
+    expect(outcome).toMatchObject({ state: "deployment_queued" });
+    expect(await attemptsOf(data.environment.id)).toHaveLength(1);
   });
 });

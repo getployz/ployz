@@ -18,5 +18,7 @@ export const CreateBranch = Schema.Struct({
   keep: Schema.Boolean,
   /** Fix it on a branch: this failed attempt's Saved configuration of this service stands in for the Parent's. */
   fix: Schema.optional(Schema.Struct({ deploymentId: Uuid, serviceId: Uuid })),
+  /** Off makes a starting point: the Branch is written and nothing is admitted. */
+  deployNow: Schema.Boolean,
 });
 export type CreateBranch = typeof CreateBranch.Type;

@@ -33,7 +33,7 @@ const core = <A>(field: string, run: () => A) => Effect.try({
 });
 
 /**
- * Make a Branch of the Parent and admit its first deployment, in one transaction; then dispatch it.
+ * Make a Branch of the Parent and, with `deployNow`, admit its first deployment, in one transaction; then dispatch it.
  * Core re-plans the picks, derives the Branch's configuration and returns its base.
  */
 export const createBranch = Effect.fn("Branches.createBranch")(function* (actor: Actor, input: CreateBranch) {
@@ -43,6 +43,7 @@ export const createBranch = Effect.fn("Branches.createBranch")(function* (actor:
   if (context === null) return yield* new NotFound({ message: "The environment was not found." });
   const created = yield* withMutationResult(Effect.gen(function* () {
     const branch = yield* writeBranch({ actor, project: context.project, parent: context.environment, input });
+    if (!input.deployNow) return { ...branch, deploymentId: null };
     const projection = yield* loadCurrentEnvironmentSnapshotProjection(branch.environment.id);
     const deployment = yield* createManualEnvironmentDeployment({
       environmentId: branch.environment.id,
@@ -59,9 +60,11 @@ export const createBranch = Effect.fn("Branches.createBranch")(function* (actor:
   }), { isolationLevel: "read committed" }).pipe(
     Effect.catchIf(isUniqueViolation, () => new Conflict({ message: `${input.name} is taken in this organization.` })),
   );
+  const { deploymentId } = created.data;
+  if (deploymentId === null) return created;
   // A dispatch failure fails the attempt; the Branch stays and deploys again from its canvas.
   yield* dispatchEnvironmentDeployment({
-    environmentDeploymentId: created.data.deploymentId, environmentId: created.data.environment.id,
+    environmentDeploymentId: deploymentId, environmentId: created.data.environment.id,
   }).pipe(Effect.catchTag("InngestEventSendError", () => Effect.void));
   return created;
 });

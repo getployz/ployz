@@ -24,7 +24,7 @@ import { NameSection } from "./NameSection";
 import { WhatComesAlongSection } from "./WhatComesAlongSection";
 
 /**
- * "New branch of X": pick what gets an Own Copy, name it, create and deploy. Core plans every pick over the Parent's
+ * "New branch of X": pick what gets an Own Copy, name it, create and deploy it, or keep it as a starting point. Core plans every pick over the Parent's
  * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes. With `fix`, a failed
  * attempt, the focused service carries the change that failed while it keeps its own copy (Fix it on a branch).
  */
@@ -48,6 +48,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
   const [picks, setPicks] = useState<BranchPicks>({ preset: "only" });
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
+  const [deployNow, setDeployNow] = useState(true);
   if (!intent || !parent) return null;
 
   const planned = { parent: intent, deployed: applied.map((node) => node.nodeLineageId), focus };
@@ -93,7 +94,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
       event.preventDefault();
       if (blocked || nameError || create.isPending) return;
       create.mutate({
-        organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep,
+        organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
         fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
       });
     }}>
@@ -124,12 +125,23 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
             </Field>
           </FieldLabel>
         </FieldSet>
+        <FieldLabel htmlFor="branch-deploy-now">
+          <Field orientation="horizontal">
+            <FieldContent>
+              <span className="font-medium">Deploy it now</span>
+              <FieldDescription>
+                {deployNow ? "Its copies start in about a minute." : "Nothing runs. It becomes a starting point that other branches copy."}
+              </FieldDescription>
+            </FieldContent>
+            <Switch id="branch-deploy-now" checked={deployNow} onCheckedChange={setDeployNow} />
+          </Field>
+        </FieldLabel>
       </FieldGroup>
       <div className="flex shrink-0 flex-col gap-2 border-t p-4">
         {create.isError && <FieldError>{create.error.message}</FieldError>}
         <Button type="submit" disabled={Boolean(blocked || nameError) || create.isPending}>
           {create.isPending && <Spinner data-icon="inline-start" />}
-          {blocked ?? "Create and deploy"}
+          {blocked ?? (deployNow ? "Create and deploy" : "Create without deploying")}
         </Button>
       </div>
     </form>
