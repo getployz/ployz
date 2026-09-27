@@ -221,7 +221,7 @@ export function buildLiveNodes(
 /** Dashed links from each Live Node into the services here that use it. */
 export function buildLiveEdges(liveNodes: LiveNode[]): Edge[] {
   return liveNodes.flatMap((liveNode) => liveNode.usedBy.map((serviceId) => ({
-    id: `live:${liveNode.lineageId}:${serviceId}`,
+    id: `${liveNodeId(liveNode.lineageId)}:${serviceId}`,
     source: liveNodeId(liveNode.lineageId),
     target: serviceId,
     style: LIVE_EDGE_STYLE,

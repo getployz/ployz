@@ -3,7 +3,7 @@ import { FieldContent, FieldDescription, FieldLabel, FieldLegend, FieldSet, Fiel
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
 import { cn } from "#/lib/utils";
-import { presetSummary, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
+import { listNames, pickFixed, presetSummary, type BranchPlan, type BranchPreset } from "#/modules/branches/branch-plan";
 
 const presetTitles = {
   only: "Only what changes",
@@ -38,6 +38,7 @@ export function WhatComesAlongSection({ parentName, ownerName, plan, presets, na
   onToggle: (lineage: string) => void;
 }) {
   const only = presets.find((option) => option.preset === "only")?.plan ?? plan;
+  const owners = [...new Set(plan.nodes.filter((node) => node.role === "live").map((node) => ownerName(node.lineageId)))];
   return (
     <FieldSet>
       <FieldLegend>What comes along</FieldLegend>
@@ -59,7 +60,7 @@ export function WhatComesAlongSection({ parentName, ownerName, plan, presets, na
       </RadioGroup>
       <ul aria-label="Legend" className="hidden flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground min-[861px]:flex">
         <li className="flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-4 rounded-sm border-2 border-foreground" />Own copy</li>
-        <li className="flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-4 rounded-sm border border-dashed border-muted-foreground" />{parentName}'s, live</li>
+        <li className="flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-4 rounded-sm border border-dashed border-muted-foreground" />{listNames(owners.length ? owners : [parentName])}'s, live</li>
         <li className="flex items-center gap-1.5"><span aria-hidden="true" className="h-2.5 w-4 rounded-sm border opacity-50" />Left out</li>
       </ul>
       <FieldDescription>
@@ -70,7 +71,7 @@ export function WhatComesAlongSection({ parentName, ownerName, plan, presets, na
       <ItemGroup className="gap-1 min-[861px]:hidden">
         {plan.nodes.map((node) => {
           const isOwn = node.role === "own";
-          const fixed = !owned.has(node.lineageId) || (isOwn && node.because !== "picked");
+          const fixed = pickFixed(node, owned);
           return (
             <Item key={node.lineageId} size="xs" variant="outline"
               render={<button type="button" aria-pressed={isOwn} disabled={fixed} onClick={() => onToggle(node.lineageId)} />}

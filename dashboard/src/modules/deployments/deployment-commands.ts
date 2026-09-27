@@ -3,7 +3,9 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { openStartedDeployments } from "#/auth/open-started-deployments";
+import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
+import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
 import { fingerprintReviewedEnvironmentWorkingState, projectReviewedEnvironmentWorkingState } from "#/modules/environment-design/working-state-review";
 import type { EnvironmentDeploymentSummary } from "./deployment-contract";
 import { reconcileDeploymentCollections } from "./deployment.collection";
@@ -55,20 +57,23 @@ export function useDeployQueuedNow(deployment: EnvironmentDeploymentSummary) {
 }
 
 /**
- * "Deploy this environment": a starting point's first deployment, the manual deploy path over its Working State. It has
- * no saved state and nothing deployed to remove. Opens the new attempt's Deployment Page.
+ * "Deploy this environment": a starting point's first deployment, the manual deploy path over its Working State once
+ * pending edits save. It has no saved state and nothing deployed to remove. Opens the new attempt's Deployment Page
+ * unless the user opted out.
  */
 export function useDeployStartingPoint({ organizationSlug, projectSlug, environmentSlug, environmentId }: {
   organizationSlug: string; projectSlug: string; environmentSlug: string; environmentId: string;
 }) {
   const environment = { organizationSlug, projectSlug, environmentSlug };
-  const document = useEnvironmentDocument(organizationSlug, environmentId);
   const scope = useCollectionScope();
+  const queue = useEnvironmentDocumentQueue(organizationSlug);
   const navigate = useNavigate();
   return useMutation({
     mutationFn: async () => {
+      await queue.settled(environmentId);
+      const document = getEnvironmentDocumentsCollection(organizationSlug, scope).get(environmentId);
       if (!document) throw new Error("Environment is not loaded.");
-      const result = await submitReviewedPublicationServerFn({ data: { ...environment, intent: "manual_deploy", review: {
+      const result = await submitReviewedPublicationServerFn({ data: { organizationSlug, projectSlug, environmentSlug, intent: "manual_deploy", review: {
         savedStateBasis: { kind: "no_saved_state" },
         workingStateFingerprint: await fingerprintReviewedEnvironmentWorkingState(projectReviewedEnvironmentWorkingState(document)),
         destructiveServiceIds: [],
@@ -79,7 +84,7 @@ export function useDeployStartingPoint({ organizationSlug, projectSlug, environm
     },
     onSuccess: (result) => {
       if (result.state === "deployment_queued") {
-        void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId", params: { ...environment, deploymentId: result.deploymentId } });
+        if (openStartedDeployments()) void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId", params: { ...environment, deploymentId: result.deploymentId } });
       } else toast.error("Saved, but the deployment could not start. Review the failed deployment before retrying.");
     },
   });

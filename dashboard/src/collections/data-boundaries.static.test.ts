@@ -176,6 +176,11 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
+        /** `x.isPersisted.promise`, directly or under `.catch(...)` and the like. */
+        const persistenceChain = (node: Node): boolean => isPropertyAccessExpression(node)
+          ? (node.name.text === "promise" && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted")
+            || persistenceChain(node.expression)
+          : isCallExpression(node) && persistenceChain(node.expression);
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
           if (isIdentifier(node.expression)) return node.expression.text;
@@ -244,6 +249,11 @@ describe("data boundaries", () => {
               if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
+            }
+            // Chaining .then or .finally on a save waits for it just as `await` does.
+            if (isUi && isCallExpression(node) && isPropertyAccessExpression(node.expression)
+              && ["then", "finally"].includes(node.expression.name.text) && persistenceChain(node.expression.expression)) {
+              awaitingUi.add(relative(SRC, source.fileName));
             }
             const name = calleeName(node);
             if (name && isCallExpression(node)) {

@@ -230,6 +230,10 @@ _Avoid_: Clone (a copy of data), fork
 An Environment Node a Branch uses from another Environment while it keeps running there, drawn dashed. The Branch deploys nothing for it, captures its values each time the Branch deploys, and reads and writes its real data.
 _Avoid_: Portal, shared node, borrowed node; Live as a Node Outcome
 
+**Starting point**:
+A Branch that was never deployed, kept as the recipe other Branches copy from. Its nodes stay staged until it deploys once.
+_Avoid_: Template, draft branch
+
 **Setup Command**:
 A command a Branch runs in one Own Copy's new image before that service first starts, after the nodes it uses are running. It runs again on later deploys until it succeeds once. It prepares the Own Copy's data, for example by seeding it.
 _Avoid_: Seed script, data hook, post-deploy hook

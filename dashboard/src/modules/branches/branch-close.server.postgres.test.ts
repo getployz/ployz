@@ -60,8 +60,8 @@ describe("closing a Branch", () => {
   }
 
   async function attemptRows() {
-    return (await harness.pool.query<{ requested_by_user_id: string; close_reason: string | null; confirm_data_loss: unknown; targets: { environments: { environmentId: string }[] } }>(
-      "select requested_by_user_id, close_reason, confirm_data_loss, targets from teardown_attempt",
+    return (await harness.pool.query<{ requested_by_user_id: string; confirm_data_loss: unknown; targets: { environments: { environmentId: string }[] } }>(
+      "select requested_by_user_id, confirm_data_loss, targets from teardown_attempt",
     )).rows;
   }
 
@@ -95,13 +95,12 @@ describe("closing a Branch", () => {
     `);
   });
 
-  it("closes its Branches first, confirms the runtime's report and records the creator and reason", async () => {
-    const attempt = await run(provide(closeBranch({ environmentId: fixWebId, reason: "merged" })));
+  it("closes its Branches first, confirms the runtime's report and records the creator", async () => {
+    const attempt = await run(provide(closeBranch(fixWebId)));
 
     expect(attempt.targets.environments.map((target) => target.environmentId)).toEqual([tryCacheId, fixWebId]);
     expect(await attemptRows()).toEqual([expect.objectContaining({
       requested_by_user_id: creatorId,
-      close_reason: "merged",
       confirm_data_loss: [volumeOf("app-try-cache"), volumeOf("app-fix-web")],
     })]);
     expect(sent).toHaveLength(1);
@@ -121,13 +120,13 @@ describe("closing a Branch", () => {
     expect(byUser.message).toBe("production is the Default Environment. Choose another Default Environment first.");
 
     await harness.pool.query(`update project set default_environment_id = '${tryCacheId}'`);
-    const bySystem = await run(provide(closeBranch({ environmentId: fixWebId, reason: "idle" }).pipe(Effect.flip)));
+    const bySystem = await run(provide(closeBranch(fixWebId).pipe(Effect.flip)));
     expect(bySystem).toBeInstanceOf(Conflict);
     expect(bySystem.message).toContain("try-cache is the Default Environment");
     expect(await attemptRows()).toEqual([]);
   });
 
-  it("tears down a root with open Branches by listing and closing them first; a person's Branch close reads manual", async () => {
+  it("tears down a root with open Branches by listing and closing them first; a person closes a Branch the same way", async () => {
     const dataLoss = await run(provide(loadTeardownDataLoss({ userId }, {
       organizationSlug: "acme", scope: "environment", environmentId: stagingId,
     })));
@@ -137,12 +136,11 @@ describe("closing a Branch", () => {
       organizationSlug: "acme", scope: "environment", environmentId: stagingId, identities: dataLoss.rust,
     })));
     expect(root.targets.environments.map((target) => target.environmentId)).toEqual([fixStagingId, stagingId]);
-    expect(root.closeReason).toBeNull();
 
     const manual = await run(provide(confirmTeardown({ userId }, {
       organizationSlug: "acme", scope: "environment", environmentId: tryCacheId, identities: [],
     })));
-    expect(manual).toMatchObject({ requestedByUserId: userId, closeReason: "manual" });
+    expect(manual).toMatchObject({ requestedByUserId: userId });
   });
 
   it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
@@ -162,8 +160,10 @@ describe("closing a Branch", () => {
     expect(closed).toEqual([fixStagingId]);
     expect(await attemptRows()).toEqual([expect.objectContaining({
       requested_by_user_id: creatorId,
-      close_reason: "idle",
       targets: expect.objectContaining({ environments: [expect.objectContaining({ environmentId: fixStagingId })] }),
     })]);
+    // Its teardown is now running, so the next sweep leaves it alone rather than failing to start another.
+    expect(await run(provide(sweepIdleBranches(new Date()), "app-try-cache"))).toEqual([]);
+    expect(await attemptRows()).toHaveLength(1);
   });
 });

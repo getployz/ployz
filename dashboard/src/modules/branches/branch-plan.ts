@@ -5,30 +5,33 @@ import {
   type BranchPlan,
   type BranchPreset,
 } from "@ployz/sdk/config";
-import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { createCanonicalEnvironmentNamespace } from "#/modules/environment-design/workspace-schemas";
 
 export type { BranchPicks, BranchPlan, BranchPreset };
 
-/** What a Branch is planned from: the Parent's Working State, its Applied lineages, and what changes. */
-export type BranchPlanInput = {
-  parent: SavedEnvironmentIntent;
-  deployed: string[];
-  focus: string[];
-  picks: BranchPicks;
-};
+type PlanNode = BranchPlan["nodes"][number];
 
-/** Core's planBranch; the browser passes the redacted Working State, the server the one with ciphertext. */
-export function planBranchOf(input: BranchPlanInput): BranchPlan {
-  return planBranch(input);
+/** Picking can't toggle it: the Parent doesn't own it (`owned`), or another copy needs it. */
+export const pickFixed = (node: PlanNode, owned: ReadonlySet<string>) =>
+  !owned.has(node.lineageId) || (node.role === "own" && node.because !== "picked");
+
+/** The Branch gets an Own Copy of data, so its Setup Commands ("Then run") apply. */
+export const copiesData = (plan: BranchPlan) => plan.nodes.some((node) => node.role === "own" && node.nodeType === "volume");
+
+/** The Setup Commands a Branch keeps: none without an Own Copy of data, else each whole one in its own service. */
+export function branchSetupCommands(plan: BranchPlan, commands: ReadonlyArray<{ lineageId: string; command: string }>) {
+  if (!copiesData(plan)) return [];
+  const own = new Set(plan.nodes.filter((node) => node.role === "own" && node.nodeType === "service").map((node) => node.lineageId));
+  return commands.filter((setup) => setup.command.trim() && own.has(setup.lineageId))
+    .map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
 }
 
 export const ownLineages = (plan: BranchPlan) => plan.nodes.filter((node) => node.role === "own").map((node) => node.lineageId);
 export const liveLineages = (plan: BranchPlan) => plan.nodes.filter((node) => node.role === "live").map((node) => node.lineageId);
 
 /** The presets to offer: "Plus what it uses" only when it would add something to "Only what changes". */
-export function offeredPresets(input: Omit<BranchPlanInput, "picks">): BranchPreset[] {
-  const own = (preset: BranchPreset) => ownLineages(planBranchOf({ ...input, picks: { preset } })).join();
+export function offeredPresets(input: Omit<Parameters<typeof planBranch>[0], "picks">): BranchPreset[] {
+  const own = (preset: BranchPreset) => ownLineages(planBranch({ ...input, picks: { preset } })).join();
   return own("uses") === own("only") ? ["only", "all"] : ["only", "uses", "all"];
 }
 
@@ -36,7 +39,8 @@ export const branchNamespace = (projectSlug: string, name: string) =>
   createCanonicalEnvironmentNamespace({ projectSlug, environmentName: name });
 
 /** The managed-hostname suffix a Branch appends to its services' prefixes: `-fix-web`. A root has none. */
-export const branchHostnameSuffix = (projectSlug: string, namespace: string) => namespace.slice(projectSlug.length);
+export const branchHostnameSuffix = (projectSlug: string, namespace: string, isBranch: boolean) =>
+  isBranch ? namespace.slice(projectSlug.length) : "";
 
 /** Why a Branch name can't be used, or null. `taken` holds every namespace in the organization. */
 export function branchNameError(projectSlug: string, name: string, taken: ReadonlySet<string>): string | null {
@@ -62,12 +66,11 @@ export function defaultBranchName(projectSlug: string, base: string, taken: Read
   return base;
 }
 
+const names = new Intl.ListFormat("en-GB", { type: "conjunction" });
 /** "a", "a and b", "a, b and c". */
-export function listNames(names: string[]) {
-  return names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
-}
+export const listNames = (list: string[]) => names.format(list);
 
-const namesWith = (plan: BranchPlan, role: BranchPlan["nodes"][number]["role"], nameOf: (lineage: string) => string) =>
+const namesWith = (plan: BranchPlan, role: PlanNode["role"], nameOf: (lineage: string) => string) =>
   plan.nodes.filter((node) => node.role === role).map((node) => nameOf(node.lineageId));
 
 /** What a preset will do, in words, from its plan and the "Only what changes" plan it extends. */

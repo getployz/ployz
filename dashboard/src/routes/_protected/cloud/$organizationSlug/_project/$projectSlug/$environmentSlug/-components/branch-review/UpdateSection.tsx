@@ -1,14 +1,13 @@
-import { useContext, useState } from "react";
 import { useParams } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
 import { ItemDescription, ItemGroup } from "#/components/ui/item";
-import { useUpdateBranch } from "#/modules/branches/branch.collection";
+import { useBranchUnsettled } from "#/modules/branches/branch.collection";
+import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import { RelativeTime } from "#/components/relative-time";
 import { presentRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
 import { ReviewSection } from "./BranchReviewPanel";
 import { ChangeRowItem } from "./ChangeRowItem";
-import { StagedReviewSlot } from "../canvas/BottomBar";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
@@ -18,20 +17,16 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 export function UpdateSection({ review, environmentId }: { review: BranchReviewView; environmentId: string }) {
   const parent = review.parent.name;
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const update = useUpdateBranch(params.organizationSlug);
-  const { unsettled } = useContext(StagedReviewSlot);
-  const [updating, setUpdating] = useState(false);
-
-  function start() {
-    setUpdating(true);
-    void update(environmentId).isPersisted.promise.catch(() => {}).finally(() => setUpdating(false));
-  }
+  const { update } = useUpdateBranch(params.organizationSlug);
+  const unsettled = useBranchUnsettled(params.organizationSlug, environmentId);
   return (
     <ReviewSection title={`New in ${parent}`} count={review.updates}
       help={review.live.length ? "This branch still runs on the values it captured from what it uses live. Deploying it picks up the new ones." : undefined}>
       {review.updates ? (
         <ItemGroup className="gap-1">
-          {review.update.map((row) => <ChangeRowItem key={row.key} row={presentRow(row, review.nameOf)} />)}
+          {review.update.map((row) => (
+            <ChangeRowItem key={row.key} row={presentRow(row, review.nameOf)} conflict={row.role === "move" && row.conflict ? review.environmentName(environmentId) : undefined} />
+          ))}
           {review.live.map((live) => (
             <ChangeRowItem key={`live:${live.lineageId}`}
               row={{ key: live.lineageId, lineageId: live.lineageId, node: review.nameOf(live.lineageId), label: "Used live", before: "", after: "" }}
@@ -43,7 +38,7 @@ export function UpdateSection({ review, environmentId }: { review: BranchReviewV
       ) : <p className="text-sm text-muted-foreground">Nothing new in {parent}.</p>}
       {review.update.length ? (
         <div className="flex flex-col items-start gap-2">
-          <Button onClick={start} disabled={updating || unsettled !== null}>Update from {parent}</Button>
+          <Button onClick={() => update(environmentId)} disabled={unsettled !== null}>Update from {parent}</Button>
           <p className="text-sm text-muted-foreground">
             {unsettled ?? `Stages ${parent}'s changes here, to deploy and test with this branch's own.`}
           </p>

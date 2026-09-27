@@ -1,4 +1,3 @@
-import { useContext, useState } from "react";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { ArrowUpRightIcon, TriangleAlertIcon } from "lucide-react";
@@ -10,8 +9,8 @@ import { cn } from "#/lib/utils";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { useLiveNodes } from "#/modules/branches/use-live-nodes";
-import { useUpdateBranch } from "#/modules/branches/branch.collection";
-import { StagedReviewSlot } from "./canvas/BottomBar";
+import { useBranchUnsettled } from "#/modules/branches/branch.collection";
+import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
 import { nodeDestination } from "./environment-node-navigation";
@@ -27,18 +26,16 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const liveNode = useLiveNodes(params.organizationSlug, environmentId).find((node) => node.lineageId === lineageId);
   const { data: services } = useLiveQuery(getRawServicesCollection(params.organizationSlug, useCollectionScope()));
-  const update = useUpdateBranch(params.organizationSlug);
-  const { unsettled } = useContext(StagedReviewSlot);
+  const { makeOwnCopy: ownCopy } = useUpdateBranch(params.organizationSlug);
+  const unsettled = useBranchUnsettled(params.organizationSlug, environmentId);
   const navigate = useNavigate();
-  const [copying, setCopying] = useState(false);
   if (!liveNode) return <CanvasInspectorError noun="Live service" />;
   const owner = liveNode.owner;
 
   // Once staged it's no longer live here; the canvas shows it as a new node of this branch.
   function makeOwnCopy() {
-    setCopying(true);
-    update(environmentId, lineageId).isPersisted.promise
-      .then(() => navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {} }), () => setCopying(false));
+    ownCopy(environmentId, lineageId);
+    void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {} });
   }
 
   return (
@@ -81,7 +78,7 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
             <FieldDescription>
               {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${liveNode.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
             </FieldDescription>
-            <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={copying || unsettled !== null}>
+            <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={unsettled !== null}>
               Make it an Own Copy
             </Button>
           </FieldSet>

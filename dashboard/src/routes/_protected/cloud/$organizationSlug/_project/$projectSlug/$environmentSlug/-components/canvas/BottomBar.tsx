@@ -18,7 +18,7 @@ import { presentRow } from "#/modules/branches/branch-review";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview, StagedChanges } from "./EnvironmentChangesReview";
 
@@ -30,15 +30,11 @@ export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
 /**
  * Where a Branch's review page shows its staged changes ("Not deployed here yet"). The page sets the slot; the bar, which
- * owns the change actions, portals the staged-changes review into it. The bar also says why Merge and Update must wait
- * (`unsettled`): something staged or an active attempt; null when neither.
+ * owns the change actions, portals the staged-changes review into it.
  */
-export const StagedReviewSlot = createContext<{
-  slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void;
-  unsettled: string | null; setUnsettled: (reason: string | null) => void;
-}>({ slot: null, setSlot: () => {}, unsettled: null, setUnsettled: () => {} });
-
-const BRANCH_REVIEW_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
+export const StagedReviewSlot = createContext<{ slot: HTMLElement | null; setSlot: (slot: HTMLElement | null) => void }>({
+  slot: null, setSlot: () => {},
+});
 
 type BottomBarProps = {
   environmentId: string;
@@ -75,7 +71,7 @@ export function BottomBar({
   onDiscardRow,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
-  const { slot: reviewSlot, setUnsettled } = useContext(StagedReviewSlot);
+  const { slot: reviewSlot } = useContext(StagedReviewSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const review = useBranchReview(params.organizationSlug, environmentId);
   const viewedId = useCanvasInspectorSelection().deploymentId;
@@ -88,13 +84,10 @@ export function BottomBar({
   const active = useEnvironmentDeployments(params.organizationSlug, environmentId)
     .filter(({ deployment }) => isActiveDeployment(deployment.status)).reverse();
   const startingPoint = useStartingPoint(params.organizationSlug, environmentId);
-  const hasChanges = !startingPoint && (totalChanges > 0 || canSaveWithoutDeploying);
+  const staged = totalChanges > 0 || canSaveWithoutDeploying;
+  const hasChanges = !startingPoint && staged;
   const deployable = hasChanges && canDeploy && totalChanges > 0;
   const shown = hasChanges ? null : active.find(({ deployment }) => deployment.id !== viewedId);
-  // The server's gate (assertBranchSettled) is the same: an empty Environment Change Set and no active attempt.
-  const unsettled = hasChanges ? "Deploy or discard the changes staged here first."
-    : active.length ? "Wait for this branch's deployment to finish." : null;
-  useEffect(() => setUnsettled(unsettled), [setUnsettled, unsettled]);
 
   function deploy() {
     setOpen(false);
@@ -128,7 +121,7 @@ export function BottomBar({
 
   const bar = startingPoint ? (
     <Bar icon={<CircleDashedIcon className="size-4 text-muted-foreground" />} title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
-      <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch" params={params} className={buttonVariants({ size: "sm" })}>
+      <Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO} params={params} className={buttonVariants({ size: "sm" })}>
         <GitBranchPlusIcon data-icon="inline-start" />New branch
       </Link>
     </Bar>
@@ -166,7 +159,7 @@ export function BottomBar({
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
-      {reviewSlot ? createPortal(hasChanges ? <StagedChanges inline {...reviewProps} />
+      {reviewSlot ? createPortal(staged ? <StagedChanges inline {...reviewProps} />
         : <p className="text-sm text-muted-foreground">Nothing staged here.</p>, reviewSlot) : null}
     </>
   );
@@ -206,7 +199,7 @@ function BranchState({ review }: { review: BranchReviewView }) {
 
 function ReviewLink({ label }: { label: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  return <Link to={BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
+  return <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
 }
 
 /**

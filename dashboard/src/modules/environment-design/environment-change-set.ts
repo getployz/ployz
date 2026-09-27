@@ -1,5 +1,5 @@
-import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
 import type { JsonObject } from "#/db/tables";
+import { compareResourceSettings, compareServiceSettings, parseResourceConfig, parseServiceConfig, type ServiceSettingChange } from "@ployz/sdk/config";
 import type { EnvironmentResourceNodeConfigByType } from "./environment-resource-node";
 import type { ServiceDeploymentConfig } from "./services";
 
@@ -80,6 +80,26 @@ export function buildEnvironmentChangeSet(input: EnvironmentChangeSetProjectionI
     totalCount: groups.reduce((n, group) => n + group.settings.length + (group.lifecycle === "update" ? 0 : 1), 0),
     headToken: head.token,
   };
+}
+
+/** One node's config as Working or Applied State holds it, before parsing. */
+export type StateNode = { nodeType: EnvironmentNodeIdentity["type"]; nodeId: string; config: unknown };
+
+/**
+ * Whether Working State differs from Applied State: `buildEnvironmentChangeSet(...).totalCount > 0` for the same states,
+ * without introductions or tokens. A Branch must have none before it merges or updates.
+ */
+export function hasUndeployedChanges(working: readonly StateNode[], applied: readonly StateNode[]): boolean {
+  const key = (node: StateNode) => `${node.nodeType}:${node.nodeId}`;
+  const before = new Map(applied.map((node) => [key(node), node]));
+  return working.length !== applied.length || working.some((node) => {
+    const baseline = before.get(key(node));
+    if (!baseline) return true;
+    const configs = node.nodeType === "service"
+      ? { type: node.nodeType, current: parseServiceConfig(node.config), baseline: parseServiceConfig(baseline.config) }
+      : { type: node.nodeType, current: parseResourceConfig("volume", node.config), baseline: parseResourceConfig("volume", baseline.config) };
+    return compareNodeSettings(configs).length > 0;
+  });
 }
 
 /** The change group for one node, computed by the same rule as the whole set. */

@@ -1,10 +1,8 @@
-import { useLiveQuery } from "@tanstack/react-db";
-import { getRawServicesCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentChangeStatesIfReady } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { branchHostnameSuffix } from "./branch-plan";
+import { useLineageNames } from "./use-lineage-names";
 import { branchReview, latestDeploy, liveUpdates, usedLive, type BranchReview, type LiveUpdate } from "./branch-review";
 
 export type BranchReviewView = BranchReview & {
@@ -25,10 +23,8 @@ export type BranchReviewView = BranchReview & {
  * computes on call, so a list pays only for the Branches it shows. Null for a root, or until the rows land.
  */
 export function useBranchReviews(organizationSlug: string): (environmentId: string) => BranchReviewView | null {
-  const scope = useCollectionScope();
   const { projects, branches } = useWorkspace(organizationSlug);
   const environments = useEnvironmentDocuments(organizationSlug);
-  const { data: services } = useLiveQuery(getRawServicesCollection(organizationSlug, scope));
   const states = useEnvironmentChangeStatesIfReady(organizationSlug);
   const environmentById = new Map(environments.map((environment) => [environment.id, environment]));
   const branchById = new Map(branches.map((branch) => [branch.environmentId, branch]));
@@ -38,11 +34,9 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
   const hostnameSuffix = (environmentId: string) => {
     const environment = environmentById.get(environmentId);
     const project = projects.find((candidate) => candidate.id === environment?.projectId);
-    return environment && project && branchById.has(environmentId) ? branchHostnameSuffix(project.slug, environment.namespace) : "";
+    return environment && project ? branchHostnameSuffix(project.slug, environment.namespace, branchById.has(environmentId)) : "";
   };
-  const nameOf = (lineage: string) => services.find((row) => row.lineageId === lineage)?.name
-    ?? environments.flatMap((environment) => environment.intent.volumes).find((node) => node.resourceLineageId === lineage)?.name
-    ?? "a node";
+  const lineageName = useLineageNames(organizationSlug);
 
   return (environmentId) => {
     const row = branchById.get(environmentId);
@@ -58,7 +52,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
     return {
       ...review, live, parent, kept: row.kept,
       changes: review.merge.length, updates: review.update.length + live.length,
-      nameOf, environmentName: (id) => environmentById.get(id)?.name ?? "another environment",
+      nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",
     };
   };
 }

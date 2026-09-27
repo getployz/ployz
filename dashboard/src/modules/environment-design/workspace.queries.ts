@@ -36,6 +36,7 @@ export function workspaceCollections(organizationSlug: string, scope: Collection
   return {
     projects: getProjectsCollection(organizationSlug, scope),
     environments: getEnvironmentSummariesCollection(organizationSlug, scope),
+    branches: getBranchesCollection(organizationSlug, scope),
   };
 }
 
@@ -87,7 +88,7 @@ export function useWorkspace(organizationSlug: string) {
   const collections = workspaceCollections(organizationSlug, scope);
   const projects = useLiveQuery(collections.projects);
   const environments = useLiveQuery(collections.environments);
-  const branches = useLiveQuery(getBranchesCollection(organizationSlug, scope));
+  const branches = useLiveQuery(collections.branches);
   const isError = useSyncExternalStore(
     (onChange) => scope.queryClient.getQueryCache().subscribe(onChange),
     () => Object.values(collections).some((collection) => collection.utils.isError),

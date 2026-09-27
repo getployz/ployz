@@ -2,7 +2,7 @@ import { branchChanges, type BranchReason, type BranchRow as ChangeRow } from "@
 import { asRecord, asString } from "#/lib/json";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { presentSettingChange } from "#/modules/services/service-deployment-diff/fields";
-import { liveOwner } from "./live-owner";
+import { liveNodeUsers, liveOwner } from "./live-owner";
 
 export type { ChangeRow };
 type RowValue = ChangeRow["from"];
@@ -58,12 +58,7 @@ export const updateInput = (input: BranchReviewInput, parentApplied: SavedEnviro
 });
 
 /** Lineages an Environment's variables reference but it doesn't own: the nodes it uses live. */
-export function usedLive(intent: SavedEnvironmentIntent): string[] {
-  const own = new Set([...intent.services.map((node) => node.lineageId), ...intent.volumes.map((node) => node.resourceLineageId)]);
-  const used = intent.services.flatMap((node) => node.variables).flatMap(({ value }) => value.kind === "template" ? value.parts : [])
-    .flatMap((part) => part.kind === "ref" && part.owner.scope === "service" ? [part.owner.lineageId] : []);
-  return [...new Set(used)].filter((lineage) => !own.has(lineage));
-}
+export const usedLive = (intent: SavedEnvironmentIntent) => [...liveNodeUsers(intent).keys()];
 
 /**
  * Each Live Node the owner redeployed after the Branch's latest deploy. The owner is `liveOwner` of the Branch's Parent.
@@ -92,7 +87,7 @@ export function latestDeploy(deployedAt: Record<string, Date> | undefined): Date
   return times.length ? new Date(Math.max(...times.map((time) => time.getTime()))) : null;
 }
 
-export const rowLineage = (row: ChangeRow) => row.key.slice(0, row.key.indexOf(":"));
+export const rowLineage = (row: { key: string }) => row.key.slice(0, row.key.indexOf(":"));
 const rowPath = (row: ChangeRow) => row.key.slice(row.key.indexOf(":") + 1);
 
 /** A row in words: which setting of which node, and its value on each side. */

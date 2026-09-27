@@ -44,3 +44,14 @@ export function descendants(
   }
   return found;
 }
+
+/** `environmentId` and then each Environment it was branched from, nearest first; its last entry is the root. */
+export function ancestors(
+  environmentId: string,
+  branches: Iterable<{ environmentId: string; parentEnvironmentId: string }>,
+): string[] {
+  const parentOf = new Map([...branches].map((branch) => [branch.environmentId, branch.parentEnvironmentId]));
+  const found: string[] = [];
+  for (let at: string | undefined = environmentId; at && !found.includes(at); at = parentOf.get(at)) found.push(at);
+  return found;
+}

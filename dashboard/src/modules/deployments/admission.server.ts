@@ -80,6 +80,9 @@ export type SavedDeploymentTarget = CompiledSavedEnvironmentIntent & {
   readonly savedStateSnapshotId: string;
   readonly requestedByUserId: string;
   readonly volumeDeletionAuthorizations: readonly DestructiveVolumeReview[];
+  /** What admission adds for a Branch (branchAdmission); empty until then, and for a root. */
+  readonly setupCommands: Record<string, string[]>;
+  readonly missingLiveValues: MissingLiveValue[];
 };
 
 export type DeploymentAdmissionInput = {
@@ -112,6 +115,8 @@ function loadExactSavedDeploymentTarget(input: {
         intent: saved.intent,
       }),
       volumeDeletionAuthorizations: saved.volumeDeletionAuthorizations,
+      setupCommands: {},
+      missingLiveValues: [],
     } satisfies SavedDeploymentTarget;
   });
 }
@@ -131,6 +136,8 @@ export const loadLatestSavedDeploymentTarget = Effect.fn(
     requestedByUserId: saved.actorId,
     ...compileSavedEnvironmentIntent({ environmentId, intent: saved.intent }),
     volumeDeletionAuthorizations: saved.volumeDeletionAuthorizations,
+    setupCommands: {},
+    missingLiveValues: [],
   } satisfies SavedDeploymentTarget;
 });
 
@@ -342,7 +349,7 @@ function stageReviewedVolumeRemoveAttempt(input: {
 
 function writeQueuedSavedTarget(
   input: DeploymentAdmissionInput,
-  target: SavedDeploymentTarget & { readonly setupCommands: Record<string, string[]>; readonly missingLiveValues: MissingLiveValue[] },
+  target: SavedDeploymentTarget,
 ) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -502,8 +509,7 @@ export const admitEnvironmentDeployment = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
-    const target = yield* loadExactSavedDeploymentTarget(input);
-    const branch = yield* branchAdmission(input.environmentId, target);
-    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, { ...target, ...branch });
+    const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
+    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
   }));
 });

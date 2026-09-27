@@ -1,14 +1,14 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { branchChanges, type BranchPick } from "@ployz/sdk/config";
+import { branchChanges, type BranchPick, type BranchRow as ChangeRow } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { withMutationResult } from "#/server/mutation-result.server";
-import { environment, environmentBranch } from "#/modules/project/tables";
+import { environment, environmentBranch, type project } from "#/modules/project/tables";
 import { getEnvironmentContextForActorById } from "#/modules/environment-design/authoring-repository.server";
-import { loadCurrentEnvironmentState, loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
+import { loadCurrentEnvironmentState, loadEnvironmentDocument, requireDocumentRevision, type EnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
 import { parseDashboardEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
@@ -16,19 +16,67 @@ import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock
 import { branchHostnameSuffix } from "./branch-plan";
 import { rowLineage, usedLive } from "./branch-review";
 import { assertBranchSettled } from "./branch-guard.server";
-import { captureIntroductions, copyIdentities } from "./branch-operations.server";
+import { loadAncestorApplied } from "./branch-admission.server";
+import { core, landChanges } from "./branch-operations.server";
 import { liveOwner } from "./live-owner";
-import type { UpdateBranch } from "./branch-schemas";
+import type { MakeOwnCopy, UpdateBranch } from "./branch-schemas";
 
 /**
  * Update: stages every change the Parent deployed since the base in the Branch's Working State and advances the base by
- * exactly what it took, in one transaction. With `only`, it turns that Live Node into an Own Copy instead, from the
- * Environment that runs it; a Volume it mounts comes along empty. Refused unless the Branch runs its Working State.
+ * exactly what it took, in one transaction. Refused unless the Branch runs its Working State.
  */
 export const updateBranch = Effect.fn("Branches.updateBranch")(function* (actor: Actor, input: UpdateBranch) {
+  return yield* onSettledBranch(actor, input, (branch) => Effect.gen(function* () {
+    const parent = yield* loadEnvironment(branch.row.parentEnvironmentId);
+    return yield* stageFrom(branch, {
+      source: parent, from: yield* appliedIntentOf(parent), base: branch.row.base, provided: usedLive(branch.into),
+      take: () => true, nothing: `Nothing new in ${parent.name}.`,
+    });
+  }));
+});
+
+/**
+ * Own Copy: turns a Live Node into an Own Copy, from the Environment that runs it; a Volume it mounts comes along empty.
+ * Under the same gate as Update.
+ */
+export const makeOwnCopy = Effect.fn("Branches.makeOwnCopy")(function* (actor: Actor, input: MakeOwnCopy) {
+  return yield* onSettledBranch(actor, input, (branch) => Effect.gen(function* () {
+    if (branch.into.services.some((node) => node.lineageId === input.lineageId)) {
+      return yield* new Conflict({ message: "This branch already has its own copy." });
+    }
+    const owner = yield* loadEnvironment(yield* ownerOf(branch.document.id, input.lineageId));
+    const from = yield* appliedIntentOf(owner);
+    // An Own Copy is an introduction: not provided live, and neither it nor the Volumes it mounts in the base.
+    const copied = ownCopyLineages(from, branch.into, input.lineageId);
+    return yield* stageFrom(branch, {
+      source: owner, from,
+      base: {
+        ...branch.row.base,
+        services: branch.row.base.services.filter((node) => !copied.has(node.lineageId)),
+        volumes: branch.row.base.volumes.filter((node) => !copied.has(node.resourceLineageId)),
+      },
+      provided: usedLive(branch.into).filter((lineage) => !copied.has(lineage)),
+      take: (row) => copied.has(rowLineage(row)),
+      nothing: `Nothing to copy from ${owner.name}.`,
+    });
+  }));
+});
+
+type SettledBranch = {
+  project: typeof project.$inferSelect;
+  document: EnvironmentDocument;
+  row: typeof environmentBranch.$inferSelect;
+  into: SavedEnvironmentIntent;
+};
+
+/** Locks a Branch's queue, checks its revision, refuses it unless it runs its Working State, then stages with `run`. */
+const onSettledBranch = <E, R>(
+  actor: Actor,
+  input: { organizationSlug: string; environmentId: string; revision: string },
+  run: (branch: SettledBranch) => Effect.Effect<EnvironmentDocument, E, R>,
+) => Effect.gen(function* () {
   const context = yield* getEnvironmentContextForActorById(actor, input);
   if (context === null) return yield* new NotFound({ message: "The environment was not found." });
-  const { project } = context;
   return yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
@@ -37,69 +85,57 @@ export const updateBranch = Effect.fn("Branches.updateBranch")(function* (actor:
     const [row] = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.environmentId, document.id));
     if (!row) return yield* new Validation({ field: "environmentId", message: "Only a branch updates from its parent." });
     yield* assertBranchSettled(drizzle, document.id);
-
-    const branches = yield* drizzle.select().from(environmentBranch).where(eq(environmentBranch.projectId, row.projectId));
-    const sourceId = input.only ? yield* ownerOf(row.parentEnvironmentId, input.only, branches) : row.parentEnvironmentId;
-    const [source] = yield* drizzle.select().from(environment).where(eq(environment.id, sourceId));
-    if (!source) return yield* Effect.die("The source environment is missing.");
-    const from = yield* loadAppliedIntent(source.id, source.namespace,
-      yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: source.id }));
     const { intent: into } = yield* loadCurrentEnvironmentState(document.id);
-
-    // An Own Copy is an introduction: not provided live, and neither it nor the Volumes it mounts in the base.
-    if (input.only && into.services.some((node) => node.lineageId === input.only)) {
-      return yield* new Conflict({ message: "This branch already has its own copy." });
-    }
-    const copied = input.only ? ownCopyLineages(from, into, input.only) : null;
-    const base = copied ? {
-      ...row.base,
-      services: row.base.services.filter((node) => !copied.has(node.lineageId)),
-      volumes: row.base.volumes.filter((node) => !copied.has(node.resourceLineageId)),
-    } : row.base;
-    const changes = (picks?: BranchPick[]) => Effect.try({
-      try: () => branchChanges({
-        base, from, into,
-        provided: usedLive(into).filter((lineage) => !copied?.has(lineage)),
-        hostnames: {
-          from: branches.some((branch) => branch.environmentId === source.id) ? branchHostnameSuffix(project.slug, source.namespace) : "",
-          into: branchHostnameSuffix(project.slug, document.namespace),
-        },
-        fromKept: false,
-        picks,
-      }),
-      catch: (error) => new Conflict({ message: error instanceof Error ? error.message : String(error) }),
-    });
-    // Every move row, secrets with the source's value as when the Branch was made.
-    const picks = (yield* changes()).rows
-      .filter((change) => change.role === "move" && (!copied || copied.has(rowLineage(change))))
-      .map((change): BranchPick => change.role === "move" && change.choice ? { key: change.key, choice: { option: "from" } } : { key: change.key });
-    if (picks.length === 0) return yield* new Conflict({ message: `Nothing new in ${source.name}.` });
-    const applied = yield* changes(picks);
-    if (!applied.base) return yield* Effect.die("Core returned no base for an Update.");
-    const next = parseDashboardEnvironmentIntent(applied.next);
-
-    const services = next.services.filter((node) => !into.services.some((own) => own.id === node.id));
-    const volumes = next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId));
-    yield* copyIdentities({ project, from: source.id, to: document.id, services, volumes });
-    const written = yield* writeEnvironmentDocument(document, next);
-    yield* captureIntroductions(document.id, services, volumes);
-    yield* drizzle.update(environmentBranch).set({ base: parseDashboardEnvironmentIntent(applied.base) })
-      .where(eq(environmentBranch.environmentId, document.id));
-    return written;
+    return yield* run({ project: context.project, document, row, into });
   }));
 });
 
+/** Stages the move rows `take` keeps, from `source`'s Applied State `from`, and advances the base by what landed. */
+const stageFrom = Effect.fn("Branches.stageFrom")(function* ({ project, document, into }: SettledBranch, { source, from, base, provided, take, nothing }: {
+  source: EnvironmentDocument; from: SavedEnvironmentIntent; base: SavedEnvironmentIntent; provided: string[];
+  take: (row: ChangeRow) => boolean; nothing: string;
+}) {
+  const { drizzle } = yield* Database;
+  const [sourceBranch] = yield* drizzle.select({ id: environmentBranch.environmentId }).from(environmentBranch)
+    .where(eq(environmentBranch.environmentId, source.id));
+  const changes = (picks?: BranchPick[]) => core("picks", () => branchChanges({
+    base, from, into, provided,
+    hostnames: {
+      from: branchHostnameSuffix(project.slug, source.namespace, sourceBranch !== undefined),
+      into: branchHostnameSuffix(project.slug, document.namespace, true),
+    },
+    fromKept: false,
+    picks,
+  }));
+  // Every move row, secrets with the source's value as when the Branch was made.
+  const picks = (yield* changes()).rows
+    .filter((row) => row.role === "move" && take(row))
+    .map((row): BranchPick => row.role === "move" && row.choice ? { key: row.key, choice: { option: "from" } } : { key: row.key });
+  if (picks.length === 0) return yield* new Conflict({ message: nothing });
+  const applied = yield* changes(picks);
+  if (!applied.base) return yield* Effect.die("Core returned no base for an Update.");
+  return yield* landChanges({
+    project, from: source.id, document, into, next: parseDashboardEnvironmentIntent(applied.next), picks,
+    advance: { branchEnvironmentId: document.id, base: applied.base },
+  });
+});
+
+const loadEnvironment = Effect.fn("Branches.loadEnvironment")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select().from(environment).where(eq(environment.id, environmentId));
+  if (!row) return yield* Effect.die("An environment this branch comes from is missing.");
+  return row;
+});
+
+const appliedIntentOf = (source: EnvironmentDocument) => Effect.gen(function* () {
+  const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: source.id });
+  return yield* loadAppliedIntent(source.id, source.namespace, projection);
+});
+
 /** The Environment that runs a Live Node: the Parent, or its nearest ancestor that does. */
-const ownerOf = Effect.fn("Branches.ownerOf")(function* (
-  parentId: string, lineageId: string, branches: Array<{ environmentId: string; parentEnvironmentId: string }>,
-) {
-  const parentOf = new Map(branches.map((branch) => [branch.environmentId, branch.parentEnvironmentId]));
-  const applied = new Map<string, Set<string>>();
-  for (let at: string | undefined = parentId; at && !applied.has(at); at = parentOf.get(at)) {
-    const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: at });
-    applied.set(at, new Set(projection.explicitStates.flatMap((state) => state.applied.nodes.map((node) => node.nodeLineageId))));
-  }
-  const owner = liveOwner(parentId, lineageId, branches, applied);
+const ownerOf = Effect.fn("Branches.ownerOf")(function* (environmentId: string, lineageId: string) {
+  const { parentId, branches, applied } = yield* loadAncestorApplied(environmentId);
+  const owner = parentId ? liveOwner(parentId, lineageId, branches, new Map([...applied].map(([id, at]) => [id, at.lineages]))) : null;
   if (!owner) return yield* new Conflict({ message: "No environment this branch comes from runs it." });
   return owner;
 });

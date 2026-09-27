@@ -67,21 +67,24 @@ export type EnvironmentExplicitStateProjection = {
   } | null;
 };
 
+/** An Applied node's config as the attempt that applied it left it. */
+export type AppliedSavedNode = {
+  environmentId: string;
+  /** The attempt that applied this node. */
+  environmentDeploymentId: string;
+  nodeType: "service" | "volume";
+  nodeId: string;
+  nodeLineageId: string;
+  configVersion: number;
+  config: JsonObject;
+  credentialRevision: string | null;
+  encryptedRegistryUsername: EncryptedSecretValue | null;
+  encryptedRegistrySecret: EncryptedSecretValue | null;
+  sourceSavedStateSnapshotId: string;
+};
+
 export type EnvironmentSnapshotProjection = {
-  appliedSavedNodeByKey: Map<
-    string,
-    {
-      nodeType: "service" | "volume";
-      nodeId: string;
-      nodeLineageId: string;
-      configVersion: number;
-      config: JsonObject;
-      credentialRevision: string | null;
-      encryptedRegistryUsername: EncryptedSecretValue | null;
-      encryptedRegistrySecret: EncryptedSecretValue | null;
-      sourceSavedStateSnapshotId: string;
-    }
-  >;
+  appliedSavedNodeByKey: Map<string, AppliedSavedNode>;
   explicitStates: EnvironmentExplicitStateProjection[];
 };
 
@@ -562,6 +565,8 @@ function projectSnapshotHeads(scope: SnapshotScope) {
       [...liveNodesByKey].map(([key, node]) => [
         key,
         {
+          environmentId: node.environmentId,
+          environmentDeploymentId: node.environmentDeploymentId,
           nodeType: node.nodeType,
           nodeId: node.nodeId,
           nodeLineageId: node.nodeLineageId,

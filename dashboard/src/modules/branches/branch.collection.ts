@@ -1,19 +1,18 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import {
-  getBranchesCollection, getCanvasPositionsCollection, getEnvironmentDeploymentsCollection, getEnvironmentNodeIntroductionsCollection,
-  getEnvironmentsCollection, getProjectsCollection, getRawEnvironmentResourcesCollection, getRawServicesCollection,
-} from "#/collections/collections";
-import { observeFailure, reconcileCollection } from "#/collections/query-collection";
+import { getBranchesCollection, getEnvironmentDeploymentsCollection, getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
+import { observeFailure } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { hasUndeployedChanges } from "#/modules/environment-design/environment-change-set";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
+import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import type { SetupCommand } from "#/modules/project/tables";
-import { setBranchKeptServerFn } from "./branch-close.functions";
-import { setBranchSetupDefaultsServerFn, updateBranchServerFn } from "./branch-functions";
+import { setBranchKeptServerFn, setBranchSetupDefaultsServerFn } from "./branch-functions";
 import { idleClose } from "./idle-close";
 
 const getKeepBranchAction = cachedByCollectionScope((organizationSlug, scope) => {
@@ -66,13 +65,29 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   return environments.find((environment) => environment.id === environmentId);
 }
 
+/**
+ * Why Merge, Update and Own Copy must wait, or null: a Branch moves only what it runs. Something staged (a starting point's
+ * nodes too) or an active attempt holds them; the server's gate, assertBranchSettled, is the same rule.
+ */
+export function useBranchUnsettled(organizationSlug: string, environmentId: string): string | null {
+  const document = useEnvironmentDocument(organizationSlug, environmentId);
+  const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
+  const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
+  if (attempts.length === 0) return "Deploy this starting point first.";
+  if (attempts.some(({ deployment }) => isActiveDeployment(deployment.status))) return "Wait for this branch's deployment to finish.";
+  return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? [])
+    ? "Deploy or discard the changes staged here first." : null;
+}
+
 const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, scope) => {
   const environments = getEnvironmentsCollection(organizationSlug, scope);
   return createOptimisticAction<{ environmentId: string; setupCommands: SetupCommand[] }>({
     onMutate: ({ environmentId, setupCommands }) => environments.update(environmentId, (draft) => { draft.branchSetupCommands = setupCommands; }),
     mutationFn: async (data) => {
       try {
-        await environments.writeCommitted(await setBranchSetupDefaultsServerFn({ data: { organizationSlug, ...data } }));
+        await environments.writeCommitted(await setBranchSetupDefaultsServerFn({
+          data: { organizationSlug, environmentId: data.environmentId, setupCommands: data.setupCommands },
+        }));
       } catch (error) {
         toast.error(error instanceof Error ? error.message : "Could not save the setup commands.");
         throw error;
@@ -85,22 +100,4 @@ const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, 
 export function useBranchSetupDefaults(organizationSlug: string) {
   const save = getBranchSetupDefaultsAction(organizationSlug, useCollectionScope());
   return (environmentId: string, setupCommands: SetupCommand[]) => observeFailure(save({ environmentId, setupCommands }));
-}
-
-/**
- * Update a Branch from its Parent, or with `only` turn that Live Node into an Own Copy. Queued behind pending edits like
- * Discard, so it saves against their revision; the queue toasts a failure. The rows it adds are read back before it counts as saved.
- */
-export function useUpdateBranch(organizationSlug: string) {
-  const scope = useCollectionScope();
-  const queue = useEnvironmentDocumentQueue(organizationSlug);
-  return (environmentId: string, only?: string) => queue.enqueue({
-    environmentId,
-    failureMessage: only ? "Could not make it an own copy." : "Could not update this branch.",
-    save: (revision) => updateBranchServerFn({ data: { organizationSlug, environmentId, revision, only } }),
-    afterSave: async () => {
-      await Promise.all([getBranchesCollection, getRawServicesCollection, getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getEnvironmentNodeIntroductionsCollection]
-        .map((get) => reconcileCollection(get(organizationSlug, scope))));
-    },
-  });
 }

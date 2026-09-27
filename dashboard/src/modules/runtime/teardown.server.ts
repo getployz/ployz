@@ -27,7 +27,7 @@ import {
   projectCloudRow,
   retryPlanForAttempt,
   teardownRuntimeRefuseMessage,
-  type BranchCloseReason,
+  defaultEnvironmentRefusal,
   type ConfirmTeardownInput,
   type RetryTeardownInput,
   type TeardownClusterView,
@@ -41,7 +41,7 @@ import {
   loadTeardownAttempt,
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
-import { Database } from "#/server/database.server";
+import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 
@@ -130,9 +130,9 @@ const requireTeardownAccess = Effect.fn("Teardown.requireAccess")(
   },
 );
 
-/** An Environment's teardown access; without an organization it's the system's, and skips membership. */
+/** An Environment's teardown access, within `organizationId`. */
 const loadEnvironmentAccess = Effect.fn("Teardown.loadEnvironmentAccess")(
-  function* (environmentId: string, organizationId?: string) {
+  function* (environmentId: string, organizationId: string) {
     const database = yield* Database;
     const rows = yield* database.drizzle
       .select({
@@ -156,7 +156,7 @@ const loadEnvironmentAccess = Effect.fn("Teardown.loadEnvironmentAccess")(
       .where(
         and(
           eq(schemaEnvironment.id, environmentId),
-          organizationId === undefined ? undefined : eq(schemaProject.organizationId, organizationId),
+          eq(schemaProject.organizationId, organizationId),
         ),
       )
       .limit(1);
@@ -207,14 +207,10 @@ const loadTeardownGraph = Effect.fn("Teardown.loadGraph")(function* (
     );
     if (defaultEnvironment !== undefined) {
       return yield* new Conflict({
-        message: `${defaultEnvironment.name} is the Default Environment. Choose another Default Environment first.`,
+        message: defaultEnvironmentRefusal(defaultEnvironment.name),
       });
     }
-    return {
-      projects: [access.project],
-      environments,
-      isBranch: branches.some((branch) => branch.environmentId === access.environment.id),
-    };
+    return { projects: [access.project], environments };
   }
   const projects =
     access.scope === "project"
@@ -243,7 +239,7 @@ const loadTeardownGraph = Effect.fn("Teardown.loadGraph")(function* (
           .from(schemaEnvironment)
           .innerJoin(schemaProject, eq(schemaEnvironment.projectId, schemaProject.id))
           .where(inArray(schemaEnvironment.projectId, projectIds));
-  return { projects, environments, isBranch: false };
+  return { projects, environments };
 });
 
 type TeardownGraph = Effect.Success<ReturnType<typeof loadTeardownGraph>>;
@@ -339,22 +335,26 @@ function targetsFor(
   };
 }
 
-const teardownDataLoss = Effect.fn("Teardown.dataLoss")(function* (
-  access: TeardownAccess,
-  graph: TeardownGraph,
-) {
-  const catalog = yield* loadCatalog(
-    graph.environments.map((environment) => environment.id),
-  );
+/** The organization's runtime; a project or Environment teardown refuses one it can't reach. */
+const reachableRuntime = Effect.fn("Teardown.reachableRuntime")(function* (access: TeardownAccess) {
   const runtime = yield* inspectRuntime(access.organization.id);
-  if (
-    access.scope !== "organization" &&
-    runtime.cluster.kind === "unreachable"
-  ) {
+  if (access.scope !== "organization" && runtime.cluster.kind === "unreachable") {
     return yield* new Validation({
       message: "The runtime is unreachable. Reconnect it before tearing down this target.",
     });
   }
+  return runtime;
+});
+type ReachableRuntime = Effect.Success<ReturnType<typeof reachableRuntime>>;
+
+const teardownDataLoss = Effect.fn("Teardown.dataLoss")(function* (
+  access: TeardownAccess,
+  graph: TeardownGraph,
+  runtime: ReachableRuntime,
+) {
+  const catalog = yield* loadCatalog(
+    graph.environments.map((environment) => environment.id),
+  );
   const organizationSlug = access.organization.slug;
   const environmentLists = graph.environments.map((environment) =>
     dataLossForEnvironment({
@@ -406,7 +406,7 @@ const teardownDataLoss = Effect.fn("Teardown.dataLoss")(function* (
 export const loadTeardownDataLoss = Effect.fn("Teardown.loadDataLoss")(
   function* (actor: Actor, input: TeardownTargetInput) {
     const access = yield* requireTeardownAccess(actor, input);
-    return yield* teardownDataLoss(access, yield* loadTeardownGraph(access));
+    return yield* teardownDataLoss(access, yield* loadTeardownGraph(access), yield* reachableRuntime(access));
   },
 );
 
@@ -419,22 +419,13 @@ export const dispatchTeardownRequested = Effect.fn("Teardown.dispatchRequested")
 const startTeardown = Effect.fn("Teardown.start")(function* (
   access: TeardownAccess,
   graph: TeardownGraph,
+  runtime: ReachableRuntime,
   input: {
     readonly requestedByUserId: string;
     readonly identities: ConfirmTeardownInput["identities"];
     readonly abandon: boolean;
-    readonly closeReason: BranchCloseReason | null;
   },
 ) {
-  const runtime = yield* inspectRuntime(access.organization.id);
-  if (
-    access.scope !== "organization" &&
-    runtime.cluster.kind === "unreachable"
-  ) {
-    return yield* new Validation({
-      message: "The runtime is unreachable. Reconnect it before tearing down this target.",
-    });
-  }
   const plan = planTeardownRuntime({
     scope: access.scope,
     abandon: input.abandon,
@@ -459,22 +450,20 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
       scope: access.scope,
       confirmDataLoss: input.identities,
       targets,
-      closeReason: input.closeReason,
     });
   if (access.scope === "organization") yield* disableOrganizationPairing(access.organization.id);
-  yield* dispatchTeardownRequested(attempt.id);
+  // Inside a transaction (the idle sweep's), the event waits for the commit.
+  yield* afterDatabaseCommit(dispatchTeardownRequested(attempt.id));
   return attempt;
 });
 
 export const confirmTeardown = Effect.fn("Teardown.confirm")(
   function* (actor: Actor, input: ConfirmTeardownInput) {
     const access = yield* requireTeardownAccess(actor, input);
-    const graph = yield* loadTeardownGraph(access);
-    return yield* startTeardown(access, graph, {
+    return yield* startTeardown(access, yield* loadTeardownGraph(access), yield* reachableRuntime(access), {
       requestedByUserId: actor.userId,
       identities: input.identities,
       abandon: input.abandon === true,
-      closeReason: graph.isBranch ? "manual" : null,
     });
   },
 );
@@ -485,18 +474,18 @@ export const confirmTeardown = Effect.fn("Teardown.confirm")(
  */
 export const confirmSystemTeardown = Effect.fn("Teardown.confirmSystem")(
   function* (input: {
+    readonly organizationId: string;
     readonly environmentId: string;
     readonly requestedByUserId: string;
-    readonly closeReason: BranchCloseReason;
   }) {
-    const access = yield* loadEnvironmentAccess(input.environmentId);
+    const access = yield* loadEnvironmentAccess(input.environmentId, input.organizationId);
     const graph = yield* loadTeardownGraph(access);
-    const dataLoss = yield* teardownDataLoss(access, graph);
-    return yield* startTeardown(access, graph, {
+    const runtime = yield* reachableRuntime(access);
+    const dataLoss = yield* teardownDataLoss(access, graph, runtime);
+    return yield* startTeardown(access, graph, runtime, {
       requestedByUserId: input.requestedByUserId,
       identities: dataLoss.rust,
       abandon: false,
-      closeReason: input.closeReason,
     });
   },
 );

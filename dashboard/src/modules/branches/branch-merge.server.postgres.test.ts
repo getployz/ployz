@@ -157,13 +157,15 @@ describe("mergeBranch", () => {
     const [branch] = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, branchId));
     const environments = await harness.db.select().from(schema.environment).where(inArray(schema.environment.id, [branchId, parentId]));
     const states = await provide(listLatestOrganizationEnvironmentChangeStates({ userId }, { organizationSlug: "acme" }));
+    // The Parent's Applied State reaches the browser redacted: its secret as a fingerprint only.
+    if (JSON.stringify(states).includes("ciphertext")) throw new Error("Sealed ciphertext reached the browser.");
     const own = environments.find((row) => row.id === branchId);
     const parent = environments.find((row) => row.id === parentId);
     if (!branch || !own || !parent) throw new Error("The Branch or its Parent is missing.");
     const changes = branchChanges(mergeInput({
       base: branch.base, kept: branch.kept, branch: own.intent, parent: parent.intent,
       parentApplied: states.find((state) => state.environmentId === parentId)?.applied.intent ?? null,
-      hostnames: { branch: branchHostnameSuffix("shop", own.namespace), parent: "" },
+      hostnames: { branch: branchHostnameSuffix("shop", own.namespace, true), parent: "" },
     }));
     const rows = changes.rows.flatMap((row) => row.role === "move" ? [row] : []);
     return { rows, review: changes.review, revision: parent.revision };
@@ -223,11 +225,11 @@ describe("mergeBranch", () => {
     const introductions = await harness.db.select().from(schema.environmentNodeIntroduction).where(eq(schema.environmentNodeIntroduction.environmentId, parentId));
     expect(introductions.map((row) => row.nodeId)).toContain(worker?.id);
 
-    // Nothing is published or deployed in production; the Branch closes after commit, as merged.
+    // Nothing is published or deployed in production; the Branch closes after commit.
     expect(await attemptsOf(parentId)).toHaveLength(1);
     expect(await harness.db.select().from(schema.environmentSavedStateSnapshot)
       .where(eq(schema.environmentSavedStateSnapshot.environmentId, parentId))).toHaveLength(1);
-    expect(await teardowns()).toEqual([expect.objectContaining({ closeReason: "merged" })]);
+    expect(await teardowns()).toEqual([expect.objectContaining({ scope: "environment", environmentId: branch.id })]);
   });
 
   it("refuses an active attempt, undeployed changes, a stale review or revision, and then closes nothing", async () => {
@@ -272,5 +274,38 @@ describe("mergeBranch", () => {
     expect((await merge(unreachable.id, next, defaults(next.rows))).data.closed).toBe(false);
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:5" });
     expect(await teardowns()).toEqual([]);
+  });
+
+  it("leaves an unticked variable of a new service in the Branch, and brings registry credentials to an existing service", async () => {
+    await deploy(parentId);
+    const branch = await create("creds");
+    await settle(branch.id);
+    const workerId = randomUUID();
+    await harness.pool.query(`insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
+      values ('${workerId}', '${projectId}', '${branch.id}', '${organizationId}', '${workerLineage}', 'Worker')`);
+    const branchWebId = (await intentOf(branch.id)).services.find((node) => node.lineageId === webLineage)?.id ?? "";
+    await harness.db.insert(schema.serviceRegistryCredential).values({
+      organizationId, serviceId: branchWebId, encryptedRegistryUsername: encryption.encrypt("robot"), encryptedRegistrySecret: encryption.encrypt("hunter2"),
+    });
+    await edit(branch.id, (intent) => {
+      const web = intent.services.find((node) => node.lineageId === webLineage);
+      if (web?.config.source.type === "image") web.config.source.credentials = { type: "configured", credentialId: web.id };
+      const variable = (key: string) => ({ id: randomUUID(), key, description: null, exported: false, valueFingerprint: `fp-${key}`, value: { kind: "literal" as const, value: key } });
+      intent.services.push({ id: workerId, lineageId: workerLineage, slug: "worker", config: config("worker", "worker:1"), variables: [variable("KEEP"), variable("TEST_ONLY")], volumeAttachments: [] });
+    });
+    await deploy(branch.id);
+
+    const seen = await review(branch.id);
+    const picks = defaults(seen.rows).filter((pick) => pick.key !== `${workerLineage}:variables.TEST_ONLY`);
+    expect(picks.map((pick) => pick.key)).toEqual(expect.arrayContaining([`${webLineage}:source.credentials`, `${workerLineage}:variables.KEEP`]));
+    await merge(branch.id, seen, picks, false);
+
+    const production = await intentOf(parentId);
+    expect(production.services.find((node) => node.lineageId === workerLineage)?.variables.map((variable) => variable.key)).toEqual(["KEEP"]);
+    expect(production.services.find((node) => node.id === webId)?.config.source).toMatchObject({ credentials: { type: "configured", credentialId: webId } });
+    const [credential] = await harness.db.select().from(schema.serviceRegistryCredential).where(eq(schema.serviceRegistryCredential.serviceId, webId));
+    expect(credential?.encryptedRegistrySecret ? encryption.decrypt(credential.encryptedRegistrySecret) : null).toBe("hunter2");
+    const [identity] = await harness.db.select().from(schema.service).where(eq(schema.service.id, webId));
+    expect(identity?.hasRegistryCredential).toBe(true);
   });
 });

@@ -241,7 +241,7 @@ export const saveReviewedEnvironmentState = Effect.fn(
 /** Reconstruct authored Applied State from each node's confirmed Saved revision. */
 export const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
   function* (environmentId: string, namespace: string, projection: EnvironmentSnapshotProjection) {
-    const nodes = [...projection.appliedSavedNodeByKey.values()];
+    const nodes = [...projection.appliedSavedNodeByKey.values()].filter(node => node.environmentId === environmentId);
     const intents = new Map<string, SavedEnvironmentIntent>();
     for (const savedStateSnapshotId of new Set(nodes.map(node => node.sourceSavedStateSnapshotId))) {
       const saved = yield* loadEnvironmentSavedIntentById({ environmentId, savedStateSnapshotId });
