@@ -62,7 +62,6 @@ function Plan({ repositoryId, project, environments: all }: {
     );
   }
   const set = (change: Parameters<typeof save>[1]) => save(plan, change);
-  const startName = startFrom?.name ?? "the environment it starts from";
 
   // Core plans the presets over the start-from Environment's Working State, with the repository's services changing.
   const applied = changeStates.find((state) => state.environmentId === startFrom?.id)?.applied.nodes ?? [];
@@ -145,7 +144,7 @@ function Plan({ repositoryId, project, environments: all }: {
                     <RadioGroupItem value={preset} id={`pr-plan-preset-${preset}`} />
                     <FieldContent>
                       <FieldTitle>{presetTitles[preset]}</FieldTitle>
-                      {presetPlanned && only && <FieldDescription>{presetSummary(preset, presetPlanned, only, nameOf, startName)}</FieldDescription>}
+                      {presetPlanned && only && <FieldDescription>{presetSummary(preset, presetPlanned, only, nameOf, startFrom?.name ?? "")}</FieldDescription>}
                     </FieldContent>
                   </Field>
                 </FieldLabel>
@@ -163,7 +162,7 @@ function Plan({ repositoryId, project, environments: all }: {
             <FieldLabel htmlFor="pr-plan-data-copy">
               <Field orientation="horizontal" data-disabled="true">
                 <RadioGroupItem value="copy" id="pr-plan-data-copy" disabled />
-                Copy {startName}'s data<Badge variant="secondary">Soon</Badge>
+                Copy {startFrom ? `${startFrom.name}'s` : "its"} data<Badge variant="secondary">Soon</Badge>
               </Field>
             </FieldLabel>
           </RadioGroup>
