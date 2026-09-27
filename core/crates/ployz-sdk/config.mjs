@@ -31,3 +31,6 @@ export const redactEnvironmentIntent = value => request({ operation: 'redact_env
 
 export const parseRuntimePreview = value => request({ operation: 'parse_runtime_preview', value });
 export const projectRuntimeOutcome = (preview, value) => request({ operation: 'project_runtime_outcome', preview, value });
+
+export const planBranch = input => request({ operation: 'plan_branch', ...input });
+export const checkBranchName = name => request({ operation: 'check_branch_name', name });

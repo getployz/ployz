@@ -1,5 +1,6 @@
 //! Pure authored configuration rules used by native clients and Cloud's canvas.
 
+mod branch_plan;
 mod change_set;
 mod change_set_types;
 mod environment;
@@ -15,6 +16,7 @@ mod service_changes;
 mod validation;
 mod variables;
 
+pub use branch_plan::*;
 pub use change_set::*;
 pub use change_set_types::*;
 pub use environment::*;
@@ -126,6 +128,15 @@ enum ConfigRequest {
         baseline: serde_json::Value,
         path: String,
     },
+    PlanBranch {
+        parent: serde_json::Value,
+        deployed: Vec<String>,
+        focus: Vec<String>,
+        picks: BranchPicks,
+    },
+    CheckBranchName {
+        name: String,
+    },
 }
 
 /// The JSON ABI behind the SDK's WASM config export; it validates before policy.
@@ -233,5 +244,17 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
             let baseline = parse_service_config(baseline)?;
             serde_json::json!(restore_service_setting(current, &baseline, &path)?)
         }
+        ConfigRequest::PlanBranch {
+            parent,
+            deployed,
+            focus,
+            picks,
+        } => serde_json::json!(plan_branch(
+            &parse_environment_intent(parent)?,
+            &deployed,
+            &focus,
+            &picks
+        )?),
+        ConfigRequest::CheckBranchName { name } => serde_json::json!(check_branch_name(&name)?),
     })
 }
