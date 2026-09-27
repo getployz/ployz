@@ -159,6 +159,9 @@ fn an_address_the_owner_uses_live_keeps_its_project() {
         .collect();
     assert_eq!(
         domains,
-        [&json!("api.shop-staging.internal"), &json!("db.shop-production.internal")]
+        [
+            &json!("api.shop-staging.internal"),
+            &json!("db.shop-production.internal")
+        ]
     );
 }
