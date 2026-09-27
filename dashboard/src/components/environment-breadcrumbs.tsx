@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronsUpDownIcon, LayoutGridIcon, MoreHorizontalIcon, PlusIcon } from "lucide-react";
+import { ChevronsUpDownIcon, LayoutGridIcon, MoreHorizontalIcon, PlusIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentsCollection, getEnvironmentSummariesCollection, environmentSummary } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
@@ -174,12 +174,14 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 <CommandGroup heading="Environments">
                   {projectEnvironments.map((environment) => (
                     <CommandItem key={environment.id} value={environment.id} keywords={[environment.name]}
-                      data-checked={environment.id === current?.id} aria-label={environment.name}
+                      data-checked={environment.id === current?.id}
+                      aria-label={environment.id === project?.resolvedEnvironment?.id ? `${environment.name}, default` : environment.name}
                       onSelect={() => {
                         setOpen(false);
                         void navigate(getDashboardDestination({ ...scope, environmentSlug: environment.namespace }, section));
                       }}>
-                      <span className="truncate">{environment.name}</span>
+                      <span className="flex-1 truncate">{environment.name}</span>
+                      {environment.id === project?.resolvedEnvironment?.id && <span className="text-muted-foreground">Default</span>}
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -187,6 +189,14 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 <CommandGroup>
                   <CommandItem value="new-environment" onSelect={() => { setOpen(false); setCreating(true); }}>
                     <PlusIcon />New environment
+                  </CommandItem>
+                  <CommandItem value="manage-environments" onSelect={() => {
+                    setOpen(false);
+                    const { organizationSlug, projectSlug, environmentSlug } = scope;
+                    void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
+                      params: { organizationSlug, projectSlug, environmentSlug }, search: { scope: "project" } });
+                  }}>
+                    <Settings2Icon />Manage environments
                   </CommandItem>
                 </CommandGroup>
               </CommandList>

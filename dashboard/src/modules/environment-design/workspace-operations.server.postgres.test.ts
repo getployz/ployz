@@ -11,6 +11,7 @@ import {
 import {
   createEmptyProject,
   createEnvironment,
+  setProjectDefaultEnvironment,
 } from "./workspace-operations.server";
 import { resolveDefaultEnvironment } from "./workspace.queries";
 
@@ -89,12 +90,28 @@ it.live(
           { userId: author.id },
           { organizationSlug: "acme", projectSlug: receipt.data.project.slug, name: "Staging" },
         );
+        const projectSlug = receipt.data.project.slug;
+        const chosen = yield* setProjectDefaultEnvironment(
+          { userId: author.id },
+          { organizationSlug: "acme", projectSlug, environmentId: staging.data.id },
+        );
+        assert.strictEqual(chosen.defaultEnvironmentId, staging.data.id);
+
+        const other = yield* createEmptyProject({ userId: author.id }, { organizationSlug: "acme" });
+        const refused = yield* Effect.flip(setProjectDefaultEnvironment(
+          { userId: author.id },
+          { organizationSlug: "acme", projectSlug, environmentId: other.data.environment.id },
+        ));
+        assert.strictEqual(refused._tag, "NotFound");
+        const [unchanged] = yield* database.drizzle.select().from(project).where(eq(project.id, receipt.data.project.id));
+        assert.strictEqual(unchanged?.defaultEnvironmentId, staging.data.id);
+
         // Teardown deletes the Environment row; the project then falls back to its oldest Environment.
-        yield* database.drizzle.delete(environment).where(eq(environment.id, receipt.data.environment.id));
+        yield* database.drizzle.delete(environment).where(eq(environment.id, staging.data.id));
         const [tornDown] = yield* database.drizzle.select().from(project).where(eq(project.id, receipt.data.project.id));
         assert.strictEqual(tornDown?.defaultEnvironmentId, null);
         const remaining = yield* database.drizzle.select().from(environment).where(eq(environment.projectId, receipt.data.project.id));
-        assert.strictEqual(tornDown && resolveDefaultEnvironment(tornDown, remaining)?.id, staging.data.id);
+        assert.strictEqual(tornDown && resolveDefaultEnvironment(tornDown, remaining)?.id, receipt.data.environment.id);
 
         const unauthorized = yield* Effect.flip(
           createEmptyProject(

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, exists } from "drizzle-orm";
 import { Effect } from "effect";
 import { member, session } from "#/modules/identity/tables";
 import { organization } from "#/modules/organization/tables";
@@ -226,18 +226,7 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
   return rows[0] ?? null;
 });
 
-export const getEnvironmentByIdForProject = Effect.fn(
-  "EnvironmentDesign.getEnvironmentByIdForProject",
-)(function* (projectId: string, environmentId: string) {
-  const database = yield* Database;
-  const rows = yield* database.drizzle
-    .select(environmentColumns)
-    .from(environment)
-    .where(and(eq(environment.projectId, projectId), eq(environment.id, environmentId)))
-    .limit(1);
-  return rows[0] ?? null;
-});
-
+/** Null when the Environment belongs to another project: the FK alone doesn't enforce it. */
 export const setDefaultEnvironment = Effect.fn(
   "EnvironmentDesign.setDefaultEnvironment",
 )(function* (projectId: string, environmentId: string) {
@@ -245,13 +234,13 @@ export const setDefaultEnvironment = Effect.fn(
   const rows = yield* database.drizzle
     .update(project)
     .set({ defaultEnvironmentId: environmentId })
-    .where(eq(project.id, projectId))
+    .where(and(
+      eq(project.id, projectId),
+      exists(database.drizzle.select({ id: environment.id }).from(environment)
+        .where(and(eq(environment.id, environmentId), eq(environment.projectId, projectId)))),
+    ))
     .returning();
-  const updated = rows[0];
-  if (updated === undefined) {
-    return yield* Effect.die("PostgreSQL did not return the updated project.");
-  }
-  return updated;
+  return rows[0] ?? null;
 });
 
 export const getProjectContextForActor = Effect.fn(

@@ -10,6 +10,7 @@ import {
   DEFAULT_ENVIRONMENT_NAME,
   type CreateEnvironment,
   type ProjectList,
+  type SetDefaultEnvironment,
   type SyncOrganizationSlug,
 } from "./workspace-schemas";
 import {
@@ -95,6 +96,9 @@ export const createEmptyProject = Effect.fn(
         }),
       });
       const project = yield* setDefaultEnvironment(created.id, environment.id);
+      if (project === null) {
+        return yield* Effect.die("PostgreSQL did not return the updated project.");
+      }
       return { project, environment };
     }),
   );
@@ -122,4 +126,15 @@ export const createEnvironment = Effect.fn(
       }),
     ),
   );
+});
+
+export const setProjectDefaultEnvironment = Effect.fn(
+  "EnvironmentDesign.setProjectDefaultEnvironment",
+)(function* (actor: Actor, input: SetDefaultEnvironment) {
+  const context = yield* requireProjectContext(actor, input);
+  const project = yield* setDefaultEnvironment(context.project.id, input.environmentId);
+  if (project === null) {
+    return yield* new NotFound({ message: "Environment not found in this project." });
+  }
+  return project;
 });
