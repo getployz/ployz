@@ -26,7 +26,9 @@ const legacyTab = Schema.Struct({ tab: Schema.Literals(["build-logs", "deploy-lo
  * Where an old Deployment Mode link (`?deployment=<id>` on the canvas or on a service) now leads: that attempt's
  * Deployment Page, focused on the service and log tab it named. Null when the location carries no such link.
  */
-export function legacyDeploymentLink({ pathname, search }: Pick<ParsedLocation, "pathname" | "search">) {
+export function legacyDeploymentLink({ pathname, searchStr }: Pick<ParsedLocation, "pathname" | "searchStr">) {
+  // The raw string: the canvas route's search schema no longer knows `deployment`.
+  const search = Object.fromEntries(new URLSearchParams(searchStr));
   if (!Schema.is(legacyLink)(search)) return null;
   const service = /\/services\/([^/]+)\/?$/.exec(pathname)?.[1];
   const logs: LogTab | undefined = Schema.is(legacyTab)(search) ? (search.tab === "build-logs" ? "build" : "deploy") : undefined;

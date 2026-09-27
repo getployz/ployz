@@ -215,7 +215,7 @@ export function EnvironmentCanvasScene() {
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
         nodeId: selectedNodeId,
-      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId } : null}
+      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true } : null}
       header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}

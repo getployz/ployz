@@ -271,6 +271,7 @@
   border: 0;
   background: color-mix(in oklab, var(--foreground) 16%, transparent);
 }
+.canvas-inspector-shade[data-clear] { background: transparent; }
 .canvas-inspector-pane {
   position: relative;
   grid-area: 2 / 1;
