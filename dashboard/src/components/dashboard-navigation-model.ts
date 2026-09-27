@@ -155,6 +155,8 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings", "settings"],
+  // Opened from Settings → Project, over the canvas.
+  ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId", "settings"],
 ]);
 
 /** The current place from the deepest route: the canvas and its panels are Canvas. */
