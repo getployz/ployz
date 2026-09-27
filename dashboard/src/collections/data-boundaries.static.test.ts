@@ -34,7 +34,7 @@ const SPINNER_FILES = {
   "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
-  "components/environment-breadcrumbs.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
@@ -72,7 +72,7 @@ const DOCUMENT_WRITE = /\b(environments|getEnvironmentsCollection\([^)]*\))\.wri
 const DOCUMENT_COMMAND_FILES = {
   "modules/environment-design/environment-document-edit.ts": "the editor itself",
   "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
-  "components/environment-breadcrumbs.tsx": "a created environment returns its first document",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "a created environment returns its first document",
   "components/service-create-command.tsx": "a created project returns its first document",
 };
 

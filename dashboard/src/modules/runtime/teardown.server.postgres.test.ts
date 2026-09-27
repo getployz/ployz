@@ -215,7 +215,7 @@ describe("teardown durable state", () => {
     `);
     const refused = await runPromiseDb(confirmTeardown({ userId }, {
       organizationSlug: "acme", scope: "environment", environmentId, identities: [],
-    }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "teardown-parent-refused" })), Effect.flip));
+    }).pipe(Effect.provideService(InngestClient, new Inngest({ id: "teardown-parent-refused" })), Effect.flip, Effect.scoped));
     expect(refused).toBeInstanceOf(Conflict);
     expect(refused.message).toContain("fix-web");
 
