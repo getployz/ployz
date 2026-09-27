@@ -4,10 +4,9 @@ import { describe, expect, it } from "vitest";
 import {
   blurClickedNodeLink,
   getNodePanDelta,
-  shouldCenterSelectedNode,
+  viewportAcrossPages,
   viewportShowing,
 } from "./useCanvasNavigation";
-import type { CanvasServiceNode } from "./types";
 
 it("clears mouse focus without stealing keyboard focus", () => {
   const link = document.createElement("a");
@@ -32,50 +31,15 @@ it("clears mouse focus without stealing keyboard focus", () => {
   }
 });
 
-function createNode(
-  overrides?: Partial<CanvasServiceNode>,
-): CanvasServiceNode {
-  return {
-    id: "service-1",
-    type: "service",
-    position: { x: 100, y: 200 },
-    data: {
-      resourceType: "service",
-      resourceId: "service-1",
-      serviceId: "service-1",
-      environmentId: "env-1",
-    },
-    ...overrides,
-  };
-}
-
-describe("shouldCenterSelectedNode", () => {
-  it("recenters when the selected node position changes", () => {
-    expect(
-      shouldCenterSelectedNode({
-        selectedNode: createNode({
-          position: { x: 300, y: 400 },
-        }),
-        selectedNodeId: "service-1",
-        previousSelectedNodeId: "service-1",
-        previousSelectedNodePositionKey: "100:200",
-      }),
-    ).toBe(true);
-  });
-
-  it("does not recenter while the selected node is being dragged", () => {
-    expect(
-      shouldCenterSelectedNode({
-        selectedNode: createNode({
-          dragging: true,
-          position: { x: 300, y: 400 },
-        }),
-        selectedNodeId: "service-1",
-        previousSelectedNodeId: "service-1",
-        previousSelectedNodePositionKey: "100:200",
-      }),
-    ).toBe(false);
-  });
+it("saves the viewport a Deployment Page opens over and starts from it again once the page closes", () => {
+  const before = { x: 0, y: 0, zoom: 1 };
+  const revealed = { x: -300, y: 20, zoom: 0.6 };
+  const opened = viewportAcrossPages(null, true, before);
+  expect(opened).toEqual({ start: null, saved: before });
+  // Revealing (or the user panning) while the page stays open keeps the first saved viewport.
+  expect(viewportAcrossPages(opened.saved, true, revealed)).toEqual({ start: null, saved: before });
+  expect(viewportAcrossPages(opened.saved, false, revealed)).toEqual({ start: before, saved: null });
+  expect(viewportAcrossPages(null, false, revealed)).toEqual({ start: null, saved: null });
 });
 
 describe("getNodePanDelta", () => {

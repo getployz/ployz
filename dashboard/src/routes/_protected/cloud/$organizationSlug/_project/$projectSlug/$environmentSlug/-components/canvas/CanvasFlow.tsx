@@ -21,7 +21,7 @@ import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
-import { useLitNodeIds } from "../deployment-page";
+import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -105,7 +105,7 @@ export function CanvasFlow({
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
-    useLitNodeIds(),
+    useDeploymentFocus(),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
   const volumeCreator = useVolumeCreator(

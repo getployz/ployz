@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   useNodesInitialized,
   useReactFlow,
-  type ReactFlowInstance,
 } from "@xyflow/react";
 import {
   CANVAS_MIN_ZOOM,
@@ -16,10 +15,6 @@ import { prefersReducedMotion } from "#/lib/motion";
 const UNSET = Symbol("canvas-nav-unset");
 const CANVAS_INSPECTOR_PANE_SELECTOR = "[data-canvas-inspector-pane]";
 const CANVAS_INSPECTOR_FULL_WIDTH_RATIO = 0.9;
-
-function getNodePositionKey(node: CanvasResourceNode) {
-  return `${node.position.x}:${node.position.y}`;
-}
 
 function getCanvasInspectorGeometryKey() {
   const wrapper = document.querySelector<HTMLElement>(".react-flow");
@@ -99,26 +94,6 @@ function useCanvasInspectorGeometryVersion(enabled: boolean) {
   return version;
 }
 
-export function shouldCenterSelectedNode(params: {
-  selectedNode: CanvasResourceNode;
-  selectedNodeId: string;
-  previousSelectedNodeId: string | null | symbol;
-  previousSelectedNodePositionKey: string | null;
-}) {
-  if (params.selectedNode.dragging) {
-    return false;
-  }
-
-  if (params.previousSelectedNodeId !== params.selectedNodeId) {
-    return true;
-  }
-
-  return (
-    params.previousSelectedNodePositionKey !==
-    getNodePositionKey(params.selectedNode)
-  );
-}
-
 export function getNodePanDelta(start: number, size: number, available: number) {
   const margin = 24;
   if (size > available - margin * 2) {
@@ -144,15 +119,18 @@ export function viewportShowing(viewport: Viewport, box: Box, width: number, hei
   };
 }
 
-/** Brings nodes into the canvas area the inspector pane leaves visible. False while no pane leaves room for them. */
-function revealNodes(flow: ReactFlowInstance<CanvasResourceNode>, nodes: readonly CanvasResourceNode[]) {
+/**
+ * The viewport, from `from`, that brings nodes into the canvas area the inspector pane leaves visible; `from` itself when
+ * there are none. Null while no pane leaves room for them.
+ */
+function revealNodes(nodes: readonly CanvasResourceNode[], from: Viewport): Viewport | null {
+  if (!nodes.length) return from;
   const wrapper = document.querySelector<HTMLElement>(".react-flow");
   const pane = document.querySelector<HTMLElement>(CANVAS_INSPECTOR_PANE_SELECTOR);
-  if (!wrapper || !pane || pane.dataset["takeover"] === "true") return false;
+  if (!wrapper || !pane || pane.dataset["takeover"] === "true") return null;
   if (pane.offsetWidth / wrapper.clientWidth >= CANVAS_INSPECTOR_FULL_WIDTH_RATIO) {
-    return false;
+    return null;
   }
-  if (!nodes.length) return true;
   const controls = wrapper.closest(".environment-canvas-scene")
     ?.querySelector<HTMLElement>(".bottom-bar");
   const x = Math.min(...nodes.map((node) => node.position.x));
@@ -162,13 +140,16 @@ function revealNodes(flow: ReactFlowInstance<CanvasResourceNode>, nodes: readonl
     width: Math.max(...nodes.map((node) => node.position.x + (node.measured?.width ?? SERVICE_NODE_WIDTH))) - x,
     height: Math.max(...nodes.map((node) => node.position.y + (node.measured?.height ?? SERVICE_NODE_HEIGHT))) - y,
   };
-  const viewport = flow.getViewport();
-  const next = viewportShowing(viewport, box, wrapper.clientWidth - pane.offsetWidth,
+  return viewportShowing(from, box, wrapper.clientWidth - pane.offsetWidth,
     wrapper.clientHeight - (controls?.offsetHeight ?? 0), CANVAS_MIN_ZOOM);
-  if (next.x !== viewport.x || next.y !== viewport.y || next.zoom !== viewport.zoom) {
-    void flow.setViewport(next, { duration: prefersReducedMotion() ? 0 : 360 });
-  }
-  return true;
+}
+
+/**
+ * A Deployment Page saves the viewport it opened over; once it closes, the canvas starts again from that viewport.
+ * `start`: where to start from (null: where the canvas is now). `saved`: what stays saved.
+ */
+export function viewportAcrossPages(saved: Viewport | null, pageOpen: boolean, current: Viewport) {
+  return pageOpen ? { start: null, saved: saved ?? current } : { start: saved, saved: null };
 }
 
 /**
@@ -182,23 +163,30 @@ export function blurClickedNodeLink(event: Pick<MouseEvent, "detail" | "target">
   }
 }
 
+/**
+ * Keeps the canvas focus in view beside the inspector pane: the selected node, else the nodes an open Deployment Page
+ * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes.
+ */
 export function useCanvasNavigation(
   selectedNodeId: string | null,
   selectedNodePositionKey: string | null,
   flowReady: boolean,
-  /** Nodes an open Deployment Page lights: brought into view once each time the set changes. */
-  litNodeIds: readonly string[] | null,
+  /** The open Deployment Page (`key`) and the nodes it lights; null while none is open or its attempt loads. */
+  deployment: { key: string; nodeIds: readonly string[] } | null,
 ) {
   const flow = useReactFlow<CanvasResourceNode>();
   const nodesInitialized = useNodesInitialized();
-  const canvasInspectorGeometryVersion = useCanvasInspectorGeometryVersion(
-    flowReady && selectedNodeId !== null,
-  );
+  const pageOpen = !selectedNodeId && deployment !== null;
+  const focusKey = selectedNodeId ?? (deployment ? `deployment:${deployment.key}` : null);
+  const geometryVersion = useCanvasInspectorGeometryVersion(flowReady && focusKey !== null);
   const previousSelectedNodeId = useRef<string | null | symbol>(UNSET);
-  const previousSelectedNodePositionKey = useRef<string | null>(null);
-  const previousCanvasInspectorGeometryVersion = useRef(
-    canvasInspectorGeometryVersion,
-  );
+  const shown = useRef<{ focusKey: string | null; positionKey: string | null; geometryVersion: number } | null>(null);
+  const savedViewport = useRef<Viewport | null>(null);
+  // The ids live in a ref so the effect below reruns on the focus changing, not on each render's new array.
+  const focusNodeIds = useRef<readonly string[]>([]);
+  useEffect(() => {
+    focusNodeIds.current = selectedNodeId ? [selectedNodeId] : deployment?.nodeIds ?? [];
+  });
 
   useEffect(() => {
     if (!flowReady) {
@@ -209,9 +197,8 @@ export function useCanvasNavigation(
       if (previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
         void flow.setViewport(flow.getViewport(), { duration: 0 });
       }
-      previousSelectedNodeId.current = null;
-      previousSelectedNodePositionKey.current = null;
     }
+    previousSelectedNodeId.current = selectedNodeId;
 
     flow.setNodes((nodes) =>
       nodes.map((node) => {
@@ -230,88 +217,41 @@ export function useCanvasNavigation(
   }, [flow, flowReady, nodesInitialized, selectedNodeId]);
 
   useEffect(() => {
-    if (!flowReady || !selectedNodeId) {
+    if (!flowReady) {
+      return;
+    }
+    const across = viewportAcrossPages(savedViewport.current, pageOpen, flow.getViewport());
+    savedViewport.current = across.saved;
+    const start = across.start;
+    const positionKey = selectedNodeId ? selectedNodePositionKey : null;
+    const previous = shown.current;
+    const changed = start !== null || previous?.focusKey !== focusKey || previous.positionKey !== positionKey
+      || previous.geometryVersion !== geometryVersion;
+    const nodes = () => focusNodeIds.current.flatMap((id) => flow.getNode(id) ?? []);
+    if (!changed || nodes().some((node) => node.dragging)) {
       return;
     }
 
-    const selectedNode = flow.getNode(selectedNodeId);
-    if (!selectedNode) {
-      return;
-    }
-
-    const shouldCenterForSelection = shouldCenterSelectedNode({
-      selectedNode,
-      selectedNodeId,
-      previousSelectedNodeId: previousSelectedNodeId.current,
-      previousSelectedNodePositionKey: previousSelectedNodePositionKey.current,
-    });
-    const shouldCenterForGeometry =
-      !selectedNode.dragging &&
-      previousCanvasInspectorGeometryVersion.current !==
-        canvasInspectorGeometryVersion;
-
-    if (!shouldCenterForSelection && !shouldCenterForGeometry) {
-      previousSelectedNodeId.current = selectedNodeId;
-      previousSelectedNodePositionKey.current = getNodePositionKey(selectedNode);
-      previousCanvasInspectorGeometryVersion.current =
-        canvasInspectorGeometryVersion;
-      return;
-    }
-
-    function markSelectedNodeCentered(node: CanvasResourceNode) {
-      previousSelectedNodeId.current = selectedNodeId;
-      previousSelectedNodePositionKey.current = getNodePositionKey(node);
-      previousCanvasInspectorGeometryVersion.current =
-        canvasInspectorGeometryVersion;
-    }
-
-    if (revealNodes(flow, [selectedNode])) {
-      markSelectedNodeCentered(selectedNode);
-      return;
-    }
-
-    let cancelled = false;
-    let frameId: number | null = window.requestAnimationFrame(() => {
-      frameId = window.requestAnimationFrame(() => {
-        frameId = null;
-        if (cancelled) {
-          return;
-        }
-
-        const nextSelectedNode = flow.getNode(selectedNodeId);
-        if (nextSelectedNode && revealNodes(flow, [nextSelectedNode])) {
-          markSelectedNodeCentered(nextSelectedNode);
-        }
-      });
-    });
-
-    return () => {
-      cancelled = true;
-      if (frameId != null) {
-        window.cancelAnimationFrame(frameId);
+    function show() {
+      const next = revealNodes(nodes(), start ?? flow.getViewport());
+      const target = next ?? start;
+      const current = flow.getViewport();
+      if (target && (target.x !== current.x || target.y !== current.y || target.zoom !== current.zoom)) {
+        void flow.setViewport(target, { duration: prefersReducedMotion() ? 0 : 360 });
       }
-    };
-  }, [
-    canvasInspectorGeometryVersion,
-    flow,
-    flowReady,
-    nodesInitialized,
-    selectedNodePositionKey,
-    selectedNodeId,
-  ]);
+      if (next) shown.current = { focusKey, positionKey, geometryVersion };
+      return next !== null;
+    }
 
-  // ponytail: ids joined into one key so the effect reruns only when the set changes; node ids never hold commas.
-  const litKey = litNodeIds?.join(",") ?? null;
-  useEffect(() => {
-    if (!flowReady || litKey === null) return;
-    const lit = () => litKey.split(",").flatMap((id) => flow.getNode(id) ?? []);
-    if (revealNodes(flow, lit())) return;
-    // The pane mounts with the page; measure once it has laid out.
+    if (show()) {
+      return;
+    }
+    // The pane mounts with its route; measure again once it has laid out.
     let frameId = window.requestAnimationFrame(() => {
-      frameId = window.requestAnimationFrame(() => revealNodes(flow, lit()));
+      frameId = window.requestAnimationFrame(show);
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [flow, flowReady, nodesInitialized, litKey]);
+  }, [flow, flowReady, nodesInitialized, focusKey, pageOpen, selectedNodeId, selectedNodePositionKey, geometryVersion]);
 
   function getViewportCenter(): FlowPosition {
     const viewport = flow.getViewport();

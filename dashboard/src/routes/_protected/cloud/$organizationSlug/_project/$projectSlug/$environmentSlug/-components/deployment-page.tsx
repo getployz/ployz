@@ -40,15 +40,15 @@ export function legacyDeploymentLink({ pathname, searchStr }: Pick<ParsedLocatio
   return { deploymentId: search.deployment, search: { service, logs } };
 }
 
-/** Which canvas nodes an open Deployment Page lights, by Node Outcome; null when no page is open. */
-type Lighting = { lit: ReadonlyMap<string, DeploymentNodeView["outcome"]>; pending: boolean } | null;
+/** Which canvas nodes an open Deployment Page (`deploymentId`) lights, by Node Outcome; null when no page is open. */
+type Lighting = { deploymentId: string; lit: ReadonlyMap<string, DeploymentNodeView["outcome"]>; pending: boolean } | null;
 const LightingContext = createContext<Lighting>(null);
 export const DeploymentLightingProvider = LightingContext;
 
-/** The canvas nodes an open Deployment Page lights; null when no page is open. */
-export function useLitNodeIds() {
+/** The open Deployment Page and the canvas nodes it lights, for the canvas to bring into view; null when no page is open. */
+export function useDeploymentFocus() {
   const lighting = use(LightingContext);
-  return lighting ? [...lighting.lit.keys()] : null;
+  return lighting ? { key: lighting.deploymentId, nodeIds: [...lighting.lit.keys()] } : null;
 }
 
 /** A canvas node under an open Deployment Page: its outcome when the attempt changed it, `null` to dim it; `undefined` when no page is open. */
@@ -73,7 +73,7 @@ export function useOpenDeployment(): Lighting {
   useOpenStartedDeploymentsSync(attempt, deploymentId);
   if (!attempt) return null;
   // Nodes the canvas no longer draws are simply never matched; the page lists them.
-  return { lit: deploymentLighting(attempt), pending: attempt.buildPending };
+  return { deploymentId: attempt.deployment.id, lit: deploymentLighting(attempt), pending: attempt.buildPending };
 }
 
 function useOpenStartedDeploymentsSync(attempt: ViewedAttempt | null, deploymentId: string | null) {
