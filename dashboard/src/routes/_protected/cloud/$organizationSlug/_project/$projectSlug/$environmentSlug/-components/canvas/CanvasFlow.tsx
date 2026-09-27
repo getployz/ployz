@@ -109,6 +109,7 @@ export function CanvasFlow({
     useDeploymentFocus(),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
+  const idleCloseWarning = { organizationSlug: params.organizationSlug, environmentId };
   const volumeCreator = useVolumeCreator(
     params,
     environmentId,
@@ -189,15 +190,14 @@ export function CanvasFlow({
         </CanvasContextMenu>
       </div>
       <CanvasNodeList
-        environmentId={environmentId}
+        header={<IdleCloseWarning {...idleCloseWarning} />}
         services={activeServicesWithBoundEnv}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}
       />
-      {/* Phones show it at the top of the node list instead. */}
-      <IdleCloseWarning organizationSlug={params.organizationSlug} environmentId={environmentId}
-        className="absolute top-4 left-4 max-[860px]:hidden" />
+      {/* Phones show it atop the node list instead. */}
+      <IdleCloseWarning {...idleCloseWarning} className="absolute top-4 left-4 max-[860px]:hidden" />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
         <CanvasFinder nodes={findableNodes} />
         <Button
