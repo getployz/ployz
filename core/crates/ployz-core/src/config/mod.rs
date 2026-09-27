@@ -113,7 +113,7 @@ enum ConfigRequest {
         value: ResolveVariablesInput,
     },
     LiveValues {
-        value: LiveValuesInput,
+        value: serde_json::Value,
     },
     ParseService {
         value: serde_json::Value,
@@ -232,7 +232,9 @@ pub fn config_request(input: serde_json::Value) -> Result<serde_json::Value, Con
             canonicalize_environment_intent(parse_environment_intent(value)?)
         ),
         ConfigRequest::ResolveVariables { value } => serde_json::json!(resolve_variables(&value)),
-        ConfigRequest::LiveValues { value } => serde_json::json!(live_values(value)?),
+        ConfigRequest::LiveValues { value } => {
+            serde_json::json!(live_values(parse_live_values_input(value)?))
+        }
         ConfigRequest::ParseService { value } => serde_json::json!(parse_service_config(value)?),
         ConfigRequest::ParseSetting { value } => parse_service_setting(value)?,
         ConfigRequest::CompareService { current, baseline } => {

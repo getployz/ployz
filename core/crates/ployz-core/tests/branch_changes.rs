@@ -433,7 +433,7 @@ fn contract_review_string() {
     .unwrap();
     assert_eq!(
         result["review"],
-        r#"[{"key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move","conflict":false,"base":"a","from":"b","into":"a"}]"#
+        r#"{"picks":[],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}"#
     );
     let picked = config_request(json!({"operation": "branch_changes", "value": {
         "base": env("a", 1), "from": env("b", 2), "into": env("a", 3), "provided": [],
@@ -497,11 +497,11 @@ fn table_picks() -> Value {
     json!([
         {"key": format!("{API}:startCommand")},
         {"key": format!("{API}:mounts.{DATA}")},
-        {"key": format!("{API}:variables.PLAIN"), "choice": "parent"},
-        {"key": format!("{API}:variables.NEW_PLAIN"), "choice": "from"},
-        {"key": format!("{API}:variables.NEW_SECRET"), "choice": "new",
-         "newValue": {"value": server, "valueFingerprint": "fp-server"}},
-        {"key": format!("{API}:variables.UNSUPPLIED"), "choice": "new"},
+        {"key": format!("{API}:variables.PLAIN"), "choice": {"option": "parent"}},
+        {"key": format!("{API}:variables.NEW_PLAIN"), "choice": {"option": "from"}},
+        {"key": format!("{API}:variables.NEW_SECRET"), "choice": {"option": "new",
+         "value": {"value": server, "valueFingerprint": "fp-server"}}},
+        {"key": format!("{API}:variables.UNSUPPLIED"), "choice": {"option": "new"}},
     ])
 }
 
@@ -568,7 +568,6 @@ fn picks_land_in_next_and_advance_base_by_exactly_the_picks() {
         "variables.PLAIN",
         "variables.NEW_PLAIN",
         "variables.NEW_SECRET",
-        "variables.UNSUPPLIED",
     ] {
         assert!(
             !again
@@ -577,6 +576,13 @@ fn picks_land_in_next_and_advance_base_by_exactly_the_picks() {
             "{settled} in {again:#?}"
         );
     }
+    // A secret still waiting for its value is proposed again.
+    assert!(
+        again.contains(&format!(
+            "{API}:variables.UNSUPPLIED move conflict=false default=new"
+        )),
+        "{again:#?}"
+    );
     assert!(
         again.contains(&format!(
             "{API}:preDeployCommand move conflict=false default=-"
@@ -595,8 +601,8 @@ fn leaving_a_variable_out_keeps_into_own() {
     let result = with_picks(
         &from,
         &parent(),
-        json!([{"key": format!("{API}:variables.PLAIN"), "choice": "leave_out"},
-               {"key": format!("{API}:variables.NEW_PLAIN"), "choice": "leave_out"}]),
+        json!([{"key": format!("{API}:variables.PLAIN"), "choice": {"option": "leave_out"}},
+               {"key": format!("{API}:variables.NEW_PLAIN"), "choice": {"option": "leave_out"}}]),
     )
     .unwrap();
     let api = &result["next"]["services"][0];
@@ -617,7 +623,7 @@ fn bad_picks_are_refused() {
         (json!([{"key": "nope"}]), "picks.key"),
         (json!([{"key": format!("{API}:routes")}]), "picks.key"),
         (
-            json!([{"key": format!("{API}:startCommand"), "choice": "from"}]),
+            json!([{"key": format!("{API}:startCommand"), "choice": {"option": "from"}}]),
             "picks.choice",
         ),
         (
@@ -625,7 +631,7 @@ fn bad_picks_are_refused() {
             "picks.choice",
         ),
         (
-            json!([{"key": format!("{API}:variables.NEW_PLAIN"), "choice": "parent"}]),
+            json!([{"key": format!("{API}:variables.NEW_PLAIN"), "choice": {"option": "parent"}}]),
             "picks.choice",
         ),
     ] {
@@ -658,7 +664,7 @@ fn review_reflects_picks_but_never_new_values_or_ids() {
         )
     );
     let mut other = table_picks();
-    other[2]["choice"] = json!("from");
+    other[2]["choice"] = json!({"option": "from"});
     assert_ne!(picked, review(&from, &parent(), other));
     let compare_only = changes(Some(&parent()), &from, &parent(), &json!({}));
     assert_ne!(picked, compare_only["review"].as_str().unwrap());
@@ -794,14 +800,17 @@ fn a_new_branch_service_is_introduced_into_the_parent() {
         .map(|v| v["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["MODE"], "the new secret waits for a value");
-    // Base now records the node, so it is not offered again.
+    // Base records the node; MODE landed as `from` has it; the waiting secret is offered again.
     let again = changes(Some(&result["base"]), &from, &result["next"], &json!({}));
-    assert!(
-        !summary(&again)
-            .iter()
-            .any(|r| r.contains(JOBS) && r.contains(" move ")),
-        "{:#?}",
-        summary(&again)
+    let jobs_rows: Vec<_> = summary(&again)
+        .into_iter()
+        .filter(|r| r.contains(JOBS))
+        .collect();
+    assert_eq!(
+        jobs_rows,
+        [format!(
+            "{JOBS}:variables.KEY move conflict=false default=new"
+        )]
     );
 
     // A name `into` already uses is refused.
@@ -876,5 +885,85 @@ fn contract_create_review_string() {
     assert_eq!(
         result["review"],
         r#"{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:node"}],"rows":[{"base":null,"conflict":false,"from":"api","into":null,"key":"a0000000-0000-4000-8000-000000000001:node","role":"move"}]}"#
+    );
+}
+
+#[test]
+fn new_values_must_be_supplied_and_secrets_sealed() {
+    let from = changed_branch();
+    let pick = |key: &str, choice: Value| json!([{"key": format!("{API}:variables.{key}"), "choice": choice}]);
+    let plain = json!({"kind": "literal", "value": "typed"});
+    for (picks, why) in [
+        (
+            pick("NEW_PLAIN", json!({"option": "new"})),
+            "plain without a value",
+        ),
+        (
+            pick(
+                "NEW_SECRET",
+                json!({"option": "new", "value": {"value": plain, "valueFingerprint": "fp"}}),
+            ),
+            "secret as plaintext",
+        ),
+        (
+            pick(
+                "NEW_SECRET",
+                json!({"option": "new", "value": {"value": {"kind": "secret"}, "valueFingerprint": "fp"}}),
+            ),
+            "secret without sealed material",
+        ),
+    ] {
+        assert_eq!(
+            with_picks(&from, &parent(), picks).unwrap_err().path,
+            "picks.value",
+            "{why}"
+        );
+    }
+    let result = with_picks(
+        &from,
+        &parent(),
+        pick(
+            "NEW_PLAIN",
+            json!({"option": "new", "value": {"value": plain, "valueFingerprint": "fp-typed"}}),
+        ),
+    )
+    .unwrap();
+    let api = find(&result["next"]["services"], "lineageId", API);
+    assert_eq!(find(&api["variables"], "key", "NEW_PLAIN")["value"], plain);
+}
+
+#[test]
+fn repository_authority_moves_with_the_repository() {
+    let mut from = branch();
+    svc(&mut from, WEB)["config"]["source"]["access"] =
+        json!({"type": "github-installation", "installationId": 9});
+    svc(&mut from, WEB)["config"]["source"]["repositoryId"] = json!(2);
+    let result = with_picks(
+        &from,
+        &parent(),
+        json!([{"key": format!("{WEB}:source.repository")}]),
+    )
+    .unwrap();
+    let web = find(&result["next"]["services"], "lineageId", WEB);
+    assert_eq!(web["config"]["source"]["repositoryId"], 2);
+    assert_eq!(web["config"]["source"]["access"]["installationId"], 9);
+}
+
+#[test]
+fn a_private_address_clash_is_refused() {
+    let mut from = branch();
+    let mut jobs = service(
+        0xc000_0000,
+        50,
+        JOBS,
+        "jobs",
+        json!({"version": 1, "type": "image", "image": "jobs:1", "credentials": {"type": "none"}}),
+    );
+    jobs["config"]["privateDns"] = json!("worker");
+    from["services"].as_array_mut().unwrap().push(jobs);
+    let error = with_picks(&from, &parent(), json!([{"key": format!("{JOBS}:node")}])).unwrap_err();
+    assert_eq!(
+        (error.path.as_str(), error.message.as_str()),
+        ("picks.key", "Name or private address is already used")
     );
 }

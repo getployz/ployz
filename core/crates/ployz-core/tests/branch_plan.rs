@@ -79,12 +79,12 @@ fn own_copies_use_deployed_nodes_live_and_leave_the_rest_out() {
         roles(&result),
         vec![
             row(1, "own", Some("picked")),
-            row(2, "live", Some("used")),
+            row(2, "live", None),
             row(3, "left_out", None),
             row(4, "left_out", None),
             row(10, "own", Some("used")),
             row(11, "left_out", None),
-            row(99, "live", Some("used")),
+            row(99, "live", None),
         ]
     );
     assert_eq!(result["nodes"][0]["nodeType"], "service");
@@ -105,12 +105,12 @@ fn undeployed_uses_are_copied_transitively() {
             row(4, "left_out", None),
             row(10, "own", Some("used")),
             row(11, "own", Some("used")),
-            row(99, "live", Some("used")),
+            row(99, "live", None),
         ]
     );
     // Lineages the Parent no longer has are ignored; a deployed api stops the walk.
     let result = plan(&[2, 42], &[1], own(&[1])).unwrap();
-    assert_eq!(roles(&result)[1], row(2, "live", Some("used")));
+    assert_eq!(roles(&result)[1], row(2, "live", None));
     assert_eq!(roles(&result)[2], row(3, "left_out", None));
 }
 

@@ -7,7 +7,8 @@ use serde_json::Value;
 use ts_rs::TS;
 
 use super::{
-    AuthoredServiceConfig, ConfigError, EncryptedSecretValue, ValuePart, parse_service_config,
+    AuthoredServiceConfig, ConfigError, EncryptedSecretValue, ValuePart, ValuePartOwner,
+    parse_service_config,
 };
 
 /// Complete authored Environment state; compiled artifacts are not accepted here.
@@ -82,6 +83,23 @@ pub enum SavedVariableValue {
         /// ciphertext privately and captures it into each immutable publication.
         encrypted_value: Option<EncryptedSecretValue>,
     },
+}
+
+impl SavedVariableValue {
+    /// The service lineages this value reads through template references.
+    pub fn referenced_lineages(&self) -> impl Iterator<Item = &str> {
+        let parts = match self {
+            Self::Template { parts } => parts.as_slice(),
+            Self::Literal { .. } | Self::Secret { .. } => &[],
+        };
+        parts.iter().filter_map(|part| match part {
+            ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id },
+                ..
+            } => Some(lineage_id.as_str()),
+            ValuePart::Ref { .. } | ValuePart::Text { .. } => None,
+        })
+    }
 }
 
 /// Decode and normalize an authored document while validating owner identities and relationships.

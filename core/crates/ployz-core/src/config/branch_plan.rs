@@ -5,10 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{
-    ConfigError, EnvironmentNodeType, SavedEnvironmentIntent, SavedVariableValue, ValuePart,
-    ValuePartOwner,
-};
+use super::{ConfigError, EnvironmentNodeType, SavedEnvironmentIntent};
 use crate::ProjectName;
 
 /// A starting selection: every preset derives its picks from the focus.
@@ -30,16 +27,19 @@ pub enum BranchPicks {
     Own { own: Vec<String> },
 }
 
-/// What the Branch does with a Parent node.
+/// What the Branch does with a Parent node; only an Own Copy says why.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "role", rename_all = "snake_case")]
 pub enum BranchNodeRole {
-    Own,
+    Own {
+        because: BranchNodeReason,
+    },
+    /// Used from the Parent while it runs.
     Live,
     LeftOut,
 }
 
-/// Why a node is an Own Copy or Live.
+/// Why a node is an Own Copy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum BranchNodeReason {
@@ -54,8 +54,9 @@ pub enum BranchNodeReason {
 pub struct BranchPlanNode {
     pub lineage_id: String,
     pub node_type: EnvironmentNodeType,
+    #[serde(flatten)]
+    #[ts(flatten)]
     pub role: BranchNodeRole,
-    pub because: Option<BranchNodeReason>,
 }
 
 /// Every Parent node's role, and the preset the picks match (`null` = picked by hand).
@@ -76,78 +77,47 @@ pub fn plan_branch(
     focus: &[String],
     picks: &BranchPicks,
 ) -> Result<BranchPlan, ConfigError> {
-    // Owned nodes in document order: services, then volumes.
-    let mut nodes: Vec<(String, EnvironmentNodeType)> = parent
+    let services: Vec<&str> = parent
         .services
         .iter()
-        .map(|s| (s.lineage_id.clone(), EnvironmentNodeType::Service))
-        .chain(
-            parent
-                .volumes
-                .iter()
-                .map(|v| (v.resource_lineage_id.clone(), EnvironmentNodeType::Volume)),
-        )
+        .map(|s| s.lineage_id.as_str())
         .collect();
-    let owned: BTreeSet<String> = nodes.iter().map(|(id, _)| id.clone()).collect();
-
-    let mut links: Vec<(String, String)> = Vec::new();
-    let mut parent_live = BTreeSet::new();
-    for service in &parent.services {
-        for variable in &service.variables {
-            let SavedVariableValue::Template { parts } = &variable.value else {
-                continue;
-            };
-            for part in parts {
-                if let ValuePart::Ref {
-                    owner: ValuePartOwner::Service { lineage_id },
-                    ..
-                } = part
-                    && *lineage_id != service.lineage_id
-                {
-                    if !owned.contains(lineage_id) {
-                        parent_live.insert(lineage_id.clone());
-                    }
-                    links.push((service.lineage_id.clone(), lineage_id.clone()));
-                }
-            }
-        }
-        for attachment in &service.volume_attachments {
-            if let Some(volume) = parent
-                .volumes
-                .iter()
-                .find(|v| v.resource_id == attachment.volume_resource_id)
-            {
-                links.push((
-                    service.lineage_id.clone(),
-                    volume.resource_lineage_id.clone(),
-                ));
-            }
-        }
-    }
+    let volumes: BTreeSet<&str> = parent
+        .volumes
+        .iter()
+        .map(|v| v.resource_lineage_id.as_str())
+        .collect();
+    let owned: BTreeSet<&str> = services
+        .iter()
+        .copied()
+        .chain(volumes.iter().copied())
+        .collect();
+    let links = links(parent);
+    // Lineages the Parent itself uses live stay live in the Branch.
+    let parent_live: BTreeSet<&str> = links
+        .iter()
+        .map(|(_, used)| *used)
+        .filter(|used| !owned.contains(used))
+        .collect();
 
     let known = |ids: &[String], path: &str| {
-        if ids.iter().all(|id| owned.contains(id)) {
+        if ids.iter().all(|id| owned.contains(id.as_str())) {
             Ok(())
         } else {
             Err(ConfigError::at(path, "Unknown lineage in the Parent"))
         }
     };
     known(focus, "focus")?;
-    let preset_picks = |preset: BranchPreset| -> BTreeSet<String> {
+    let focus: BTreeSet<&str> = focus.iter().map(String::as_str).collect();
+    let preset_picks = |preset: BranchPreset| -> BTreeSet<&str> {
         match preset {
-            BranchPreset::Only => focus.iter().cloned().collect(),
+            BranchPreset::Only => focus.clone(),
             BranchPreset::All => owned.clone(),
             BranchPreset::Uses => {
-                let mut set: BTreeSet<String> = focus.iter().cloned().collect();
-                let mut changed = true;
-                while changed {
-                    changed = false;
-                    for (user, used) in &links {
-                        if set.contains(user) && owned.contains(used) {
-                            changed |= set.insert(used.clone());
-                        }
-                    }
-                }
+                let mut set = focus.clone();
+                close_over(&links, |user, used| {
+                    set.contains(user) && owned.contains(used) && set.insert(used)
+                });
                 set
             }
         }
@@ -156,82 +126,104 @@ pub fn plan_branch(
         BranchPicks::Preset { preset } => preset_picks(*preset),
         BranchPicks::Own { own } => {
             known(own, "picks.own")?;
-            own.iter().cloned().collect()
+            own.iter().map(String::as_str).collect()
         }
     };
 
     let deployed: BTreeSet<&str> = deployed.iter().map(String::as_str).collect();
-    let volume = |id: &str| {
-        nodes
-            .iter()
-            .any(|(n, t)| n == id && *t == EnvironmentNodeType::Volume)
-    };
-    let mut roles: BTreeMap<String, (BranchNodeRole, Option<BranchNodeReason>)> = owned
+    let mut roles: BTreeMap<&str, BranchNodeRole> = owned
         .iter()
         .map(|id| {
             let role = if picked.contains(id) {
-                (BranchNodeRole::Own, Some(BranchNodeReason::Picked))
-            } else {
-                (BranchNodeRole::LeftOut, None)
-            };
-            (id.clone(), role)
-        })
-        .collect();
-    for id in &parent_live {
-        roles.insert(
-            id.clone(),
-            (BranchNodeRole::Live, Some(BranchNodeReason::Used)),
-        );
-    }
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for (user, used) in &links {
-            let role = |id: &String| roles.get(id).map(|(role, _)| *role);
-            if role(user) == Some(BranchNodeRole::Own)
-                && role(used) == Some(BranchNodeRole::LeftOut)
-            {
-                roles.insert(
-                    used.clone(),
-                    if volume(used) {
-                        (BranchNodeRole::Own, Some(BranchNodeReason::Used))
-                    } else if deployed.contains(used.as_str()) {
-                        (BranchNodeRole::Live, Some(BranchNodeReason::Used))
-                    } else {
-                        (
-                            BranchNodeRole::Own,
-                            Some(BranchNodeReason::ParentNotDeployed),
-                        )
-                    },
-                );
-                changed = true;
-            }
-        }
-    }
-
-    nodes.extend(
-        parent_live
-            .into_iter()
-            .map(|id| (id, EnvironmentNodeType::Service)),
-    );
-    Ok(BranchPlan {
-        nodes: nodes
-            .into_iter()
-            .map(|(lineage_id, node_type)| {
-                let (role, because) = roles
-                    .get(&lineage_id)
-                    .copied()
-                    .expect("every planned node has a role");
-                BranchPlanNode {
-                    lineage_id,
-                    node_type,
-                    role,
-                    because,
+                BranchNodeRole::Own {
+                    because: BranchNodeReason::Picked,
                 }
+            } else {
+                BranchNodeRole::LeftOut
+            };
+            (*id, role)
+        })
+        .chain(parent_live.iter().map(|id| (*id, BranchNodeRole::Live)))
+        .collect();
+    close_over(&links, |user, used| {
+        let own = matches!(roles.get(user), Some(BranchNodeRole::Own { .. }));
+        if !own || roles.get(used) != Some(&BranchNodeRole::LeftOut) {
+            return false;
+        }
+        let because = if volumes.contains(used) {
+            BranchNodeReason::Used
+        } else if deployed.contains(used) {
+            roles.insert(used, BranchNodeRole::Live);
+            return true;
+        } else {
+            BranchNodeReason::ParentNotDeployed
+        };
+        roles.insert(used, BranchNodeRole::Own { because });
+        true
+    });
+
+    // Owned nodes in document order (services, then volumes), then the Parent's live lineages.
+    let typed = services
+        .iter()
+        .map(|id| (*id, EnvironmentNodeType::Service))
+        .chain(
+            parent
+                .volumes
+                .iter()
+                .map(|v| (v.resource_lineage_id.as_str(), EnvironmentNodeType::Volume)),
+        )
+        .chain(
+            parent_live
+                .iter()
+                .map(|id| (*id, EnvironmentNodeType::Service)),
+        );
+    Ok(BranchPlan {
+        nodes: typed
+            .map(|(lineage_id, node_type)| BranchPlanNode {
+                lineage_id: lineage_id.to_owned(),
+                node_type,
+                role: *roles
+                    .get(lineage_id)
+                    .expect("every planned node has a role"),
             })
             .collect(),
         preset: PRESETS.into_iter().find(|p| preset_picks(*p) == picked),
     })
+}
+
+/// Every (user, used) lineage pair: variable references to other services, and mounts.
+fn links(parent: &SavedEnvironmentIntent) -> Vec<(&str, &str)> {
+    let mut links = Vec::new();
+    for service in &parent.services {
+        let user = service.lineage_id.as_str();
+        for variable in &service.variables {
+            links.extend(
+                variable
+                    .value
+                    .referenced_lineages()
+                    .filter(|used| *used != user)
+                    .map(|used| (user, used)),
+            );
+        }
+        for attachment in &service.volume_attachments {
+            if let Some(volume) = parent
+                .volumes
+                .iter()
+                .find(|v| v.resource_id == attachment.volume_resource_id)
+            {
+                links.push((user, volume.resource_lineage_id.as_str()));
+            }
+        }
+    }
+    links
+}
+
+/// Apply `step` to every link until a full pass changes nothing.
+fn close_over<'a>(links: &[(&'a str, &'a str)], mut step: impl FnMut(&'a str, &'a str) -> bool) {
+    while links
+        .iter()
+        .fold(false, |changed, (user, used)| step(user, used) | changed)
+    {}
 }
 
 /// Admit a Branch's Project namespace under the runtime's Project name rule.

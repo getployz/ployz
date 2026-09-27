@@ -2,16 +2,21 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use ts_rs::TS;
 
-use super::*;
+use super::{
+    ConfigError, SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner,
+    check_branch_name,
+};
 use crate::ProjectName;
 
 /// The Project that runs a Live Node, with its frozen variable producers.
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveValuesOwner {
-    pub namespace: String,
+    #[ts(type = "string")]
+    pub namespace: ProjectName,
     pub producers: Vec<SavedVariableProducer>,
 }
 
@@ -23,6 +28,7 @@ pub struct LiveLineageUse {
     pub keys: Vec<String>,
 }
 
+/// The owner of the Live Nodes a Branch uses, and what the Branch reads from each lineage.
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveValuesInput {
@@ -48,37 +54,46 @@ pub struct LiveValues {
 
 const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
 
+/// Decode a live-values request, admitting the owner namespace under the Project name rule.
+///
+/// # Errors
+/// Returns ConfigError at `owner.namespace` for an unusable Project name, else for a bad shape.
+pub fn parse_live_values_input(value: Value) -> Result<LiveValuesInput, ConfigError> {
+    let namespace = value
+        .pointer("/owner/namespace")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    check_branch_name(namespace)
+        .map_err(|error| ConfigError::at("owner.namespace", &error.message))?;
+    serde_json::from_value(value)
+        .map_err(|_| ConfigError::at("liveValues", "Invalid live values request"))
+}
+
 /// Rescope the owner's producers: used lineages keep their id so the Branch finds them; every
 /// other owner lineage moves under the owner's namespace so the Branch's Own Copies of the
 /// same lineage neither capture nor shadow them. Private addresses gain the owner's Project.
 /// Secrets pass through untouched.
-///
-/// # Errors
-/// Returns ConfigError when the owner namespace is not a usable Project name.
-pub fn live_values(input: LiveValuesInput) -> Result<LiveValues, ConfigError> {
-    let namespace = ProjectName::parse(&input.owner.namespace)
-        .ok()
-        .filter(|name| !name.is_reserved())
-        .ok_or_else(|| ConfigError::at("owner.namespace", "Invalid Project name"))?;
-    let used: BTreeSet<&str> = input
-        .lineages
+#[must_use]
+pub fn live_values(input: LiveValuesInput) -> LiveValues {
+    let LiveValuesInput { owner, lineages } = input;
+    let namespace = owner.namespace;
+    let used: BTreeSet<&str> = lineages
         .iter()
         .map(|lineage| lineage.lineage_id.as_str())
         .collect();
     // ponytail: "::" cannot appear in a Project name, so scoped ids never meet authored ones.
-    let scope = |lineage: &str| {
-        if used.contains(lineage) {
-            lineage.to_owned()
+    let scope = |lineage: String| {
+        if used.contains(lineage.as_str()) {
+            lineage
         } else {
             format!("{namespace}::{lineage}")
         }
     };
-    let missing = input
-        .lineages
+    let missing = lineages
         .iter()
         .flat_map(|lineage| {
             lineage.keys.iter().filter_map(|key| {
-                let provided = input.owner.producers.iter().any(|producer| {
+                let provided = owner.producers.iter().any(|producer| {
                     producer.owner_lineage_id == lineage.lineage_id && producer.key == *key
                 });
                 (!provided).then(|| MissingLiveValue {
@@ -88,49 +103,45 @@ pub fn live_values(input: LiveValuesInput) -> Result<LiveValues, ConfigError> {
             })
         })
         .collect();
-    let producers = input
-        .owner
+    let producers = owner
         .producers
-        .iter()
+        .into_iter()
         .map(|producer| {
-            let value =
-                match &producer.value {
-                    SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
-                        SavedVariableValue::Literal {
-                            value: value.strip_suffix(".internal").map_or_else(
-                                || value.clone(),
-                                |host| format!("{host}.{namespace}.internal"),
-                            ),
-                        }
+            let value = match producer.value {
+                SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
+                    SavedVariableValue::Literal {
+                        value: match value.strip_suffix(".internal") {
+                            Some(host) => format!("{host}.{namespace}.internal"),
+                            None => value,
+                        },
                     }
-                    SavedVariableValue::Template { parts } => SavedVariableValue::Template {
-                        parts: parts
-                            .iter()
-                            .map(|part| match part {
-                                ValuePart::Ref {
-                                    owner: ValuePartOwner::Service { lineage_id },
-                                    key,
-                                } => ValuePart::Ref {
-                                    owner: ValuePartOwner::Service {
-                                        lineage_id: scope(lineage_id),
-                                    },
-                                    key: key.clone(),
+                }
+                SavedVariableValue::Template { parts } => SavedVariableValue::Template {
+                    parts: parts
+                        .into_iter()
+                        .map(|part| match part {
+                            ValuePart::Ref {
+                                owner: ValuePartOwner::Service { lineage_id },
+                                key,
+                            } => ValuePart::Ref {
+                                owner: ValuePartOwner::Service {
+                                    lineage_id: scope(lineage_id),
                                 },
-                                other @ (ValuePart::Text { .. } | ValuePart::Ref { .. }) => {
-                                    other.clone()
-                                }
-                            })
-                            .collect(),
-                    },
-                    other @ (SavedVariableValue::Literal { .. }
-                    | SavedVariableValue::Secret { .. }) => other.clone(),
-                };
+                                key,
+                            },
+                            other @ (ValuePart::Text { .. } | ValuePart::Ref { .. }) => other,
+                        })
+                        .collect(),
+                },
+                other
+                @ (SavedVariableValue::Literal { .. } | SavedVariableValue::Secret { .. }) => other,
+            };
             SavedVariableProducer {
-                owner_lineage_id: scope(&producer.owner_lineage_id),
+                owner_lineage_id: scope(producer.owner_lineage_id),
                 value,
-                ..producer.clone()
+                ..producer
             }
         })
         .collect();
-    Ok(LiveValues { producers, missing })
+    LiveValues { producers, missing }
 }

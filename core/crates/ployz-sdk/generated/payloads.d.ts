@@ -11,7 +11,7 @@ export type BindRecursive = "disabled" | "writable" | "readonly";
 
 export type BranchChanges = { rows: Array<BranchRow>, next: SavedEnvironmentIntent, base: SavedEnvironmentIntent | null,
 /**
- * Canonical, id-free rendering of the rows; callers hash it.
+ * Canonical, id-free rendering of the rows and picks; callers hash it.
  */
 review: string, };
 
@@ -41,21 +41,17 @@ export type BranchNewValue = { value: SavedVariableValue, valueFingerprint: stri
 
 export type BranchNodeReason = "picked" | "used" | "parent_not_deployed";
 
-export type BranchNodeRole = "own" | "live" | "left_out";
-
 export type BranchOption = "from" | "parent" | "new" | "leave_out";
 
-export type BranchPick = { key: string, choice?: BranchOption,
-/**
- * The value for `new`, supplied by the caller (a secret's arrives sealed); never reviewed.
- */
-newValue?: BranchNewValue, };
+export type BranchPick = { key: string, choice?: BranchPickChoice, };
+
+export type BranchPickChoice = { "option": "from" } | { "option": "parent" } | { "option": "new", value?: BranchNewValue, } | { "option": "leave_out" };
 
 export type BranchPicks = { preset: BranchPreset, } | { own: Array<string>, };
 
 export type BranchPlan = { nodes: Array<BranchPlanNode>, preset: BranchPreset | null, };
 
-export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType, role: BranchNodeRole, because: BranchNodeReason | null, };
+export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType, } & ({ "role": "own", because: BranchNodeReason, } | { "role": "live" } | { "role": "left_out" });
 
 export type BranchPreset = "only" | "uses" | "all";
 
