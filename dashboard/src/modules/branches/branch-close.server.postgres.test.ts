@@ -99,9 +99,9 @@ describe("closing a Branch", () => {
   it("closes its Branches first, confirms the runtime's report and records the creator and reason", async () => {
     const logs: unknown[] = [];
     const attempt = await run(provide(closeBranch(fixWebId, "merged").pipe(
+      Effect.flatMap((close) => close.admit),
       Effect.provide(Logger.layer([Logger.make((options) => logs.push(options.message))], { mergeWithExisting: true })),
     )));
-    if (!attempt) throw new Error("The close admitted nothing.");
 
     expect(logs).toContainEqual(["A Branch is closing.", {
       environmentId: fixWebId, reason: "merged", requestedByUserId: creatorId, teardownAttemptId: attempt.id,
@@ -128,7 +128,7 @@ describe("closing a Branch", () => {
     expect(byUser.message).toBe("production is the Default Environment. Choose another Default Environment first.");
 
     await harness.pool.query(`update project set default_environment_id = '${tryCacheId}'`);
-    const bySystem = await run(provide(closeBranch(fixWebId, "idle").pipe(Effect.flip)));
+    const bySystem = await run(provide(closeBranch(fixWebId, "idle").pipe(Effect.flatMap((close) => close.admit), Effect.flip)));
     expect(bySystem).toBeInstanceOf(Conflict);
     expect(bySystem.message).toContain("try-cache is the Default Environment");
     expect(await attemptRows()).toEqual([]);
