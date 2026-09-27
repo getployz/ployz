@@ -175,6 +175,26 @@ The complete desired Services for one Deploy together with which of those Servic
 It is the only authored model: Cloud authors it today and the CLI will read it from a file later. Compose files are not an input.
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
+**Branch**:
+Authored configuration made from another's, its Parent's, and deployed to its own Project. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Project as Live Nodes. Branching rules are pure authored-configuration rules, the same for every client.
+_Avoid_: Fork, clone, preview; "branch" alone for a Git branch
+
+**Parent**:
+The authored configuration a Branch was made from, whose Project lends the Branch its Live Nodes.
+_Avoid_: Base, upstream
+
+**Own Copy**:
+A node a Branch deploys in its own Project, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty.
+_Avoid_: Clone (a copy of data)
+
+**Live Node**:
+A node a Branch uses without deploying it. It is reached in the Project that runs it as `{service}.{project}.internal`, with the values it has there.
+_Avoid_: Portal, shared node, borrowed node
+
+**Setup Command**:
+A command a Branch adds after one Own Copy's own pre-deploy command, in the same Hook Container, until that Service first deploys successfully. It prepares the Own Copy's data, for example by seeding it.
+_Avoid_: Seed script, data hook, post-deploy hook
+
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
