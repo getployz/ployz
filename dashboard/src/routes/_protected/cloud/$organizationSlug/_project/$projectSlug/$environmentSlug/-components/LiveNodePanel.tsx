@@ -79,7 +79,7 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
           <FieldSet>
             <FieldLegend>Own copy</FieldLegend>
             <FieldDescription>
-              {unsettled ?? `This branch runs its own ${liveNode.name}, made from ${owner.environment.name}'s${liveNode.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
+              {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${liveNode.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
             </FieldDescription>
             <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={copying || unsettled !== null}>
               Make it an Own Copy
