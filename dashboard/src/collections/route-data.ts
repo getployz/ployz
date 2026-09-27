@@ -6,6 +6,7 @@ import {
   loadWorkspaceEnvironment, organizationStateQueryOptions, preloadWorkspace, readWorkspace,
 } from "#/modules/environment-design/workspace.queries";
 import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-schemas";
+import { activeBuildTailReads } from "#/modules/deployments/deployment.collection";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -56,6 +57,12 @@ export async function prefetchOrgStore(context: RouteDataContext, organizationSl
 export async function prefetchRemote(context: RouteDataContext, ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
   const ready = Promise.all(reads.map((options) => context.queryClient.prefetchQuery(options)));
   if (environmentManager.isServer()) await ready;
+}
+
+/** The build tails of the Environment's active attempts that build images, which the canvas's bottom bar and list read. */
+export async function prefetchActiveBuildTails(context: RouteDataContext, input: EnvironmentBySlug) {
+  const environment = await requireEnvironment(context, input);
+  await prefetchRemote(context, ...await activeBuildTailReads(input.organizationSlug, environment.id, scopeOf(context)));
 }
 
 /** `prefetchRemote` for a paged read: its first page. */

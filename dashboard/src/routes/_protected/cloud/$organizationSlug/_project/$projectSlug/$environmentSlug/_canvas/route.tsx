@@ -4,6 +4,7 @@ import {
   redirect,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
+import { prefetchActiveBuildTails, prefetchFromOrgStore } from "#/collections/route-data";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   EnvironmentCanvasScene,
@@ -21,6 +22,9 @@ export const Route = createFileRoute(
     if (legacy) throw redirect({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: legacy.deploymentId }, search: legacy.search, replace: true });
     if (new URLSearchParams(location.searchStr).get("deploymentList") === "true") throw redirect({ to: DEPLOYMENT_LIST_ROUTE_TO, params, replace: true });
   },
+  // The canvas and every panel over it (the deployment list among them) show the bottom bar, whose running attempt, like
+  // the list's active rows, reads its build tail.
+  loader: ({ params, context }) => prefetchFromOrgStore(context, params.organizationSlug, () => [prefetchActiveBuildTails(context, params)]),
   errorComponent: CanvasError,
   component: CanvasLayout,
 });
