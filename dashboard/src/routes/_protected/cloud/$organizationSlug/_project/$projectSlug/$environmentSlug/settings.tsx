@@ -150,7 +150,8 @@ function ProjectSettings({ organizationSlug, project, branches }: {
             const { online, label } = servicesOnline({ namespace: environment.namespace, services: environment.intent.services }, runtimeServices, runtimeStatus);
             return (
               <Item key={environment.id} variant="outline" size="sm"
-                style={{ marginInlineStart: `${depth * 1.5}rem` }} render={
+                // Indented under its Parent, and narrower by as much so it still ends with the list.
+                className="w-auto" style={{ marginInlineStart: `${depth * 1.5}rem` }} render={
                 <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
                   params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
               }>

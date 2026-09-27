@@ -4,7 +4,7 @@ import { GitBranchIcon } from "lucide-react";
 export function BranchIndent({ depth }: { depth: number }) {
   if (depth === 0) return null;
   return <>
-    <span aria-hidden="true" className="shrink-0" style={{ width: `${(depth - 1) * 1.25}rem` }} />
+    <span aria-hidden="true" className="shrink-0" style={{ width: `${depth * 0.75}rem` }} />
     <GitBranchIcon aria-hidden="true" className="shrink-0 text-muted-foreground" />
   </>;
 }
