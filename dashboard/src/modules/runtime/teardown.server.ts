@@ -42,7 +42,7 @@ import {
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
-import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
 import { lockOrganizationProjects, lockProjectDefault } from "#/modules/environment-design/workspace-repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -478,8 +478,9 @@ const admitTeardown = Effect.fn("Teardown.admit")(function* (
     if (input.expected && graph.environments.map((environment) => environment.id).join() !== input.expected.join()) {
       return yield* new Conflict({ message: "What this teardown removes changed. Try again." });
     }
-    // Each Environment's deployment queue, by id: deployment admission waits, then sees this teardown and refuses.
-    for (const id of graph.environments.map((environment) => environment.id).sort()) yield* lockEnvironmentDeploymentQueue(id);
+    // Each Environment's deployment queue, by id: deployment admission waits, then sees this teardown and refuses. A
+    // caller that holds documents took these first (lock order: lockProjectDefault), so here they don't wait.
+    yield* lockEnvironmentDeploymentQueues(graph.environments.map((environment) => environment.id));
     return yield* startTeardown(current, graph, runtime, input);
   }));
 });

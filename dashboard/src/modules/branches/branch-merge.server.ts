@@ -17,7 +17,7 @@ import { environmentVariableReferences } from "#/modules/environment-design/vari
 import { variableValueColumnsForWrite } from "#/modules/environment-design/variable-repository.server";
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
-import { lockEnvironmentDeploymentQueue } from "#/modules/deployments/queue-lock.server";
+import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
 import { assertBranchSettled } from "./branch-guard.server";
 import { tryCloseBranch } from "./branch-close.server";
 import { core, landChanges } from "./branch-operations.server";
@@ -44,7 +44,8 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     const destinationId = branch.parentEnvironmentId;
 
     // 1–3. Lock the Destination, check its revision, and refuse a Branch that runs something other than its Working State.
-    yield* lockEnvironmentDeploymentQueue(destinationId);
+    // Both queues, by id, before the Destination's document (lock order: lockProjectDefault).
+    yield* lockEnvironmentDeploymentQueues([destinationId, input.branchEnvironmentId]);
     const document = yield* loadEnvironmentDocument(destinationId, true);
     yield* requireDocumentRevision(document, input.destinationRevision);
     yield* assertBranchSettled(drizzle, input.branchEnvironmentId);

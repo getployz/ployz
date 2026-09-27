@@ -230,17 +230,26 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  * Holds a Project's row for the transaction and returns its Default Environment as it is now. Choosing the Default
  * Environment, admitting a teardown and every Branch operation take it, so none acts on what another is changing.
  *
- * Lock order. Every path takes these locks in this order, skipping any it doesn't need, so none waits on another in a
- * cycle: Project rows (by id when several: `lockOrganizationProjects`), then Branch rows (`environment_branch`, through
- * `lockBranchScope`), then Environment deployment queues (`lockEnvironmentDeploymentQueue`, by id when several), then
- * Environment documents (`loadEnvironmentDocument(id, true)`).
- * - Create Branch: Project, Parent's Branch row (then the new Environment's queue).
- * - Merge, Update and Own Copy: Project, Branch row, queues, documents.
- * - Merge's close and the idle sweep: Project, Branch row, queue, document; teardown admission then adds the queues of
- *   what it removes.
- * - Keep: Project, Branch row. Default selection: Project. Deployment admission: its queue. Edits: document.
- * Project rows are held FOR NO KEY UPDATE: inserting a row that references the Project (a service, a volume) takes a
- * KEY SHARE on it through the foreign key, which this doesn't block, so an edit holding its document never waits here.
+ * Lock order. A transaction takes these locks in this order, skipping any it doesn't need, and never takes an earlier
+ * kind after a later one, so no two wait on each other in a cycle:
+ *   1. Project rows, FOR NO KEY UPDATE (several: `lockOrganizationProjects`, by id).
+ *   2. Branch rows (`environment_branch`), only through `lockBranchScope`, which takes the Project first.
+ *   3. Every Environment deployment queue the transaction will need, all of them before any document
+ *      (`lockEnvironmentDeploymentQueues` sorts several by id; re-taking a held queue doesn't wait).
+ *   4. Environment documents (`loadEnvironmentDocument(id, true)`).
+ * Per path:
+ * - Create Branch: Project, Parent's Branch row (share); with Deploy now, the new Environment's queue, after writing its
+ *   document: an exception that can't wait on anyone, since no other transaction can see the new Environment yet.
+ * - Merge: Project, Branch row, Destination's and Branch's queues, Destination's document.
+ * - Update and Own Copy: Project, Branch row, the Branch's queue, its document.
+ * - Merge's close: Project, Branch row, the queues of every Environment the teardown removes, the Branch's document.
+ * - Idle sweep: Project, Branch row, the queues of every Environment the teardown removes.
+ * - Keep: Project, Branch row. Default selection: Project.
+ * - Teardown admission: Project(s), then the queues of every Environment it removes.
+ * - Deployment admission, publish, discard and GitHub admission: the queue, then the document.
+ * - Edits: the document only.
+ * Inserting a row that references the Project (a service, a volume) takes a KEY SHARE on the Project row through its
+ * foreign key. FOR NO KEY UPDATE doesn't block that, so an edit holding its document never waits on a Project lock.
  */
 export const lockProjectDefault = Effect.fn("EnvironmentDesign.lockProjectDefault")(function* (projectId: string) {
   const { drizzle } = yield* Database;
