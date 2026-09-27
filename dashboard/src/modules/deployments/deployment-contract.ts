@@ -173,7 +173,7 @@ export type EnvironmentChangeStateProjection = {
     nodes: EnvironmentChangeStateNodeProjection[];
     /** When each Applied node last deployed, by node lineage. */
     deployedAt: Record<string, Date>;
-    /** Applied State in authored form, redacted; null before the first deploy. */
+    /** Applied State in authored form, redacted, for a Parent of Branches; null for any other Environment, or before its first deploy. */
     intent: SavedEnvironmentIntent | null;
   };
   deploymentEvidence: {

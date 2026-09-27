@@ -71,6 +71,7 @@ export type EnvironmentSnapshotProjection = {
   appliedSavedNodeByKey: Map<
     string,
     {
+      environmentId: string;
       nodeType: "service" | "volume";
       nodeId: string;
       nodeLineageId: string;
@@ -562,6 +563,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
       [...liveNodesByKey].map(([key, node]) => [
         key,
         {
+          environmentId: node.environmentId,
           nodeType: node.nodeType,
           nodeId: node.nodeId,
           nodeLineageId: node.nodeLineageId,

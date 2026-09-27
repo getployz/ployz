@@ -1,4 +1,5 @@
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import { ancestors } from "#/modules/project/environment-tree";
 
 type BranchRow = { environmentId: string; parentEnvironmentId: string };
 
@@ -13,13 +14,7 @@ export function liveOwner(
   branches: Iterable<BranchRow>,
   appliedByEnvironment: ReadonlyMap<string, ReadonlySet<string>>,
 ): string | null {
-  const parentOf = new Map([...branches].map((branch) => [branch.environmentId, branch.parentEnvironmentId]));
-  const seen = new Set<string>();
-  for (let at: string | undefined = parentId; at && !seen.has(at); at = parentOf.get(at)) {
-    if (appliedByEnvironment.get(at)?.has(lineageId)) return at;
-    seen.add(at);
-  }
-  return null;
+  return ancestors(parentId, branches).find((at) => appliedByEnvironment.get(at)?.has(lineageId)) ?? null;
 }
 
 /** The lineages this intent's services use but don't own (its Live Nodes), each with the ids of the services using it. */

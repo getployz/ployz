@@ -11,6 +11,7 @@ import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domai
 import { useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { ancestors } from "#/modules/project/environment-tree";
 import { useCreateBranch } from "#/modules/branches/branch-commands";
 import { branchHostnameSuffix, branchNameError, branchNamespace, defaultBranchName, ownLineages } from "#/modules/branches/branch-plan";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
@@ -49,10 +50,8 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
   const nameOf = (lineage: string) => services.find((row) => row.lineageId === lineage && row.environmentId === environmentId)?.name
     ?? services.find((row) => row.lineageId === lineage)?.name
     ?? intent.volumes.find((node) => node.resourceLineageId === lineage)?.name ?? "a service";
-  const parentOf = (id: string) => environments.find((environment) =>
-    environment.id === branches.find((row) => row.environmentId === id)?.parentEnvironmentId);
-  let root = parent;
-  for (let up = parentOf(root.id); up; up = parentOf(root.id)) root = up;
+  const rootId = ancestors(parent.id, branches).at(-1);
+  const root = environments.find((environment) => environment.id === rootId) ?? parent;
 
   // The failed service, while it keeps its own copy: its node in the attempt, and the Parent's service it failed on.
   const failedService = intent.services.find((node) => node.lineageId === initialFocus);
