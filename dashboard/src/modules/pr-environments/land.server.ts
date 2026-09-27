@@ -8,7 +8,7 @@ import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type environment, project } from "#/modules/project/tables";
 import { githubBranchProjection, githubEnvironmentTrigger } from "#/modules/github/tables";
 import {
-  compareInstallationRepositoryCommits, isGithubObservationNotFound, listInstallationCommitMergedPullRequests, resolveGithubRepository,
+  compareInstallationRepositoryCommits, fetchInstallationPullRequest, isGithubObservationNotFound, resolveGithubRepository,
   type GithubResolvedRepository,
 } from "#/modules/github/github-observation.api";
 import { service } from "#/modules/environment-design/tables";
@@ -187,19 +187,20 @@ const ofTargetBranch = (push: Push) =>
   and(eq(conditionalSave.repositoryId, push.repositoryId), eq(conditionalSave.targetBranch, push.ref.slice("refs/heads/".length)));
 
 /**
- * A pull request that merged by the pushed commit before its closed delivery arrived: its approvals freeze now, so the
- * push carries them. Asks GitHub, only when something stands on the pushed Git branch.
+ * Pull requests that merged before their closed delivery arrived: their approvals freeze now, so a push carrying their
+ * merge commits carries them, however many merged before it. Asks GitHub about each pull request with an approval
+ * standing on the pushed Git branch, only when one stands.
  */
 export const freezeMergedBy = Effect.fn("PrEnvironments.freezeMergedBy")(function* (push: Push) {
   const { drizzle } = yield* Database;
-  const [anyStanding] = yield* drizzle.select({ id: conditionalSave.id }).from(conditionalSave)
-    .where(and(ofTargetBranch(push), eq(conditionalSave.state, "standing"))).limit(1);
-  if (!anyStanding) return;
+  const standing = yield* drizzle.selectDistinct({ number: conditionalSave.prNumber }).from(conditionalSave)
+    .where(and(ofTargetBranch(push), eq(conditionalSave.state, "standing")));
   const targetBranch = push.ref.slice("refs/heads/".length);
-  for (const pull of yield* listInstallationCommitMergedPullRequests(push.installationId, push.repositoryId, push.headSha)) {
-    if (pull.targetBranch !== targetBranch) continue;
+  for (const { number } of standing) {
+    const pull = yield* fetchInstallationPullRequest(push.installationId, push.repositoryId, number);
+    if (!pull.mergeCommitSha || pull.targetBranch !== targetBranch) continue;
     const prEnvironments = yield* drizzle.select({ id: prEnvironment.environmentId }).from(prEnvironment)
-      .where(and(eq(prEnvironment.repositoryId, push.repositoryId), eq(prEnvironment.number, pull.number), eq(prEnvironment.retired, false)));
+      .where(and(eq(prEnvironment.repositoryId, push.repositoryId), eq(prEnvironment.number, number), eq(prEnvironment.retired, false)));
     // One being torn down is being retired: its approvals drop rather than freeze.
     const closing = yield* activeTeardownFor(prEnvironments.map((row) => row.id));
     yield* settleAtClose(prEnvironments.map((row) => row.id).filter((id) => !closing.has(id)), { commitSha: pull.mergeCommitSha, targetBranch });

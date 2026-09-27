@@ -204,7 +204,7 @@ function isGithubPullRequestAction(action: string): action is GithubPullRequestA
 
 /**
  * Decodes a pull request delivery into its facts, or `null` for an action Cloud doesn't record:
- * labels, reviews, assignments, and edits that leave the target Git branch alone.
+ * labels, reviews, assignments, and edits that leave the title and target Git branch alone.
  */
 export function decodeGithubPullRequestPayload<Input>(
   payload: Input,
@@ -219,7 +219,8 @@ export function decodeGithubPullRequestPayload<Input>(
   const action = asString(record?.["action"]);
   if (action === null) return malformed;
   if (!isGithubPullRequestAction(action)) return Result.succeed(null);
-  if (action === "edited" && asRecord(asRecord(record?.["changes"])?.["base"]) === null) {
+  const changes = asRecord(record?.["changes"]);
+  if (action === "edited" && asRecord(changes?.["base"]) === null && asRecord(changes?.["title"]) === null) {
     return Result.succeed(null);
   }
 

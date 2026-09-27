@@ -342,7 +342,7 @@ describe("GitHub pull request contracts", () => {
     });
   });
 
-  it("records edits only when the target Git branch changed", () => {
+  it("records edits only when the title or target Git branch changed", () => {
     expect(
       decodePullRequest(
         pullRequestPayload({ action: "edited", changes: { base: { ref: { from: "dev" } } } }),
@@ -351,6 +351,11 @@ describe("GitHub pull request contracts", () => {
     expect(
       decodePullRequest(
         pullRequestPayload({ action: "edited", changes: { title: { from: "Old" } } }),
+      ),
+    ).toMatchObject({ action: "edited" });
+    expect(
+      decodePullRequest(
+        pullRequestPayload({ action: "edited", changes: { body: { from: "Old" } } }),
       ),
     ).toBeNull();
   });

@@ -92,10 +92,9 @@ describe("PR Environment lifecycle", () => {
   // What GitHub says about each pull request now.
   const pulls = new Map<number, PullRequest>();
   const heads = new Map<string, string>();
-  // main's commits in order, the paths each changed, and the merged pull requests GitHub has for a commit.
+  // main's commits in order, and the paths each changed.
   const history: string[] = [];
   const changed = new Map<string, string[]>();
-  const commitPulls = new Map<string, Array<{ number: number; base: { ref: string }; merged_at: string; merge_commit_sha: string }>>();
 
   const inngest = new Inngest({ id: "pr-lifecycle" });
   inngest.send = async (input) => {
@@ -128,7 +127,6 @@ describe("PR Environment lifecycle", () => {
             const ahead = history.includes(base) && history.indexOf(head) > history.indexOf(base);
             return { status: ahead ? "ahead" : "diverged", base_commit: { sha: base }, files: (changed.get(head) ?? []).map((filename) => ({ filename })) };
           }
-          case "list_commit_pulls": return commitPulls.get(request.url.split("/commits/")[1]?.split("/")[0] ?? "") ?? [];
           case "list_check_runs": {
             const sha = request.url.split("/commits/")[1]?.split("/")[0];
             const runs = checkRuns.filter((run) => run.headSha === sha);
@@ -221,10 +219,15 @@ describe("PR Environment lifecycle", () => {
     pulls.set(number, pull);
     return deliverPullRequest(deliveryId, action, pull);
   }
+  /** GitHub now has the pull request changed as given, before any delivery says so. */
+  function mergedOnGithub(number: number, change: Partial<PullRequest>) {
+    const pull = pulls.get(number);
+    if (pull) pulls.set(number, { ...pull, ...change });
+  }
   function deliverPullRequest(deliveryId: string, action: string, pull: PullRequest) {
     return deliver("pull_request", deliveryId, {
       action,
-      // Only an edit of the target Git branch reaches Ployz; which one it was isn't read.
+      // Only an edit of the title or target Git branch reaches Ployz; what changed is read from GitHub.
       changes: action === "edited" ? { base: { ref: { from: "main" } } } : undefined,
       pull_request: {
         base: { ref: "main" }, ...pull, title: `Change ${pull.number}`,
@@ -268,7 +271,6 @@ describe("PR Environment lifecycle", () => {
     heads.clear();
     history.length = 0;
     changed.clear();
-    commitPulls.clear();
     await harness.pool.query(`
       truncate table github_environment_trigger, github_branch_projection, github_webhook_delivery, teardown_attempt, organization, "user" cascade;
       insert into organization (id, name, slug) values ('${organizationId}', 'Acme', 'acme');
@@ -893,9 +895,27 @@ describe("PR Environment lifecycle", () => {
           expect(idOf((await environmentOf(stagingId))?.intent as Intent | undefined)?.id).toBe(idOf(saved)?.id);
         });
 
+        it("lands two pull requests' approvals in the one push carrying both merges, before either closed delivery", async () => {
+          await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
+          await pullRequest("opened-150", "opened", 150);
+          const second = (await prEnvironment(150))?.environmentId ?? "";
+          await setVariable(second, "MODE", "fast");
+          await approve(second, tickAll);
+          const secondMerge = "f".repeat(40);
+          mergedOnGithub(142, merged);
+          mergedOnGithub(150, { ...merged, merge_commit_sha: secondMerge });
+          history.push(mergeSha);
+          await push(secondMerge, ["api/main.ts"]);
+
+          const { saved } = await attemptAt(secondMerge);
+          expect(variableIn(saved, "FLAG")).toEqual(plain("on"));
+          expect(variableIn(saved, "MODE")).toEqual(plain("fast"));
+          expect(await saves()).toEqual([]);
+        });
+
         it("lands at the merge commit's push when it comes before the closed delivery, by asking GitHub, and takes no approval after", async () => {
           await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
-          commitPulls.set(mergeSha, [{ number: 142, base: { ref: "main" }, merged_at: new Date().toISOString(), merge_commit_sha: mergeSha }]);
+          mergedOnGithub(142, merged);
           await push(mergeSha, ["api/main.ts"]);
           expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toEqual(plain("on"));
           expect(await saves()).toEqual([]);
@@ -945,7 +965,7 @@ describe("PR Environment lifecycle", () => {
           const prId = (await prEnvironment(142))?.environmentId ?? "";
           await approve(prId, tickAll);
           await runEffect(closePrEnvironment(prId));
-          commitPulls.set(mergeSha, [{ number: 142, base: { ref: "main" }, merged_at: new Date().toISOString(), merge_commit_sha: mergeSha }]);
+          mergedOnGithub(142, merged);
           await push(mergeSha, ["api/main.ts"]);
           expect(variableIn((await attemptAt(mergeSha)).saved, "FLAG")).toBeUndefined();
           expect((await saves()).map((row) => row.state)).toEqual(["standing"]);

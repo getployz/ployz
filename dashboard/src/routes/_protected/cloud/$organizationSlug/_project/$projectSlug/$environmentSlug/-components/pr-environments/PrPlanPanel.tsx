@@ -1,5 +1,6 @@
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useRef } from "react";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection, type PrEnvironmentPlanRow } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -43,6 +44,8 @@ function Plan({ repositoryId, project, environments: all, branches }: {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const navigate = useNavigate();
+  // The latest Start from choice, so a refused older one doesn't navigate over it.
+  const chosen = useRef<string | null>(null);
   const plan = usePrEnvironmentPlans(organizationSlug, project).find((row) => row.repositoryId === repositoryId);
   const save = useSetPrEnvironmentPlan(organizationSlug, project.slug);
   const approve = useMissingPrEnvironmentGrant(organizationSlug, plan?.installationId ?? 0);
@@ -108,8 +111,10 @@ function Plan({ repositoryId, project, environments: all, branches }: {
             if (!environment || environment.id === startFrom?.id) return;
             const over = (environmentSlug: string) => void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
               params: { ...params, environmentSlug, repositoryId: String(repositoryId) } });
-            // Refused and rolled back: back over the canvas it was on.
-            set({ startFromEnvironmentId: environment.id }).isPersisted.promise.catch(() => over(params.environmentSlug));
+            chosen.current = environment.id;
+            // Refused and rolled back: back over the canvas it was on, unless a newer choice took over.
+            set({ startFromEnvironmentId: environment.id }).isPersisted.promise
+              .catch(() => chosen.current === environment.id && over(params.environmentSlug));
             over(environment.namespace);
           }}>
             <SelectTrigger id="pr-plan-start-from" className="w-full" aria-invalid={!startFrom || undefined}>

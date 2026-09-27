@@ -52,15 +52,20 @@ export const applyPullRequest = Effect.fn("PrEnvironments.applyPullRequest")(fun
     }));
   }
   const existing = all.filter((row) => !closing.includes(row.environmentId));
-  if (existing.length) {
-    yield* drizzle.update(prEnvironment).set({
-      title: live.title, author: live.author.login, headBranch: live.headBranch, targetBranch: live.targetBranch,
-      commits: live.commits, closed: !live.open,
-    }).where(inArray(prEnvironment.environmentId, existing.map((row) => row.environmentId)));
-    // A new target Git branch withdraws every approval of the PR Environment.
-    yield* drizzle.delete(conditionalSave).where(and(
-      inArray(conditionalSave.prEnvironmentId, existing.map((row) => row.environmentId)), ne(conditionalSave.targetBranch, live.targetBranch),
-    ));
+  for (const { environmentId } of existing) {
+    // Under its document, as an approval takes it: none lands between the refresh and the withdrawal.
+    yield* database.transaction(Effect.gen(function* () {
+      const { drizzle } = yield* Database;
+      yield* loadEnvironmentDocument(environmentId, true);
+      yield* drizzle.update(prEnvironment).set({
+        title: live.title, author: live.author.login, headBranch: live.headBranch, targetBranch: live.targetBranch,
+        commits: live.commits, closed: !live.open,
+      }).where(eq(prEnvironment.environmentId, environmentId));
+      // A new target Git branch withdraws every approval of the PR Environment.
+      yield* drizzle.delete(conditionalSave).where(and(
+        eq(conditionalSave.prEnvironmentId, environmentId), ne(conditionalSave.targetBranch, live.targetBranch),
+      ));
+    }));
   }
 
   if (!live.open) {
