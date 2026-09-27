@@ -197,6 +197,25 @@ describe("closing a Branch", () => {
     expect(["Validation", "Conflict"]).toContain((await created)._tag);
   });
 
+  it("admits an organization teardown only after a Branch being created commits, so its targets include it", async () => {
+    // A create in flight: it holds the Project and has written its Branch, not yet committed.
+    const lateId = "00000000-0000-4000-8000-0000000009f1";
+    const creating = await harness.pool.connect();
+    await creating.query("begin");
+    await creating.query("select id from project where id = $1 for update", [projectId]);
+    await creating.query(`insert into environment (id, project_id, organization_id, name, namespace, intent) values ($1, $2, $3, 'late', 'app-late',
+      '{"version":1,"environmentSlug":"app-late","services":[],"volumes":[]}')`, [lateId, projectId, organizationId]);
+    await creating.query(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, created_by_user_id)
+      values ($1, $2, $3, $4, '{}', $5)`, [lateId, organizationId, projectId, stagingId, creatorId]);
+    const teardown = run(provide(confirmTeardown({ userId }, { organizationSlug: "acme", scope: "organization", identities: [] })));
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await creating.query("commit");
+    creating.release();
+
+    const attempt = await teardown;
+    expect(attempt.targets.environments.map((target) => target.environmentId)).toContain(lateId);
+  });
+
   it("sweeps idle Branches closed as the system; a failed close doesn't stop the others", async () => {
     await ageBranches();
 
