@@ -32,7 +32,7 @@ export type BranchReviewView = BranchReview & {
  * computes on call, so a list pays only for the Branches it shows. Null for a root, or until the rows land.
  */
 export function useBranchReviews(organizationSlug: string): (environmentId: string) => BranchReviewView | null {
-  const { projects, branches } = useWorkspace(organizationSlug);
+  const { projects, branches, environments: summaries } = useWorkspace(organizationSlug);
   const environments = useEnvironmentDocuments(organizationSlug);
   const states = useEnvironmentChangeStatesIfReady(organizationSlug);
   const environmentById = new Map(environments.map((environment) => [environment.id, environment]));
@@ -62,7 +62,9 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       number: row.prNumber, title: row.prTitle ?? "", author: row.prAuthor ?? "",
       headBranch: row.prHeadBranch ?? "", targetBranch: row.prTargetBranch ?? "",
     };
-    const project = environments.filter((environment) => environment.projectId === branch.projectId);
+    // Oldest first, as the Environments tree lists them.
+    const project = summaries.filter((environment) => environment.projectId === branch.projectId)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
     const landings = pr && row.prRepositoryId !== null ? destinations({
       environments: destinationCandidates(project, branches, states), repositoryId: row.prRepositoryId, targetBranch: pr.targetBranch,
     }).flatMap((id) => {
