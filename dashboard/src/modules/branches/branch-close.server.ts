@@ -10,31 +10,43 @@ import { dueForIdleClose } from "#/modules/branches/idle-close";
 import { environmentBranch as schemaEnvironmentBranch, project as schemaProject } from "#/modules/project/tables";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
-import { confirmSystemTeardown } from "#/modules/runtime/teardown.server";
+import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
+/** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
+export type BranchCloseReason = "merged" | "idle";
+
 /**
  * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
- * own Branches first. It runs as the Branch's creator; a person closes one through the teardown's typed confirmation.
+ * own Branches first. It runs as the Branch's creator, and each close it starts is logged with its reason. The runtime is
+ * asked first, holding nothing; `underLocks` then runs inside the admitting transaction, and a false there admits nothing.
  */
-export const closeBranch = Effect.fn("Branches.close")(function* (environmentId: string) {
+export const closeBranch = Effect.fn("Branches.close")(function* (
+  environmentId: string,
+  reason: BranchCloseReason,
+  underLocks: Effect.Effect<boolean, never, Database> = Effect.succeed(true),
+) {
   const database = yield* Database;
   const [branch] = yield* database.drizzle
     .select({ organizationId: schemaEnvironmentBranch.organizationId, createdByUserId: schemaEnvironmentBranch.createdByUserId })
     .from(schemaEnvironmentBranch)
     .where(eq(schemaEnvironmentBranch.environmentId, environmentId));
   if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
-  return yield* confirmSystemTeardown({
-    organizationId: branch.organizationId,
-    environmentId,
-    requestedByUserId: branch.createdByUserId,
-  });
+  const requestedByUserId = branch.createdByUserId;
+  const prepared = yield* prepareSystemTeardown({ organizationId: branch.organizationId, environmentId });
+  const attempt = yield* database.transaction(Effect.gen(function* () {
+    if (!(yield* underLocks)) return null;
+    return yield* admitSystemTeardown(prepared, requestedByUserId);
+  }));
+  if (attempt) yield* Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id });
+  return attempt;
 });
 
 /** Runs a system close: true once its teardown started, else false with `why` logged. Only an interruption fails it. */
-const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect<boolean, E, R>) => close.pipe(
+const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect<unknown, E, R>) => close.pipe(
+  Effect.map((attempt) => attempt !== null),
   Effect.scoped,
   Effect.catchCause((cause) => Cause.hasInterrupts(cause)
     ? Effect.failCause(cause)
@@ -43,7 +55,7 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
 
 /** Closes a merged Branch; false when it couldn't, and the Merge stands. */
 export const tryCloseBranch = (environmentId: string) =>
-  tryClose(environmentId, "A merged Branch did not close.", closeBranch(environmentId).pipe(Effect.as(true)));
+  tryClose(environmentId, "A merged Branch did not close.", closeBranch(environmentId, "merged"));
 
 /** A kept Branch stays after merging and never closes for being idle. */
 export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Actor, input: SetBranchKept) {
@@ -67,18 +79,16 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
  * A close that fails (an unreachable runtime) leaves that Branch for the next sweep and never stops the others.
  */
 export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now: Date) {
-  const database = yield* Database;
   const closed = yield* Effect.forEach(yield* idleBranches(now), (environmentId) => tryClose(
     environmentId,
     "An idle Branch did not close; the next sweep retries it.",
-    database.transaction(Effect.gen(function* () {
+    // Under the Branch's queue lock (a deploy waits) and its row (Keep and a new Branch of it wait), the rule again.
+    closeBranch(environmentId, "idle", Effect.gen(function* () {
       yield* lockEnvironmentDeploymentQueue(environmentId);
-      yield* database.drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch)
+      yield* (yield* Database).drizzle.select({ id: schemaEnvironmentBranch.environmentId }).from(schemaEnvironmentBranch)
         .where(eq(schemaEnvironmentBranch.environmentId, environmentId)).for("update");
-      if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return false;
-      yield* closeBranch(environmentId);
-      return true;
-    })),
+      return (yield* idleBranches(now, environmentId)).includes(environmentId);
+    }).pipe(Effect.orDie)),
   ).pipe(Effect.map((done) => (done ? [environmentId] : []))));
   return closed.flat();
 });

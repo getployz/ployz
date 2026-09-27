@@ -25,7 +25,7 @@ export const assertBranchSettled = Effect.fn("Branches.assertBranchSettled")(fun
   if (active) return yield* new Conflict({ message: "A deploy of this branch is still running. Wait for it to finish." });
   const working = yield* loadCurrentEnvironmentSnapshotProjection(branchEnvironmentId);
   const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: branchEnvironmentId });
-  const applied = projection.explicitStates.find((state) => state.environmentId === branchEnvironmentId)?.applied.nodes ?? [];
+  const applied = [...projection.appliedSavedNodeByKey.values()].filter((node) => node.environmentId === branchEnvironmentId);
   if (hasUndeployedChanges(working.nodeSnapshots, applied)) {
     return yield* new Conflict({ message: "This branch has changes that aren't deployed. Deploy or discard them first." });
   }

@@ -42,6 +42,7 @@ import {
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
+import { lockProjectRow } from "#/modules/environment-design/workspace-repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 import { disableOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 
@@ -457,10 +458,31 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
   return attempt;
 });
 
+/**
+ * Admits a teardown against its graph as it is now. A project or Environment teardown holds the Project row, so choosing a
+ * Default Environment waits for it, and it sees a Default chosen before it (loadTeardownGraph refuses one). With
+ * `expected`, the graph must still hold exactly those Environments.
+ */
+const admitTeardown = Effect.fn("Teardown.admit")(function* (
+  access: TeardownAccess,
+  runtime: ReachableRuntime,
+  input: Parameters<typeof startTeardown>[3] & { readonly expected?: readonly string[] },
+) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    if (access.scope !== "organization") yield* lockProjectRow(access.project.id);
+    const graph = yield* loadTeardownGraph(access);
+    if (input.expected && graph.environments.map((environment) => environment.id).join() !== input.expected.join()) {
+      return yield* new Conflict({ message: "What this teardown removes changed. Try again." });
+    }
+    return yield* startTeardown(access, graph, runtime, input);
+  }));
+});
+
 export const confirmTeardown = Effect.fn("Teardown.confirm")(
   function* (actor: Actor, input: ConfirmTeardownInput) {
     const access = yield* requireTeardownAccess(actor, input);
-    return yield* startTeardown(access, yield* loadTeardownGraph(access), yield* reachableRuntime(access), {
+    return yield* admitTeardown(access, yield* reachableRuntime(access), {
       requestedByUserId: actor.userId,
       identities: input.identities,
       abandon: input.abandon === true,
@@ -469,26 +491,32 @@ export const confirmTeardown = Effect.fn("Teardown.confirm")(
 );
 
 /**
- * Tears down an Environment and its Branches with no one confirming: it confirms exactly the runtime's data-loss
- * report for their namespaces. An unreachable runtime refuses; the caller decides when to try again.
+ * Tears down an Environment and its Branches with no one confirming, in two steps: prepare asks the runtime (holding no
+ * locks) for the data-loss report of their namespaces, and admit confirms exactly that. An unreachable runtime refuses;
+ * the caller decides when to try again.
  */
-export const confirmSystemTeardown = Effect.fn("Teardown.confirmSystem")(
-  function* (input: {
-    readonly organizationId: string;
-    readonly environmentId: string;
-    readonly requestedByUserId: string;
-  }) {
+export const prepareSystemTeardown = Effect.fn("Teardown.prepareSystem")(
+  function* (input: { readonly organizationId: string; readonly environmentId: string }) {
     const access = yield* loadEnvironmentAccess(input.environmentId, input.organizationId);
     const graph = yield* loadTeardownGraph(access);
     const runtime = yield* reachableRuntime(access);
     const dataLoss = yield* teardownDataLoss(access, graph, runtime);
-    return yield* startTeardown(access, graph, runtime, {
-      requestedByUserId: input.requestedByUserId,
-      identities: dataLoss.rust,
-      abandon: false,
-    });
+    return { access, runtime, expected: graph.environments.map((environment) => environment.id), identities: dataLoss.rust };
   },
 );
+
+/**
+ * Admits a prepared system teardown as `requestedByUserId`: database work only, safe under a caller's locks. Refuses when
+ * the Environments it removes changed since it was prepared.
+ */
+export const admitSystemTeardown = Effect.fn("Teardown.admitSystem")(function* (
+  prepared: Effect.Success<ReturnType<typeof prepareSystemTeardown>>,
+  requestedByUserId: string,
+) {
+  return yield* admitTeardown(prepared.access, prepared.runtime, {
+    requestedByUserId, identities: prepared.identities, abandon: false, expected: prepared.expected,
+  });
+});
 
 export const retryTeardown = Effect.fn("Teardown.retry")(
   function* (actor: Actor, input: RetryTeardownInput) {

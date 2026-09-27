@@ -36,8 +36,6 @@ export type LiveNode = {
   owner: LiveNodeOwner | null;
   /** The services here that use it. */
   usedBy: string[];
-  /** Its owner's Applied State says it keeps data: the Branch reads and writes that real data. */
-  ownsData: boolean;
 };
 
 /** A Branch's Live Nodes: what its Own Copies use but don't own. A root Environment has none. */
@@ -52,6 +50,6 @@ export function useLiveNodes(organizationSlug: string, environmentId: string): L
   if (!parentId || !intent) return [];
   return [...liveNodeUsers(intent)].map(([lineageId, usedBy]) => {
     const owner = ownerOf(parentId, lineageId);
-    return { lineageId, name: lineageName(lineageId, owner?.environment.id), owner, usedBy, ownsData: owner?.ownsData ?? false };
+    return { lineageId, name: lineageName(lineageId, owner?.environment.id), owner, usedBy };
   });
 }

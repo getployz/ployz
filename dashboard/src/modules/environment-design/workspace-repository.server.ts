@@ -226,6 +226,15 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
   return rows[0] ?? null;
 });
 
+/**
+ * Holds a Project's row for the transaction. Choosing its Default Environment and admitting a teardown in it both take it,
+ * so neither acts on what the other is changing.
+ */
+export const lockProjectRow = Effect.fn("EnvironmentDesign.lockProjectRow")(function* (projectId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.select({ id: project.id }).from(project).where(eq(project.id, projectId)).for("update");
+});
+
 /** Null when the Environment belongs to another project: the FK alone doesn't enforce it. */
 export const setDefaultEnvironment = Effect.fn(
   "EnvironmentDesign.setDefaultEnvironment",

@@ -168,13 +168,19 @@ describe("branchAdmission", () => {
     expect(pushed.row?.missingLiveValues.map((value) => value.key).sort()).toEqual(["NOPE", "PLOYZ_PRIVATE_DOMAIN"]);
   });
 
-  it("gives a Live Node's public address from the owner's configuration and keeps an address the owner itself uses live", async () => {
+  it("gives the owner's public addresses, directly or through its values, and keeps an address the owner itself uses live", async () => {
     const intent = production();
     const db = intent.services.find((service) => service.lineageId === dbLineage);
     if (db) {
       db.config.managedHostnames = [{ prefix: "db-shop", targetPort: null }];
       db.variables.push(variable(id(12), "CACHE_ADDR", ref(cacheLineage, "PLOYZ_PRIVATE_DOMAIN")));
+      // db's WEB_URL embeds production's web's public address: the Branch reaches it only through db.
+      db.variables.push(variable(id(13), "WEB_URL", { kind: "template", parts: [
+        { kind: "text", value: "https://" }, { kind: "ref", owner: { scope: "service", lineageId: webLineage }, key: "PLOYZ_PUBLIC_DOMAIN" },
+      ] }));
     }
+    const web = intent.services.find((service) => service.lineageId === webLineage);
+    if (web) web.config.managedHostnames = [{ prefix: "web-shop", targetPort: null }];
     await applyProduction(intent);
     // production itself used cache live from elsewhere: its attempt holds cache's address already at its owner.
     await harness.db.update(schema.environmentDeployment).set({ variableProducers: [
@@ -186,6 +192,7 @@ describe("branchAdmission", () => {
     const savedStateSnapshotId = await saved(branchId, { ...branch(), services: branch().services.map((service) => ({ ...service, variables: [
       variable(id(10), "DB_URL", ref(dbLineage, "PLOYZ_PUBLIC_DOMAIN")),
       variable(id(11), "DB_SEES_CACHE", ref(dbLineage, "CACHE_ADDR")),
+      variable(id(14), "DB_SEES_WEB_URL", ref(dbLineage, "WEB_URL")),
     ] })) });
     const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
       environmentId: branchId, savedStateSnapshotId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
@@ -195,6 +202,8 @@ describe("branchAdmission", () => {
       producer.ownerLineageId === lineage && producer.key === key)?.value;
     expect(produced(dbLineage, "PLOYZ_PUBLIC_DOMAIN")).toEqual({ kind: "literal", value: "db-shop.acme.ployz.dev" });
     expect(produced(`shop-production::${cacheLineage}`, "PLOYZ_PRIVATE_DOMAIN")).toEqual({ kind: "literal", value: "cache.shop-root.internal" });
+    // production's web, not the Branch's own copy of web.
+    expect(produced(`shop-production::${webLineage}`, "PLOYZ_PUBLIC_DOMAIN")).toEqual({ kind: "literal", value: "web-shop.acme.ployz.dev" });
     expect(row?.missingLiveValues).toEqual([]);
   });
 });

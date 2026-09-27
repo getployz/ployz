@@ -5,6 +5,7 @@ import { Effect } from "effect";
 import { Inngest } from "inngest";
 import { parseServiceConfig, type ServiceManagedHostname, type ServiceSource } from "@ployz/sdk/config";
 import * as schema from "#/db/schema";
+import { compileSavedEnvironmentIntent, parseDashboardEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { submitReviewedPublication } from "#/modules/deployments/deployment-command.server";
 import { loadCurrentEnvironmentSnapshotProjection } from "#/modules/environment-design/working-state-repository.server";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "#/modules/environment-design/working-state-fingerprint.server";
@@ -192,12 +193,11 @@ describe("createBranch", () => {
     await harness.db.insert(schema.environmentDeployment).values([
       attempt(appliedId, appliedSaved?.id ?? "", "applied", 1_000), attempt(failedId, failedSaved?.id ?? "", "failed", 2_000),
     ]);
-    await harness.db.insert(schema.environmentNodeConfigSnapshot).values([
-      // Applied State is rebuilt from the Saved revision each node came from; only the ids matter here.
-      { nodeType: "service" as const, nodeId: webId, nodeLineageId: webLineage, config: { version: 2 } },
-      { nodeType: "service" as const, nodeId: dbId, nodeLineageId: dbLineage, config: { version: 2 } },
-      { nodeType: "volume" as const, nodeId: dataId, nodeLineageId: dataLineage, config: { version: 2 } },
-    ].map((node) => ({ organizationId, environmentId: parentId, environmentDeploymentId: appliedId, ...node })));
+    await harness.db.insert(schema.environmentNodeConfigSnapshot).values(compileSavedEnvironmentIntent({ environmentId: parentId, intent: parseDashboardEnvironmentIntent(withImage("web:1")) })
+      .nodeSnapshots.map((node) => ({
+        organizationId, environmentId: parentId, environmentDeploymentId: appliedId,
+        nodeType: node.nodeType, nodeId: node.nodeId, nodeLineageId: node.nodeLineageId, configVersion: node.configVersion, config: node.config,
+      })));
     const staged = { ...parentIntent, services: parentIntent.services.map((node) => node.id === webId
       ? { ...node, config: { ...node.config, source: { ...node.config.source, image: "web:3" } } } : node) };
     await harness.pool.query("update environment set intent = $1 where id = $2", [JSON.stringify(staged), parentId]);

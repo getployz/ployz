@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { branchChanges, planBranch } from "@ployz/sdk/config";
+import { branchChanges, planBranch, type BranchChanges } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
@@ -22,6 +22,7 @@ import { loadAppliedIntent } from "#/modules/environment-design/saved-state-oper
 import { createManualEnvironmentDeployment } from "#/modules/deployments/deployment-command.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages } from "./branch-plan";
+import { rowLineage } from "./branch-review";
 import type { CreateBranch, SetBranchSetupDefaults } from "./branch-schemas";
 
 type EnvironmentRow = typeof environment.$inferSelect;
@@ -151,13 +152,13 @@ export const landChanges = Effect.fn("Branches.landChanges")(function* ({ projec
   project: ProjectRow; from: string; document: EnvironmentRow;
   into: SavedEnvironmentIntent; next: SavedEnvironmentIntent;
   picks: ReadonlyArray<{ key: string }>;
-  advance?: { branchEnvironmentId: string; base: unknown };
+  advance?: { branchEnvironmentId: string; base: NonNullable<BranchChanges["base"]> };
 }) {
   const { drizzle } = yield* Database;
   const services = next.services.filter((node) => !into.services.some((own) => own.id === node.id));
   const volumes = next.volumes.filter((node) => !into.volumes.some((own) => own.resourceId === node.resourceId));
   yield* copyIdentities({ project, from, to: document.id, services, volumes });
-  const credentialLineages = picks.flatMap((pick) => pick.key.endsWith(":source.credentials") ? [pick.key.slice(0, pick.key.indexOf(":"))] : []);
+  const credentialLineages = picks.flatMap((pick) => pick.key.endsWith(":source.credentials") ? [rowLineage(pick)] : []);
   for (const lineageId of credentialLineages) {
     const receiver = into.services.find((node) => node.lineageId === lineageId);
     if (receiver) yield* copyCredential({ organizationId: project.organizationId, from, lineageId, to: receiver.id });
@@ -196,8 +197,6 @@ const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project
 }) {
   const { drizzle } = yield* Database;
   const services = yield* drizzle.select().from(service).where(eq(service.environmentId, from));
-  const credentials = services.length ? yield* drizzle.select().from(serviceRegistryCredential)
-    .where(inArray(serviceRegistryCredential.serviceId, services.map((row) => row.id))) : [];
   const resources = yield* drizzle.select().from(environmentResource).where(eq(environmentResource.environmentId, from));
   const positions = yield* drizzle.select().from(environmentCanvasNodePosition).where(eq(environmentCanvasNodePosition.environmentId, from));
   const copies: Array<{ from: string; to: string }> = [];
@@ -208,11 +207,9 @@ const copyIdentities = Effect.fn("Branches.copyIdentities")(function* ({ project
       id: node.id, organizationId: project.organizationId, projectId: project.id, environmentId: to,
       lineageId: node.lineageId, name: source.name, policy: source.policy, hasRegistryCredential: source.hasRegistryCredential,
     });
-    const credential = credentials.find((row) => row.serviceId === source.id);
-    if (credential) yield* drizzle.insert(serviceRegistryCredential).values({
-      organizationId: project.organizationId, serviceId: node.id,
-      encryptedRegistryUsername: credential.encryptedRegistryUsername, encryptedRegistrySecret: credential.encryptedRegistrySecret,
-    });
+    if (source.hasRegistryCredential) {
+      yield* copyCredential({ organizationId: project.organizationId, from, lineageId: node.lineageId, to: node.id });
+    }
     copies.push({ from: source.id, to: node.id });
   }
   for (const node of arrivingVolumes) {

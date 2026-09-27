@@ -33,7 +33,13 @@ const ACTIVE_DEPLOYMENT_STATUSES = [
 
 type SnapshotScope =
   | { kind: "environment"; environmentId: string }
+  | { kind: "environments"; environmentIds: readonly string[] }
   | { kind: "organization"; organizationId: string };
+
+/** A many-Environment scope's filter: its Environments, or every one of the organization's. */
+const manyScope = (scope: Exclude<SnapshotScope, { kind: "environment" }>) => scope.kind === "organization"
+  ? eq(schemaProject.organizationId, scope.organizationId)
+  : inArray(schemaEnvironment.id, [...scope.environmentIds]);
 
 export type EnvironmentExplicitStateProjectionNode = {
   nodeType: "service" | "volume";
@@ -176,7 +182,7 @@ function loadDeploymentHeads(
         )
         .where(
           and(
-            eq(schemaProject.organizationId, scope.organizationId),
+            manyScope(scope),
             statusFilter,
           ),
         )
@@ -199,7 +205,7 @@ function loadDeploymentHeads(
       )
       .where(
         and(
-          eq(schemaProject.organizationId, scope.organizationId),
+          manyScope(scope),
           statusFilter,
         ),
       )
@@ -291,7 +297,7 @@ function loadSavedHeads(scope: SnapshotScope) {
         schemaProject,
         eq(schemaEnvironment.projectId, schemaProject.id),
       )
-      .where(eq(schemaProject.organizationId, scope.organizationId))
+      .where(manyScope(scope))
       .orderBy(
         asc(schemaEnvironmentSavedStateSnapshot.environmentId),
         desc(schemaEnvironmentSavedStateSnapshot.createdAt),

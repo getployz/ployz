@@ -14,18 +14,21 @@ export function BranchDefaultsSection({ organizationSlug, environmentId }: { org
   const lineageName = useLineageNames(organizationSlug);
   const save = useBranchSetupDefaults(organizationSlug);
   const saved = document?.branchSetupCommands ?? [];
+  // While typing, the whole list; once committed, only the blank rows not yet typed, after the saved ones.
   const [draft, setDraft] = useState<SetupCommand[] | null>(null);
+  const [blanks, setBlanks] = useState<SetupCommand[]>([]);
   if (!document) return null;
-  const commands = draft ?? saved;
+  const commands = draft ?? [...saved, ...blanks];
   // The Working State's services; a removed service keeps its row until deployed away.
   const own = document.intent.services.map((node) => ({ lineageId: node.lineageId, name: lineageName(node.lineageId, environmentId) }));
 
-  // Blank commands stay in the draft until typed; only whole ones save, and only when they changed. A draft with nothing
-  // left unsaved goes, so the saved (optimistic) rows show again and a failed save's rollback shows too.
+  // Only whole commands save, and only when they changed. Submitted values then show from the saved (optimistic) rows,
+  // so a failed save's rollback shows too; blank rows wait below them until typed.
   function commit(next: SetupCommand[]) {
     const whole = next.filter((setup) => setup.command.trim()).map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
     if (JSON.stringify(whole) !== JSON.stringify(saved)) save(environmentId, whole);
-    if (whole.length === next.length) setDraft(null);
+    setDraft(null);
+    setBlanks(next.filter((setup) => !setup.command.trim()));
   }
 
   return (

@@ -44,8 +44,7 @@ export const makeOwnCopy = Effect.fn("Branches.makeOwnCopy")(function* (actor: A
     if (branch.into.services.some((node) => node.lineageId === input.lineageId)) {
       return yield* new Conflict({ message: "This branch already has its own copy." });
     }
-    const owner = yield* loadEnvironment(yield* ownerOf(branch.document.id, input.lineageId));
-    const from = yield* appliedIntentOf(owner);
+    const { owner, from } = yield* ownerOf(branch.document.id, input.lineageId);
     // An Own Copy is an introduction: not provided live, and neither it nor the Volumes it mounts in the base.
     const copied = ownCopyLineages(from, branch.into, input.lineageId);
     return yield* stageFrom(branch, {
@@ -132,12 +131,13 @@ const appliedIntentOf = (source: EnvironmentDocument) => Effect.gen(function* ()
   return yield* loadAppliedIntent(source.id, source.namespace, projection);
 });
 
-/** The Environment that runs a Live Node: the Parent, or its nearest ancestor that does. */
+/** The Environment that runs a Live Node (the Parent, or its nearest ancestor that does), and its Applied State. */
 const ownerOf = Effect.fn("Branches.ownerOf")(function* (environmentId: string, lineageId: string) {
-  const { parentId, branches, applied } = yield* loadAncestorApplied(environmentId);
-  const owner = parentId ? liveOwner(parentId, lineageId, branches, new Map([...applied].map(([id, at]) => [id, at.lineages]))) : null;
-  if (!owner) return yield* new Conflict({ message: "No environment this branch comes from runs it." });
-  return owner;
+  const { parentId, branches, runs, projection } = yield* loadAncestorApplied(environmentId);
+  const ownerId = parentId ? liveOwner(parentId, lineageId, branches, runs) : null;
+  if (!ownerId || !projection) return yield* new Conflict({ message: "No environment this branch comes from runs it." });
+  const owner = yield* loadEnvironment(ownerId);
+  return { owner, from: yield* loadAppliedIntent(owner.id, owner.namespace, projection) };
 });
 
 /** A Live Node's lineage and the Volumes it mounts where it runs that the Branch doesn't have yet. */
