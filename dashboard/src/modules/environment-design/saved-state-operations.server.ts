@@ -238,6 +238,14 @@ export const saveReviewedEnvironmentState = Effect.fn(
   }));
 });
 
+/**
+ * Publishes `intent`, reviewed elsewhere, on top of the latest Saved revision `basis`; the caller holds the queue lock.
+ * Held changes landing in a Destination go through here.
+ */
+export const publishLandedSavedState = (input: {
+  environmentId: string; actorId: string; message: string; basis: EnvironmentSavedStateBasis; intent: SavedEnvironmentIntent;
+}) => publishEnvironmentSavedState({ ...input, destructiveVolumeReviews: [], revisionPolicy: "reuse_latest_if_equivalent" });
+
 /** Reconstruct authored Applied State from each node's confirmed Saved revision. */
 export const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
   function* (environmentId: string, namespace: string, projection: EnvironmentSnapshotProjection) {

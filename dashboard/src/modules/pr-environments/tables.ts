@@ -9,7 +9,8 @@ import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-
 import type { JsonValue } from "#/db/tables";
 import type { BranchHostnames, BranchOption, BranchPick, BranchRow } from "@ployz/sdk/config";
 
-import { bigint, boolean, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { bigint, boolean, check, foreignKey, index, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 /**
  * A project's PR Environments plan for one GitHub repository its services deploy from. No row means Off with the defaults.
@@ -63,7 +64,7 @@ export type HeldRow = { row: BranchRow; option?: BranchOption; missing: boolean 
 export type ConditionalSaveRow = {
   id: string; organizationId: string; projectId: string; prEnvironmentId: string | null; repositoryId: number; prNumber: number;
   destinationEnvironmentId: string; rows: HeldRow[]; workingRevision: string; targetBranch: string;
-  approvedBy: string | null; approvedAt: Date;
+  approvedBy: string | null; approvedAt: Date; mergeCommitSha: string | null; landedSavedStateId: string | null;
 };
 
 /**
@@ -78,6 +79,8 @@ export type HeldLanding = {
 /**
  * A Conditional Save: a PR Environment's approved changes, held on one Destination until its pull request merges. It
  * stands while the PR Environment's revision and the pull request's target Git branch are what they were at approval.
+ * At the merge it freezes: `merge_commit_sha` is set and it leaves the PR Environment, so nothing done there withdraws
+ * it. Once landed it only remains to mark the rows the Destination had changed, which were staged instead of saved.
  * `picks`, `approved_against` and `landing` hold sealed values and never reach the browser.
  */
 export const conditionalSave = pgTable(
@@ -88,7 +91,7 @@ export const conditionalSave = pgTable(
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
     projectId: uuid("project_id").notNull(),
-    // Goes with the PR Environment; landing reads `landing` instead.
+    // Goes with the PR Environment until frozen, then null; landing reads `landing` instead.
     prEnvironmentId: uuid("pr_environment_id")
       .references(() => environment.id, { onDelete: "cascade" }),
     repositoryId: bigint("repository_id", { mode: "number" }).notNull(),
@@ -107,6 +110,11 @@ export const conditionalSave = pgTable(
     approvedByUserId: uuid("approved_by_user_id")
       .references(() => user.id, { onDelete: "set null" }),
     approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
+    // Frozen at the merge: its pull request's merge commit.
+    mergeCommitSha: text("merge_commit_sha"),
+    // Landed: the Saved revision landing published. `rows` are then the ones staged instead, marked there until the
+    // Destination's next Saved revision.
+    landedSavedStateId: uuid("landed_saved_state_id"),
   },
   (table) => [
     uniqueIndex("conditional_save_pr_destination_idx").on(table.prEnvironmentId, table.destinationEnvironmentId),
@@ -117,5 +125,6 @@ export const conditionalSave = pgTable(
     }).onDelete("cascade"),
     index("conditional_save_organization_idx").on(table.organizationId),
     index("conditional_save_destination_idx").on(table.destinationEnvironmentId),
+    check("conditional_save_landed_frozen_check", sql`${table.landedSavedStateId} is null or ${table.mergeCommitSha} is not null`),
   ],
 );

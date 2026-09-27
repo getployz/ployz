@@ -73,6 +73,7 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           repositoryId: save.repositoryId, prNumber: save.prNumber, destinationEnvironmentId: save.destinationEnvironmentId,
           rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
           approvedBy: tables.user.name, approvedAt: save.approvedAt,
+          mergeCommitSha: save.mergeCommitSha, landedSavedStateId: save.landedSavedStateId,
         }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save));
         return rows;
       }
