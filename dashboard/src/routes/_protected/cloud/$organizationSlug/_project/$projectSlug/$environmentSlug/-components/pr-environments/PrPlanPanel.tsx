@@ -1,26 +1,25 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { TriangleAlertIcon } from "lucide-react";
-import { planBranch } from "@ployz/sdk/config";
 import { getEnvironmentDeploymentsCollection, type PrEnvironmentPlanRow } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { Badge } from "#/components/ui/badge";
-import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet, FieldTitle } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemMedia } from "#/components/ui/item";
-import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
-import { listNames, offeredPresets, presetSummary, presetTitles, type BranchPreset } from "#/modules/branches/branch-plan";
+import { listNames } from "#/modules/branches/branch-plan";
 import { useEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinations, trackedBranches } from "#/modules/pr-environments/destinations";
 import { usePrEnvironmentPlans, useSetPrEnvironmentPlan } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
-import { githubAppRepository } from "#/modules/pr-environments/repositories";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { useBranchPicking } from "../new-branch/branch-picking";
+import { DataSection } from "../new-branch/DataSection";
+import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
+import { WhatComesAlongSection } from "../new-branch/WhatComesAlongSection";
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -49,9 +48,14 @@ function Plan({ repositoryId, project, environments: all }: {
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(attempts.map((attempt) => attempt.environmentId));
   const startFrom = environments.find((environment) => environment.id === plan?.startFromEnvironmentId);
-  const intent = useEnvironmentDocument(organizationSlug, startFrom?.id ?? null)?.intent;
   const changeStates = useEnvironmentChangeStates(organizationSlug, useCollectionScope());
   const lineageName = useLineageNames(organizationSlug);
+  const picking = useBranchPicking();
+  // Then run lists the plan's Own Copies' commands; the rest keep their lineage for when they're Own Copies again.
+  const ownServices = new Set(picking?.plan.nodes.flatMap((node) => node.role === "own" && node.nodeType === "service" ? [node.lineageId] : []));
+  const saved = plan?.setupCommands ?? [];
+  const setup = useSavedSetupCommands(saved.filter((command) => ownServices.has(command.lineageId)),
+    (whole) => plan && save(plan, { setupCommands: [...whole, ...saved.filter((command) => !ownServices.has(command.lineageId))] }));
 
   if (!plan) {
     return (
@@ -63,16 +67,6 @@ function Plan({ repositoryId, project, environments: all }: {
   }
   const set = (change: Parameters<typeof save>[1]) => save(plan, change);
 
-  // Core plans the presets over the start-from Environment's Working State, with the repository's services changing.
-  const applied = changeStates.find((state) => state.environmentId === startFrom?.id)?.applied.nodes ?? [];
-  const planned = intent && {
-    parent: intent,
-    deployed: applied.map((node) => node.nodeLineageId),
-    focus: intent.services.filter((node) => githubAppRepository(node.config)?.repositoryId === repositoryId).map((node) => node.lineageId),
-  };
-  const presets: BranchPreset[] = planned ? offeredPresets(planned) : ["only", "uses", "all"];
-  const presetPlan = (preset: BranchPreset) => planned && planBranch({ ...planned, picks: { preset } });
-  const only = presetPlan("only");
   const nameOf = (lineage: string) => lineageName(lineage, plan.startFromEnvironmentId ?? "");
 
   // Where merges land, by the Destinations rule over each Environment's latest Saved State.
@@ -130,43 +124,14 @@ function Plan({ repositoryId, project, environments: all }: {
             ? <FieldDescription>Services from {plan.repository} run the pull request's code. Everything else starts from {startFrom.name}.</FieldDescription>
             : <FieldError>The environment it started from was torn down. Pick another: no PR environment starts until you do.</FieldError>}
         </Field>
-        <FieldSet>
-          <FieldLegend>What comes along</FieldLegend>
-          <RadioGroup value={"preset" in plan.picks ? plan.picks.preset : null} onValueChange={(value) => {
-            const preset = presets.find((candidate) => candidate === value);
-            if (preset) set({ picks: { preset } });
-          }}>
-            {presets.map((preset) => {
-              const presetPlanned = presetPlan(preset);
-              return (
-                <FieldLabel key={preset} htmlFor={`pr-plan-preset-${preset}`}>
-                  <Field orientation="horizontal">
-                    <RadioGroupItem value={preset} id={`pr-plan-preset-${preset}`} />
-                    <FieldContent>
-                      <FieldTitle>{presetTitles[preset]}</FieldTitle>
-                      {presetPlanned && only && <FieldDescription>{presetSummary(preset, presetPlanned, only, nameOf, startFrom?.name ?? "")}</FieldDescription>}
-                    </FieldContent>
-                  </Field>
-                </FieldLabel>
-              );
-            })}
-          </RadioGroup>
-          <FieldDescription>PR environments run one replica of each service.</FieldDescription>
-        </FieldSet>
-        <FieldSet>
-          <FieldLegend>Data</FieldLegend>
-          <RadioGroup value="empty">
-            <FieldLabel htmlFor="pr-plan-data-empty">
-              <Field orientation="horizontal"><RadioGroupItem value="empty" id="pr-plan-data-empty" />Start empty</Field>
-            </FieldLabel>
-            <FieldLabel htmlFor="pr-plan-data-copy">
-              <Field orientation="horizontal" data-disabled="true">
-                <RadioGroupItem value="copy" id="pr-plan-data-copy" disabled />
-                Copy {startFrom ? `${startFrom.name}'s` : "its"} data<Badge variant="secondary">Soon</Badge>
-              </Field>
-            </FieldLabel>
-          </RadioGroup>
-        </FieldSet>
+        {picking && <>
+          <WhatComesAlongSection plan={picking.plan} presets={picking.presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr}
+            parentName={picking.parent.name} ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle}
+            footnote="PR environments run one replica of each service." />
+          <DataSection plan={picking.plan} liveOwner={picking.liveOwner} parentName={picking.parent.name} rootName={null} nameOf={nameOf}
+            setupCommands={setup.commands} onSetupCommands={setup.onChange} onSetupBlur={setup.onBlur}
+            setupHelp="Runs once per PR environment, with the pull request's code, before the services start." />
+        </>}
         <FieldSet>
           <FieldLegend>When the pull request…</FieldLegend>
           <FieldLabel htmlFor="pr-plan-remove-on-close">

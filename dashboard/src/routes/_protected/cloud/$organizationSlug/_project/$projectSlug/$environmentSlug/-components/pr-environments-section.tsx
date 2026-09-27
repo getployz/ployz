@@ -3,20 +3,16 @@ import { ChevronRightIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import type { PrEnvironmentPlanRow } from "#/collections/collections";
-import { presetTitles } from "#/modules/branches/branch-plan";
+import { useLineageNames } from "#/modules/branches/use-lineage-names";
+import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
+import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import type { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { usePrEnvironmentPlans } from "#/modules/pr-environments/plan.collection";
 import { useMissingPrEnvironmentGrant } from "#/modules/pr-environments/plan.queries";
+import { planSummary, prPlanInput } from "#/modules/pr-environments/repositories";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO } from "./environment-route-paths";
 
 type Workspace = ReturnType<typeof useWorkspace>;
-
-/** A plan in short: "Off", or "On · from staging · Only what changes". */
-export function planSummary(plan: PrEnvironmentPlanRow, startFrom: string | undefined) {
-  if (!plan.enabled) return "Off";
-  if (!startFrom) return "On · pick an environment to start from";
-  return `On · from ${startFrom} · ${"preset" in plan.picks ? presetTitles[plan.picks.preset] : "Picked by hand"}`;
-}
 
 /** Settings → Project: one row per GitHub repository the project deploys from, each opening its plan page. */
 export function PrEnvironmentsSection({ organizationSlug, project, environments }: {
@@ -40,7 +36,7 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments 
           // Opens over the start-from Environment's canvas; a torn-down one leaves the plan asking, over the Default Environment's.
           const over = startFrom ?? project.resolvedEnvironment;
           return over && (
-            <PlanRow key={plan.repositoryId} organizationSlug={organizationSlug} plan={plan} summary={planSummary(plan, startFrom?.name)}
+            <PlanRow key={plan.repositoryId} organizationSlug={organizationSlug} plan={plan} startFrom={startFrom}
               params={{ organizationSlug, projectSlug: project.slug, environmentSlug: over.namespace, repositoryId: String(plan.repositoryId) }} />
           );
         })}
@@ -49,13 +45,19 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments 
   );
 }
 
-function PlanRow({ organizationSlug, plan, summary, params }: {
+function PlanRow({ organizationSlug, plan, startFrom, params }: {
   organizationSlug: string;
   plan: PrEnvironmentPlanRow;
-  summary: string;
+  startFrom: Workspace["environments"][number] | undefined;
   params: { organizationSlug: string; projectSlug: string; environmentSlug: string; repositoryId: string };
 }) {
   const approve = useMissingPrEnvironmentGrant(organizationSlug, plan.installationId);
+  const intent = useEnvironmentDocument(organizationSlug, startFrom?.id ?? null)?.intent;
+  const applied = useEnvironmentChangeStateProjection({ organizationSlug, environmentId: startFrom?.id ?? "" })?.applied.nodes ?? [];
+  const lineageName = useLineageNames(organizationSlug);
+  const summary = planSummary(plan, startFrom?.name,
+    intent ? prPlanInput(intent, applied.map((node) => node.nodeLineageId), plan.repositoryId, plan.picks) : null,
+    (lineage) => lineageName(lineage, startFrom?.id ?? ""));
   return (
     <Item variant="outline" size="sm" render={<Link to={ENVIRONMENT_PR_PLAN_ROUTE_TO} params={params} />}>
       <ItemMedia><GitHubMarkIcon aria-hidden="true" className="size-4" /></ItemMedia>

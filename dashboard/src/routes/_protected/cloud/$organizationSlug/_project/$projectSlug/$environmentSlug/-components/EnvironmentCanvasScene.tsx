@@ -227,7 +227,7 @@ export function EnvironmentCanvasScene() {
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    <BranchPickingProvider open={newBranch !== null} focus={newBranch?.focus ?? null}>
+    <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
     <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
@@ -237,7 +237,7 @@ export function EnvironmentCanvasScene() {
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
         : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
         : branchReview ? { key: `${canvasKey}/review`, nodeId: "review" }
-        : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan" } : null}
+        : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
