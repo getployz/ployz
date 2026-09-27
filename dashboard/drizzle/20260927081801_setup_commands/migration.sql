@@ -1,0 +1,2 @@
+ALTER TABLE "environment" ADD COLUMN "branch_setup_commands" jsonb DEFAULT '[]' NOT NULL;--> statement-breakpoint
+ALTER TABLE "environment_deployment" ADD COLUMN "setup_commands" jsonb DEFAULT '{}' NOT NULL;

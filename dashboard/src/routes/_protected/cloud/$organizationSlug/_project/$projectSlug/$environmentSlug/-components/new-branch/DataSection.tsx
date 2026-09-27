@@ -4,24 +4,30 @@ import { Field, FieldDescription, FieldLabel, FieldLegend, FieldSet } from "#/co
 import { Item, ItemContent, ItemDescription, ItemMedia } from "#/components/ui/item";
 import { RadioGroup, RadioGroupItem } from "#/components/ui/radio-group";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
+import type { SetupCommand } from "#/modules/project/tables";
 import { listNames, type BranchPlan } from "#/modules/branches/branch-plan";
+import { SetupCommandsField } from "./SetupCommandsField";
 
 /**
  * Where the Branch's data comes from: Own Copies of Volumes start empty (copying data is Soon), and a Live Node that owns
- * data is the Parent's real data.
+ * data is the Parent's real data. Setup Commands then run in the Branch's own services.
  */
-export function DataSection({ intent, plan, parentName, rootName, nameOf }: {
+export function DataSection({ intent, plan, parentName, rootName, nameOf, setupCommands, onSetupCommands }: {
   intent: SavedEnvironmentIntent;
   plan: BranchPlan;
   parentName: string;
   /** The root the Parent was branched from, when the Parent is itself a Branch. */
   rootName: string | null;
   nameOf: (lineage: string) => string;
+  setupCommands: SetupCommand[];
+  onSetupCommands: (next: SetupCommand[]) => void;
 }) {
   const own = plan.nodes.filter((node) => node.role === "own" && node.nodeType === "volume").map((node) => nameOf(node.lineageId));
   const liveData = plan.nodes.filter((node) => node.role === "live"
     && intent.services.some((service) => service.lineageId === node.lineageId && service.volumeAttachments.length > 0))
     .map((node) => nameOf(node.lineageId));
+  const ownServices = plan.nodes.filter((node) => node.role === "own" && node.nodeType === "service")
+    .map((node) => ({ lineageId: node.lineageId, name: nameOf(node.lineageId) }));
   const soon = [parentName, ...(rootName ? [rootName] : [])];
   return (
     <FieldSet>
@@ -41,6 +47,13 @@ export function DataSection({ intent, plan, parentName, rootName, nameOf }: {
             </FieldLabel>
           ))}
         </RadioGroup>
+        {ownServices.length > 0 && (
+          <Field>
+            <FieldLabel htmlFor="branch-setup-command">Then run</FieldLabel>
+            <SetupCommandsField id="branch-setup-command" commands={setupCommands} services={ownServices} onChange={onSetupCommands} />
+            <FieldDescription>Runs in the service's new image before it first starts, until it deploys once. Use it to migrate or seed.</FieldDescription>
+          </Field>
+        )}
       </>}
       {liveData.length > 0 && (
         <Item variant="outline" state="warning" size="sm" role="note">

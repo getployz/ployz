@@ -75,6 +75,7 @@ const DOCUMENT_COMMAND_FILES = {
   "modules/environment-design/apply-created-node.ts": "a created service or resource returns its new document",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "a created environment returns its first document",
   "components/service-create-command.tsx": "a created project returns its first document",
+  "modules/branches/branch.collection.ts": "Branches of X defaults: the server returns the whole committed Environment row",
 };
 
 /** Remote Reads a loader cannot prefetch, and what warms them instead. */

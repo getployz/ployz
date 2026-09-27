@@ -43,6 +43,8 @@ export const environment = pgTable(
     namespace: text("namespace").notNull(),
     intent: jsonb("intent").notNull().$type<SavedEnvironmentIntent>(),
     revision: uuid("revision").defaultRandom().notNull(),
+    // Prefills every new Branch of this Environment; saved at once, never staged.
+    branchSetupCommands: jsonb("branch_setup_commands").default([]).notNull().$type<SetupCommand[]>(),
     updatedAt,
     createdAt,
   },

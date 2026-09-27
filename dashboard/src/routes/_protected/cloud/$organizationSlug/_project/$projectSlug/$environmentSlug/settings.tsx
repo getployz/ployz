@@ -19,6 +19,7 @@ import { cn } from "#/lib/utils";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
+import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { Route as EnvironmentLayoutRoute } from "./route";
@@ -80,6 +81,7 @@ function RouteComponent() {
           {branch && parent && (
             <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent} />
           )}
+          <BranchDefaultsSection organizationSlug={organizationSlug} environmentId={environmentId} />
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"

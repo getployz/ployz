@@ -101,7 +101,7 @@ describe("createBranch", () => {
   function create(input: Partial<CreateBranch> = {}) {
     return harness.runEffect(createBranch({ userId }, {
       organizationSlug: "acme", parentEnvironmentId: parentId, name: "fix-web",
-      focus: [webLineage], picks: { preset: "only" }, keep: false, ...input,
+      focus: [webLineage], picks: { preset: "only" }, keep: false, setupCommands: [], ...input,
     }).pipe(
       Effect.provideService(SecretEncryption, makeSecretEncryption("test-encryption-secret")),
       Effect.provideService(InngestClient, inngest),
@@ -109,7 +109,7 @@ describe("createBranch", () => {
   }
 
   it("copies the picked nodes under fresh ids, stores the base and admits the first deployment", async () => {
-    const { data } = await create({ keep: true });
+    const { data } = await create({ keep: true, setupCommands: [{ lineageId: webLineage, command: "pnpm db:seed" }] });
     const branchId = data.environment.id;
     expect(data.environment.namespace).toBe("shop-fix-web");
 
@@ -146,7 +146,9 @@ describe("createBranch", () => {
 
     // The base and the Node Introductions.
     const branches = await harness.db.select().from(schema.environmentBranch).where(eq(schema.environmentBranch.environmentId, branchId));
-    expect(branches).toEqual([expect.objectContaining({ parentEnvironmentId: parentId, kept: true, createdByUserId: userId })]);
+    expect(branches).toEqual([expect.objectContaining({
+      parentEnvironmentId: parentId, kept: true, createdByUserId: userId, setupCommands: [{ lineageId: webLineage, command: "pnpm db:seed" }],
+    })]);
     const base = branches[0]?.base;
     expect(base?.services.map((node) => node.id)).toEqual(expect.arrayContaining([dbId, webId]));
     expect(JSON.stringify(base)).not.toContain("parent-cipher");
@@ -158,6 +160,8 @@ describe("createBranch", () => {
     // Its first deployment is admitted and dispatched.
     const attempts = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.environmentId, branchId));
     expect(attempts.map((attempt) => attempt.id)).toEqual([data.deploymentId]);
+    // Admission froze web's Setup Command on it: web has never deployed.
+    expect(attempts[0]?.setupCommands).toEqual({ [webNode?.id ?? ""]: ["pnpm db:seed"] });
     expect(inngest.send).toHaveBeenCalledTimes(1);
   });
 
@@ -166,6 +170,8 @@ describe("createBranch", () => {
     await expect(create()).rejects.toMatchObject({ _tag: "Conflict" });
     await expect(create({ name: "x".repeat(60) })).rejects.toMatchObject({ _tag: "Validation", field: "name" });
     await expect(create({ name: "empty", focus: [] })).rejects.toMatchObject({ _tag: "Validation", field: "picks" });
+    await expect(create({ name: "stray", setupCommands: [{ lineageId: dataLineage, command: "seed" }] }))
+      .rejects.toMatchObject({ _tag: "Validation", field: "setupCommands" });
     expect(await harness.db.select().from(schema.environment)).toHaveLength(2);
   });
 });

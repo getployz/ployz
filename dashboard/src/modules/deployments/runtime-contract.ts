@@ -11,6 +11,7 @@ export type EnvironmentDeploySnapshot = {
   config: ServiceDeploymentConfig;
   replicas?: number;
   resolvedEnv?: Record<string, string>;
+  setupCommands?: string[];
 };
 
 export const TERMINAL_ENVIRONMENT_DEPLOYMENT_STATUSES =

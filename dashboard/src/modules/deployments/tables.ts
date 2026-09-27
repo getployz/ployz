@@ -96,6 +96,8 @@ export const environmentDeployment = pgTable(
     variableProducers: jsonb("variable_producers").$type<
       EnvironmentSnapshotVariableProducer[] | null
     >(),
+    // Frozen at admission: each never-deployed Own Copy's Setup Commands, by service id.
+    setupCommands: jsonb("setup_commands").notNull().default({}).$type<Record<string, string[]>>(),
     deployManifest: jsonb("deploy_manifest").$type<RedactedDeployManifest>(),
     deployPreview:
       jsonb("deploy_preview").$type<EnvironmentDeploymentPreview>(),

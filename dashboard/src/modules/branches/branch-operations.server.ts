@@ -18,7 +18,7 @@ import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environ
 import { createManualEnvironmentDeployment } from "#/modules/deployments/deployment-command.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import { branchHostnameSuffix, branchNameError, branchNamespace, liveLineages, ownLineages, planBranchOf } from "./branch-plan";
-import type { CreateBranch } from "./branch-schemas";
+import type { CreateBranch, SetBranchSetupDefaults } from "./branch-schemas";
 
 type EnvironmentRow = typeof environment.$inferSelect;
 type ProjectRow = typeof project.$inferSelect;
@@ -76,6 +76,10 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
   }));
   const own = ownLineages(plan);
   if (own.length === 0) return yield* new Validation({ field: "picks", message: "Pick something to copy." });
+  const ownServices = new Set(from.services.map((node) => node.lineageId).filter((lineage) => own.includes(lineage)));
+  if (input.setupCommands.some((setup) => !ownServices.has(setup.lineageId))) {
+    return yield* new Validation({ field: "setupCommands", message: "A setup command runs in one of the branch's own services." });
+  }
 
   // The browser checks these first; the unique index settles a race.
   const namespace = branchNamespace(project.slug, input.name);
@@ -146,8 +150,22 @@ const writeBranch = Effect.fn("Branches.writeBranch")(function* ({ actor, projec
     environmentId: document.id, organizationId: project.organizationId, projectId: project.id,
     parentEnvironmentId: parent.id, kept: input.keep,
     base: parseDashboardEnvironmentIntent(changes.base),
+    setupCommands: input.setupCommands,
     createdByUserId: actor.userId,
   }).returning();
   if (!branch) return yield* Effect.die("PostgreSQL did not return the Branch row.");
   return { environment: written, branch };
+});
+
+/** Saves the Setup Commands that prefill new Branches of this Environment; saved at once, never staged. */
+export const setBranchSetupDefaults = Effect.fn("Branches.setBranchSetupDefaults")(function* (actor: Actor, input: SetBranchSetupDefaults) {
+  const context = yield* getEnvironmentContextForActorById(actor, {
+    organizationSlug: input.organizationSlug, environmentId: input.environmentId,
+  });
+  if (context === null) return yield* new NotFound({ message: "The environment was not found." });
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.update(environment).set({ branchSetupCommands: input.setupCommands })
+    .where(eq(environment.id, context.environment.id)).returning();
+  if (!row) return yield* new NotFound({ message: "The environment was not found." });
+  return row;
 });
