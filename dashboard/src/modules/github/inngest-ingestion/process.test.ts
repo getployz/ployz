@@ -7,6 +7,7 @@ import {
 } from "#/modules/github/inngest-ingestion/process";
 import {
   createProcessGithubCheckSuiteReceived,
+  createProcessGithubPullRequestReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
 
@@ -26,6 +27,11 @@ describe("GitHub ingestion workflow contracts", () => {
       "check suite",
       "github/check-suite.received",
       createProcessGithubCheckSuiteReceived,
+    ],
+    [
+      "pull request",
+      "github/pull-request.received",
+      createProcessGithubPullRequestReceived,
     ],
   ] as const)(
     "rejects malformed %s event data before any activity",

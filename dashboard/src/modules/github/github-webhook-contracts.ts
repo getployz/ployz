@@ -2,6 +2,8 @@ import { minimatch } from "minimatch";
 import { Data, Result, Schema } from "effect";
 import {
   GITHUB_CHECK_SUITE_ACTIONS,
+  GITHUB_PULL_REQUEST_ACTIONS,
+  githubBranchNameSchema,
   githubChangedPathsSchema,
   githubCheckSuiteActionSchema,
   githubCheckSuiteConclusionSchema,
@@ -12,6 +14,8 @@ import {
   githubTimestampSchema,
   githubWatchPatternSchema,
   type GithubCheckSuiteWebhook,
+  type GithubPullRequestAction,
+  type GithubPullRequestWebhook,
   type GithubPushWebhook,
 } from "#/modules/github/github-ingestion.contracts";
 import { asRecord, asString } from "#/lib/json";
@@ -41,6 +45,24 @@ const githubCheckSuitePayloadSchema = Schema.Struct({
   }),
 });
 const nonEmptyStringSchema = Schema.String.check(Schema.isMinLength(1));
+const githubPullRequestPayloadSchema = Schema.Struct({
+  ...githubIdentityFields,
+  pull_request: Schema.Struct({
+    number: githubIdSchema,
+    title: Schema.String,
+    user: Schema.Struct({ login: nonEmptyStringSchema, type: Schema.String }),
+    head: Schema.Struct({
+      ref: githubBranchNameSchema,
+      sha: githubExactShaSchema,
+      repo: Schema.NullOr(Schema.Struct({ id: githubIdSchema })),
+    }),
+    base: Schema.Struct({ ref: githubBranchNameSchema }),
+    draft: Schema.Boolean,
+    merged: Schema.Boolean,
+    merge_commit_sha: Schema.NullOr(githubExactShaSchema),
+    commits: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  }),
+});
 const githubInstallationPayloadSchema = Schema.Struct({
   action: Schema.Literals([
     "created",
@@ -114,6 +136,7 @@ export class GithubPathContractError extends Data.TaggedError(
 
 export type {
   GithubCheckSuiteWebhook,
+  GithubPullRequestWebhook,
   GithubPushWebhook,
 } from "#/modules/github/github-ingestion.contracts";
 
@@ -179,6 +202,57 @@ export function decodeGithubCheckSuitePayload<Input>(
     status: checkSuite.status,
     conclusion: checkSuite.conclusion,
     sourceUpdatedAt: checkSuite.updated_at,
+  });
+}
+
+const githubPullRequestActions = new Set<string>(GITHUB_PULL_REQUEST_ACTIONS);
+
+function isGithubPullRequestAction(action: string): action is GithubPullRequestAction {
+  return githubPullRequestActions.has(action);
+}
+
+/**
+ * Decodes a pull request delivery into its facts, or `null` for an action Cloud doesn't record:
+ * labels, reviews, assignments, and edits that leave the target Git branch alone.
+ */
+export function decodeGithubPullRequestPayload<Input>(
+  payload: Input,
+): Result.Result<GithubPullRequestWebhook | null, GithubWebhookContractError> {
+  const malformed = Result.fail(
+    new GithubWebhookContractError({
+      code: "malformed_payload",
+      message: "Malformed GitHub pull request payload.",
+    }),
+  );
+  const record = asRecord(payload);
+  const action = asString(record?.["action"]);
+  if (action === null) return malformed;
+  if (!isGithubPullRequestAction(action)) return Result.succeed(null);
+  if (action === "edited" && asRecord(asRecord(record?.["changes"])?.["base"]) === null) {
+    return Result.succeed(null);
+  }
+
+  const decoded = Schema.decodeUnknownResult(githubPullRequestPayloadSchema)(payload);
+  if (Result.isFailure(decoded)) return malformed;
+  const { installation, repository, pull_request: pullRequest } = decoded.success;
+  if (pullRequest.merged && pullRequest.merge_commit_sha === null) return malformed;
+  return Result.succeed({
+    kind: "pull_request",
+    action,
+    installationId: installation.id,
+    repositoryId: repository.id,
+    number: pullRequest.number,
+    title: pullRequest.title,
+    author: { login: pullRequest.user.login, isBot: pullRequest.user.type === "Bot" },
+    headRepositoryId: pullRequest.head.repo?.id ?? null,
+    headBranch: pullRequest.head.ref,
+    headSha: pullRequest.head.sha,
+    targetBranch: pullRequest.base.ref,
+    draft: pullRequest.draft,
+    merged: pullRequest.merged,
+    // GitHub fills merge_commit_sha with a test merge while the pull request is open.
+    mergeCommitSha: pullRequest.merged ? pullRequest.merge_commit_sha : null,
+    commitCount: pullRequest.commits,
   });
 }
 

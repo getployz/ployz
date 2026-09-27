@@ -13,7 +13,7 @@ The display name of a Service, stored on its stable identity and saved immediate
 _Avoid_: Deployable name, DNS alias
 
 **Deployment Policy**:
-Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
+Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting for CI counts check suites from other GitHub Apps, never Ployz's own. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
 _Avoid_: Staged source settings, runtime configuration
 
 **Registry Credential**:

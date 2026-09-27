@@ -3,6 +3,7 @@ import {
   decodeGithubCheckSuitePayload,
   decodeGithubInstallationPayload,
   decodeGithubInstallationRepositoriesPayload,
+  decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
 import { rejectMalformedGithubDelivery } from "#/modules/github/github-ingestion.repository";
@@ -14,14 +15,19 @@ import {
   createGithubCheckSuiteReceivedEvent,
   createGithubInstallationReceivedEvent,
   createGithubInstallationRepositoriesReceivedEvent,
+  createGithubPullRequestReceivedEvent,
   createGithubPushReceivedEvent,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { publicErrorResponse } from "#/server/public-error";
+import { AppConfig } from "#/server/config.server";
 
 const workflowRunPayloadSchema = Schema.Struct({
   action: Schema.String,
   workflow_run: Schema.Struct({ id: Schema.Number, path: Schema.String }),
+});
+const checkSuiteAppSchema = Schema.Struct({
+  check_suite: Schema.Struct({ app: Schema.Struct({ id: Schema.Number }) }),
 });
 
 class GithubWebhookReadError extends Data.TaggedError(
@@ -74,7 +80,7 @@ export const handleGithubWebhookRequest = Effect.fn(
     Schema.fromJsonString(Schema.Unknown),
   )(body);
   if (Option.isNone(payload)) {
-    return event === "push" || event === "check_suite"
+    return event === "push" || event === "check_suite" || event === "pull_request"
       ? yield* rejectDelivery({ deliveryId, eventKind: event, rejection: "malformed" })
       : new Response("Malformed webhook", { status: 400 });
   }
@@ -108,6 +114,12 @@ export const handleGithubWebhookRequest = Effect.fn(
   }
 
   if (event === "check_suite") {
+    // Ployz's own check suite never counts as CI, so its deliveries stop here.
+    const app = Schema.decodeUnknownOption(checkSuiteAppSchema)(payload.value);
+    const { appId } = (yield* AppConfig).github;
+    if (Option.isSome(app) && String(app.value.check_suite.app.id) === appId) {
+      return new Response("OK", { status: 200 });
+    }
     const decoded = decodeGithubCheckSuitePayload(payload.value);
     if (EffectResult.isFailure(decoded)) {
       return yield* rejectDelivery({
@@ -125,6 +137,26 @@ export const handleGithubWebhookRequest = Effect.fn(
         ...decoded.success,
       }),
     );
+    return new Response("OK", { status: 200 });
+  }
+
+  if (event === "pull_request") {
+    const decoded = decodeGithubPullRequestPayload(payload.value);
+    if (EffectResult.isFailure(decoded)) {
+      return yield* rejectDelivery({
+        deliveryId,
+        eventKind: "pull_request",
+        rejection: "malformed",
+      });
+    }
+    if (decoded.success) {
+      yield* sendInngestEvent(
+        createGithubPullRequestReceivedEvent({
+          deliveryId,
+          ...decoded.success,
+        }),
+      );
+    }
     return new Response("OK", { status: 200 });
   }
 

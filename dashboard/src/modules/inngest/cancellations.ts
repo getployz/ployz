@@ -1,5 +1,6 @@
 import {
   PROCESS_GITHUB_CHECK_SUITE_RECEIVED_FUNCTION_ID,
+  PROCESS_GITHUB_PULL_REQUEST_RECEIVED_FUNCTION_ID,
   PROCESS_GITHUB_PUSH_RECEIVED_FUNCTION_ID,
 } from "#/modules/inngest/row-backed-workflow-ids";
 import type { GithubIngestionEffectRunner } from "#/modules/github/inngest-ingestion/process";
@@ -18,7 +19,8 @@ export async function executeCancelGithubRowBackedWorkflow(
 ) {
   if (
     input.functionId === PROCESS_GITHUB_PUSH_RECEIVED_FUNCTION_ID ||
-    input.functionId === PROCESS_GITHUB_CHECK_SUITE_RECEIVED_FUNCTION_ID
+    input.functionId === PROCESS_GITHUB_CHECK_SUITE_RECEIVED_FUNCTION_ID ||
+    input.functionId === PROCESS_GITHUB_PULL_REQUEST_RECEIVED_FUNCTION_ID
   ) {
     const marked = await input.step.run("cancel-github-delivery", async () => {
       const cancelled = await runEffect(
