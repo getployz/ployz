@@ -167,4 +167,34 @@ describe("branchAdmission", () => {
     expect(pushed.env).toMatchObject({ DB_HOST: "db.shop-production.internal" });
     expect(pushed.row?.missingLiveValues.map((value) => value.key).sort()).toEqual(["NOPE", "PLOYZ_PRIVATE_DOMAIN"]);
   });
+
+  it("gives a Live Node's public address from the owner's configuration and keeps an address the owner itself uses live", async () => {
+    const intent = production();
+    const db = intent.services.find((service) => service.lineageId === dbLineage);
+    if (db) {
+      db.config.managedHostnames = [{ prefix: "db-shop", targetPort: null }];
+      db.variables.push(variable(id(12), "CACHE_ADDR", ref(cacheLineage, "PLOYZ_PRIVATE_DOMAIN")));
+    }
+    await applyProduction(intent);
+    // production itself used cache live from elsewhere: its attempt holds cache's address already at its owner.
+    await harness.db.update(schema.environmentDeployment).set({ variableProducers: [
+      ...compileSavedEnvironmentIntent({ environmentId: productionId, intent }).variableProducers,
+      { ownerScope: "service", ownerId: id(9), ownerLineageId: cacheLineage, key: "PLOYZ_PRIVATE_DOMAIN", value: { kind: "literal", value: "cache.shop-root.internal" } },
+    ] }).where(eq(schema.environmentDeployment.environmentId, productionId));
+    await harness.pool.query(`insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at)
+      values ('${organizationId}', 'https://dns.example', 'acme.ployz.dev', '${JSON.stringify(encryption.encrypt("token"))}', now(), now())`);
+    const savedStateSnapshotId = await saved(branchId, { ...branch(), services: branch().services.map((service) => ({ ...service, variables: [
+      variable(id(10), "DB_URL", ref(dbLineage, "PLOYZ_PUBLIC_DOMAIN")),
+      variable(id(11), "DB_SEES_CACHE", ref(dbLineage, "CACHE_ADDR")),
+    ] })) });
+    const admitted = await harness.runTransaction(() => admitEnvironmentDeployment({
+      environmentId: branchId, savedStateSnapshotId, triggerOrigin: { origin: "manual", actorId: userId }, message: null,
+    }));
+    const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, admitted.id));
+    const produced = (lineage: string, key: string) => row?.variableProducers?.find((producer) =>
+      producer.ownerLineageId === lineage && producer.key === key)?.value;
+    expect(produced(dbLineage, "PLOYZ_PUBLIC_DOMAIN")).toEqual({ kind: "literal", value: "db-shop.acme.ployz.dev" });
+    expect(produced(`shop-production::${cacheLineage}`, "PLOYZ_PRIVATE_DOMAIN")).toEqual({ kind: "literal", value: "cache.shop-root.internal" });
+    expect(row?.missingLiveValues).toEqual([]);
+  });
 });

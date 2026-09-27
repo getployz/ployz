@@ -67,24 +67,24 @@ export type EnvironmentExplicitStateProjection = {
   } | null;
 };
 
+/** An Applied node's config as the attempt that applied it left it. */
+export type AppliedSavedNode = {
+  environmentId: string;
+  /** The attempt that applied this node. */
+  environmentDeploymentId: string;
+  nodeType: "service" | "volume";
+  nodeId: string;
+  nodeLineageId: string;
+  configVersion: number;
+  config: JsonObject;
+  credentialRevision: string | null;
+  encryptedRegistryUsername: EncryptedSecretValue | null;
+  encryptedRegistrySecret: EncryptedSecretValue | null;
+  sourceSavedStateSnapshotId: string;
+};
+
 export type EnvironmentSnapshotProjection = {
-  appliedSavedNodeByKey: Map<
-    string,
-    {
-      environmentId: string;
-      /** The attempt that applied this node. */
-      environmentDeploymentId: string;
-      nodeType: "service" | "volume";
-      nodeId: string;
-      nodeLineageId: string;
-      configVersion: number;
-      config: JsonObject;
-      credentialRevision: string | null;
-      encryptedRegistryUsername: EncryptedSecretValue | null;
-      encryptedRegistrySecret: EncryptedSecretValue | null;
-      sourceSavedStateSnapshotId: string;
-    }
-  >;
+  appliedSavedNodeByKey: Map<string, AppliedSavedNode>;
   explicitStates: EnvironmentExplicitStateProjection[];
 };
 
