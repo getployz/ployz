@@ -93,34 +93,38 @@ pub fn live_values(input: LiveValuesInput) -> Result<LiveValues, ConfigError> {
         .producers
         .iter()
         .map(|producer| {
-            let value = match &producer.value {
-                SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
-                    SavedVariableValue::Literal {
-                        value: value.strip_suffix(".internal").map_or_else(
-                            || value.clone(),
-                            |host| format!("{host}.{namespace}.internal"),
-                        ),
+            let value =
+                match &producer.value {
+                    SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
+                        SavedVariableValue::Literal {
+                            value: value.strip_suffix(".internal").map_or_else(
+                                || value.clone(),
+                                |host| format!("{host}.{namespace}.internal"),
+                            ),
+                        }
                     }
-                }
-                SavedVariableValue::Template { parts } => SavedVariableValue::Template {
-                    parts: parts
-                        .iter()
-                        .map(|part| match part {
-                            ValuePart::Ref {
-                                owner: ValuePartOwner::Service { lineage_id },
-                                key,
-                            } => ValuePart::Ref {
-                                owner: ValuePartOwner::Service {
-                                    lineage_id: scope(lineage_id),
+                    SavedVariableValue::Template { parts } => SavedVariableValue::Template {
+                        parts: parts
+                            .iter()
+                            .map(|part| match part {
+                                ValuePart::Ref {
+                                    owner: ValuePartOwner::Service { lineage_id },
+                                    key,
+                                } => ValuePart::Ref {
+                                    owner: ValuePartOwner::Service {
+                                        lineage_id: scope(lineage_id),
+                                    },
+                                    key: key.clone(),
                                 },
-                                key: key.clone(),
-                            },
-                            other => other.clone(),
-                        })
-                        .collect(),
-                },
-                other => other.clone(),
-            };
+                                other @ (ValuePart::Text { .. } | ValuePart::Ref { .. }) => {
+                                    other.clone()
+                                }
+                            })
+                            .collect(),
+                    },
+                    other @ (SavedVariableValue::Literal { .. }
+                    | SavedVariableValue::Secret { .. }) => other.clone(),
+                };
             SavedVariableProducer {
                 owner_lineage_id: scope(&producer.owner_lineage_id),
                 value,
