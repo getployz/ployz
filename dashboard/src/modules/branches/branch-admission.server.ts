@@ -29,33 +29,60 @@ export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
 });
 
 /**
- * A Branch's ancestors, nearest first, each with its namespace and, per Applied lineage, the attempt that applied that
- * node. Per node, so a node a partly failed attempt deployed counts. No ancestors for a root.
+ * A Branch's ancestors in one read: each one's namespace, its Applied nodes by lineage (per node, so a node a partly failed
+ * attempt deployed counts, each with the attempt that applied it), and the projection they came from. Nothing for a root.
  */
 export const loadAncestorApplied = Effect.fn("Branches.loadAncestorApplied")(function* (environmentId: string) {
   const { drizzle } = yield* Database;
   const [self] = yield* drizzle.select({
     organizationId: environmentBranch.organizationId, projectId: environmentBranch.projectId, parentId: environmentBranch.parentEnvironmentId,
   }).from(environmentBranch).where(eq(environmentBranch.environmentId, environmentId));
-  if (!self) return { organizationId: null, parentId: null, branches: [], applied: new Map<string, AncestorApplied>() };
+  const runs = new Map<string, Map<string, AppliedSavedNode>>();
+  if (!self) return { organizationId: null, parentId: null, branches: [], namespaces: new Map<string, string>(), runs, projection: null };
   const branches = yield* drizzle.select({ environmentId: environmentBranch.environmentId, parentEnvironmentId: environmentBranch.parentEnvironmentId })
     .from(environmentBranch).where(eq(environmentBranch.projectId, self.projectId));
   const ids = ancestors(self.parentId, branches);
   const namespaces = new Map((yield* drizzle.select({ id: environment.id, namespace: environment.namespace })
     .from(environment).where(inArray(environment.id, ids))).map((row) => [row.id, row.namespace]));
-  const applied = new Map<string, AncestorApplied>();
-  for (const id of ids) {
-    const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: id });
-    const nodes = [...projection.appliedSavedNodeByKey.values()].filter((node) => node.environmentId === id);
-    applied.set(id, { namespace: namespaces.get(id) ?? "", lineages: new Map(nodes.map((node) => [node.nodeLineageId, node])) });
+  const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environments", environmentIds: ids });
+  for (const node of projection.appliedSavedNodeByKey.values()) {
+    runs.set(node.environmentId, (runs.get(node.environmentId) ?? new Map()).set(node.nodeLineageId, node));
   }
-  return { organizationId: self.organizationId, parentId: self.parentId, branches, applied };
+  return { organizationId: self.organizationId, parentId: self.parentId, branches, namespaces, runs, projection };
 });
-type AncestorApplied = {
-  namespace: string;
-  /** Each Applied node by lineage, with the attempt that applied it. */
-  lineages: Map<string, AppliedSavedNode>;
-};
+
+type Attempt = { id: string; createdAt: Date; producers: Producers | null };
+
+/**
+ * What an owner provides to what uses its nodes live: each node it runs, with its values from the attempt that applied it
+ * there (a Live Node's values may read the owner's other nodes); what the owner itself uses live, as the newest of those
+ * attempts captured it; and each of its services' public addresses.
+ */
+function ownerProducers(nodes: ReadonlyMap<string, AppliedSavedNode>, attempts: readonly Attempt[], clusterDomain: string | null): Producers {
+  const attemptOf = new Map(attempts.map((attempt) => [attempt.id, attempt]));
+  const newest = [...nodes.values()].map((node) => attemptOf.get(node.environmentDeploymentId))
+    .reduce<Attempt | undefined>((latest, attempt) => (!attempt || (latest && latest.createdAt > attempt.createdAt) ? latest : attempt), undefined);
+  return [
+    ...[...nodes].flatMap(([lineage, node]) => (attemptOf.get(node.environmentDeploymentId)?.producers ?? [])
+      .filter((producer) => producer.ownerLineageId === lineage)),
+    ...(newest?.producers ?? []).filter((producer) => !nodes.has(producer.ownerLineageId)),
+    ...publicDomainProducers(nodes, clusterDomain),
+  ];
+}
+
+/**
+ * Each service's PLOYZ_PUBLIC_DOMAIN, which a deploy resolves from the service's own configuration rather than recording
+ * it, for every service the owner runs: a value that embeds it (an ORIGIN) reaches it through another service.
+ */
+function publicDomainProducers(nodes: ReadonlyMap<string, AppliedSavedNode>, clusterDomain: string | null): Producers {
+  return [...nodes].flatMap(([lineage, node]) => {
+    const domain = node.nodeType === "service" ? servicePublicDomain(parseServiceConfig(node.config), clusterDomain) : null;
+    return domain ? [{
+      ownerScope: "service" as const, ownerId: node.nodeId, ownerLineageId: lineage, key: "PLOYZ_PUBLIC_DOMAIN",
+      value: { kind: "literal" as const, value: domain },
+    }] : [];
+  });
+}
 
 /** From the nearest ancestor that runs each Live Node its Own Copies reference, and the ones no ancestor provides. */
 const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
@@ -79,8 +106,7 @@ const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
   if (uses.size === 0) return { variableProducers, missingLiveValues };
 
   // The owner of a Live lineage is the nearest ancestor whose Applied State runs it.
-  const { organizationId, parentId, branches, applied } = yield* loadAncestorApplied(environmentId);
-  const runs = new Map([...applied].map(([id, at]) => [id, at.lineages]));
+  const { organizationId, parentId, branches, namespaces, runs } = yield* loadAncestorApplied(environmentId);
   const byOwner = new Map<string, string[]>();
   const missing: { lineageId: string; key: string }[] = [];
   for (const lineageId of uses.keys()) {
@@ -88,38 +114,14 @@ const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
     if (owner) byOwner.set(owner, [...byOwner.get(owner) ?? [], lineageId]);
     else for (const key of uses.get(lineageId)?.keys() ?? []) missing.push({ lineageId, key });
   }
-  const attemptIds = [...new Set([...byOwner.keys()].flatMap((owner) => [...applied.get(owner)?.lineages.values() ?? []]
-    .map((node) => node.environmentDeploymentId)))];
+  const attemptIds = [...new Set([...byOwner.keys()].flatMap((owner) => [...runs.get(owner)?.values() ?? []].map((node) => node.environmentDeploymentId)))];
   const attempts = attemptIds.length ? yield* drizzle.select({
     id: environmentDeployment.id, createdAt: environmentDeployment.createdAt, producers: environmentDeployment.variableProducers,
   }).from(environmentDeployment).where(inArray(environmentDeployment.id, attemptIds)) : [];
-  const producersOf = new Map(attempts.map((row) => [row.id, row.producers]));
-  const reads = (key: string) => [...uses.values()].some((keys) => keys.has(key));
-  const clusterDomain = organizationId && reads("PLOYZ_PUBLIC_DOMAIN") ? (yield* loadClusterDomain(organizationId))?.name ?? null : null;
+  const clusterDomain = organizationId && byOwner.size ? (yield* loadClusterDomain(organizationId))?.name ?? null : null;
   for (const [owner, lineages] of byOwner) {
-    const at = applied.get(owner);
-    const nodes = [...at?.lineages ?? []];
-    // Each node the owner runs, with its values from the attempt that applied it there (a Live Node's own values may
-    // read the owner's other nodes); then what the owner itself uses live, as its newest of those attempts captured it.
-    const newest = attempts.filter((row) => nodes.some(([, node]) => node.environmentDeploymentId === row.id))
-      .reduce<(typeof attempts)[number] | undefined>((latest, row) => (latest && latest.createdAt > row.createdAt ? latest : row), undefined);
-    const producers = [
-      ...nodes.flatMap(([lineage, node]) => (producersOf.get(node.environmentDeploymentId) ?? [])
-        .filter((producer) => producer.ownerLineageId === lineage)),
-      ...(newest?.producers ?? []).filter((producer) => !at?.lineages.has(producer.ownerLineageId)),
-      // A service's public address is resolved at deploy time from its own configuration, so the owner's attempt doesn't hold it.
-      ...lineages.flatMap((lineage) => {
-        const node = at?.lineages.get(lineage);
-        const domain = node?.nodeType === "service" && uses.get(lineage)?.has("PLOYZ_PUBLIC_DOMAIN")
-          ? servicePublicDomain(parseServiceConfig(node.config), clusterDomain) : null;
-        return node && domain ? [{
-          ownerScope: "service" as const, ownerId: node.nodeId, ownerLineageId: lineage, key: "PLOYZ_PUBLIC_DOMAIN",
-          value: { kind: "literal" as const, value: domain },
-        }] : [];
-      }),
-    ];
     const result = liveValues({
-      owner: { namespace: at?.namespace ?? "", producers },
+      owner: { namespace: namespaces.get(owner) ?? "", producers: ownerProducers(runs.get(owner) ?? new Map(), attempts, clusterDomain) },
       lineages: lineages.map((lineageId) => ({ lineageId, keys: [...uses.get(lineageId)?.keys() ?? []] })),
     });
     variableProducers.push(...result.producers);
