@@ -9,8 +9,9 @@ use ts_rs::TS;
 use super::service_changes::{FIELDS, at};
 use super::{
     ConfigError, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent,
-    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ValuePart, ValuePartOwner,
-    VolumeAttachment, parse_environment_intent, redact_environment_intent, restore_service_setting,
+    SavedVariableValue, SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    ValuePart, ValuePartOwner, VolumeAttachment, parse_environment_intent,
+    redact_environment_intent, restore_service_setting,
 };
 
 /// The sides of one move: changes flow from `from` into `into`, judged against `base`.
@@ -216,13 +217,13 @@ impl Sides<'_> {
             let b = base.get(lineage).copied();
             match (from.get(lineage).copied(), into.get(lineage).copied()) {
                 (Some(f), Some(i)) => self.settings_rows(lineage, b, f, i, &mut rows),
-                // ponytail: a node only `from` has and `base` lacks is an introduction (#1146).
                 (Some(f), None) => {
                     let why = if self.provided.contains(lineage) {
                         BranchReason::Live
                     } else if b.is_some() {
                         BranchReason::LeftOut
                     } else {
+                        self.introduction_rows(lineage, f, &mut rows);
                         continue;
                     };
                     rows.push(node_row(lineage, why, b, Some(f), None));
@@ -309,7 +310,43 @@ impl Sides<'_> {
         }
     }
 
+    /// A node `into` lacks and doesn't use live moves in whole, with a row per variable.
+    fn introduction_rows(&self, lineage: &str, node: Node, rows: &mut Vec<BranchRow>) {
+        rows.push(BranchRow {
+            key: format!("{lineage}:node"),
+            role: BranchRole::Move {
+                conflict: false,
+                choice: None,
+            },
+            base: Value::Null,
+            from: node_value(node),
+            into: Value::Null,
+        });
+        let Node::Service(service) = node else {
+            return;
+        };
+        for variable in &service.variables {
+            let secret = matches!(variable.value, SavedVariableValue::Secret { .. });
+            let mut choice = self.choice(lineage, &variable.key, secret);
+            // A Branch starts with its Parent's values, secrets included.
+            if self.base.is_none() {
+                choice.default = BranchOption::From;
+            }
+            rows.push(BranchRow {
+                key: format!("{lineage}:variables.{}", variable.key),
+                role: BranchRole::Move {
+                    conflict: false,
+                    choice: Some(choice),
+                },
+                base: Value::Null,
+                from: variable_value(variable),
+                into: Value::Null,
+            });
+        }
+    }
+
     /// Move the picked rows into `next` and advance `base` by exactly those rows.
+    /// Creating (no `base`) returns `from` minus the lineages `into` uses live as the new base.
     fn apply(
         &self,
         rows: &[BranchRow],
@@ -318,6 +355,20 @@ impl Sides<'_> {
         let mut next = self.into.clone();
         let mut base = self.base.cloned();
         let mut seen = BTreeSet::new();
+        // Volumes, then services, are introduced before any setting or variable lands on them.
+        let mut picks: Vec<_> = picks.iter().collect();
+        let volume_lineages: BTreeSet<_> = self
+            .from
+            .volumes
+            .iter()
+            .map(|v| v.resource_lineage_id.as_str())
+            .collect();
+        picks.sort_by_key(|pick| match pick.key.split_once(':') {
+            Some((lineage, "node")) if volume_lineages.contains(lineage) => 0,
+            Some((_, "node")) => 1,
+            _ => 2,
+        });
+        let mut introduced = Vec::new();
         for pick in picks {
             if !seen.insert(pick.key.as_str()) {
                 return Err(ConfigError::at("picks.key", "Each change is picked once"));
@@ -330,6 +381,20 @@ impl Sides<'_> {
                 return Err(ConfigError::at("picks.key", "Change is meant to differ"));
             };
             let (lineage, path) = pick.key.split_once(':').expect("row keys hold a lineage");
+            if path == "node" {
+                if pick.choice.is_some() {
+                    return Err(ConfigError::at("picks.choice", "Choice is not offered"));
+                }
+                self.introduce(&mut next, base.as_mut(), lineage)?;
+                introduced.push(lineage);
+                continue;
+            }
+            if !nodes(&next).contains_key(lineage) {
+                return Err(ConfigError::at(
+                    "picks.key",
+                    "Pick the node to introduce its variables",
+                ));
+            }
             match (choice, pick.choice, path.strip_prefix("variables.")) {
                 (Some(offered), Some(chosen), Some(key)) if offered.options.contains(&chosen) => {
                     if let Some(variable) = self.chosen_variable(lineage, key, chosen, pick) {
@@ -339,7 +404,6 @@ impl Sides<'_> {
                 (None, None, None) => move_setting(&mut next, self.from, lineage, path)?,
                 _ => return Err(ConfigError::at("picks.choice", "Choice is not offered")),
             }
-            // ponytail: a null base (create) advances in #1146.
             if let Some(base) = &mut base {
                 adopt_node(base, self.into, lineage, path);
                 match path.strip_prefix("variables.") {
@@ -348,8 +412,114 @@ impl Sides<'_> {
                 }
             }
         }
+        // An introduced node's unpicked variables land by their default choice.
+        for row in rows {
+            let (lineage, path) = row.key.split_once(':').expect("row keys hold a lineage");
+            let (
+                Some(key),
+                BranchRole::Move {
+                    choice: Some(choice),
+                    ..
+                },
+            ) = (path.strip_prefix("variables."), &row.role)
+            else {
+                continue;
+            };
+            if !introduced.contains(&lineage) || seen.contains(row.key.as_str()) {
+                continue;
+            }
+            let pick = BranchPick {
+                key: row.key.clone(),
+                choice: None,
+                new_value: None,
+            };
+            if let Some(variable) = self.chosen_variable(lineage, key, choice.default, &pick) {
+                put_variable(&mut next, lineage, variable);
+            }
+        }
         let next = parse_environment_intent(json!(next))?;
-        Ok((next, base.map(redact_environment_intent)))
+        let base = base.unwrap_or_else(|| {
+            let mut base = self.from.clone();
+            base.services
+                .retain(|s| !self.provided.contains(s.lineage_id.as_str()));
+            base
+        });
+        Ok((next, Some(redact_environment_intent(base))))
+    }
+
+    /// Add `from`'s node to `next` with fresh ids, no custom domains, `into`'s generated-address
+    /// naming, a rebound credential, and mounts on `into`'s Volumes; its variables land separately.
+    fn introduce(
+        &self,
+        next: &mut SavedEnvironmentIntent,
+        base: Option<&mut SavedEnvironmentIntent>,
+        lineage: &str,
+    ) -> Result<(), ConfigError> {
+        let clash = || ConfigError::at("picks.key", "Name or private address is already used");
+        if let Some(volume) = self
+            .from
+            .volumes
+            .iter()
+            .find(|v| v.resource_lineage_id == lineage)
+        {
+            if next.volumes.iter().any(|v| v.name == volume.name) {
+                return Err(clash());
+            }
+            let volume = SavedVolumeIntent {
+                resource_id: uuid::Uuid::new_v4().to_string(),
+                ..volume.clone()
+            };
+            if let Some(base) = base {
+                base.volumes.push(volume.clone());
+            }
+            next.volumes.push(volume);
+            return Ok(());
+        }
+        let source = service(self.from, lineage);
+        if next
+            .services
+            .iter()
+            .any(|s| s.slug == source.slug || s.config.private_dns == source.config.private_dns)
+        {
+            return Err(clash());
+        }
+        let mut copy = SavedServiceIntent {
+            id: uuid::Uuid::new_v4().to_string(),
+            variables: Vec::new(),
+            volume_attachments: Vec::new(),
+            ..source.clone()
+        };
+        copy.config.routes.clear();
+        for hostname in &mut copy.config.managed_hostnames {
+            let prefix = hostname
+                .prefix
+                .strip_suffix(self.hostnames.from.as_str())
+                .unwrap_or(&hostname.prefix);
+            hostname.prefix = format!("{prefix}{}", self.hostnames.into);
+        }
+        rebind_credential(&mut copy);
+        copy.volume_attachments = attachments_in(self.from, source, next).ok_or_else(|| {
+            ConfigError::at(
+                "picks.key",
+                "Mounted Volume is not in the receiving configuration",
+            )
+        })?;
+        if let Some(base) = base {
+            let mut recorded = copy.clone();
+            recorded.variables = source.variables.clone();
+            for variable in &mut recorded.variables {
+                variable.id = uuid::Uuid::new_v4().to_string();
+            }
+            // ponytail: a mount on a Volume base predates is dropped; the next compare re-offers it.
+            recorded.volume_attachments = source
+                .volume_attachments
+                .iter()
+                .filter_map(|a| attachment_in(self.from, a, base))
+                .collect();
+            base.services.push(recorded);
+        }
+        next.services.push(copy);
+        Ok(())
     }
 
     fn chosen_variable(
@@ -629,7 +799,54 @@ fn move_setting(
         path,
     )?
     .settings;
+    if path.starts_with("source") {
+        rebind_credential(target);
+    }
     Ok(())
+}
+
+/// Credentials compare by presence, and each node's credential is its own: bind it to `service`.
+fn rebind_credential(service: &mut SavedServiceIntent) {
+    if let ServiceSource::Image {
+        credentials: ServiceImageCredentials::Configured { credential_id },
+        ..
+    } = &mut service.config.source
+    {
+        credential_id.clone_from(&service.id);
+    }
+}
+
+/// `attachment` re-pointed at `to`'s Volume of the same lineage, if `to` has one.
+fn attachment_in(
+    from: &SavedEnvironmentIntent,
+    attachment: &VolumeAttachment,
+    to: &SavedEnvironmentIntent,
+) -> Option<VolumeAttachment> {
+    let lineage = &from
+        .volumes
+        .iter()
+        .find(|v| v.resource_id == attachment.volume_resource_id)?
+        .resource_lineage_id;
+    let volume = to
+        .volumes
+        .iter()
+        .find(|v| &v.resource_lineage_id == lineage)?;
+    Some(VolumeAttachment {
+        volume_resource_id: volume.resource_id.clone(),
+        mount_path: attachment.mount_path.clone(),
+    })
+}
+
+fn attachments_in(
+    from: &SavedEnvironmentIntent,
+    service: &SavedServiceIntent,
+    to: &SavedEnvironmentIntent,
+) -> Option<Vec<VolumeAttachment>> {
+    service
+        .volume_attachments
+        .iter()
+        .map(|a| attachment_in(from, a, to))
+        .collect()
 }
 
 /// A base that predates a node starts that node, and any mounted Volume, from `into`'s copy.
