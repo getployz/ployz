@@ -4,7 +4,7 @@ import { Effect } from "effect";
 import type { JsonObject } from "#/db/tables";
 import { asRecord, asString } from "#/lib/json";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
-import { compareNodeSettings } from "#/modules/environment-design/environment-change-set";
+import { compareNodeSettings, parseNodeConfigs } from "#/modules/environment-design/environment-change-set";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { presentSettingChange } from "#/modules/services/service-deployment-diff/fields";
 import { Database } from "#/server/database.server";
@@ -35,14 +35,15 @@ export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<Targ
 
 /** An updated node's setting changes as presented strings, so sealed values never leave the server; none when either config no longer parses. */
 function settingRows({ nodeType, config }: Node, before: Node): TargetNodeList["nodes"][number]["settings"] {
+  let configs: ReturnType<typeof parseNodeConfigs>;
   try {
-    return compareNodeSettings(nodeType, config, before.config).map((row) =>
-      ({ path: row.path, kind: row.kind, ...presentSettingChange(nodeType, row.path, row.before, row.after) }));
-  } catch (error) {
-    // An applied config may predate today's config schema; anything else is a bug.
-    if (error instanceof Error && /^\w+: Invalid \w+ configuration$/.test(error.message)) return undefined;
-    throw error;
+    configs = parseNodeConfigs(nodeType, config, before.config);
+  } catch {
+    // An applied config may predate today's config schema. Comparing and presenting parsed configs must not fail.
+    return undefined;
   }
+  return compareNodeSettings(configs).map((row) =>
+    ({ path: row.path, kind: row.kind, ...presentSettingChange(nodeType, row.path, row.before, row.after) }));
 }
 
 /**

@@ -75,8 +75,8 @@ it("writes the target node list against Applied State, counting a failed attempt
   await harness.db.insert(schema.environmentNodeConfigSnapshot).values([
     snapshot(applied, api, service("api")), snapshot(applied, web, service("web")), snapshot(applied, old, service("old")),
     snapshot(applied, data, { version: 2, name: "data" }, "volume"),
-    // Applied before today's config schema: it no longer parses, so it lists no setting rows.
-    snapshot(applied, legacy, { privateDns: "legacy", source: { type: "image", image: "nginx:1" } }),
+    // Applied under config version 1: today's schema rejects it, so it lists no setting rows.
+    snapshot(applied, legacy, { ...service("legacy"), version: 1 }),
     snapshot(failed, api, service("api", "nginx:2")), snapshot(failed, web, service("web", "nginx:2")),
     snapshot(target, api, service("api", "nginx:2")),
     snapshot(target, web, { ...service("web", "nginx:2"), mounts: [{ volumeResourceId: data, volumeName: "data", mountPath: "/data" }], env: { TOKEN: sealed } }),
