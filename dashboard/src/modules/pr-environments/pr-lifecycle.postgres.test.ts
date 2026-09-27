@@ -21,6 +21,7 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { setPrEnvironmentPlan } from "./plan-operations.server";
 import type { PullRequestEffectRunner } from "./pr-lifecycle.server";
+import { prDestinations } from "./pr-environment.repository.server";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
 const userId = "00000000-0000-4000-8000-000000001102";
@@ -56,11 +57,12 @@ const stagingIntent = {
   volumes: [],
 };
 
-type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; draft: boolean };
+type PullRequest = { number: number; state: "open" | "closed"; user: { login: string; type: string }; head: { ref: string; sha: string; repo: { id: number } }; base?: { ref: string }; draft: boolean };
 
 type PushDelivery = { ref: string; before: string; after: string; created: boolean; deleted: boolean; forced: boolean };
 type PullRequestDelivery = {
   action: string;
+  changes?: { base: { ref: { from: string } } };
   pull_request: PullRequest & { title: string; base: { ref: string }; merged: boolean; merge_commit_sha: null; commits: number };
 };
 
@@ -83,7 +85,7 @@ describe("PR Environment lifecycle", () => {
         switch (request.operation) {
           case "fetch_pull_request": {
             const pull = pulls.get(Number(request.url.split("/pulls/")[1]));
-            return pull && { ...pull, title: `Change ${pull.number}`, base: { ref: "main" } };
+            return pull && { base: { ref: "main" }, ...pull, title: `Change ${pull.number}` };
           }
           case "resolve_repository": return { id: repositoryId, full_name: "acme/app" };
           case "resolve_branch_head": {
@@ -155,8 +157,10 @@ describe("PR Environment lifecycle", () => {
   function deliverPullRequest(deliveryId: string, action: string, pull: PullRequest) {
     return deliver("pull_request", deliveryId, {
       action,
+      // Only an edit of the target Git branch reaches Ployz; which one it was isn't read.
+      ...action === "edited" ? { changes: { base: { ref: { from: "main" } } } } : {},
       pull_request: {
-        ...pull, title: `Change ${pull.number}`, base: { ref: "main" },
+        base: { ref: "main" }, ...pull, title: `Change ${pull.number}`,
         merged: false, merge_commit_sha: null, commits: 1,
       },
     });
@@ -321,5 +325,29 @@ describe("PR Environment lifecycle", () => {
     expect(await prEnvironment(143)).toBeUndefined();
     expect(await harness.db.select().from(schema.environmentBranch)
       .where(and(eq(schema.environmentBranch.projectId, projectId), eq(schema.environmentBranch.prNumber, 143)))).toEqual([]);
+  });
+
+  it("follows the pull request's target Git branch, and its Destinations with it", async () => {
+    // staging tracks main; dev tracks dev. Each by its latest Saved State.
+    const devId = "00000000-0000-4000-8000-000000001105";
+    const devIntent = { ...stagingIntent, environmentSlug: "shop-dev", services: stagingIntent.services.map((node) => node.lineageId === apiLineage
+      ? { ...node, config: { ...node.config, source: { ...node.config.source, branch: { type: "connected", name: "dev" } } } } : node) };
+    await harness.db.insert(schema.environment).values({ id: devId, projectId, organizationId, name: "dev", namespace: "shop-dev", intent: devIntent as never });
+    await harness.db.insert(schema.environmentSavedStateSnapshot).values([stagingId, devId].map((environmentId) => ({
+      organizationId, environmentId, actorId: userId, intent: (environmentId === devId ? devIntent : stagingIntent) as never, volumeDeletionAuthorizations: [],
+    })));
+
+    await pullRequest("opened", "opened", 142);
+    const environmentId = (await prEnvironment(142))?.environmentId ?? "";
+    const destinationsNow = () => harness.runEffect(prDestinations(environmentId));
+    expect(await destinationsNow()).toEqual([stagingId]);
+
+    expect(await pullRequest("edited", "edited", 142, { base: { ref: "dev" } })).toBe("pull_request_projected");
+    expect((await prEnvironment(142))?.prTargetBranch).toBe("dev");
+    expect(await destinationsNow()).toEqual([devId]);
+
+    // Nothing deploys release: no Destinations.
+    await pullRequest("edited-again", "edited", 142, { base: { ref: "release" } });
+    expect(await destinationsNow()).toEqual([]);
   });
 });
