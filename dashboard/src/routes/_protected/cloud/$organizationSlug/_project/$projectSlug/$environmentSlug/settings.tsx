@@ -20,6 +20,7 @@ import { cn } from "#/lib/utils";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
+import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
@@ -85,6 +86,7 @@ function RouteComponent() {
           )}
           {startingPoint && <StartingPointSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug}
             environmentSlug={environmentSlug} environmentId={environmentId} />}
+          <BranchDefaultsSection organizationSlug={organizationSlug} environmentId={environmentId} />
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"

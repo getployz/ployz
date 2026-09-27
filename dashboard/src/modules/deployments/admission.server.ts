@@ -59,6 +59,7 @@ import {
 } from "./deployment";
 import { Database } from "#/server/database.server";
 import { writeTargetNodeList } from "./attempt-target.server";
+import { branchAdmission } from "#/modules/branches/branch-admission.server";
 import { loadAppliedNodeConfigs } from "./environment-state.repository.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
@@ -341,7 +342,7 @@ function stageReviewedVolumeRemoveAttempt(input: {
 
 function writeQueuedSavedTarget(
   input: DeploymentAdmissionInput,
-  target: SavedDeploymentTarget,
+  target: SavedDeploymentTarget & { readonly setupCommands: Record<string, string[]> },
 ) {
   return Effect.gen(function* () {
     const { drizzle } = yield* Database;
@@ -378,6 +379,7 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            setupCommands: target.setupCommands,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
             updatedAt: now,
@@ -399,6 +401,7 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            setupCommands: target.setupCommands,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
           })
@@ -497,7 +500,7 @@ export const admitEnvironmentDeployment = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
-    const target = yield* loadExactSavedDeploymentTarget(input);
+    const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
     return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
   }));
 });

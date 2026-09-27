@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { createOptimisticAction, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { getBranchesCollection, getEnvironmentDeploymentsCollection, getProjectsCollection } from "#/collections/collections";
+import { getBranchesCollection, getEnvironmentDeploymentsCollection, getEnvironmentsCollection, getProjectsCollection } from "#/collections/collections";
 import { observeFailure } from "#/collections/query-collection";
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import type { SetupCommand } from "#/modules/project/tables";
 import { setBranchKeptServerFn } from "./branch-close.functions";
+import { setBranchSetupDefaultsServerFn } from "./branch-functions";
 import { idleClose } from "./idle-close";
 
 const getKeepBranchAction = cachedByCollectionScope((organizationSlug, scope) => {
@@ -58,4 +60,25 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
   if (attempts.length > 0 || !branches.some((branch) => branch.environmentId === environmentId)) return undefined;
   return environments.find((environment) => environment.id === environmentId);
+}
+
+const getBranchSetupDefaultsAction = cachedByCollectionScope((organizationSlug, scope) => {
+  const environments = getEnvironmentsCollection(organizationSlug, scope);
+  return createOptimisticAction<{ environmentId: string; setupCommands: SetupCommand[] }>({
+    onMutate: ({ environmentId, setupCommands }) => environments.update(environmentId, (draft) => { draft.branchSetupCommands = setupCommands; }),
+    mutationFn: async (data) => {
+      try {
+        await environments.writeCommitted(await setBranchSetupDefaultsServerFn({ data: { organizationSlug, ...data } }));
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not save the setup commands.");
+        throw error;
+      }
+    },
+  });
+});
+
+/** Saves the Setup Commands that prefill new Branches of an Environment; applies at once and rolls back on failure. */
+export function useBranchSetupDefaults(organizationSlug: string) {
+  const save = getBranchSetupDefaultsAction(organizationSlug, useCollectionScope());
+  return (environmentId: string, setupCommands: SetupCommand[]) => observeFailure(save({ environmentId, setupCommands }));
 }

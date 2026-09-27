@@ -49,6 +49,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
   const [deployNow, setDeployNow] = useState(true);
+  const [setupCommands, setSetupCommands] = useState(() => document?.branchSetupCommands ?? []);
   if (!intent || !parent) return null;
 
   const planned = { parent: intent, deployed: applied.map((node) => node.nodeLineageId), focus };
@@ -93,9 +94,14 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
     <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
       event.preventDefault();
       if (blocked || nameError || create.isPending) return;
+      // Only a Branch with an Own Copy of data shows Then run; a command for a service that isn't own is dropped.
+      const ownData = plan.nodes.some((node) => node.role === "own" && node.nodeType === "volume");
+      const commands = ownData ? setupCommands.filter((setup) => setup.command.trim() && own.includes(setup.lineageId)
+        && intent.services.some((node) => node.lineageId === setup.lineageId)) : [];
       create.mutate({
         organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
         fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
+        setupCommands: commands.map((setup) => ({ ...setup, command: setup.command.trim() })),
       });
     }}>
       <CanvasInspectorHeader params={params}>
@@ -108,7 +114,8 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
       <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
         <WhatComesAlongSection parentName={parent.name} plan={plan} presets={presets} nameOf={nameOf} owned={owned}
           onPreset={(preset) => setPicks({ preset })} onToggle={toggle} />
-        <DataSection intent={intent} plan={plan} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf} />
+        <DataSection intent={intent} plan={plan} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
+          setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
         <NameSection name={branchName} onName={setName} error={nameError} addresses={addresses} />
         <FieldSet>
           <FieldLegend>When it's done</FieldLegend>

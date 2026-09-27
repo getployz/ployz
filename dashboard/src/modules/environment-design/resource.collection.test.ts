@@ -24,7 +24,7 @@ function createStores() {
   const server = {
     resources: [{ id, environmentId, projectId, organizationId, lineageId, implementationType: "volume", deployedName: null, removedAt: null, createdAt: now, updatedAt: now }] satisfies Row<"resources">[],
     lineages: [{ id: lineageId, projectId, organizationId, canonicalName: "data", canonicalSlug: "data", createdAt: now, updatedAt: now }] satisfies Row<"lineages">[],
-    documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", createdAt: now, updatedAt: now, intent, compiled: compileSavedEnvironmentIntent({ environmentId, intent }) }] satisfies Row<"documents">[],
+    documents: [{ id: environmentId, projectId, organizationId, projectSlug: "app", namespace: "production", name: "Production", revision: "00000000-0000-4000-8000-000000000099", branchSetupCommands: [], createdAt: now, updatedAt: now, intent, compiled: compileSavedEnvironmentIntent({ environmentId, intent }) }] satisfies Row<"documents">[],
     positions: [{ id: "00000000-0000-4000-8000-000000000006", environmentId, organizationId, resourceType: "volume", resourceId: id, x: 10, y: 20, createdAt: now, updatedAt: now }] satisfies Row<"positions">[],
   };
   const sources = {
