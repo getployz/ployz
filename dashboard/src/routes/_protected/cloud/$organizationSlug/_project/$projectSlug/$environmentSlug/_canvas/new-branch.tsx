@@ -21,6 +21,7 @@ export const Route = createFileRoute(
   component: RouteComponent,
 });
 
+// The scene's BranchPickingProvider reads `focus`; the panel and the canvas share its picks.
 function RouteComponent() {
   const { focus, fix } = Route.useSearch();
   return <NewBranchPanel focus={focus ?? null} fix={fix ?? null} />;

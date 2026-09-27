@@ -171,7 +171,10 @@ export function useCanvasNavigation(
   selectedNodeId: string | null,
   selectedNodePositionKey: string | null,
   flowReady: boolean,
-  /** The open Deployment Page (`key`) and the nodes it lights; null while none is open or its attempt loads. */
+  /**
+   * The open Deployment Page (`key`) and the nodes it lights, or the New branch panel and every node; null while neither
+   * is open or the attempt loads.
+   */
   deployment: { key: string; nodeIds: readonly string[] } | null,
 ) {
   const flow = useReactFlow<CanvasResourceNode>();

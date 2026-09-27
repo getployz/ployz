@@ -81,7 +81,7 @@ export function presetSummary(preset: BranchPreset, plan: BranchPlan, only: Bran
     const copies = `${listNames(added)} ${added.length === 1 ? "gets a copy" : "get copies"} too`;
     return live.length ? `${copies}.` : `${copies}, so nothing touches ${parent}'s data.`;
   }
-  if (own.length === 0) return "Tick what changes below.";
+  if (own.length === 0) return "Pick what changes.";
   const one = own.length === 1;
   const copies = `${listNames(own)} ${one ? "gets its own copy" : "get their own copies"}.`;
   return live.length ? `${copies} What ${one ? "it uses" : "they use"} comes from ${parent}, live.` : copies;

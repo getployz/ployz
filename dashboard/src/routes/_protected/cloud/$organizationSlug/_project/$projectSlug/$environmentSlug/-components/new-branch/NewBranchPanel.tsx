@@ -9,52 +9,41 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
 import { useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
-import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { useCreateBranch } from "#/modules/branches/branch-commands";
-import {
-  branchHostnameSuffix, branchNameError, branchNamespace, defaultBranchName, offeredPresets, ownLineages, planBranchOf,
-  type BranchPicks,
-} from "#/modules/branches/branch-plan";
+import { branchHostnameSuffix, branchNameError, branchNamespace, defaultBranchName, ownLineages } from "#/modules/branches/branch-plan";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { useBranchPicking } from "./branch-picking";
 import { DataSection } from "./DataSection";
 import { NameSection } from "./NameSection";
 import { WhatComesAlongSection } from "./WhatComesAlongSection";
 
 /**
- * "New branch of X": pick what gets an Own Copy, name it, create and deploy it, or keep it as a starting point. Core plans every pick over the Parent's
- * Working State, with "deployed" meaning the Parent's Applied lineages. `focus` seeds what changes. With `fix`, a failed
- * attempt, the focused service carries the change that failed while it keeps its own copy (Fix it on a branch).
+ * "New branch of X": pick what gets an Own Copy, name it, create and deploy it, or keep it as a starting point. The picks
+ * live in `BranchPickingProvider`, shared with the canvas under the panel. `focus` is the lineage it opened on. With `fix`,
+ * a failed attempt, the focused service carries the change that failed while it keeps its own copy (Fix it on a branch).
  */
 export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | null; fix: string | null }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const scope = useCollectionScope();
+  const picking = useBranchPicking();
   const document = useEnvironmentDocument(params.organizationSlug, environmentId);
-  const applied = useEnvironmentChangeStateProjection({ organizationSlug: params.organizationSlug, environmentId })?.applied.nodes ?? [];
-  const { projects, environments, branches } = useWorkspace(params.organizationSlug);
+  const { environments, branches } = useWorkspace(params.organizationSlug);
   const { data: services } = useLiveQuery(getRawServicesCollection(params.organizationSlug, scope));
   const clusterDomain = useClusterDomainName(params.organizationSlug);
   const create = useCreateBranch(params.projectSlug);
   const failedAttempt = useDeploymentAttempt(params.organizationSlug, environmentId, fix).attempt?.deployment;
-  const parent = findEnvironment(projects, environments, params);
   const taken = new Set(environments.map((environment) => environment.namespace));
-  const intent = document?.intent;
-  const owned = new Set([...(intent?.services.map((node) => node.lineageId) ?? []), ...(intent?.volumes.map((node) => node.resourceLineageId) ?? [])]);
-
-  const [focus, setFocus] = useState(() => initialFocus && owned.has(initialFocus) ? [initialFocus] : []);
-  const [picks, setPicks] = useState<BranchPicks>({ preset: "only" });
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
   const [deployNow, setDeployNow] = useState(true);
   const [setupCommands, setSetupCommands] = useState(() => document?.branchSetupCommands ?? []);
-  if (!intent || !parent) return null;
+  if (!picking) return null;
 
-  const planned = { parent: intent, deployed: applied.map((node) => node.nodeLineageId), focus };
-  const plan = planBranchOf({ ...planned, picks });
-  const presets = offeredPresets(planned).map((preset) => ({ preset, plan: planBranchOf({ ...planned, picks: { preset } }) }));
+  const { parent, intent, plan, presets, focus, picks, owned } = picking;
   const own = ownLineages(plan);
   // Services a Branch uses live may belong to an ancestor, so names come from any Environment with that lineage.
   const nameOf = (lineage: string) => services.find((row) => row.lineageId === lineage && row.environmentId === environmentId)?.name
@@ -81,14 +70,6 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
     .flatMap((node) => node.config.managedHostnames.map(({ prefix }) =>
       `${prefix.endsWith(fromSuffix) ? prefix.slice(0, prefix.length - fromSuffix.length) : prefix}${intoSuffix}${clusterDomain ? `.${clusterDomain}` : ""}`));
 
-  function toggle(lineage: string) {
-    const next = new Set(own);
-    const on = !next.has(lineage);
-    if (on) next.add(lineage); else next.delete(lineage);
-    setFocus(on ? [...focus, lineage] : focus.filter((candidate) => candidate !== lineage));
-    setPicks({ own: [...next] });
-  }
-
   const blocked = own.length === 0 ? "Pick something to copy" : null;
   return (
     <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
@@ -112,8 +93,8 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
         </p>
       </CanvasInspectorHeader>
       <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
-        <WhatComesAlongSection parentName={parent.name} plan={plan} presets={presets} nameOf={nameOf} owned={owned}
-          onPreset={(preset) => setPicks({ preset })} onToggle={toggle} />
+        <WhatComesAlongSection plan={plan} presets={presets} nameOf={nameOf} owned={owned} parentName={parent.name}
+          ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle} />
         <DataSection intent={intent} plan={plan} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
           setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
         <NameSection name={branchName} onName={setName} error={nameError} addresses={addresses} />

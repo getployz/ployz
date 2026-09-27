@@ -1,4 +1,5 @@
 import { Position, type Edge } from "@xyflow/react";
+import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentServiceVolumeAttachment } from "#/modules/environment-design/service-volume-attachments";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
@@ -9,6 +10,7 @@ import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/s
 import { extractDisplayRefs } from "#/modules/environment-design/variable-template";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT } from "./constants";
 import type {
+  CanvasLiveNode,
   CanvasResourceNode,
   CanvasServiceNode,
   CanvasVolumeNode,
@@ -189,4 +191,39 @@ export function buildEdges(
   );
 
   return [...referenceEdges, ...volumeEdges];
+}
+
+/** Links into Live Nodes are dashed; every other link is solid. */
+export const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
+
+export const liveNodeId = (lineageId: string) => `live:${lineageId}`;
+
+/** A Branch's Live Nodes, each where it sits on its owner's canvas. */
+export function buildLiveNodes(
+  liveNodes: LiveNode[],
+  canvasPositions: ServiceCanvasPositionRecord[],
+): CanvasLiveNode[] {
+  const positionByResource = getPositionByCanvasResource(canvasPositions);
+  return liveNodes.map((liveNode) => ({
+    id: liveNodeId(liveNode.lineageId),
+    type: "live",
+    position: getCanvasPosition(liveNode.owner
+      ? positionByResource.get(getCanvasPositionCollectionKey({ resourceType: "service", resourceId: liveNode.owner.node.nodeId }))
+      : null),
+    width: SERVICE_NODE_WIDTH,
+    height: SERVICE_NODE_HEIGHT,
+    handles: CANVAS_NODE_HANDLES,
+    draggable: false,
+    data: { liveNode },
+  }));
+}
+
+/** Dashed links from each Live Node into the services here that use it. */
+export function buildLiveEdges(liveNodes: LiveNode[]): Edge[] {
+  return liveNodes.flatMap((liveNode) => liveNode.usedBy.map((serviceId) => ({
+    id: `live:${liveNode.lineageId}:${serviceId}`,
+    source: liveNodeId(liveNode.lineageId),
+    target: serviceId,
+    style: LIVE_EDGE_STYLE,
+  })));
 }

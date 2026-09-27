@@ -42,7 +42,7 @@ describe("branch plan", () => {
       .toBe("postgres and postgres-data get copies too, so nothing touches production's data.");
     expect(presetSummary("all", uses, only, nameOf, "production")).toBe("A full copy of production.");
     expect(presetSummary("only", planBranchOf({ ...input, focus: [], picks: { preset: "only" } }), only, nameOf, "production"))
-      .toBe("Tick what changes below.");
+      .toBe("Pick what changes.");
   });
 
   it("reads hand picks that match no preset as picked by hand", () => {

@@ -12,3 +12,6 @@ export const ENVIRONMENT_SERVICE_ROUTE_TO =
 
 export const ENVIRONMENT_RESOURCE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId";
+
+export const ENVIRONMENT_LIVE_NODE_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId";
