@@ -233,6 +233,18 @@ describe("createBranch", () => {
     expect(await harness.db.select().from(schema.environment)).toHaveLength(2);
   });
 
+  it("refuses a Branch of an Environment being torn down, whatever the teardown's scope", async () => {
+    await harness.db.insert(schema.teardownAttempt).values({
+      organizationId, requestedByUserId: userId, projectId, environmentId: null, scope: "project", confirmDataLoss: [],
+      targets: {
+        environments: [{ environmentId: parentId, projectId, projectName: "shop-production", cloudName: "acme/shop/production" }],
+        destroyRuntimeProjects: true, revokePairing: false, runtimeMembership: "untouched",
+      },
+    });
+    await expect(create({ name: "late" })).rejects.toMatchObject({ _tag: "Conflict", message: expect.stringContaining("is being torn down") });
+    expect(await harness.db.select().from(schema.environment)).toHaveLength(1);
+  });
+
   it("makes a starting point without admitting anything, which Branches copy from and which deploys from its settings", async () => {
     const { data } = await create({ name: "template", deployNow: false });
     expect(data.deploymentId).toBeNull();
