@@ -7,7 +7,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { dropTeardownCloudRowsActivity } from "#/modules/runtime/teardown-activities.server";
-import { confirmTeardown, loadTeardownDataLoss } from "#/modules/runtime/teardown.server";
+import { admitSystemTeardown, confirmTeardown, loadTeardownDataLoss, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
@@ -131,6 +131,16 @@ describe("closing a Branch", () => {
     const bySystem = await run(provide(closeBranch(fixWebId, "idle").pipe(Effect.flip)));
     expect(bySystem).toBeInstanceOf(Conflict);
     expect(bySystem.message).toContain("try-cache is the Default Environment");
+    expect(await attemptRows()).toEqual([]);
+  });
+
+  it("refuses a Default Environment chosen after the close was prepared", async () => {
+    const refused = await run(provide(Effect.gen(function* () {
+      const prepared = yield* prepareSystemTeardown({ organizationId, environmentId: fixWebId });
+      yield* Effect.promise(() => harness.pool.query(`update project set default_environment_id = '${fixWebId}'`));
+      return yield* admitSystemTeardown(prepared, creatorId).pipe(Effect.flip);
+    })));
+    expect(refused).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("fix-web is the Default Environment") });
     expect(await attemptRows()).toEqual([]);
   });
 
