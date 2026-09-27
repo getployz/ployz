@@ -58,7 +58,7 @@ export function LiveNodeCard({ liveNode, size, selected, className, children }: 
             </Avatar>
             <div className="min-w-0 flex-1 overflow-hidden">
               <CardTitle className="truncate">{liveNode.name}</CardTitle>
-              <CardDescription><LiveLabel label={liveNodeLabel(liveNode)} ownsData={liveNode.ownsData} /></CardDescription>
+              <CardDescription><LiveLabel label={liveNodeLabel(liveNode)} ownsData={liveNode.owner?.ownsData ?? false} /></CardDescription>
             </div>
           </div>
         </CardHeader>

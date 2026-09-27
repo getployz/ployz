@@ -52,7 +52,7 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
               ? `${liveNode.name} is ${owner.environment.name}'s. This branch uses it live instead of its own copy, so changing it changes ${owner.environment.name}.`
               : `No environment this branch comes from runs ${liveNode.name}, so what uses it here can't reach it.`}
           </FieldDescription>
-          {liveNode.ownsData && owner && (
+          {owner?.ownsData && (
             <Item variant="outline" state="warning" size="sm" role="note">
               <ItemMedia><TriangleAlertIcon className="text-warning" /></ItemMedia>
               <ItemContent>
@@ -76,7 +76,7 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
           <FieldSet>
             <FieldLegend>Own copy</FieldLegend>
             <FieldDescription>
-              {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${liveNode.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
+              {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${owner.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
             </FieldDescription>
             <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={unsettled !== null}>
               Make it an Own Copy
