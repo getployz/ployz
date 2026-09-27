@@ -239,7 +239,7 @@ export const saveReviewedEnvironmentState = Effect.fn(
 });
 
 /** Reconstruct authored Applied State from each node's confirmed Saved revision. */
-const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
+export const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
   function* (environmentId: string, namespace: string, projection: EnvironmentSnapshotProjection) {
     const nodes = [...projection.appliedSavedNodeByKey.values()];
     const intents = new Map<string, SavedEnvironmentIntent>();
