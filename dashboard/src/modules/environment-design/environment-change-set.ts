@@ -42,7 +42,8 @@ export type DashboardReviewChangeSet = {
 
 function nodeMap(state: EnvironmentStateProjection) { return new Map(state.nodes.map((entry) => [`${entry.node.type}:${entry.node.id}`, entry])); }
 /** A node's setting changes from `baseline` to `current`, as the review lists them; the Deployment Page's rows reuse it. */
-export function compareNodeSettings(type: EnvironmentNodeIdentity["type"], current: EnvironmentNodeProjection["config"], baseline: EnvironmentNodeProjection["config"]): ServiceSettingChange[] {
+/** Parses both configs, so raw JSON is fine; a config that no longer parses throws. */
+export function compareNodeSettings(type: EnvironmentNodeIdentity["type"], current: unknown, baseline: unknown): ServiceSettingChange[] {
   if (!current || !baseline) return [];
   const settings = type === "service" ? compareServiceSettings(parseServiceConfig(current), parseServiceConfig(baseline))
     : compareResourceSettings("volume", parseResourceConfig("volume", current), parseResourceConfig("volume", baseline));

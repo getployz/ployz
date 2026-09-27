@@ -17,7 +17,7 @@ const userId = "00000000-0000-4000-8000-000000000902";
 const projectId = "00000000-0000-4000-8000-000000000903";
 const environmentId = "00000000-0000-4000-8000-000000000904";
 const [applied, failed, target] = ["911", "912", "913"].map((suffix) => `00000000-0000-4000-8000-000000000${suffix}`) as [string, string, string];
-const [api, web, old, data, build] = ["921", "922", "923", "924", "925"].map((suffix) => `00000000-0000-4000-8000-000000000${suffix}`) as [string, string, string, string, string];
+const [api, web, old, data, build, legacy] = ["921", "922", "923", "924", "925", "926"].map((suffix) => `00000000-0000-4000-8000-000000000${suffix}`) as [string, string, string, string, string, string];
 const machineId = "a".repeat(32) as MachineId;
 const encryption = makeSecretEncryption("test-encryption-secret");
 
@@ -75,11 +75,14 @@ it("writes the target node list against Applied State, counting a failed attempt
   await harness.db.insert(schema.environmentNodeConfigSnapshot).values([
     snapshot(applied, api, service("api")), snapshot(applied, web, service("web")), snapshot(applied, old, service("old")),
     snapshot(applied, data, { version: 2, name: "data" }, "volume"),
+    // Applied before today's config schema: it no longer parses, so it lists no setting rows.
+    snapshot(applied, legacy, { privateDns: "legacy", source: { type: "image", image: "nginx:1" } }),
     snapshot(failed, api, service("api", "nginx:2")), snapshot(failed, web, service("web", "nginx:2")),
     snapshot(target, api, service("api", "nginx:2")),
     snapshot(target, web, { ...service("web", "nginx:2"), mounts: [{ volumeResourceId: data, volumeName: "data", mountPath: "/data" }], env: { TOKEN: sealed } }),
     snapshot(target, data, { version: 2, name: "data" }, "volume"),
     snapshot(target, build, { ...service("build"), source: { type: "git", repository: "acme/build" } }),
+    snapshot(target, legacy, service("legacy")),
   ]);
 
   const settingsOf = async () => {
@@ -94,7 +97,7 @@ it("writes the target node list against Applied State, counting a failed attempt
     imageRow("nginx:1"),
     { path: `mounts.${data}`, kind: "add", label: "Volume mount data", currentValue: "", newValue: "/data" },
   ];
-  expect(await settingsOf()).toEqual({ [api]: [imageRow("nginx:1")], [web]: expect.arrayContaining(webRows), [data]: undefined, [build]: undefined, [old]: undefined });
+  expect(await settingsOf()).toEqual({ [api]: [imageRow("nginx:1")], [web]: expect.arrayContaining(webRows), [data]: undefined, [build]: undefined, [old]: undefined, [legacy]: undefined });
 
   // As the attempt's start writes it: against the whole of Applied State.
   await harness.runTransaction(() => loadEnvironmentSnapshotProjection({ kind: "environment", environmentId }).pipe(
@@ -103,7 +106,7 @@ it("writes the target node list against Applied State, counting a failed attempt
   ));
 
   // The failed attempt confirmed api, so it has nothing left to list.
-  expect(await settingsOf()).toEqual({ [api]: undefined, [web]: expect.arrayContaining(webRows), [data]: undefined, [build]: undefined, [old]: undefined });
+  expect(await settingsOf()).toEqual({ [api]: undefined, [web]: expect.arrayContaining(webRows), [data]: undefined, [build]: undefined, [old]: undefined, [legacy]: undefined });
   const [row] = await harness.db.select().from(schema.environmentDeployment).where(eq(schema.environmentDeployment.id, target));
   expect(row?.targetNodes.version).toBe(1);
   expect(Object.fromEntries(row?.targetNodes.nodes.map((node) => [node.nodeId, node]) ?? [])).toEqual({
@@ -114,12 +117,13 @@ it("writes the target node list against Applied State, counting a failed attempt
     [data]: { nodeId: data, nodeType: "volume", name: "data", changed: false, removed: false, needsBuild: false, source: null, mounts: [] },
     [build]: { nodeId: build, nodeType: "service", name: "build", changed: true, removed: false, needsBuild: true, source: { kind: "git", label: "acme/build" }, mounts: [] },
     [old]: { nodeId: old, nodeType: "service", name: "old", changed: true, removed: true, needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] },
+    [legacy]: { nodeId: legacy, nodeType: "service", name: "legacy", changed: true, removed: false, needsBuild: false, source: { kind: "image", label: "nginx:1" }, mounts: [] },
   });
 
   if (!row) throw new Error("Missing target attempt");
   const { nodes, progress } = viewTargetNodes(row.targetNodes, null);
   const view = deploymentView({ deployment: { status: "applied", failureMessage: null, planned: true }, progress, nodes });
   expect(Object.fromEntries(view.nodes.map((node) => [node.nodeId, node.outcome]))).toEqual({
-    [api]: "unchanged", [web]: "deployed", [data]: "unchanged", [build]: "deployed", [old]: "removed",
+    [api]: "unchanged", [web]: "deployed", [data]: "unchanged", [build]: "deployed", [old]: "removed", [legacy]: "deployed",
   });
 });

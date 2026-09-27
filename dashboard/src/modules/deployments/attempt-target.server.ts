@@ -1,7 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { eq } from "drizzle-orm";
 import { Effect } from "effect";
-import { parseResourceConfig, parseServiceConfig } from "@ployz/sdk/config";
 import { asRecord, asString } from "#/lib/json";
 import { canonicalJson } from "#/modules/environment-design/canonical-json";
 import { compareNodeSettings } from "#/modules/environment-design/environment-change-set";
@@ -36,12 +35,12 @@ export function snapshotNodeFacts({ nodeType, nodeId, config }: Node): Omit<Targ
 /** An updated node's setting changes as presented strings, so sealed values never leave the server; none when either config no longer parses. */
 function settingRows({ nodeType, config }: Node, before: Node): TargetNodeList["nodes"][number]["settings"] {
   try {
-    const [current, baseline] = nodeType === "service" ? [parseServiceConfig(config), parseServiceConfig(before.config)]
-      : [parseResourceConfig("volume", config), parseResourceConfig("volume", before.config)];
-    return compareNodeSettings(nodeType, current, baseline).map((row) =>
+    return compareNodeSettings(nodeType, config, before.config).map((row) =>
       ({ path: row.path, kind: row.kind, ...presentSettingChange(nodeType, row.path, row.before, row.after) }));
-  } catch {
-    return undefined;
+  } catch (error) {
+    // An applied config may predate today's config schema; anything else is a bug.
+    if (error instanceof Error && /^\w+: Invalid \w+ configuration$/.test(error.message)) return undefined;
+    throw error;
   }
 }
 
