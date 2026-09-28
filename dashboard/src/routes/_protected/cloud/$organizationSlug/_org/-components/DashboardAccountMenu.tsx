@@ -47,13 +47,15 @@ const themes = [
   { value: "dark", label: "Dark" },
 ] as const;
 
-/** The avatar menu: organization pages, switching organization, Theme and Log out. */
+/** The avatar menu: organization pages (phones only; the rail has them on desktop), switching organization, Theme and Log out. */
 export default function DashboardAccountMenu({
   scope,
   side = "bottom",
+  withOrganizationPages = true,
 }: {
   scope: DashboardScope;
   side?: "bottom" | "right";
+  withOrganizationPages?: boolean;
 }) {
   const auth = useAuth();
   const signOut = useSignOut();
@@ -104,37 +106,40 @@ export default function DashboardAccountMenu({
           </div>
         </div>
 
-        <DropdownMenuSeparator />
-
-        <DropdownMenuGroup>
-          {organization.map((item) => (
-            <DropdownMenuItem key={item.section}
-              render={<Link to={item.to} params={item.params} search={item.search}
-                activeOptions={{ exact: true }} aria-current={item.current ? "page" : undefined} />}>
-              <item.icon />
-              {item.label}
-            </DropdownMenuItem>
-          ))}
-          {organizations.length > 1 ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Building2Icon />
-                Switch organization
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
-                  void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
-                }}>
-                  {organizations.map((candidate) => (
-                    <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                      {candidate.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : null}
-        </DropdownMenuGroup>
+        {withOrganizationPages || organizations.length > 1 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              {withOrganizationPages && organization.map((item) => (
+                <DropdownMenuItem key={item.section}
+                  render={<Link to={item.to} params={item.params} search={item.search}
+                    activeOptions={{ exact: true }} aria-current={item.current ? "page" : undefined} />}>
+                  <item.icon />
+                  {item.label}
+                </DropdownMenuItem>
+              ))}
+              {organizations.length > 1 ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Building2Icon />
+                    Switch organization
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent>
+                    <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
+                      void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
+                    }}>
+                      {organizations.map((candidate) => (
+                        <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                          {candidate.name}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
+            </DropdownMenuGroup>
+          </>
+        ) : null}
 
         <DropdownMenuSeparator />
 

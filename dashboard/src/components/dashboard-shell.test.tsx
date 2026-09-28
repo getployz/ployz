@@ -133,10 +133,12 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
   expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
 });
 
-it("puts the logo, the four places and the avatar in the rail, with the current place marked", async () => {
+it("puts the logo, the four places, the organization's pages and the avatar in the rail, with the current place marked", async () => {
   const { rail } = await show();
   const links = within(rail).getAllByRole("link");
-  expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(["Projects", "Canvas", "Deployments", "Logs", "Settings"]);
+  expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(
+    ["Projects", "Canvas", "Deployments", "Logs", "Settings", "Projects", "Servers", "Organization"],
+  );
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
   expect(links.filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent)).toEqual(["Logs"]);
@@ -157,13 +159,10 @@ it("offers the same places in the phone tab bar and follows the route", async ()
   expect(within(tabs).getByRole("link", { name: "Logs" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("holds the organization destinations in the avatar menu, and applies a theme choice", async () => {
+it("leaves the organization's pages out of the desktop avatar menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(
-    ["Projects", "Servers", "Organization Settings", "Switch organization", "Log out"],
-  );
-  expect(within(menu).getByRole("menuitem", { name: "Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Log out"]);
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
   fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
@@ -171,15 +170,26 @@ it("holds the organization destinations in the avatar menu, and applies a theme 
   expect(document.cookie).toContain("theme=dark");
 });
 
-it("shows Billing in the avatar menu only when billing is configured", async () => {
-  const { rail } = await show({ billingEnabled: true });
-  const menu = await openAccountMenu(rail);
-  expect(within(menu).getByRole("menuitem", { name: "Billing" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
+it("holds the organization's pages in the phone avatar menu", async () => {
+  await show();
+  fireEvent.click(within(screen.getByRole("banner")).getByRole("button", { name: "Open account menu" }));
+  const menu = await screen.findByRole("menu");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(
+    ["Projects", "Servers", "Organization Settings", "Switch organization", "Log out"],
+  );
+  expect(within(menu).getByRole("menuitem", { name: "Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
 });
 
-it("shows only the logo and the avatar in the rail on organization pages", async () => {
+it("shows Billing in the rail only when billing is configured", async () => {
+  const { rail } = await show({ billingEnabled: true });
+  expect(within(rail).getByRole("link", { name: "Billing" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
+});
+
+it("leads the rail with the organization's pages on organization pages", async () => {
   const { rail } = await show({ scope: "all" });
-  expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Projects"]);
+  expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent))
+    .toEqual(["Projects", "Projects", "Servers", "Organization"]);
+  expect(within(rail).queryByRole("separator")).toBeNull();
   expect(within(rail).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Open account menu"]);
   expect(screen.queryByRole("navigation", { name: "Environment places" })).toBeNull();
 });

@@ -14,19 +14,26 @@ export function HomeLink({ organizationSlug, className }: { organizationSlug: st
   );
 }
 
-/** Desktop: the logo, the Environment's places, the avatar at the bottom. */
-export function Rail({ organizationSlug, places, account }: {
+/**
+ * Desktop: the logo, the Environment's places, then the organization's pages, the avatar at the bottom.
+ * On organization pages the organization's pages lead; on an Environment they sit below a divider, at the bottom.
+ */
+export function Rail({ organizationSlug, places, organization, account }: {
   organizationSlug: string;
   places: DashboardNavItem[];
+  organization: DashboardNavItem[];
   account: React.ReactNode;
 }) {
+  const railPlace = (place: DashboardNavItem) => <Place key={place.section} place={place}
+    className="w-20 flex-col gap-1 rounded-lg py-2 text-xs whitespace-nowrap" />;
   return (
     <nav aria-label="Dashboard navigation"
-      className="hidden w-22 shrink-0 flex-col items-center gap-1 border-r bg-background py-2 min-wf-nav:flex">
+      className="hidden w-22 shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-background py-2 min-wf-nav:flex">
       <HomeLink organizationSlug={organizationSlug} className="mb-3" />
-      {places.map((place) => <Place key={place.section} place={place}
-        className="w-20 flex-col gap-1 rounded-lg py-2 text-xs whitespace-nowrap" />)}
-      <div className="mt-auto">{account}</div>
+      {places.map(railPlace)}
+      {places.length ? <div role="separator" className="mt-auto mb-1 h-px w-12 shrink-0 bg-border" /> : null}
+      {organization.map(railPlace)}
+      <div className={cn("pt-2", !places.length && "mt-auto")}>{account}</div>
     </nav>
   );
 }
@@ -53,7 +60,7 @@ function Place({ place, className }: { place: DashboardNavItem; className: strin
         className,
       )}>
       <place.icon className="size-5" aria-hidden />
-      {place.label}
+      {place.shortLabel ?? place.label}
     </Link>
   );
 }
