@@ -1,27 +1,19 @@
 import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { VolumeRemoveDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "#/components/ui/alert-dialog";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
+import { toErrorMessage } from "#/lib/error-message";
 import { createEnvironmentNodeNameSchema } from "#/modules/environment-design/environment-node-names";
+import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { environmentDesignFields } from "#/modules/environment-design/fields";
 import {
   deleteVolumeResourceServerFn,
@@ -49,6 +41,7 @@ import type {
   VolumeResourceRouteParams,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/useVolumeDrawerState";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deletion-items";
 
 const resourceNameSchema = environmentDesignFields.resource.name;
 
@@ -146,6 +139,7 @@ export function VolumeDrawer({
               >
                 Danger
               </h2>
+              {/* Deleting is staged: the Review lists it, Deploy asks if it holds data, and Discard undoes it. */}
               <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
                 <div className="min-w-0">
                   <div className="text-sm font-semibold text-destructive">
@@ -153,43 +147,14 @@ export function VolumeDrawer({
                   </div>
                   <p className="mt-1 text-sm text-destructive/85">
                     {mountedCount > 0
-                      ? `Stages deletion and removes ${mountedCount} service mount${mountedCount === 1 ? "" : "s"} on the next deploy.`
-                      : "Stages deletion until you deploy or discard the change."}
+                      ? `Deleted on your next deploy, with its ${mountedCount} mount${mountedCount === 1 ? "" : "s"}.`
+                      : "Deleted on your next deploy."}
                   </p>
                 </div>
-                <AlertDialog>
-                  <AlertDialogTrigger
-                    render={
-                      <Button
-                        variant="destructive"
-                        className="shrink-0"
-                      >
-                        <Trash2Icon data-icon="inline-start" />
-                        Delete volume
-                      </Button>
-                    }
-                  />
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Delete this volume?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        {mountedCount > 0
-                          ? `Deletion is staged. ${mountedCount} mounted service${
-                              mountedCount === 1 ? "" : "s"
-                            } will drop this mount on the next deploy, and deployed data is removed on confirmation at deploy time.`
-                          : "Deletion is staged until you deploy or discard it."}
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        onClick={handleDelete}
-                      >
-                        Delete
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
+                <Button variant="destructive" className="shrink-0" onClick={handleDelete}>
+                  <Trash2Icon data-icon="inline-start" />
+                  Delete volume
+                </Button>
               </div>
             </section>
           </>
@@ -213,6 +178,10 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const identities = useRef<DataLossList["rust"]>([]);
+  const place = useEnvironmentPlace(state.organizationSlug, state.environmentId);
+  const { machines } = useRuntimeLens(state.organizationSlug);
+  const name = state.resource.resource.name;
   const input = {
     organizationSlug: state.organizationSlug,
     environmentId: state.environmentId,
@@ -238,13 +207,8 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
             },
           }),
       );
-      toast.success("Volume remove retry started.");
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The volume remove couldn’t be retried.",
-      );
+      toast.error(toErrorMessage(error, "Couldn't try again."));
     } finally {
       setRetrying(false);
     }
@@ -265,6 +229,7 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
         <div className="mt-4 flex flex-col gap-4">
           {attempt ? (
             <VolumeRemoveStatusAlert
+              name={name}
               attempt={attempt}
               retrying={retrying}
               onRetry={() => {
@@ -275,11 +240,10 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
           <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
             <div className="min-w-0">
               <div className="text-sm font-semibold text-destructive">
-                Remove volume data
+                Delete its data
               </div>
               <p className="mt-1 text-sm text-destructive/85">
-                Deletes the Docker volumes on the machine. This cannot be
-                undone.
+                Its files are still on your servers.
               </p>
             </div>
             <Button
@@ -289,27 +253,31 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
               onClick={() => setOpen(true)}
             >
               <Trash2Icon data-icon="inline-start" />
-              Remove volume data
+              Delete data
             </Button>
           </div>
         </div>
       </section>
-      <VolumeRemoveDataLossDialog
+      <DeletionDialog
         open={open}
         onOpenChange={setOpen}
-        confirmPhrase={state.resource.resource.name}
+        title={`Delete what's left of ${name}?`}
+        place={place}
+        confirmLabel="Delete"
         callbacks={{
-          load: () => loadDataLoss({ data: input }),
-          confirm: async (identities) => {
-            await rememberLatestVolumeRemoveAttempt(
-              queryClient,
-              latestQuery.queryKey,
-              () =>
-                confirmRemove({
-                  data: { ...input, identities },
-                }),
-            );
-            toast.success("Volume remove started.");
+          load: async () => {
+            const dataLoss = await loadDataLoss({ data: input });
+            identities.current = dataLoss.rust;
+            return dataLoss.rust.map((identity): DeletionItem => ({
+              kind: "volume",
+              name: identity.id.name,
+              detail: machines.find((machine) => machine.id === identity.id.machine_id)?.name,
+            }));
+          },
+          confirm: async () => {
+            await rememberLatestVolumeRemoveAttempt(queryClient, latestQuery.queryKey,
+              () => confirmRemove({ data: { ...input, identities: identities.current } }));
+            toast(`Deleting what's left of ${name}`);
           },
         }}
       />
@@ -317,49 +285,26 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   );
 }
 
-function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
+function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary, name: string) {
   switch (attempt.status) {
     case "awaiting_deployment":
-      return {
-        title: "Waiting for deployment",
-        description:
-          "Volume data removal begins after the deployment removes its service references.",
-      };
+      return { title: "Waiting for the deploy", description: `${name}'s data is deleted once the deploy stops using it.` };
     case "pending":
     case "running":
-      return {
-        title: "Removing volume data",
-        description: "Inngest is deleting the confirmed Docker volumes.",
-      };
+      return { title: `Deleting what's left of ${name}…`, description: undefined };
     case "partial":
-      return {
-        title: "Some machines failed",
-        description: "Retry remaining volumes to finish.",
-      };
+      return { title: "Some servers didn't delete it", description: "Retry to finish." };
     case "unknown":
       return {
-        title: "Volume remove outcome unknown",
-        description:
-          attempt.failureMessage ??
-          "Cloud could not determine whether Ployz removed the volume. Review it before retrying.",
+        title: `Not sure ${name}'s data is gone`,
+        description: attempt.failureMessage ?? "Check your servers before trying again.",
       };
     case "cancelled":
-      return {
-        title: "Volume remove cancelled",
-        description:
-          attempt.failureMessage ?? "Retry to run the same volume list again.",
-      };
+      return { title: "Cancelled", description: attempt.failureMessage };
     case "failed":
-      return {
-        title: "Volume remove failed",
-        description:
-          attempt.failureMessage ?? "Retry to run the same volume list again.",
-      };
+      return { title: `Couldn't delete ${name}'s data`, description: attempt.failureMessage };
     case "completed":
-      return {
-        title: "Volume remove finished",
-        description: "The confirmed Docker volumes were deleted.",
-      };
+      return { title: `${name}'s data is gone`, description: undefined };
     default: {
       const exhaustive: never = attempt.status;
       return exhaustive;
@@ -368,21 +313,23 @@ function volumeRemoveStatusCopy(attempt: VolumeRemoveAttemptSummary) {
 }
 
 function VolumeRemoveStatusAlert({
+  name,
   attempt,
   retrying,
   onRetry,
 }: {
+  name: string;
   attempt: VolumeRemoveAttemptSummary;
   retrying: boolean;
   onRetry: () => void;
 }) {
   const retryable = volumeRemoveIsRetryable(attempt.status);
-  const { title, description } = volumeRemoveStatusCopy(attempt);
+  const { title, description } = volumeRemoveStatusCopy(attempt, name);
 
   return (
     <Alert variant={retryable ? "destructive" : "default"}>
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{description}</AlertDescription>
+      {description ? <AlertDescription>{description}</AlertDescription> : null}
       {retryable ? (
         <AlertAction>
           <Button

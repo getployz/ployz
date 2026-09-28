@@ -1,20 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { TeardownDataLossDialog } from "#/components/data-loss/data-loss-confirm-dialog";
-import {
-  Alert,
-  AlertAction,
-  AlertDescription,
-  AlertTitle,
-} from "#/components/ui/alert";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
-import { DangerRow } from "./danger-row";
 import { Spinner } from "#/components/ui/spinner";
+import { toErrorMessage } from "#/lib/error-message";
+import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
 import {
   confirmTeardownServerFn,
   loadTeardownDataLossServerFn,
@@ -30,6 +26,7 @@ import {
   type TeardownScope,
 } from "#/modules/runtime/teardown";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
+import { DangerRow } from "./danger-row";
 
 type TeardownAttemptSummary = {
   id: string;
@@ -38,17 +35,23 @@ type TeardownAttemptSummary = {
   outcome: TeardownOutcome | null;
 };
 
+/**
+ * Deletes an Environment, project or organization, or closes a Kept Branch: the roots of real data, so the dialog lists
+ * what goes and asks for `place`. Branches that aren't kept close with one click from the Branch section instead.
+ */
 export function TeardownDangerSection({
   organizationSlug,
   scope,
   environmentId,
   projectSlug,
-  confirmPhrase,
+  name,
+  place,
+  verb = "Delete",
   title,
   description,
-  closes = [],
-  disabledReason,
   actionLabel,
+  items,
+  disabledReason,
   headingId,
   onCompleted,
 }: {
@@ -56,14 +59,18 @@ export function TeardownDangerSection({
   scope: TeardownScope;
   environmentId?: string;
   projectSlug?: string;
-  confirmPhrase: string;
+  /** What goes, as the dialog and status name it: "staging". */
+  name: string;
+  /** Where it is, typed to confirm: "shop/staging". */
+  place: string;
+  verb?: "Delete" | "Close";
   title: string;
   description: string;
-  /** Branches the teardown closes first. */
-  closes?: readonly string[];
-  /** Why the teardown can't start, which disables it. */
-  disabledReason?: string;
   actionLabel: string;
+  /** What Cloud knows goes with it; the servers add any volume Cloud doesn't name. */
+  items: readonly DeletionItem[];
+  /** Why it can't start, which disables it. */
+  disabledReason?: string;
   headingId: string;
   onCompleted?: () => void;
 }) {
@@ -73,49 +80,28 @@ export function TeardownDangerSection({
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const input = {
-    organizationSlug,
-    scope,
-    environmentId,
-    projectSlug,
-  };
+  const identities = useRef<DataLossList["rust"]>([]);
+  const input = { organizationSlug, scope, environmentId, projectSlug };
   const latestQuery = latestTeardownAttemptQueryOptions(input);
   const latest = useQuery(latestQuery);
   const attempt = latest.data ?? null;
   const busy = attempt != null && teardownIsBusy(attempt.status);
   const { lensStatus } = useRuntimeStatus();
+  // An organization whose servers can't be reached can still go: Ployz lets go of them without resetting them.
   const abandon = scope === "organization" && lensStatus === "unreachable";
-  const resolvedTitle = abandon
-    ? "Abandon this organization's cluster"
-    : title;
-  const resolvedDescription = abandon
-    ? "Can't reach the cluster. This drops Cloud management and pairing without verifying runtime removal. Runtime membership stays unknown."
-    : description;
-  const resolvedActionLabel = abandon ? "Abandon cluster" : actionLabel;
+  const doing = `${abandon ? "Abandoning" : verb === "Close" ? "Closing" : "Deleting"} ${name}`;
 
   useEffect(() => {
     if (attempt?.status === "completed") onCompleted?.();
   }, [attempt?.status]);
 
-  function remember(next: NonNullable<typeof latest.data>) {
-    queryClient.setQueryData(latestQuery.queryKey, next);
-  }
-
   async function handleRetry() {
     if (!attempt || retrying) return;
     setRetrying(true);
     try {
-      const next = await retryTeardown({
-        data: { organizationSlug, attemptId: attempt.id },
-      });
-      remember(next);
-      toast.success("Teardown retry started.");
+      queryClient.setQueryData(latestQuery.queryKey, await retryTeardown({ data: { organizationSlug, attemptId: attempt.id } }));
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The teardown couldn’t be retried.",
-      );
+      toast.error(toErrorMessage(error, "Couldn't try again."));
     } finally {
       setRetrying(false);
     }
@@ -129,52 +115,40 @@ export function TeardownDangerSection({
         </h2>
         <div className="mt-4 flex flex-col gap-4">
           {attempt ? (
-            <TeardownStatusAlert
-              attempt={attempt}
-              retrying={retrying}
-              onRetry={() => {
-                void handleRetry();
-              }}
-            />
+            <TeardownStatusAlert attempt={attempt} doing={doing} retrying={retrying} onRetry={() => void handleRetry()} />
           ) : null}
           <DangerRow
-            title={resolvedTitle}
-            description={resolvedDescription}
+            title={abandon ? "Abandon this organization's servers" : title}
+            description={abandon ? "Can't reach them. This deletes the organization and leaves the servers as they are." : description}
             action={
-              <Button
-                variant="destructive"
-                className="shrink-0"
-                disabled={busy || disabledReason !== undefined}
-                onClick={() => setOpen(true)}
-              >
+              <Button variant="destructive" className="shrink-0" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>
                 <Trash2Icon data-icon="inline-start" />
-                {resolvedActionLabel}
+                {abandon ? "Abandon servers" : actionLabel}
               </Button>
             }
           >
-            {closes.length > 0 && (
-              <p className="mt-1 text-sm text-foreground">
-                It closes {closes.length === 1 ? "its branch" : "its branches"} first: {closes.join(", ")}.
-              </p>
-            )}
-            {disabledReason && (
-              <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>
-            )}
+            {disabledReason && <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>}
           </DangerRow>
         </div>
       </section>
-      <TeardownDataLossDialog
+      <DeletionDialog
         open={open}
         onOpenChange={setOpen}
-        confirmPhrase={confirmPhrase}
+        title={abandon ? `Abandon ${name}'s servers?` : `${verb} ${name}?`}
+        place={place}
+        confirmLabel={abandon ? "Abandon" : verb}
+        items={items}
         callbacks={{
-          load: () => loadDataLoss({ data: input }),
-          confirm: async (identities) => {
-            const next = await confirmTeardown({
-              data: { ...input, identities, abandon },
-            });
-            remember(next);
-            toast.success(abandon ? "Abandon started." : "Teardown started.");
+          load: async () => {
+            const dataLoss = await loadDataLoss({ data: input });
+            identities.current = dataLoss.rust;
+            return withServerVolumes(items, dataLoss.rust);
+          },
+          confirm: async () => {
+            queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({
+              data: { ...input, identities: identities.current, abandon },
+            }));
+            toast(doing);
           },
         }}
       />
@@ -182,42 +156,29 @@ export function TeardownDangerSection({
   );
 }
 
-function teardownStatusCopy(attempt: TeardownAttemptSummary) {
+/** Cloud's list, plus any volume the servers hold that Cloud doesn't name. */
+function withServerVolumes(items: readonly DeletionItem[], rust: DataLossList["rust"]): DeletionItem[] {
+  const named = new Set(items.flatMap((item) => item.kind === "volume" ? [item.name] : []));
+  const extra = [...new Set(rust.map((identity) => identity.id.name))].filter((volume) => !named.has(volume));
+  return [...items, ...extra.map((volume): DeletionItem => ({ kind: "volume", name: volume }))];
+}
+
+function teardownStatusCopy(attempt: TeardownAttemptSummary, doing: string) {
   switch (attempt.status) {
     case "pending":
     case "running":
-      return {
-        title: "Tearing down",
-        description: "Destroying the confirmed Data Loss, then the Cloud records.",
-      };
+      return { title: `${doing}…`, description: undefined };
     case "partial":
-      return {
-        title: "Teardown is incomplete",
-        description:
-          "Review fresh Data Loss and confirm a new teardown to finish the remaining work.",
-      };
+      return { title: `${doing} didn't finish`, description: "Something new is on your servers. Try again to include it." };
     case "cancelled":
-      return {
-        title: "Teardown cancelled",
-        description:
-          attempt.failureMessage ??
-          "Review fresh Data Loss and confirm a new teardown.",
-      };
+      return { title: `${doing} was cancelled`, description: attempt.failureMessage };
     case "failed":
-      return {
-        title: "Teardown failed",
-        description:
-          attempt.failureMessage ??
-          "Review fresh Data Loss and confirm a new teardown.",
-      };
+      return { title: `${doing} failed`, description: attempt.failureMessage };
     case "completed":
       if (attempt.outcome === null) {
         throw new Error("Completed teardown is missing its runtime outcome.");
       }
-      return {
-        title: "Teardown finished",
-        description: teardownCompletedDescription(attempt.outcome),
-      };
+      return { title: "Done", description: teardownCompletedDescription(attempt.outcome) };
     default: {
       const exhaustive: never = attempt.status;
       return exhaustive;
@@ -225,30 +186,23 @@ function teardownStatusCopy(attempt: TeardownAttemptSummary) {
   }
 }
 
-function TeardownStatusAlert({
-  attempt,
-  retrying,
-  onRetry,
-}: {
+function TeardownStatusAlert({ attempt, doing, retrying, onRetry }: {
   attempt: TeardownAttemptSummary;
+  doing: string;
   retrying: boolean;
   onRetry: () => void;
 }) {
   const retryable = teardownIsRetryable(attempt.status);
-  const { title, description } = teardownStatusCopy(attempt);
+  const { title, description } = teardownStatusCopy(attempt, doing);
 
   return (
-    <Alert variant={retryable ? "destructive" : "default"}>
+    <Alert variant={attempt.status === "failed" || attempt.status === "partial" ? "destructive" : "default"}>
+      {teardownIsBusy(attempt.status) ? <Spinner /> : null}
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{description}</AlertDescription>
+      {description ? <AlertDescription>{description}</AlertDescription> : null}
       {retryable ? (
         <AlertAction>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={retrying}
-            onClick={onRetry}
-          >
+          <Button variant="outline" size="sm" disabled={retrying} onClick={onRetry}>
             {retrying ? <Spinner data-icon="inline-start" /> : null}
             Retry
           </Button>

@@ -16,18 +16,20 @@ import { branchUnsettled } from "./branch-guard.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
-import type { SetBranchKept } from "./branch-schemas";
+import type { CloseBranch, SetBranchKept } from "./branch-schemas";
 
-/** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
-export type BranchCloseReason = "merged" | "idle" | "pull_request_closed";
+/** Why a Branch closes: by hand, after a Merge, idle, or with its pull request. A Kept Branch closes by typed teardown. */
+export type BranchCloseReason = "by_hand" | "merged" | "idle" | "pull_request_closed";
 
 /**
- * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
- * own Branches first. It runs as the Branch's creator. This asks the runtime, holding nothing, and returns `admit`, which
- * writes the teardown attempt (inside the caller's transaction, under its locks) and logs the close with its reason once
- * that commits.
+ * Closes a Branch through the Environment teardown, which takes its own Branches first, confirming whatever the runtime
+ * reports. It runs as `requestedByUserId`, or else the Branch's creator. This asks the runtime, holding nothing, and
+ * returns `admit`, which writes the teardown attempt (inside the caller's transaction, under its locks) and logs the
+ * close with its reason once that commits.
  */
-export const closeBranch = Effect.fn("Branches.close")(function* (environmentId: string, reason: BranchCloseReason) {
+export const closeBranch = Effect.fn("Branches.close")(function* (
+  environmentId: string, reason: BranchCloseReason, requestedByUserId?: string,
+) {
   const database = yield* Database;
   const [branch] = yield* database.drizzle
     .select({
@@ -37,15 +39,15 @@ export const closeBranch = Effect.fn("Branches.close")(function* (environmentId:
     .from(schemaEnvironmentBranch)
     .where(eq(schemaEnvironmentBranch.environmentId, environmentId));
   if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
-  const requestedByUserId = branch.createdByUserId;
+  const requester = requestedByUserId ?? branch.createdByUserId;
   const prepared = yield* prepareSystemTeardown({ organizationId: branch.organizationId, environmentId });
   return {
     projectId: branch.projectId,
     /** The Environments the teardown removes (the Branch and its Branches): their queues come before any document. */
     environmentIds: prepared.expected,
     admit: Effect.gen(function* () {
-      const attempt = yield* admitSystemTeardown(prepared, requestedByUserId);
-      yield* afterDatabaseCommit(Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId, teardownAttemptId: attempt.id }));
+      const attempt = yield* admitSystemTeardown(prepared, requester);
+      yield* afterDatabaseCommit(Effect.logInfo("A Branch is closing.", { environmentId, reason, requestedByUserId: requester, teardownAttemptId: attempt.id }));
       return attempt;
     }),
   };
@@ -88,6 +90,36 @@ export const closePrEnvironment = (environmentId: string) => Effect.gen(function
     return yield* close.admit;
   }));
 }).pipe(Effect.scoped);
+
+/**
+ * A person closes a Branch they don't keep, with no typed confirmation: its Own Copies started empty and a PR
+ * Environment comes back with the next push. A Kept Branch, or one with Branches of its own, takes the typed teardown.
+ */
+export const closeBranchByHand = Effect.fn("Branches.closeByHand")(function* (actor: Actor, input: CloseBranch) {
+  const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+  const database = yield* Database;
+  const [branch] = yield* database.drizzle.select({ kept: schemaEnvironmentBranch.kept }).from(schemaEnvironmentBranch)
+    .where(and(
+      eq(schemaEnvironmentBranch.environmentId, input.environmentId),
+      eq(schemaEnvironmentBranch.organizationId, organization.id),
+    ));
+  if (branch === undefined) return yield* new NotFound({ message: "The branch was not found." });
+  const typed = new Conflict({ message: "Type its name under Danger to close this branch.", userFacing: true });
+  if (branch.kept) return yield* typed;
+  const close = yield* closeBranch(input.environmentId, "by_hand", actor.userId);
+  if (close.environmentIds.length > 1) return yield* typed;
+  return yield* database.transaction(Effect.gen(function* () {
+    const row = yield* lockBranchScope(close.projectId, input.environmentId, "update");
+    if (!row) return yield* new NotFound({ message: "The branch was not found." });
+    if (row.kept) return yield* typed;
+    yield* lockEnvironmentDeploymentQueues(close.environmentIds);
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
+      return yield* new Conflict({ message: "This branch is already closing.", userFacing: true });
+    }
+    const attempt = yield* close.admit;
+    return { id: attempt.id };
+  }));
+}, Effect.scoped);
 
 /**
  * A kept Branch stays after merging and never closes for being idle. Under its Branch row, which a close holds while it

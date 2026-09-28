@@ -22,6 +22,8 @@ import { BranchIndent } from "#/components/environment-tree";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
+import { CloseBranchRow } from "./-components/close-branch-row";
+import { useEnvironmentDeletionItems, useEnvironmentPlace } from "./-components/deletion-items";
 import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
@@ -64,6 +66,12 @@ function RouteComponent() {
   // A teardown takes the Environment's Branches with it, deepest first.
   const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
   const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
+  const own = useEnvironmentDeletionItems({ organizationSlug, projectSlug, environmentSlug });
+  const place = useEnvironmentPlace(organizationSlug, environmentId);
+  const name = environment?.name ?? environmentSlug;
+  const projectName = project?.name ?? projectSlug;
+  // A Branch that isn't kept and has none of its own closes from its section; the rest go through Danger, typed.
+  const closesHere = branch !== undefined && !branch.kept && closing.length === 0;
 
   function leaveDeletedTree() {
     void navigate({
@@ -79,26 +87,31 @@ function RouteComponent() {
       {section === "environment" ? (
         <div className="flex flex-col gap-8">
           {branch && parent && (
-            <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent} />
+            <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent}>
+              {closesHere && <CloseBranchRow organizationSlug={organizationSlug} projectSlug={projectSlug}
+                environmentId={environmentId} name={name} parentNamespace={parent.namespace}
+                reopensWith={branch.pullRequest && !branch.pullRequest.closed ? branch.pullRequest.number : null}
+                own={own.map((item) => item.name)} />}
+            </BranchSettingsSection>
           )}
           {startingPoint && <StartingPointSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug}
             environmentSlug={environmentSlug} environmentId={environmentId} />}
           <BranchDefaultsSection organizationSlug={organizationSlug} environmentId={environmentId} />
-          <TeardownDangerSection
+          {!closesHere && <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"
             environmentId={environmentId}
-            confirmPhrase={environment?.name ?? environmentSlug}
-            title={branch ? "Close this branch" : "Tear down this environment"}
-            description={branch
-              ? "Deletes this branch and its own services and volumes. Services it uses live keep running. This cannot be undone."
-              : "Deletes this environment and all of its services and volumes. This cannot be undone."}
-            closes={closing.map((row) => row.name)}
+            name={name}
+            place={place}
+            verb={branch ? "Close" : "Delete"}
+            title={branch ? "Close this branch" : "Delete this environment"}
+            description={branch ? "Its services and data go with it." : "Its services, data and branches go with it."}
+            actionLabel={branch ? "Close branch" : "Delete environment"}
+            items={[...own, ...closing.map((row) => ({ kind: "branch" as const, name: row.name }))]}
             disabledReason={defaultEnvironment && defaultEnvironmentRefusal(defaultEnvironment.name)}
-            actionLabel={branch ? "Close branch" : "Tear down environment"}
             headingId="environment-teardown-heading"
             onCompleted={leaveDeletedTree}
-          />
+          />}
         </div>
       ) : (
         <div className="flex flex-col gap-8">
@@ -107,10 +120,15 @@ function RouteComponent() {
             organizationSlug={organizationSlug}
             scope="project"
             projectSlug={projectSlug}
-            confirmPhrase={project?.name ?? projectSlug}
-            title="Tear down this project"
-            description="Deletes this project and all of its environments, services, and volumes. This cannot be undone."
-            actionLabel="Tear down project"
+            name={projectName}
+            place={projectName}
+            title="Delete this project"
+            description="Its environments, services and data go with it."
+            actionLabel="Delete project"
+            items={environments.filter((row) => row.projectId === project?.id).map((row) => ({
+              kind: branches.some((candidate) => candidate.environmentId === row.id) ? "branch" as const : "environment" as const,
+              name: row.name,
+            }))}
             headingId="project-teardown-heading"
             onCompleted={leaveDeletedTree}
           />

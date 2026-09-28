@@ -28,8 +28,7 @@ import {
   prepareEnvironmentDestructiveVolumesServerFn,
 } from "#/modules/deployments/deployment.functions";
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
-import type { PreparedDestructiveReview } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
-import { prepareVolumeDestructionReview } from "#/components/destructive-volume/destructive-volume-review";
+import { prepareVolumeDestructionReview, type PreparedDestructiveReview } from "#/components/destructive-volume/destructive-volume-review";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import {
   fingerprintReviewedEnvironmentWorkingState,
@@ -53,6 +52,8 @@ type UseCanvasChangeActionsInput = {
   } | null;
   destructiveServiceIds: string[];
   deletedDeployedVolumeIds: string[];
+  /** Removals ask for a typed confirmation; otherwise the Review is the confirmation. */
+  confirmsRemovals: boolean;
   commitMessage: string;
   setCommitMessage: (message: string) => void;
   setDestructiveConfirmationOpen: (open: boolean) => void;
@@ -65,6 +66,7 @@ export function useCanvasChangeActions({
   savedSnapshotSource,
   destructiveServiceIds,
   deletedDeployedVolumeIds,
+  confirmsRemovals,
   commitMessage,
   setCommitMessage,
   setDestructiveConfirmationOpen,
@@ -188,7 +190,20 @@ export function useCanvasChangeActions({
     if (action === "deploy" && !deployTargetIsAvailable()) return;
     setReviewAction(action);
     if (destructiveServiceIds.length > 0 || deletedDeployedVolumeIds.length > 0) {
-      setDestructiveConfirmationOpen(true);
+      if (confirmsRemovals) {
+        setDestructiveConfirmationOpen(true);
+        return;
+      }
+      try {
+        // The servers' evidence can move once between reading and publishing; publish again with the fresh one.
+        const outcome = await confirmDestructiveAction(await prepareDestructiveReview(), action);
+        if (outcome.state === "review_updated_evidence"
+          && (await confirmDestructiveAction(outcome.preparation, action)).state === "review_updated_evidence") {
+          toast.error("Your servers changed. Try again.");
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : `Could not ${action} the changes.`);
+      }
       return;
     }
     try {
@@ -245,13 +260,14 @@ export function useCanvasChangeActions({
 
   async function confirmDestructiveAction(
     preparation: PreparedDestructiveReview,
+    action = reviewAction,
   ) {
     if (!preparation.reviewedMutation) {
       throw new Error("The destructive action is missing its reviewed mutation.");
     }
     const reviewedMutation = preparation.reviewedMutation;
     const outcome = await publicationMutation.mutateAsync({
-      intent: reviewAction === "deploy" ? "manual_deploy" : "save",
+      intent: action === "deploy" ? "manual_deploy" : "save",
       review: {
         savedStateBasis: reviewedMutation.savedStateBasis,
         workingStateFingerprint: reviewedMutation.workingStateFingerprint,

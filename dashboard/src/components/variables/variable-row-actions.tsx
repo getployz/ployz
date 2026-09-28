@@ -24,7 +24,7 @@ export function VariableRowActions({
   plainValue,
   showMetadata,
   onCancelEdit,
-  onOpenDeleteDialog,
+  onDelete,
   onOpenEdit,
   onOpenSealDialog,
   onSave,
@@ -36,7 +36,8 @@ export function VariableRowActions({
   plainValue: string;
   showMetadata: boolean;
   onCancelEdit: () => void;
-  onOpenDeleteDialog: () => void;
+  /** Stages the deletion; Discard undoes it. */
+  onDelete: () => void;
   onOpenEdit: (value: string) => void;
   onOpenSealDialog: () => void;
   onSave: () => void;
@@ -99,7 +100,7 @@ export function VariableRowActions({
               {exported ? "Stop exporting" : "Export"}
             </DropdownMenuItem>
           ) : null}
-          <DropdownMenuItem onClick={onOpenDeleteDialog}>
+          <DropdownMenuItem onClick={onDelete}>
             <TrashIcon />
             Delete
           </DropdownMenuItem>

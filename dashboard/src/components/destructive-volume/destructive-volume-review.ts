@@ -1,11 +1,23 @@
 import type { DestructiveVolumeReview } from "#/modules/deployments/deployment-contract";
-import type { PreparedVolumeDestruction } from "./volume-destruction-confirmation-dialog";
+import type { EnvironmentSavedStateBasis } from "#/modules/environment-design/saved-state";
+import type { PreparedNamespaceDestructiveEvidence } from "#/modules/operations/destructive-volume-evidence";
+
+/** Fresh evidence for every deployed volume a save or deploy deletes, with the reviewed Working State it goes with. */
+export type PreparedDestructiveReview = PreparedNamespaceDestructiveEvidence & {
+  reviews: DestructiveVolumeReview[];
+  reviewedMutation?: {
+    savedStateBasis: EnvironmentSavedStateBasis;
+    workingStateFingerprint: string;
+    serviceIds: string[];
+    volumeIds: string[];
+  };
+};
 
 export function prepareVolumeDestructionReview(input: {
   reviews: readonly DestructiveVolumeReview[];
   expectedResourceIds: readonly string[];
   expectedNamespaceId: string;
-}): PreparedVolumeDestruction {
+}): PreparedDestructiveReview {
   const reviews = [...input.reviews].sort((left, right) =>
     left.target.resourceId.localeCompare(right.target.resourceId),
   );

@@ -10,6 +10,7 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
@@ -39,6 +40,7 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { section = "general" } = Route.useSearch();
   const navigate = useNavigate();
+  const { projects } = useWorkspace(organizationSlug);
 
   return (
     <DashboardPage width="content">
@@ -50,10 +52,12 @@ function RouteComponent() {
           <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="organization"
-            confirmPhrase={organizationSlug}
-            title="Tear down this organization"
-            description="Deletes all projects and their stored data, removes servers from the cluster, disconnects the cluster from Ployz, and deletes this organization. This cannot be undone."
-            actionLabel="Tear down organization"
+            name={organizationSlug}
+            place={organizationSlug}
+            title="Delete this organization"
+            description="Its projects and data go with it, and its servers are reset."
+            actionLabel="Delete organization"
+            items={projects.map((project) => ({ kind: "project" as const, name: project.name }))}
             headingId="organization-teardown-heading"
             onCompleted={() => {
               void navigate({ to: "/cloud", replace: true });

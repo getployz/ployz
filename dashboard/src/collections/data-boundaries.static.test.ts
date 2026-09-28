@@ -29,10 +29,8 @@ const SPINNER_FILES = {
   "components/ui/spinner.tsx": "the primitive",
   "components/ui/sonner.tsx": "promise toasts for writes",
   "components/cancel-deployment-dialog.tsx": "cancel in flight",
-  "components/confirm-destructive-dialog.tsx": "confirm in flight",
   "components/confirm-dialog.tsx": "confirm in flight",
-  "components/data-loss/data-loss-confirm-dialog.tsx": "submit in flight",
-  "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
+  "components/deletion-dialog.tsx": "deletion in flight",
   "components/deployment-logs.tsx": "deployment step running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/GoesToSection.tsx": "approval, Undo or a new value in flight",
@@ -42,7 +40,8 @@ const SPINNER_FILES = {
   "components/service-create-command.tsx": "create in flight",
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
-  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight",
+  "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight; the teardown running",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch-row.tsx": "close in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
@@ -108,6 +107,8 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch-row.tsx": "closing a Branch is destructive, and the page leaves it once the close starts",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "deleting a volume's data is destructive",
 };
 
 function walk(dir: string): string[] {
