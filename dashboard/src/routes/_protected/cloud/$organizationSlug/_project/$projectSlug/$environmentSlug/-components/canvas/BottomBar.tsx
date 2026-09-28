@@ -32,7 +32,7 @@ import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
-import { bottomBarRows, type ParentRow } from "./bottom-bar-rows";
+import { bottomBarRows, type SaveRow } from "./bottom-bar-rows";
 
 /**
  * Where the bottom bar renders: the scene, outside the canvas that turns inert under a panel. The canvas owns the change
@@ -104,7 +104,7 @@ export function BottomBar({
   });
   // Save opens on a row; the sheet shows only while that row is there, so a Destination that's gone closes it.
   const saveInto = saving === null ? undefined
-    : rows.parent.find((row): row is Extract<ParentRow<BranchReviewView["goesTo"][number], PullRequest>, { kind: "save" }> => row.kind === "save" && (row.into?.landing.destination.id ?? PARENT) === saving);
+    : rows.parent.find((row): row is SaveRow<BranchReviewView["goesTo"][number], PullRequest> => row.kind === "save" && (row.into?.landing.destination.id ?? PARENT) === saving);
 
   function deploy() {
     setOpen(false);

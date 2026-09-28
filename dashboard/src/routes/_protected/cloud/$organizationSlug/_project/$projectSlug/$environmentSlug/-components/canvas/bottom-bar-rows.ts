@@ -25,6 +25,7 @@ export type OwnRow = { kind: "starting_point"; name: string } | { kind: "staged"
 /** What a Branch has for a Destination: changes to save, changes saved to go live with its pull request, else updates from its Parent. */
 export type ParentRow<L extends Landing, P> = { kind: "save"; into: { landing: L; pullRequest: P } | null }
   | { kind: "saved"; landing: L; saved: NonNullable<L["saved"]>; pullRequest: P } | { kind: "update" };
+export type SaveRow<L extends Landing, P> = Extract<ParentRow<L, P>, { kind: "save" }>
 
 /**
  * The bottom bar's rows. Row 1 is the Environment itself; on a Branch, the rows after it are what it has for its

@@ -303,6 +303,7 @@ export const completeTeardownAttempt = Effect.fn(
           });
         }
         if (updated.scope === "shutdown" && updated.environmentId) {
+          // Any other terminal status leaves the runtime in doubt, so the shutdown counts as failed.
           yield* settleShutdown(updated.environmentId, input.status === "completed" ? "completed" : "failed");
         }
         return parsedAttempt(updated);
