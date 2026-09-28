@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "./-components/environment-route-paths";
+import { ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO, ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "./-components/environment-route-paths";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
-import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
+import { ChevronRightIcon, GitBranchIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { Effect, Option, Schema } from "effect";
 import { getEnvironmentsCollection } from "#/collections/collections";
 import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
@@ -11,26 +11,23 @@ import { DashboardPage } from "#/components/dashboard-page";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { cn } from "#/lib/utils";
 import { BranchIndent } from "#/components/environment-tree";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
-import { CloseBranchRow } from "./-components/close-branch-row";
 import { useDeletionNodes, useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { BranchDefaultsSection } from "./-components/branch-defaults-section";
-import { BranchSettingsSection } from "./-components/branch-settings-section";
-import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { PrEnvironmentsSection } from "./-components/pr-environments-section";
 import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
 import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
+import { useEnvironmentNotes } from "#/modules/project/environment-notes";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
 const settingsSection = Schema.Literals(["environment", "project"]);
@@ -61,8 +58,6 @@ function RouteComponent() {
   const project = projects.find((row) => row.slug === projectSlug);
   const environment = environments.find((row) => row.id === environmentId);
   const branch = branches.find((row) => row.environmentId === environmentId);
-  const parent = branch && environments.find((row) => row.id === branch.parentEnvironmentId);
-  const startingPoint = useStartingPoint(organizationSlug, environmentId);
   // A teardown takes the Environment's Branches with it, deepest first.
   const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
   const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
@@ -71,8 +66,6 @@ function RouteComponent() {
   const place = useEnvironmentPlace(organizationSlug, environmentId);
   const name = environment?.name ?? environmentSlug;
   const projectName = project?.name ?? projectSlug;
-  // A Branch that isn't kept and has none of its own closes from its section; the rest go through Danger, typed.
-  const closesHere = branch !== undefined && !branch.kept && closing.length === 0;
 
   // The project opens its Default Environment, which can't be deleted.
   function leaveDeletedEnvironment() {
@@ -88,27 +81,23 @@ function RouteComponent() {
       {/* The rail, or on phones the strip under the top bar, picks the section. */}
       {section === "environment" ? (
         <div className="flex flex-col gap-8">
-          {branch && parent && (
-            <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent}>
-              {closesHere && <CloseBranchRow organizationSlug={organizationSlug} projectSlug={projectSlug}
-                environmentId={environmentId} name={name} parentNamespace={parent.namespace}
-                reopensWith={branch.pullRequest && !branch.pullRequest.closed ? branch.pullRequest.number : null}
-                own={own.map((item) => item.name)} />}
-            </BranchSettingsSection>
-          )}
-          {startingPoint && <StartingPointSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug}
-            environmentSlug={environmentSlug} environmentId={environmentId} />}
+          {branch && <Item variant="outline" size="sm" render={<Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO}
+            params={{ organizationSlug, projectSlug, environmentSlug }} />}>
+            <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
+            <ItemContent><ItemTitle>Manage {name}</ItemTitle>
+              <ItemDescription>{branch.pullRequest ? "Save, shut down or close it" : "Save, keep or close it"} from its panel.</ItemDescription></ItemContent>
+            <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+          </Item>}
           <BranchDefaultsSection organizationSlug={organizationSlug} environmentId={environmentId} />
-          {!closesHere && <TeardownDangerSection
+          {!branch && <TeardownDangerSection
             organizationSlug={organizationSlug}
             scope="environment"
             environmentId={environmentId}
             name={name}
             place={place}
-            verb={branch ? "Close" : "Delete"}
-            title={branch ? "Close this branch" : "Delete this environment"}
-            description={branch ? "Its services and data go with it." : "Its services, data and branches go with it."}
-            actionLabel={branch ? "Close branch" : "Delete environment"}
+            title="Delete this environment"
+            description="Its services, data and branches go with it."
+            actionLabel="Delete environment"
             items={[...own, ...closing.map((row) => ({ kind: "branch" as const, name: row.name }))]}
             disabledReason={defaultEnvironment && defaultEnvironmentRefusal(defaultEnvironment.name)}
             headingId="environment-teardown-heading"
@@ -161,6 +150,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
   const defaultEnvironment = project.resolvedEnvironment;
   // A PR Environment can't be the Default Environment.
   const prEnvironments = prEnvironmentIds(branches);
+  const notesOf = useEnvironmentNotes(organizationSlug, defaultEnvironment?.id);
 
   return (
     <>
@@ -199,6 +189,8 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
         <ItemGroup className="gap-2">
           {environmentTree(environments, branches).map(({ environment, depth, parent }) => {
             const { online, label } = servicesOnline({ namespace: environment.namespace, services: environment.intent.services }, runtimeServices, runtimeStatus);
+            // The Default chip says "default" already.
+            const notes = notesOf(environment.id).filter((note) => note !== "default");
             return (
               <Item key={environment.id} variant="outline" size="sm" render={
                 <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
@@ -213,7 +205,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
                   </ItemTitle>
                   <ItemDescription className="flex items-center gap-2">
                     <span aria-hidden="true" className={cn("size-2 shrink-0 rounded-full", online ? "bg-success" : "bg-muted-foreground")} />
-                    {label}
+                    <span className="truncate">{[label, ...notes].join(" · ")}</span>
                   </ItemDescription>
                 </ItemContent>
                 <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>

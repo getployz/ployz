@@ -20,8 +20,10 @@ type CanvasInspectorHeaderParams = {
   environmentSlug: string;
 };
 
-export function CanvasInspectorHeader({ params, children }: {
+export function CanvasInspectorHeader({ params, actions, children }: {
   params: CanvasInspectorHeaderParams;
+  /** The panel's own controls, before resize and close: a ⋮ menu. */
+  actions?: ReactNode;
   children: ReactNode;
 }) {
   const presentation = useContext(InspectorPresentation);
@@ -41,6 +43,7 @@ export function CanvasInspectorHeader({ params, children }: {
       {returnLink}
       <div className="min-w-0">{children}</div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
+        {actions}
         <Button
           variant="ghost"
           size="icon"
