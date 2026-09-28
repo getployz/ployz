@@ -93,8 +93,8 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
           <FieldLabel htmlFor="branch-keep">
             <Field orientation="horizontal">
               <FieldContent>
-                <span className="font-medium">Keep it after merging</span>
-                <FieldDescription>Otherwise it closes after merging, or after 7 days without a deploy.</FieldDescription>
+                <span className="font-medium">Keep it after saving</span>
+                <FieldDescription>Otherwise it can be deleted after saving, and closes after 7 days without a deploy.</FieldDescription>
               </FieldContent>
               <Switch id="branch-keep" checked={keep} onCheckedChange={setKeep} />
             </Field>
