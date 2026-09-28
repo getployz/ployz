@@ -47,6 +47,19 @@ export function branchReview(input: BranchReviewInput): BranchReview {
   return { merge: moves(merge), update: moves(update), differ: merge.filter((row) => row.role === "differ"), mergeReview };
 }
 
+/**
+ * What a PR Environment moves into one Destination when its pull request merges: its Working State into the
+ * Destination's, over its base, with `parent` the Parent's Applied State ("the Parent's value"). `review` is core's
+ * compare-only review string, which an approval sends back so the server can refuse rows that moved since.
+ */
+export type GoesTo = { rows: ChangeRow[]; review: string };
+
+/** `input.parent` is the Destination's Working State here, and `parentApplied` the Parent's Applied State. */
+export function goesTo(input: BranchReviewInput): GoesTo {
+  const { rows, review } = branchChanges(mergeInput(input));
+  return { rows: moves(rows), review };
+}
+
 export const mergeInput = (input: BranchReviewInput) => ({
   base: input.base, from: input.branch, into: input.parent, parent: input.parentApplied ?? undefined,
   provided: usedLive(input.parent), hostnames: { from: input.hostnames.branch, into: input.hostnames.parent }, fromKept: input.kept,

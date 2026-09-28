@@ -220,14 +220,14 @@ export function EnvironmentCanvasScene() {
     from: ENVIRONMENT_ROUTE_FROM,
   });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, branchReview } = useCanvasInspectorSelection();
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, branchReview, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
   const [stagedReviewSlot, setStagedReviewSlot] = useState<HTMLElement | null>(null);
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    <BranchPickingProvider open={newBranch !== null} focus={newBranch?.focus ?? null}>
+    <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
     <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
@@ -236,7 +236,8 @@ export function EnvironmentCanvasScene() {
       } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
         : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
         : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
-        : branchReview ? { key: `${canvasKey}/review`, nodeId: "review" } : null}
+        : branchReview ? { key: `${canvasKey}/review`, nodeId: "review" }
+        : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}
       canvas={<>
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { Cache, Context, Data, Effect, Layer, Redacted, Result, Schema } from "effect";
 import {
   GITHUB_COMPARE_STATUSES,
+  githubBranchNameSchema,
   githubChangedPathsSchema,
   githubCheckSuiteConclusionSchema,
   githubCheckSuiteStatusSchema,
@@ -53,7 +54,12 @@ export type GithubObservationOperation =
   | "fetch_workflow"
   | "dispatch_workflow"
   | "cancel_run"
-  | "fetch_run";
+  | "fetch_run"
+  | "fetch_installation"
+  | "fetch_pull_request"
+  | "list_check_runs"
+  | "create_check_run"
+  | "update_check_run";
 
 export type GithubObservationErrorCode =
   | "invalid_input"
@@ -139,6 +145,17 @@ const checkSuiteResponseSchema = Schema.Struct({
   conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
   updated_at: githubTimestampSchema,
 });
+const pullRequestResponseSchema = Schema.Struct({
+  number: githubIdSchema,
+  state: Schema.Literals(["open", "closed"]),
+  title: Schema.String,
+  user: Schema.NullOr(Schema.Struct({ login: Schema.String.check(Schema.isMinLength(1)), type: Schema.String })),
+  head: Schema.Struct({ ref: githubBranchNameSchema, sha: githubExactShaSchema }),
+  base: Schema.Struct({ ref: githubBranchNameSchema }),
+  merged: Schema.Boolean,
+  merge_commit_sha: Schema.NullOr(githubExactShaSchema),
+  commits: Schema.Number,
+});
 const installationTokenResponseSchema = Schema.Struct({
   token: Schema.String.check(Schema.isMinLength(1)),
   expires_at: githubTimestampSchema,
@@ -149,8 +166,10 @@ export type GithubJsonRequest<S extends Schema.ConstraintDecoder<unknown>> = {
   url: string;
   operation: GithubObservationOperation;
   schema: S;
-  /** A POST sends `body` as JSON; an empty response reads as `{}`. */
-  method?: "POST";
+  /** `app` calls as the GitHub App itself (`/app/...` endpoints), not as an installation; `installationId` is ignored. */
+  auth?: "app";
+  /** A POST or PATCH sends `body` as JSON; an empty response reads as `{}`. */
+  method?: "POST" | "PATCH";
   body?: unknown;
 };
 
@@ -366,6 +385,99 @@ export const fetchInstallationCheckSuite = Effect.fn(
   };
 });
 
+/** A pull request as GitHub has it now, so a late or repeated delivery never acts on an older state. */
+export const fetchInstallationPullRequest = Effect.fn(
+  "Github.fetchInstallationPullRequest",
+)(function* (installationId: number, repositoryId: number, number: number) {
+  const operation = "fetch_pull_request";
+  if (!isValidGithubId(repositoryId) || !isValidGithubId(number)) {
+    return yield* githubObservationError({ code: "invalid_input", operation, retriable: false });
+  }
+  const api = yield* GithubApi;
+  const observed = yield* api.json({
+    installationId,
+    url: `https://api.github.com/repositories/${repositoryId}/pulls/${number}`,
+    operation,
+    schema: pullRequestResponseSchema,
+  });
+  if (observed.number !== number) {
+    return yield* githubObservationError({ code: "identity_mismatch", operation, retriable: false });
+  }
+  return {
+    open: observed.state === "open",
+    title: observed.title,
+    // A deleted author shows as GitHub's "ghost" user.
+    author: { login: observed.user?.login ?? "ghost", isBot: observed.user?.type === "Bot" },
+    headBranch: observed.head.ref,
+    headSha: observed.head.sha,
+    targetBranch: observed.base.ref,
+    commits: observed.commits,
+    // Only a merged pull request's is its merge commit.
+    mergeCommitSha: observed.merged ? observed.merge_commit_sha : null,
+  };
+});
+
+const installationSchema = Schema.Struct({
+  html_url: Schema.String,
+  permissions: Schema.Record(Schema.String, Schema.String),
+});
+
+/** The permissions an installation of the GitHub App has granted, and where its owner manages them. */
+export const fetchAppInstallationPermissions = Effect.fn(
+  "Github.fetchAppInstallationPermissions",
+)(function* (installationId: number) {
+  const api = yield* GithubApi;
+  const installation = yield* api.json({
+    auth: "app",
+    installationId,
+    url: `https://api.github.com/app/installations/${installationId}`,
+    operation: "fetch_installation",
+    schema: installationSchema,
+  });
+  return { url: installation.html_url, permissions: installation.permissions };
+});
+
+const checkRunSchema = Schema.Struct({ id: githubIdSchema });
+const checkRunsResponseSchema = Schema.Struct({
+  check_runs: Schema.Array(Schema.Struct({ id: githubIdSchema, external_id: Schema.optional(Schema.NullOr(Schema.String)) })),
+});
+
+/**
+ * The installation's completed check run `name` on a commit for `externalId`: updated in place when the commit already
+ * has that one, else created. Two checks of one name on one commit (two pull requests from one head) stay apart by
+ * `externalId`. The caller serializes posts per check, so two never race to create.
+ */
+export const postInstallationCheckRun = Effect.fn(
+  "Github.postInstallationCheckRun",
+)(function* (installationId: number, repositoryId: number, input: {
+  headSha: string; name: string; externalId: string; conclusion: "success" | "action_required"; detailsUrl: string; title: string; summary: string;
+}) {
+  if (!isValidGithubId(repositoryId) || !isValidGithubExactSha(input.headSha)) {
+    return yield* githubObservationError({ code: "invalid_input", operation: "create_check_run", retriable: false });
+  }
+  const api = yield* GithubApi;
+  const repository = `https://api.github.com/repositories/${repositoryId}`;
+  // Every run of that name, not only the latest one GitHub shows by default, page by page until it's found.
+  let existing: { id: number } | undefined;
+  for (let page = 1; !existing; page++) {
+    const { check_runs: runs } = yield* api.json({
+      installationId,
+      url: `${repository}/commits/${input.headSha}/check-runs?check_name=${encodeURIComponent(input.name)}&filter=all&per_page=100&page=${page}`,
+      operation: "list_check_runs",
+      schema: checkRunsResponseSchema,
+    });
+    existing = runs.find((run) => run.external_id === input.externalId);
+    if (runs.length < 100) break;
+  }
+  const body = {
+    name: input.name, external_id: input.externalId, status: "completed", conclusion: input.conclusion, details_url: input.detailsUrl,
+    output: { title: input.title, summary: input.summary },
+  };
+  return yield* api.json(existing
+    ? { installationId, url: `${repository}/check-runs/${existing.id}`, operation: "update_check_run", schema: checkRunSchema, method: "PATCH", body }
+    : { installationId, url: `${repository}/check-runs`, operation: "create_check_run", schema: checkRunSchema, method: "POST", body: { ...body, head_sha: input.headSha } });
+});
+
 export function createGithubAppJwt(input: {
   readonly appId: string;
   readonly privateKey: string;
@@ -402,22 +514,23 @@ export const GithubApiLive = Layer.effect(
   Effect.gen(function* () {
     const config = yield* AppConfig;
 
+    const appJwt = (operation: GithubObservationOperation) => Effect.try({
+      try: () =>
+        createGithubAppJwt({
+          appId: config.github.appId,
+          privateKey: Redacted.value(config.github.appPrivateKey),
+        }),
+      catch: () =>
+        githubObservationError({
+          code: "request_failed",
+          operation,
+          retriable: false,
+        }),
+    });
+
     const fetchInstallationToken = Effect.fn("GithubApi.fetchInstallationToken")(
       function* (installationId: number) {
-        const { appId, appPrivateKey } = config.github;
-        const jwt = yield* Effect.try({
-          try: () =>
-            createGithubAppJwt({
-              appId,
-              privateKey: Redacted.value(appPrivateKey),
-            }),
-          catch: () =>
-            githubObservationError({
-              code: "request_failed",
-              operation: "installation_token",
-              retriable: false,
-            }),
-        });
+        const jwt = yield* appJwt("installation_token");
         const response = yield* Effect.tryPromise({
           try: (signal) =>
             fetch(
@@ -506,7 +619,7 @@ export const GithubApiLive = Layer.effect(
       function* <S extends Schema.ConstraintDecoder<unknown>>(
         input: GithubJsonRequest<S>,
       ) {
-        if (input.installationId !== null && !isValidGithubId(input.installationId)) {
+        if (input.auth !== "app" && input.installationId !== null && !isValidGithubId(input.installationId)) {
           return yield* githubObservationError({
             code: "invalid_input",
             operation: input.operation,
@@ -514,12 +627,13 @@ export const GithubApiLive = Layer.effect(
           });
         }
 
-        const token = input.installationId === null ? null : yield* installationToken(input.installationId);
+        const token = input.auth === "app" ? yield* appJwt(input.operation)
+          : input.installationId === null ? null : yield* installationToken(input.installationId);
         const headers: GithubRequestHeaders = { Accept: "application/vnd.github+json", "X-GitHub-Api-Version": GITHUB_API_VERSION };
         if (token !== null) headers.Authorization = `Bearer ${token}`;
         const response = yield* Effect.tryPromise({
-          try: (signal) => fetch(input.url, input.method === "POST"
-            ? { signal, method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
+          try: (signal) => fetch(input.url, input.method
+            ? { signal, method: input.method, headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify(input.body ?? {}) }
             : { signal, headers }),
           catch: () =>
             githubObservationError({

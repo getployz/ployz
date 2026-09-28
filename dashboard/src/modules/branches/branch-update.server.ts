@@ -18,7 +18,7 @@ import { branchHostnameSuffix } from "./branch-plan";
 import { rowLineage, usedLive } from "./branch-review";
 import { assertBranchSettled } from "./branch-guard.server";
 import { loadAncestorApplied } from "./branch-admission.server";
-import { core, landChanges } from "./branch-operations.server";
+import { core, landChanges, loadIdentitySources } from "./branch-operations.server";
 import { liveOwner } from "./live-owner";
 import type { MakeOwnCopy, UpdateBranch } from "./branch-schemas";
 
@@ -117,7 +117,7 @@ const stageFrom = Effect.fn("Branches.stageFrom")(function* ({ project, document
   const applied = yield* changes(picks);
   if (!applied.base) return yield* Effect.die("Core returned no base for an Update.");
   return yield* landChanges({
-    project, from: source.id, document, into, next: parseDashboardEnvironmentIntent(applied.next), picks,
+    project, sources: yield* loadIdentitySources(source.id), document, into, next: parseDashboardEnvironmentIntent(applied.next), picks,
     advance: { branchEnvironmentId: document.id, base: applied.base },
   });
 });

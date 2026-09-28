@@ -10,6 +10,7 @@ import type { SavedDeploymentTarget } from "#/modules/deployments/admission.serv
 import { loadEnvironmentSnapshotProjection, type AppliedSavedNode } from "#/modules/deployments/environment-state.repository.server";
 import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { servicePublicDomain } from "#/modules/environment-design/managed-service-exports";
+import { isEmptyValue } from "#/modules/environment-design/saved-intent";
 import { ancestors } from "#/modules/project/environment-tree";
 import { liveOwner } from "./live-owner";
 
@@ -17,15 +18,26 @@ type Producers = SavedDeploymentTarget["variableProducers"];
 
 /**
  * A Branch's attempt as admission writes it, captured fresh on every attempt: plus each never-deployed Own Copy's Setup
- * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides. A
- * root's comes back unchanged.
+ * Commands by service id, the values of the Live Nodes its Own Copies reference, and the ones no ancestor provides or
+ * that resolved empty. Any Environment's variables with an empty value count as missing too.
  */
 export const branchAdmission = Effect.fn("Branches.branchAdmission")(function* (
   environmentId: string,
   target: SavedDeploymentTarget,
 ) {
   const live = yield* liveValuesOf(environmentId, target);
-  return { ...target, ...live, setupCommands: yield* setupCommandsOf(environmentId) } satisfies SavedDeploymentTarget;
+  const missingLiveValues = [...live.missingLiveValues, ...yield* emptyValuesOf(target)];
+  return { ...target, ...live, missingLiveValues, setupCommands: yield* setupCommandsOf(environmentId) } satisfies SavedDeploymentTarget;
+});
+
+/** Its services' variables whose value is empty, such as one a pull request landed without a value: shown, never blocking. */
+const emptyValuesOf = Effect.fn("Branches.emptyValuesOf")(function* (target: SavedDeploymentTarget) {
+  const empty = target.variableProducers.filter(({ value }) => isEmptyValue(value));
+  if (empty.length === 0) return [];
+  const { drizzle } = yield* Database;
+  const names = new Map((yield* drizzle.select({ id: service.id, name: service.name }).from(service)
+    .where(inArray(service.id, empty.map((producer) => producer.ownerId)))).map((row) => [row.id, row.name]));
+  return empty.map((producer): MissingLiveValue => ({ serviceId: producer.ownerId, from: names.get(producer.ownerId) ?? "", key: producer.key }));
 });
 
 /**
@@ -126,6 +138,9 @@ const liveValuesOf = Effect.fn("Branches.liveValuesOf")(function* (
     });
     variableProducers.push(...result.producers);
     missing.push(...result.missing);
+    // A Live value that resolved empty, such as one a pull request landed without a value, is missing to its readers too.
+    missing.push(...result.producers.filter((producer) => isEmptyValue(producer.value) && uses.get(producer.ownerLineageId)?.has(producer.key))
+      .map((producer) => ({ lineageId: producer.ownerLineageId, key: producer.key })));
   }
   if (missing.length === 0) return { variableProducers, missingLiveValues };
 

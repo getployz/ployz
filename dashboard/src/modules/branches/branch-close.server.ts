@@ -1,9 +1,9 @@
 import "@tanstack/react-start/server-only";
+import { loadBranchRows } from "#/modules/pr-environments/pr-environment.repository.server";
 
 import { and, eq, inArray, isNotNull, max, or } from "drizzle-orm";
 import { Cause, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
 import { dueForIdleClose } from "#/modules/branches/idle-close";
@@ -19,7 +19,7 @@ import { Conflict, NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
 /** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
-export type BranchCloseReason = "merged" | "idle";
+export type BranchCloseReason = "merged" | "idle" | "pull_request_closed";
 
 /**
  * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
@@ -77,6 +77,18 @@ export const tryCloseBranch = (environmentId: string) => Effect.gen(function* ()
     })))));
 });
 
+/** Tears down a PR Environment with its pull request, kept or not; null when its teardown already runs. */
+export const closePrEnvironment = (environmentId: string) => Effect.gen(function* () {
+  const database = yield* Database;
+  const close = yield* closeBranch(environmentId, "pull_request_closed");
+  return yield* database.transaction(Effect.gen(function* () {
+    yield* lockBranchScope(close.projectId, environmentId, "update");
+    yield* lockEnvironmentDeploymentQueues(close.environmentIds);
+    if ((yield* activeTeardownFor([environmentId])).size > 0) return null;
+    return yield* close.admit;
+  }));
+}).pipe(Effect.scoped);
+
 /**
  * A kept Branch stays after merging and never closes for being idle. Under its Branch row, which a close holds while it
  * admits, so Keep never reports success for a Branch already closing.
@@ -98,9 +110,10 @@ export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Act
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
       return yield* new Conflict({ message: "This branch is already closing." });
     }
-    const [row] = yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where).returning();
+    yield* drizzle.update(schemaEnvironmentBranch).set({ kept: input.kept }).where(where);
+    const [row] = yield* loadBranchRows(where);
     if (row === undefined) return yield* new NotFound({ message: "The branch was not found." });
-    return { ...row, base: withoutSealedCiphertext(row.base) };
+    return row;
   }));
 });
 

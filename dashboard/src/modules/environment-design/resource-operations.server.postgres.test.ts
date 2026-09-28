@@ -24,6 +24,7 @@ import {
 } from "./resource-operations.server";
 import { createService } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
+import { InngestLive } from "#/modules/inngest/client";
 
 it.live(
   "keeps resource lifecycle and service-owned mounts authorized and atomic",
@@ -42,9 +43,10 @@ it.live(
           ),
         ),
       );
-      const layer = Layer.merge(
+      const layer = Layer.mergeAll(
         DatabaseLive.pipe(Layer.provide(config)),
         SecretEncryptionLive.pipe(Layer.provide(config)),
+        InngestLive.pipe(Layer.provide(config)),
       );
 
       yield* Effect.gen(function* () {

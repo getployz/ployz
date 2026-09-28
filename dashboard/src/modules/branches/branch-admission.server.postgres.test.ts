@@ -147,6 +147,16 @@ describe("branchAdmission", () => {
     expect(row?.missingLiveValues).toHaveLength(2);
   });
 
+  it("records a Live value that resolved empty as missing for the service reading it", async () => {
+    const intent = production();
+    const db = intent.services.find((node) => node.id === prodDb);
+    if (db) db.variables[0] = variable(id(1), "WEB_ORIGIN", { kind: "literal", value: "" });
+    await applyProduction(intent);
+    const { row } = await admitBranch();
+    expect(row?.missingLiveValues).toEqual(expect.arrayContaining([{ serviceId: branchWeb, from: "db", key: "WEB_ORIGIN" }]));
+    expect(row?.missingLiveValues).toHaveLength(3);
+  });
+
   it("deploys every Live reference empty when the Parent stopped running the service, and records them", async () => {
     await applyProduction({ ...production(), services: production().services.filter((service) => service.lineageId !== dbLineage) });
     const { row, env } = await admitBranch();
