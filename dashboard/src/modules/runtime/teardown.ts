@@ -25,16 +25,18 @@ export const defaultEnvironmentRefusal = (name: string) => `${name} is the Defau
 export const TeardownTargetInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   scope: Schema.Literals(TEARDOWN_SCOPES),
-  environmentId: Schema.optionalKey(Uuid),
-  projectSlug: Schema.optionalKey(NonEmptyString),
+  // optional, not optionalKey: the client sends the unused target key as undefined.
+  environmentId: Schema.optional(Uuid),
+  projectSlug: Schema.optional(NonEmptyString),
 });
 export type TeardownTargetInput = typeof TeardownTargetInput.Type;
 
 export const ConfirmTeardownInput = Schema.Struct({
   organizationSlug: NonEmptyString,
   scope: Schema.Literals(TEARDOWN_SCOPES),
-  environmentId: Schema.optionalKey(Uuid),
-  projectSlug: Schema.optionalKey(NonEmptyString),
+  // optional, not optionalKey: the client sends the unused target key as undefined.
+  environmentId: Schema.optional(Uuid),
+  projectSlug: Schema.optional(NonEmptyString),
   identities: Schema.Array(dataLossIdentitySchema),
   abandon: Schema.optionalKey(Schema.Boolean),
 });

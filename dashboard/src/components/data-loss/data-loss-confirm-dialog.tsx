@@ -13,13 +13,18 @@ import {
   AlertDialogMedia,
   AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
-import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "#/components/ui/alert";
 import { Badge } from "#/components/ui/badge";
+import { Button } from "#/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import {
   Field,
   FieldDescription,
-  FieldError,
   FieldGroup,
   FieldLabel,
 } from "#/components/ui/field";
@@ -146,6 +151,8 @@ function OpenDataLossConfirmDialog({
   const [state, setState] = useState<DialogState>({ status: "gathering" });
   const [typedPhrase, setTypedPhrase] = useState("");
   const [pending, setPending] = useState(false);
+  // Bumping it gathers Data Loss again, so a failed read is never a dead end.
+  const [loadCount, setLoadCount] = useState(0);
   const inputId = useId();
   const loadOnOpen = useEffectEvent(callbacks.load);
 
@@ -167,7 +174,12 @@ function OpenDataLossConfirmDialog({
     return () => {
       active = false;
     };
-  }, []);
+  }, [loadCount]);
+
+  function retryLoad() {
+    setState({ status: "gathering" });
+    setLoadCount((count) => count + 1);
+  }
 
   async function confirmDataLoss() {
     if (
@@ -224,6 +236,11 @@ function OpenDataLossConfirmDialog({
             <AlertTriangleIcon />
             <AlertTitle>Data Loss could not be prepared</AlertTitle>
             <AlertDescription>{state.message}</AlertDescription>
+            <AlertAction>
+              <Button type="button" variant="outline" size="sm" onClick={retryLoad}>
+                Retry
+              </Button>
+            </AlertAction>
           </Alert>
         ) : null}
         {state.status === "ready" ? (
@@ -232,7 +249,6 @@ function OpenDataLossConfirmDialog({
 
         <FieldGroup>
           <Field
-            data-invalid={state.status === "failed" || undefined}
             data-disabled={
               state.status !== "ready" || pending ? true : undefined
             }
@@ -247,15 +263,8 @@ function OpenDataLossConfirmDialog({
               onChange={(event) => setTypedPhrase(event.target.value)}
               placeholder={confirmPhrase}
               disabled={state.status !== "ready" || pending}
-              aria-invalid={state.status === "failed" || undefined}
             />
-            <FieldDescription>
-              The phrase must match exactly. Named Data Loss is what Inngest
-              will send to rust.
-            </FieldDescription>
-            {state.status === "failed" ? (
-              <FieldError>Fix the error before trying again.</FieldError>
-            ) : null}
+            <FieldDescription>The phrase must match exactly.</FieldDescription>
           </Field>
         </FieldGroup>
 
@@ -291,8 +300,8 @@ function ReadyDataLoss({
           <RefreshCwIcon />
           <AlertTitle>Data Loss changed</AlertTitle>
           <AlertDescription>
-            Rust reported identities that were not in this confirmation. Review
-            the updated list and type the phrase again.
+            Your servers reported data that was not in this confirmation.
+            Review the updated list and type the phrase again.
           </AlertDescription>
         </Alert>
       ) : null}
@@ -322,9 +331,9 @@ function ReadyDataLoss({
       {list.cloud.length > 0 ? (
         <section
           className="flex flex-col gap-2"
-          aria-label="Cloud records to remove (not sent to rust)"
+          aria-label="Cloud records to remove"
         >
-          <strong>Cloud records to remove (not sent to rust)</strong>
+          <strong>Cloud records to remove</strong>
           <ItemGroup>
             {list.cloud.map((row) => (
               <CloudRowItem key={cloudRowKey(row)} row={row} />
