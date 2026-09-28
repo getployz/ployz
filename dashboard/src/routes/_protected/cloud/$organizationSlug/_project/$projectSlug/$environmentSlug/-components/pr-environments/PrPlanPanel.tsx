@@ -4,7 +4,8 @@ import { useRef } from "react";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection, type PrEnvironmentPlanRow } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
+import { Button } from "#/components/ui/button";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
@@ -21,9 +22,9 @@ import { BranchIndent } from "#/components/environment-tree";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useBranchPicking } from "../new-branch/branch-picking";
-import { DataSection } from "../new-branch/DataSection";
+import { ServicesSection } from "../new-branch/ServicesSection";
 import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
-import { WhatComesAlongSection } from "../new-branch/WhatComesAlongSection";
+import { SetupSection } from "../new-branch/SetupSection";
 
 type Workspace = ReturnType<typeof useWorkspace>;
 
@@ -63,7 +64,7 @@ function Plan({ repositoryId, project, environments: all, branches }: {
   const changeStates = useEnvironmentChangeStates(organizationSlug, useCollectionScope());
   const lineageName = useLineageNames(organizationSlug);
   const picking = useBranchPicking();
-  // Then run lists the plan's Own Copies' commands; the rest keep their lineage for when they're Own Copies again.
+  // Setup command lists the plan's Own Copies' commands; the rest keep their lineage for when they're Own Copies again.
   const ownServices = new Set(picking?.plan.nodes.flatMap((node) => node.role === "own" && node.nodeType === "service" ? [node.lineageId] : []));
   const saved = plan?.setupCommands ?? [];
   const setup = useSavedSetupCommands(saved.filter((command) => ownServices.has(command.lineageId)),
@@ -93,98 +94,94 @@ function Plan({ repositoryId, project, environments: all, branches }: {
         <span className="font-medium">PR environments</span>
         <p className="truncate text-sm text-muted-foreground">{plan.repository}</p>
       </CanvasInspectorHeader>
-      <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
+      <FieldGroup className="min-h-0 flex-1 gap-8 overflow-y-auto p-4">
         {approve && <MissingGrant repository={plan.repository} url={approve} />}
-        <FieldLabel htmlFor="pr-plan-enabled">
-          <Field orientation="horizontal">
-            <FieldContent>
-              <span className="font-medium">Create an environment for every pull request</span>
-            </FieldContent>
-            <Switch id="pr-plan-enabled" checked={plan.enabled} onCheckedChange={(enabled) => set({ enabled })} />
-          </Field>
-        </FieldLabel>
-        <Field data-invalid={!startFrom || undefined}>
-          <FieldLabel htmlFor="pr-plan-start-from">Start from</FieldLabel>
-          <Select value={startFrom?.id ?? null} onValueChange={(next) => {
-            const environment = environments.find((candidate) => candidate.id === next);
-            if (!environment || environment.id === startFrom?.id) return;
-            const over = (environmentSlug: string) => void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
-              params: { ...params, environmentSlug, repositoryId: String(repositoryId) } });
-            chosen.current = environment.id;
-            // Refused and rolled back: back over the canvas it was on, unless a newer choice took over.
-            set({ startFromEnvironmentId: environment.id }).isPersisted.promise
-              .catch(() => chosen.current === environment.id && over(params.environmentSlug));
-            over(environment.namespace);
-          }}>
-            <SelectTrigger id="pr-plan-start-from" className="w-full" aria-invalid={!startFrom || undefined}>
-              <SelectValue placeholder="Pick an environment">{startFrom?.name}</SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {environmentTree(environments.filter((environment) => !prEnvironments.has(environment.id)), branches).map(({ environment, depth }) => (
-                  <SelectItem key={environment.id} value={environment.id} label={environment.name}>
-                    <BranchIndent depth={depth} />
-                    {environment.name}
-                    {!deployed.has(environment.id) && <span className="text-muted-foreground">not deployed</span>}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-          {!startFrom && <FieldError>Its environment was deleted. Pick another.</FieldError>}
-        </Field>
-        {picking && <>
-          <WhatComesAlongSection plan={picking.plan} presets={picking.presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr}
-            parentName={picking.parent.name} ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle}
-            footnote="One replica per service." />
-          <DataSection plan={picking.plan} liveOwner={picking.liveOwner} parentName={picking.parent.name} rootName={null} nameOf={nameOf}
-            setupCommands={setup.commands} onSetupCommands={setup.onChange} onSetupBlur={setup.onBlur}
-            setupHelp="Runs once, before the services start." />
-        </>}
-        <FieldSet>
-          <FieldLegend>When the pull request…</FieldLegend>
-          <FieldLabel htmlFor="pr-plan-remove-on-close">
-            <Field orientation="horizontal">
-              <FieldContent>
-                <span className="font-medium">Closes: remove its environment</span>
-                <FieldDescription>Otherwise removed after 7 days without a deploy.</FieldDescription>
-              </FieldContent>
-              <Switch id="pr-plan-remove-on-close" checked={plan.removeOnClose} onCheckedChange={(removeOnClose) => set({ removeOnClose })} />
-            </Field>
-          </FieldLabel>
+        <div className="flex flex-col items-start gap-3">
           <FieldDescription>
-            {landings.length > 0 ? `Saved changes go live in ${landings.join(", ")} when the pull request merges.` : "Merging changes no settings."}
+            Created when a pull request opens.{" "}
+            {landings.length > 0 ? `Merges land in ${landings.join(", ")}.` : "Merging changes no settings."}
           </FieldDescription>
-        </FieldSet>
-        <FieldLabel htmlFor="pr-plan-bots">
-          <Field orientation="horizontal">
-            <FieldContent>
-              <span className="font-medium">Bot pull requests</span>
-              <FieldDescription>Dependabot, Renovate and other bots.</FieldDescription>
-            </FieldContent>
-            <Switch id="pr-plan-bots" checked={plan.includeBots} onCheckedChange={(includeBots) => set({ includeBots })} />
-          </Field>
-        </FieldLabel>
-        {open.length > 0 && (
+          <Button variant="outline" onClick={() => set({ enabled: !plan.enabled })}>
+            {plan.enabled ? "Disable PR environments" : "Enable PR environments"}
+          </Button>
+        </div>
+        {plan.enabled && <>
           <FieldSet>
-            <FieldLegend>Open now</FieldLegend>
-            <ItemGroup className="gap-2">
-              {open.map(({ pullRequest, environment }) => (
-                <Item key={environment.id} variant="outline" size="sm" render={
-                  <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
-                    params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
-                }>
-                  <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
-                  <ItemContent className="min-w-0">
-                    <ItemTitle>{environment.name} <span className="font-normal text-muted-foreground">#{pullRequest.number}</span></ItemTitle>
-                    <ItemDescription className="truncate">{pullRequest.title} · {pullRequest.author}</ItemDescription>
-                  </ItemContent>
-                  <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
-                </Item>
-              ))}
-            </ItemGroup>
+            <FieldLegend>Start from</FieldLegend>
+            <FieldDescription>Each pull request starts from this environment's services and variables.</FieldDescription>
+            <Field data-invalid={!startFrom || undefined}>
+              <Select value={startFrom?.id ?? null} onValueChange={(next) => {
+                const environment = environments.find((candidate) => candidate.id === next);
+                if (!environment || environment.id === startFrom?.id) return;
+                const over = (environmentSlug: string) => void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
+                  params: { ...params, environmentSlug, repositoryId: String(repositoryId) } });
+                chosen.current = environment.id;
+                // Refused and rolled back: back over the canvas it was on, unless a newer choice took over.
+                set({ startFromEnvironmentId: environment.id }).isPersisted.promise
+                  .catch(() => chosen.current === environment.id && over(params.environmentSlug));
+                over(environment.namespace);
+              }}>
+                <SelectTrigger aria-label="Start from" className="w-full" aria-invalid={!startFrom || undefined}>
+                  <SelectValue placeholder="Pick an environment">{startFrom?.name}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectGroup>
+                    {environmentTree(environments.filter((environment) => !prEnvironments.has(environment.id)), branches).map(({ environment, depth }) => (
+                      <SelectItem key={environment.id} value={environment.id} label={environment.name}>
+                        <BranchIndent depth={depth} />
+                        {environment.name}
+                        {!deployed.has(environment.id) && <span className="text-muted-foreground">not deployed</span>}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
+              {!startFrom && <FieldError>Its environment was deleted. Pick another.</FieldError>}
+            </Field>
           </FieldSet>
-        )}
+          {picking && <>
+            <ServicesSection picking={picking} nameOf={nameOf} who="The PR"
+              target={<><GitPullRequestIcon aria-hidden="true" className="size-3.5 shrink-0" />each pull request</>} />
+            <SetupSection plan={picking.plan} nameOf={nameOf}
+              setupCommands={setup.commands} onSetupCommands={setup.onChange} onSetupBlur={setup.onBlur} />
+          </>}
+          {open.length > 0 && (
+            <FieldSet>
+              <FieldLegend>Open now</FieldLegend>
+              <ItemGroup className="gap-2">
+                {open.map(({ pullRequest, environment }) => (
+                  <Item key={environment.id} variant="outline" size="sm" render={
+                    <Link to="/cloud/$organizationSlug/$projectSlug/$environmentSlug"
+                      params={{ organizationSlug, projectSlug: project.slug, environmentSlug: environment.namespace }} />
+                  }>
+                    <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
+                    <ItemContent className="min-w-0">
+                      <ItemTitle>{environment.name} <span className="font-normal text-muted-foreground">#{pullRequest.number}</span></ItemTitle>
+                      <ItemDescription className="truncate">{pullRequest.title} · {pullRequest.author}</ItemDescription>
+                    </ItemContent>
+                    <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+                  </Item>
+                ))}
+              </ItemGroup>
+            </FieldSet>
+          )}
+          <FieldSet>
+            <FieldLegend>Closed pull requests</FieldLegend>
+            <FieldDescription>Otherwise it's deleted after 7 days without a deploy.</FieldDescription>
+            <Item variant="muted" render={<label htmlFor="pr-plan-remove-on-close" />}>
+              <ItemMedia><Switch id="pr-plan-remove-on-close" checked={plan.removeOnClose} onCheckedChange={(removeOnClose) => set({ removeOnClose })} /></ItemMedia>
+              <ItemContent><ItemTitle>Delete when the PR closes</ItemTitle></ItemContent>
+            </Item>
+          </FieldSet>
+          <FieldSet>
+            <FieldLegend>Bot PR environments</FieldLegend>
+            <FieldDescription>Pull requests from Dependabot, Renovate and other bots.</FieldDescription>
+            <Item variant="muted" render={<label htmlFor="pr-plan-bots" />}>
+              <ItemMedia><Switch id="pr-plan-bots" checked={plan.includeBots} onCheckedChange={(includeBots) => set({ includeBots })} /></ItemMedia>
+              <ItemContent><ItemTitle>Enable bot PR environments</ItemTitle></ItemContent>
+            </Item>
+          </FieldSet>
+        </>}
       </FieldGroup>
     </div>
   );

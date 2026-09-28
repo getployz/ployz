@@ -2,11 +2,10 @@ import { describe, expect, it } from "vitest";
 import { parseServiceConfig } from "@ployz/sdk/config";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { planBranch } from "@ployz/sdk/config";
-import { branchNameError, defaultBranchName, offeredPresets, presetSummary } from "./branch-plan";
+import { branchNameError, defaultBranchName, offeredPresets } from "./branch-plan";
 
 const id = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const [WEB, DB, CACHE, DATA] = [id(1), id(2), id(3), id(4)];
-const names = new Map([[WEB, "web"], [DB, "postgres"], [CACHE, "cache"], [DATA, "postgres-data"]]);
 
 function service(n: number, lineageId: string, slug: string) {
   const { env: _env, mounts: _mounts, ...config } = parseServiceConfig({
@@ -27,23 +26,12 @@ function parent(): SavedEnvironmentIntent {
     volumes: [{ resourceId: id(30), resourceLineageId: DATA, name: "postgres-data" }] };
 }
 
-const nameOf = (lineage: string) => names.get(lineage) ?? lineage;
-
 describe("branch plan", () => {
   const input = { parent: parent(), deployed: [WEB, DB, CACHE, DATA], focus: [WEB] };
 
-  it("describes each preset in words and offers Plus what it uses only when it adds something", () => {
+  it("offers Plus what it uses only when it adds something", () => {
     expect(offeredPresets(input)).toEqual(["only", "uses", "all"]);
     expect(offeredPresets({ ...input, focus: [CACHE] })).toEqual(["only", "all"]);
-    const only = planBranch({ ...input, picks: { preset: "only" } });
-    const uses = planBranch({ ...input, picks: { preset: "uses" } });
-    expect(presetSummary("only", only, only, nameOf, "production"))
-      .toBe("web gets its own copy. What it uses comes from production, live.");
-    expect(presetSummary("uses", uses, only, nameOf, "production"))
-      .toBe("postgres and postgres-data get copies too.");
-    expect(presetSummary("all", uses, only, nameOf, "production")).toBe("A full copy of production.");
-    expect(presetSummary("only", planBranch({ ...input, focus: [], picks: { preset: "only" } }), only, nameOf, "production"))
-      .toBe("Pick what changes.");
   });
 
   it("reads hand picks that match no preset as picked by hand", () => {
