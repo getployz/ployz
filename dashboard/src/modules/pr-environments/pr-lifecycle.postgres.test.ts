@@ -481,10 +481,10 @@ describe("PR Environment lifecycle", () => {
         hostnames: { branch: branchHostnameSuffix("shop", pr.namespace, true), parent: branchHostnameSuffix("shop", staging.namespace, false) },
       });
     }
-    const approve = async (prId: string, picks: (keys: string[], rows: Awaited<ReturnType<typeof review>>["rows"]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
+    const approve = async (prId: string, picks: (keys: string[], rows: Awaited<ReturnType<typeof review>>["rows"]) => Array<{ key: string; option?: "from" | "new"; value: string }>, shutDown = false) => {
       const { rows, review: string } = await review(prId);
       return runEffect(saveConditionalSave({ userId }, {
-        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key), rows),
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, shutDown, review: string, picks: picks(rows.map((row) => row.key), rows),
       }));
     };
     const saves = () => harness.db.select().from(schema.conditionalSave);
@@ -512,7 +512,7 @@ describe("PR Environment lifecycle", () => {
 
       // A stale review is refused.
       const stale = await runEffect(saveConditionalSave({ userId }, {
-        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: "old", picks: [{ key: flag, value: "" }],
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, shutDown: false, review: "old", picks: [{ key: flag, value: "" }],
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
       expect(stale).toMatchObject({ _tag: "Conflict", message: "Changed since you reviewed. Review again." });
 
@@ -571,7 +571,9 @@ describe("PR Environment lifecycle", () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
-      await approve(prId, tickAll);
+      // Saving with "Shut down pr-142 now" shuts it down in the same call.
+      await approve(prId, tickAll, true);
+      expect(await stands(prId)).toBe(true);
       await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.environmentId, prId));
       const before = await environmentOf(prId);
       const shutdown = async () => (await prEnvironment(142))?.shutdown ?? null;
@@ -593,7 +595,8 @@ describe("PR Environment lifecycle", () => {
       };
 
       // Its runtime half only: its namespace's data confirmed, its attempt cancelled, every row kept.
-      const attempt = await shutDown();
+      const attempt = (await teardownsOf(prId)).find((row) => row.status === "pending");
+      if (!attempt) throw new Error("No shutdown was admitted.");
       expect(attempt).toMatchObject({ scope: "shutdown", environmentId: prId, confirmDataLoss: [expect.objectContaining({ id: expect.objectContaining({ name: "shop-pr-142-data" }) })] });
       expect(await shutdown()).toBe("running");
       expect((await deploymentsOf(prId)).map((row) => row.status)).not.toContain("queued");
@@ -650,7 +653,7 @@ describe("PR Environment lifecycle", () => {
       const flag = rows.find((row) => variableName(row) === "FLAG")?.key ?? "";
       const queue = rows.find((row) => variableName(row) === "QUEUE")?.key ?? "";
       const approveOnly = (picks: Array<{ key: string; option?: "from" | "new"; value: string }>) => runEffect(saveConditionalSave({ userId }, {
-        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks,
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, shutDown: false, review: string, picks,
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
 
       // The new service's variable without the service: core refuses it.
@@ -667,7 +670,7 @@ describe("PR Environment lifecycle", () => {
       await pullRequest("closed", "closed", 142);
       const { rows, review: string } = await review(prId);
       const refused = await runEffect(saveConditionalSave({ userId }, {
-        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
+        organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, shutDown: false, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
       expect(refused).toMatchObject({ _tag: "Conflict", message: "PR #142 is closed." });
       expect(await saves()).toEqual([]);
@@ -1034,7 +1037,7 @@ describe("PR Environment lifecycle", () => {
           const prId = (await prEnvironment(142))?.environmentId ?? "";
           const { rows, review: string } = await review(prId);
           const refused = await runEffect(saveConditionalSave({ userId }, {
-            organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
+            organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, shutDown: false, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
           }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
           expect(refused).toMatchObject({ _tag: "Conflict", message: "PR #142 is closed." });
 

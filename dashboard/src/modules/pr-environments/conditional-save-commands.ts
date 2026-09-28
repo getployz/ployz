@@ -1,9 +1,10 @@
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
+import { getBranchesCollection, getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
+import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
 import type { SavePick } from "#/modules/branches/branch-schemas";
 import {
@@ -16,14 +17,18 @@ import {
  * Store row is read back before it counts as done.
  */
 export function useConditionalSave(scope: { organizationSlug: string; prEnvironmentId: string; destinationEnvironmentId: string }) {
-  const saves = getConditionalSavesCollection(scope.organizationSlug, useCollectionScope());
+  const collections = useCollectionScope();
+  const saves = getConditionalSavesCollection(scope.organizationSlug, collections);
   const queue = useEnvironmentDocumentQueue(scope.organizationSlug);
   return {
     save: useMutation({
-      mutationFn: async (save: { review: string; picks: SavePick[] }) => {
+      mutationFn: async (save: { review: string; picks: SavePick[]; shutDown: boolean }) => {
         await queue.settled(scope.prEnvironmentId);
         await saveConditionalSaveServerFn({ data: { ...scope, ...save } });
-        await reconcileCollection(saves);
+        await Promise.all([
+          reconcileCollection(saves),
+          ...save.shutDown ? [reconcileCollection(getBranchesCollection(scope.organizationSlug, collections)), reconcileDeploymentCollections(scope.organizationSlug, collections)] : [],
+        ]);
       },
     }),
     withdraw: useMutation({

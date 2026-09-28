@@ -40,7 +40,7 @@ async function renderAt(path: string) {
   ]));
   queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
     { environmentId: "store-fix-web", parentEnvironmentId: "store-production", pullRequest: null },
-    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", pullRequest: { number: 142 } },
+    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", pullRequest: { number: 142, shutdown: null } },
   ]));
   queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
     { id: "attempt", environmentId: "store-production" },

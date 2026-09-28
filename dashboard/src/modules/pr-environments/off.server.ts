@@ -14,7 +14,7 @@ import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { prepareShutdown } from "#/modules/runtime/teardown.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
-import type { OffCommand } from "./off";
+import { canShutDown, type OffCommand } from "./off";
 import { prEnvironment } from "./tables";
 
 /** The PR Environment in the actor's organization, with its name. */
@@ -43,7 +43,7 @@ export const shutDownPrEnvironment = Effect.fn("PrEnvironments.shutDown")(functi
     if (!(yield* lockBranchScope(projectId, input.environmentId, "update"))) return yield* new NotFound({ message: "The PR environment was not found." });
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
     const [row] = yield* drizzle.select({ shutdown: prEnvironment.shutdown }).from(prEnvironment).where(eq(prEnvironment.environmentId, input.environmentId));
-    if (row?.shutdown === "running" || row?.shutdown === "off") return;
+    if (!canShutDown(row?.shutdown ?? null)) return;
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: `${name} is being removed.`, userFacing: true });
     yield* cancelActiveDeployments([input.environmentId]);
     yield* prepared.admit(actor.userId);

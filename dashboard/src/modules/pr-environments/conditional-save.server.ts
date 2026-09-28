@@ -16,11 +16,11 @@ import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environ
 import { core, loadIdentitySources } from "#/modules/branches/branch-operations.server";
 import { corePicks } from "#/modules/branches/branch-save.server";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
-import { saveInput, rowLineage, variableName } from "#/modules/branches/branch-review";
+import { saveInput, rowLineage, variableName, type ChangeRow } from "#/modules/branches/branch-review";
+import { shutDownPrEnvironment } from "./off.server";
 import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
 import type { SavePick } from "#/modules/branches/branch-schemas";
-import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { SaveConditionalSave, WithdrawConditionalSave } from "./conditional-save";
 import { conditionalSave, prEnvironment, type SavedRow } from "./tables";
 
@@ -35,13 +35,14 @@ const prEnvironmentFor = Effect.fn("PrEnvironments.prEnvironmentFor")(function* 
  * Save the kept rows of a PR Environment's changes for one Destination: the Conditional Save, which goes live with the
  * pull request's merge commit. The rows are recomputed from authoritative states exactly as the browser did; a different
  * review string is refused. It stores what landing needs, so landing never reads the PR Environment. Saving again
- * replaces it.
+ * replaces it. With `shutDown`, the PR Environment then shuts down, in the same call, so the opt-in never depends on the
+ * browser staying around; the save stands if the shutdown fails.
  */
 export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave")(function* (actor: Actor, input: SaveConditionalSave) {
   const { project, environment: prEnvironmentRow } = yield* prEnvironmentFor(actor, input);
   const encryption = yield* SecretEncryption;
   const database = yield* Database;
-  return yield* database.transaction(Effect.gen(function* () {
+  const saved = yield* database.transaction(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // The Project, the Branch row, then the PR Environment's document, whose revision the save records.
     const branch = yield* lockBranchScope(project.id, input.prEnvironmentId, "share");
@@ -94,6 +95,8 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
     yield* requestPrCheck(input.prEnvironmentId);
     return saved;
   }));
+  if (input.shutDown) yield* shutDownPrEnvironment(actor, { organizationSlug: input.organizationSlug, environmentId: input.prEnvironmentId });
+  return saved;
 });
 
 /** The row with the value it was saved with, as Details and the "Use" hint show it: a new secret stays hidden. */

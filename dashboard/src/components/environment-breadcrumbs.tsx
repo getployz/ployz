@@ -24,6 +24,7 @@ import { findEnvironment, useWorkspace } from "#/modules/environment-design/work
 import { environmentTree } from "#/modules/project/environment-tree";
 import { useBranchReviews } from "#/modules/branches/use-branch-review";
 import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
+import { canShutDown } from "#/modules/pr-environments/off";
 import type { PrShutdown } from "#/modules/pr-environments/tables";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
@@ -217,7 +218,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 }}>
                   <GitCompareArrowsIcon />Review {current.name}
                 </CommandItem>}
-                {current && currentBranch?.pullRequest && !["running", "off"].includes(currentBranch.pullRequest.shutdown ?? "") && <CommandItem value="shut-down" disabled={shutDown.isPending}
+                {current && currentBranch?.pullRequest && canShutDown(currentBranch.pullRequest.shutdown) && <CommandItem value="shut-down" disabled={shutDown.isPending}
                   onSelect={() => {
                     setOpen(false);
                     shutDown.mutate();
