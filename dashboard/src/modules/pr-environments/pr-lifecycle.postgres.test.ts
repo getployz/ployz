@@ -432,7 +432,7 @@ describe("PR Environment lifecycle", () => {
     await harness.db.insert(schema.environmentSavedStateSnapshot).values([stagingId, devId].map((environmentId) => ({
       organizationId, environmentId, actorId: userId, intent: (environmentId === devId ? devIntent : stagingIntent) as never, volumeDeletionAuthorizations: [],
     })));
-    // Below staging, through a never-deployed Starting point, hotfix also tracks main: it isn't a Destination.
+    // Below staging, through a Starting point with no Saved State, hotfix also tracks main: it isn't a Destination.
     const [starterId, hotfixId] = ["00000000-0000-4000-8000-000000001106", "00000000-0000-4000-8000-000000001107"];
     for (const [id, name, parent] of [[starterId, "starter", stagingId], [hotfixId, "hotfix", starterId]] as const) {
       const intent = { ...stagingIntent, environmentSlug: `shop-${name}` };
