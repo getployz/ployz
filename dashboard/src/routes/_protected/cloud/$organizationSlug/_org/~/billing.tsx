@@ -35,7 +35,7 @@ export const Route = createFileRoute(
 
 function BillingPending() {
   return (
-    <DashboardPage width="wide">
+    <DashboardPage width="content">
       <Card className="max-w-md">
         <CardHeader className="flex flex-col gap-3">
           <Skeleton className="h-5 w-24" />
@@ -51,7 +51,7 @@ function BillingPending() {
 
 function BillingError() {
   return (
-    <DashboardPage width="wide">
+    <DashboardPage width="content">
       <RouteErrorAlert
         title="Billing couldn’t load"
         description="Subscription details are unavailable right now. Try loading them again."
@@ -132,7 +132,7 @@ function RouteComponent() {
     : { label: "Get Started", variant: "default", run: openCheckout } as const;
 
   return (
-    <DashboardPage width="wide">
+    <DashboardPage width="content">
       <Card className="max-w-md">
         <CardHeader className="flex flex-col gap-3">
           {subscribed ? <Badge variant="secondary">Current</Badge> : null}

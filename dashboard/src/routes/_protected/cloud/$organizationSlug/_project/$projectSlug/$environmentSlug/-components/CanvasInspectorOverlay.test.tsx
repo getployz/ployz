@@ -120,7 +120,7 @@ describe("canvas inspector presentation", () => {
     expect(screen.getByRole("link", { name: "Close inspector" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Fill canvas" }));
     expect(screen.queryByRole("link", { name: "Close inspector" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Back to Canvas" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Architecture" })).toBeTruthy();
     await act(() => router.navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
       params: { ...params, serviceId: "api" },
@@ -167,7 +167,7 @@ describe("canvas inspector presentation", () => {
     await openInspector();
     expect(screen.getByRole("button", { name: "Edit service name" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Close inspector" }).className).toContain("canvas-inspector-close");
-    expect(screen.getByRole("link", { name: "Back to Canvas" }).className).toContain("canvas-inspector-back");
+    expect(screen.getByRole("link", { name: "Back to Architecture" }).className).toContain("canvas-inspector-back");
     expect(screen.getByRole("button", { name: "Fill canvas" }).hasAttribute("data-canvas-inspector-resize")).toBe(true);
   });
 
@@ -177,7 +177,7 @@ describe("canvas inspector presentation", () => {
     vi.stubGlobal("innerWidth", width);
     const router = await openInspector(state);
     const returnControl = screen.getByRole("link", {
-      name: width <= 860 ? "Back to Canvas" : "Close inspector",
+      name: width <= 860 ? "Back to Architecture" : "Close inspector",
     });
     expect(returnControl.getAttribute("href")).toBe("/cloud/acme/shop/production");
     fireEvent.click(returnControl);

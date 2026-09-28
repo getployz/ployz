@@ -56,10 +56,11 @@ afterEach(() => {
   else Reflect.deleteProperty(HTMLElement.prototype, "scrollTo");
 });
 
-async function show({ orgStore = "ready", scope = "environment", billingEnabled = false }: {
+async function show({ orgStore = "ready", scope = "environment", billingEnabled = false, path = "/cloud/acme/store/production/logs" }: {
   orgStore?: "ready" | "pending" | "failed";
   scope?: DashboardScope["kind"];
   billingEnabled?: boolean;
+  path?: string;
 } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
@@ -96,10 +97,12 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const environment = createRoute({ getParentRoute: () => project, path: "$environmentSlug" });
   const logs = createRoute({ getParentRoute: () => environment, path: "logs", component: () => <div>Log entries</div> });
   const settings = createRoute({ getParentRoute: () => environment, path: "settings", component: () => <div>Environment preferences</div> });
+  const canvasLayout = createRoute({ getParentRoute: () => environment, id: "_canvas", component: Outlet });
+  const canvas = createRoute({ getParentRoute: () => canvasLayout, path: "/", component: () => <div>Canvas nodes</div> });
   const router = createRouter({
     context: { queryClient: client, dbClient: getDbClient(client) },
-    routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings])])])])])])]),
-    history: createMemoryHistory({ initialEntries: ["/cloud/acme/store/production/logs"] }),
+    routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([organization.addChildren([projectLayout.addChildren([project.addChildren([environment.addChildren([logs, settings, canvasLayout.addChildren([canvas])])])])])])])]),
+    history: createMemoryHistory({ initialEntries: [path] }),
     scrollRestoration: true, scrollToTopSelectors: [scrollSelector],
   });
   await router.load();
@@ -133,10 +136,12 @@ it("shows a retryable Org Store failure inside the shell and recovers", async ()
   expect(screen.queryByText("Organization data couldn’t load")).toBeNull();
 });
 
-it("puts the logo, the four places and the avatar in the rail, with the current place marked", async () => {
+it("puts the logo, the four places, the way back to the organization and the avatar in the rail, with the current place marked", async () => {
   const { rail } = await show();
   const links = within(rail).getAllByRole("link");
-  expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(["Projects", "Canvas", "Deployments", "Logs", "Settings"]);
+  expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(
+    ["Projects", "Architecture", "Deployments", "Logs", "Settings", "Projects", "Servers"],
+  );
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
   expect(links.filter((link) => link.getAttribute("aria-current") === "page").map((link) => link.textContent)).toEqual(["Logs"]);
@@ -147,23 +152,47 @@ it("puts the logo, the four places and the avatar in the rail, with the current 
   expect(screen.queryByRole("heading")).toBeNull();
 });
 
+it("narrows the rail to named icons wherever the canvas shows", async () => {
+  const { rail, router } = await show({ path: "/cloud/acme/store/production" });
+  expect(await screen.findByText("Canvas nodes")).toBeTruthy();
+  const architecture = within(rail).getByRole("link", { name: "Architecture" });
+  expect(architecture.getAttribute("aria-current")).toBe("page");
+  expect(within(architecture).getByText("Architecture").className).toContain("sr-only");
+  await act(async () => { router.history.push("/cloud/acme/store/production/logs"); });
+  await screen.findByText("Log entries");
+  expect(within(within(rail).getByRole("link", { name: "Logs" })).getByText("Logs").className).not.toContain("sr-only");
+});
+
 it("offers the same places in the phone tab bar and follows the route", async () => {
   const { router } = await show();
-  const tabs = screen.getByRole("navigation", { name: "Environment places" });
-  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Canvas", "Deployments", "Logs", "Settings"]);
+  const tabs = screen.getByRole("navigation", { name: "Places" });
+  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Architecture", "Deployments", "Logs", "Settings"]);
   fireEvent.click(within(tabs).getByRole("link", { name: "Settings" }));
   await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/store/production/settings"));
   await waitFor(() => expect(within(tabs).getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page"));
   expect(within(tabs).getByRole("link", { name: "Logs" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("holds the organization destinations in the avatar menu, and applies a theme choice", async () => {
+it("lists Settings' sections under it in the rail, and on phones under the top bar", async () => {
+  const { rail, router } = await show({ path: "/cloud/acme/store/production/settings" });
+  await screen.findByText("Environment preferences");
+  // The current place heads its sections instead of linking to itself.
+  expect(within(rail).queryByRole("link", { name: "Settings" })).toBeNull();
+  const strip = screen.getByRole("navigation", { name: "Settings sections" });
+  for (const nav of [rail, strip]) {
+    expect(within(nav).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBe("page");
+    expect(within(nav).getByRole("link", { name: "Project" }).getAttribute("aria-current")).toBeNull();
+  }
+  fireEvent.click(within(rail).getByRole("link", { name: "Project" }));
+  await waitFor(() => expect(router.state.location.search).toEqual({ scope: "project" }));
+  await waitFor(() => expect(within(strip).getByRole("link", { name: "Project" }).getAttribute("aria-current")).toBe("page"));
+  expect(within(rail).getByRole("link", { name: "Environment" }).getAttribute("aria-current")).toBeNull();
+});
+
+it("holds only organization switching, Theme and Log out in the avatar menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(
-    ["Projects", "Servers", "Organization Settings", "Switch organization", "Log out"],
-  );
-  expect(within(menu).getByRole("menuitem", { name: "Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Log out"]);
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
   fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
@@ -171,17 +200,13 @@ it("holds the organization destinations in the avatar menu, and applies a theme 
   expect(document.cookie).toContain("theme=dark");
 });
 
-it("shows Billing in the avatar menu only when billing is configured", async () => {
-  const { rail } = await show({ billingEnabled: true });
-  const menu = await openAccountMenu(rail);
-  expect(within(menu).getByRole("menuitem", { name: "Billing" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
-});
-
-it("shows only the logo and the avatar in the rail on organization pages", async () => {
+it("gives organization pages their three places in the rail and the phone tab bar", async () => {
   const { rail } = await show({ scope: "all" });
-  expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label"))).toEqual(["Projects"]);
-  expect(within(rail).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Open account menu"]);
-  expect(screen.queryByRole("navigation", { name: "Environment places" })).toBeNull();
+  expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent))
+    .toEqual(["Projects", "Projects", "Servers", "Organization"]);
+  expect(within(rail).queryByRole("separator")).toBeNull();
+  const tabs = screen.getByRole("navigation", { name: "Places" });
+  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Projects", "Servers", "Organization"]);
 });
 
 it("resets its persistent scroll surface when navigating to a different environment page", async () => {
