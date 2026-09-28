@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
@@ -116,15 +115,12 @@ function ServiceListItem({
 }
 
 export function CanvasNodeList({
-  header,
   services,
   liveNodes,
   selectedNodeId,
   servicesById,
   volumeResourcesById,
 }: {
-  /** What tops the list on phones, above the nodes. */
-  header?: ReactNode;
   services: EnvironmentServiceViewRecord[];
   /** A Branch's Live Nodes, after its own services. */
   liveNodes: LiveNode[];
@@ -138,7 +134,6 @@ export function CanvasNodeList({
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
     >
       <div className="flex flex-col gap-3">
-        {header}
         {services.map((serviceView) => {
           const serviceState = servicesById.get(serviceView.service.id);
           return serviceState ? (

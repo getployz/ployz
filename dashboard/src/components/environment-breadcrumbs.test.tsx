@@ -155,21 +155,22 @@ it("notes the Default Environment and opens the Project settings from Manage env
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
 });
 
-it("notes what each Branch has to save and its updates, and offers Review of the current Branch", async () => {
+it("notes what each Branch has to save and its updates, and offers Manage of the current Branch", async () => {
   const review = asTestDouble<branchReviews.BranchReviewView>()({ changes: 2, updates: 1 });
   vi.spyOn(branchReviews, "useBranchReviews").mockReturnValue((id) => id === "store-fix-web" ? review : null);
   await using app = await renderAt("/cloud/acme/store/fix-web/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
   expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 to save, 1 update" })).toBeTruthy();
-  fireEvent.click(screen.getByRole("option", { name: "Review fix-web" }));
+  fireEvent.click(screen.getByRole("option", { name: "Manage fix-web" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
   vi.restoreAllMocks();
 });
 
-it("notes a PR Environment's pull request, and offers Review and Shut down on it", async () => {
+it("notes a PR Environment's pull request, and offers Manage on it: Shut down lives in its panel", async () => {
   await using app = await renderAt("/cloud/acme/store/pr-142/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: pr-142" }));
-  expect(await screen.findByRole("option", { name: /^Shut down pr-142/ })).toBeTruthy();
-  fireEvent.click(screen.getByRole("option", { name: "Review pr-142" }));
+  const manage = await screen.findByRole("option", { name: "Manage pr-142" });
+  expect(screen.queryByRole("option", { name: /^Shut down/ })).toBeNull();
+  fireEvent.click(manage);
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/pr-142/review"));
 });

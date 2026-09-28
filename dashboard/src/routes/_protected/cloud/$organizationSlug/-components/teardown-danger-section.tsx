@@ -37,9 +37,14 @@ type TeardownAttemptSummary = {
 
 /**
  * Deletes an Environment, project or organization, or closes a Kept Branch: the roots of real data, so the dialog lists
- * what goes and asks for `place`. Branches that aren't kept close with one click from the Branch section instead.
+ * what goes and asks for `place`. Branches that aren't kept close with one plain confirm from their panel instead.
+ * `inline` leaves out the Danger section, for a Branch's panel whose menu opens the dialog: only the attempt's status and
+ * the typed dialog render, and `open` is the panel's.
  */
 export function TeardownDangerSection({
+  inline = false,
+  open: openProp,
+  onOpenChange,
   organizationSlug,
   scope,
   environmentId,
@@ -55,6 +60,9 @@ export function TeardownDangerSection({
   headingId,
   onCompleted,
 }: {
+  inline?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   organizationSlug: string;
   scope: TeardownScope;
   environmentId?: string;
@@ -78,7 +86,9 @@ export function TeardownDangerSection({
   const confirmTeardown = useServerFn(confirmTeardownServerFn);
   const retryTeardown = useServerFn(retryTeardownServerFn);
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = onOpenChange ?? setOpenState;
   const [retrying, setRetrying] = useState(false);
   const input = { organizationSlug, scope, environmentId, projectSlug };
   const latestQuery = latestTeardownAttemptQueryOptions(input);
@@ -108,6 +118,30 @@ export function TeardownDangerSection({
     }
   }
 
+  const status = attempt ? <TeardownStatusAlert attempt={attempt} doing={doing} retrying={retrying} onRetry={() => void handleRetry()} /> : null;
+  const dialog = (
+    <DeletionDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={abandon ? `Abandon ${name}'s servers?` : `${verb} ${name}?`}
+      place={place}
+      confirmLabel={abandon ? "Abandon" : verb}
+      items={items}
+      callbacks={{
+        load: async () => {
+          const { rust } = await loadDataLoss({ data: input });
+          return { items: withServerVolumes(items, rust), evidence: rust };
+        },
+        confirm: async (identities) => {
+          queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({ data: { ...input, identities, abandon } }));
+          toast(doing);
+        },
+      }}
+    />
+  );
+
+  if (inline) return <>{status}{dialog}</>;
+
   return (
     <>
       <section aria-labelledby={headingId}>
@@ -115,9 +149,7 @@ export function TeardownDangerSection({
           Danger
         </h2>
         <div className="mt-4 flex flex-col gap-4">
-          {attempt ? (
-            <TeardownStatusAlert attempt={attempt} doing={doing} retrying={retrying} onRetry={() => void handleRetry()} />
-          ) : null}
+          {status}
           <DangerRow
             title={abandon ? "Abandon this organization's servers" : title}
             description={abandon ? "Can't reach them. This deletes the organization and leaves the servers as they are." : description}
@@ -132,24 +164,7 @@ export function TeardownDangerSection({
           </DangerRow>
         </div>
       </section>
-      <DeletionDialog
-        open={open}
-        onOpenChange={setOpen}
-        title={abandon ? `Abandon ${name}'s servers?` : `${verb} ${name}?`}
-        place={place}
-        confirmLabel={abandon ? "Abandon" : verb}
-        items={items}
-        callbacks={{
-          load: async () => {
-            const { rust } = await loadDataLoss({ data: input });
-            return { items: withServerVolumes(items, rust), evidence: rust };
-          },
-          confirm: async (identities) => {
-            queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({ data: { ...input, identities, abandon } }));
-            toast(doing);
-          },
-        }}
-      />
+      {dialog}
     </>
   );
 }

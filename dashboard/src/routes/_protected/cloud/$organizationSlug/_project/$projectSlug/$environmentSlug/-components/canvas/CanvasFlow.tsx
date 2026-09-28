@@ -28,7 +28,7 @@ import { useBranchPicking } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
-import { IdleCloseWarning } from "./IdleCloseWarning";
+import { BranchButton } from "./BranchButton";
 import { useEnvironmentNavigationNodes } from "../environment-node-navigation";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
@@ -129,7 +129,6 @@ export function CanvasFlow({
     useDeploymentFocus() ?? (picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
-  const idleCloseWarning = { organizationSlug: params.organizationSlug, environmentId };
   const volumeCreator = useVolumeCreator(
     params,
     environmentId,
@@ -212,16 +211,14 @@ export function CanvasFlow({
         </CanvasContextMenu>
       </div>
       <CanvasNodeList
-        header={<IdleCloseWarning {...idleCloseWarning} />}
         services={activeServicesWithBoundEnv}
         liveNodes={canvasNodes.flatMap((node) => node.type === "live" ? [node.data.liveNode] : [])}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}
       />
-      {/* Phones show it atop the node list instead. */}
-      <IdleCloseWarning {...idleCloseWarning} className="absolute top-4 left-4 max-[860px]:hidden" />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <BranchButton environmentId={environmentId} />
         <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"

@@ -89,7 +89,7 @@ export function useBranchUnsettled(organizationSlug: string, environmentId: stri
   const startingPoint = useStartingPoint(organizationSlug, environmentId);
   const staged = useHasStagedChanges(organizationSlug, environmentId);
   const attempts = useEnvironmentDeployments(organizationSlug, environmentId);
-  if (startingPoint) return "Deploy this starting point first.";
+  if (startingPoint) return "Deploy this branch first.";
   if (attempts.some(({ deployment }) => isActiveDeployment(deployment.status))) return "Wait for this branch's deployment to finish.";
   return staged ? "Deploy or discard the changes staged here first." : null;
 }
