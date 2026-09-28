@@ -190,7 +190,7 @@ export function PublicDomainRow({
               params={{ organizationSlug }}
               className={buttonVariants({ variant: "link", size: "sm" })}
             >
-              Settings
+              Organization Settings
             </Link>
           ) : null}
         </div>

@@ -93,7 +93,7 @@ declare module "@tanstack/react-router" {
     router: ReturnType<typeof getRouter>;
   }
   interface StaticDataRouteOption {
-    /** A detail page's crumb, shown after its section's name in the header: Servers / hel-1 ⌄. */
+    /** An organization page's crumb, shown after its section's name in the top bar: Servers / hel-1 ⌄. Environment pages are named by EnvironmentCrumbs instead. */
     crumb?: ComponentType;
   }
 }

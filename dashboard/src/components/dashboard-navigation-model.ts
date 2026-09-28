@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
+  Building2Icon,
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
@@ -53,7 +54,8 @@ type OrganizationDestination = (typeof organizationOrder)[number];
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
-  "organization-settings": { label: "Settings", icon: SlidersHorizontalIcon, path: "/cloud/$organizationSlug/~/settings" },
+  // Not plain "Settings": the avatar menu reads as personal, and on an Environment it sits beside the rail's Settings.
+  "organization-settings": { label: "Organization Settings", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
   // Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
 } satisfies Record<OrganizationDestination, Destination>;

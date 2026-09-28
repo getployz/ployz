@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { CrumbTrigger } from "#/components/environment-breadcrumbs";
+import { CrumbTrigger, SwitcherLoading } from "#/components/environment-breadcrumbs";
 import { ServerStatusLabel } from "#/components/server-status-label";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "#/components/ui/command";
 import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
@@ -16,13 +16,14 @@ export function ServerSwitcher() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <CrumbTrigger label="Server" name={current?.name ?? serverId} current />
-      <PopoverContent padding="none" align="start" className="w-72">
+      <CrumbTrigger label="Server" name={current?.name ?? "Server"} current />
+      <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch server</PopoverTitle>
+        <SwitcherLoading isPending={state === "loading"}>
         <Command label="Servers" value={serverId}>
           {servers.length > 8 ? <CommandInput placeholder="Find a server…" /> : null}
-          <CommandList>
-            <CommandEmpty>No servers found</CommandEmpty>
+          <CommandList className="max-h-[min(20rem,45dvh)]">
+            <CommandEmpty>{state === "unreachable" ? "Can’t reach your servers right now" : "No servers found"}</CommandEmpty>
             <CommandGroup>
               {servers.map((server) => (
                 <CommandItem
@@ -42,6 +43,7 @@ export function ServerSwitcher() {
             </CommandGroup>
           </CommandList>
         </Command>
+        </SwitcherLoading>
       </PopoverContent>
     </Popover>
   );

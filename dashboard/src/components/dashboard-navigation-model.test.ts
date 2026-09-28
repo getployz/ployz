@@ -38,7 +38,7 @@ describe("dashboard navigation model", () => {
 
   it("lists the organization destinations, with Billing only when billing is configured", () => {
     const withBilling = createDashboardNavigation(environment, { section: "canvas", billingEnabled: true }).organization;
-    expect(withBilling.map((item) => item.label)).toEqual(["Projects", "Servers", "Settings", "Billing"]);
+    expect(withBilling.map((item) => item.label)).toEqual(["Projects", "Servers", "Organization Settings", "Billing"]);
     expect(withBilling.map((item) => item.to)).toEqual([
       "/cloud/$organizationSlug/~",
       "/cloud/$organizationSlug/~/servers",
@@ -48,7 +48,7 @@ describe("dashboard navigation model", () => {
     expect(withBilling.every((item) => !item.current && item.params.organizationSlug === "acme")).toBe(true);
 
     const selfHosted = createDashboardNavigation(organization, { section: "servers" }).organization;
-    expect(selfHosted.map((item) => item.label)).toEqual(["Projects", "Servers", "Settings"]);
+    expect(selfHosted.map((item) => item.label)).toEqual(["Projects", "Servers", "Organization Settings"]);
     expect(selfHosted.find((item) => item.current)?.label).toBe("Servers");
   });
 

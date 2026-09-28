@@ -96,7 +96,7 @@ export function CrumbTrigger({ label, name, current }: { label: string; name: st
   );
 }
 
-function SwitcherLoading({ isPending, retry, children }: { isPending: boolean; retry?: () => void; children: ReactNode }) {
+export function SwitcherLoading({ isPending, retry, children }: { isPending: boolean; retry?: () => void; children: ReactNode }) {
   if (isPending) return (
     <div role="status" aria-label="Loading" className="flex flex-col gap-2 p-2">
       <Skeleton className="h-7 w-full" /><Skeleton className="h-7 w-full" />

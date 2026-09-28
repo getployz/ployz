@@ -53,17 +53,15 @@ function RouteComponent() {
   return (
     <DashboardPage width="content">
       {/* The top bar's crumb names the server. */}
-      <div className="flex min-w-0 flex-col gap-1">
-        <h1 className="sr-only">{server.name}</h1>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-          <ServerStatusLabel status={server.status} stale={stale} />
-          {machine.publicIp ? (
-            <span className="inline-flex items-center gap-1 font-mono text-muted-foreground">
-              {machine.publicIp}
-              <CopyButton value={machine.publicIp} label="Copy address" size="icon-xs" variant="ghost" />
-            </span>
-          ) : null}
-        </div>
+      <h1 className="sr-only">{server.name}</h1>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <ServerStatusLabel status={server.status} stale={stale} />
+        {machine.publicIp ? (
+          <span className="inline-flex items-center gap-1 font-mono text-muted-foreground">
+            {machine.publicIp}
+            <CopyButton value={machine.publicIp} label="Copy address" size="icon-xs" variant="ghost" />
+          </span>
+        ) : null}
       </div>
       {stale ? (
         <ServersStaleAlert />

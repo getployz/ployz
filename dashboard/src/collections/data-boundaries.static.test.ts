@@ -87,7 +87,7 @@ const ON_DEMAND_READS = {
   githubRepoAccessQueryOptions: "read together with the install URL when a repository picker opens",
   githubInstallUrlQueryOptions: "read together with repository access when a repository picker opens",
   githubBranchesQueryOptions: "depends on the repository the user just picked",
-  githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Settings › Builds fills it in after hydration",
+  githubBuildRepositoriesQueryOptions: "calls GitHub per repository; Organization Settings › Builds fills it in after hydration",
 };
 
 /** Hook files outside data files that await the server without making UI wait on it. */
