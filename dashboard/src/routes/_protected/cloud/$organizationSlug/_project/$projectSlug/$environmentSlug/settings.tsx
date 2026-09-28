@@ -74,12 +74,13 @@ function RouteComponent() {
   // A Branch that isn't kept and has none of its own closes from its section; the rest go through Danger, typed.
   const closesHere = branch !== undefined && !branch.kept && closing.length === 0;
 
-  function leaveDeletedTree() {
-    void navigate({
-      to: "/cloud/$organizationSlug/~",
-      params: { organizationSlug },
-      replace: true,
-    });
+  // The project opens its Default Environment, which can't be deleted.
+  function leaveDeletedEnvironment() {
+    void navigate({ to: "/cloud/$organizationSlug/$projectSlug", params: { organizationSlug, projectSlug }, replace: true });
+  }
+
+  function leaveDeletedProject() {
+    void navigate({ to: "/cloud/$organizationSlug/~", params: { organizationSlug }, replace: true });
   }
 
   return (
@@ -111,7 +112,7 @@ function RouteComponent() {
             items={[...own, ...closing.map((row) => ({ kind: "branch" as const, name: row.name }))]}
             disabledReason={defaultEnvironment && defaultEnvironmentRefusal(defaultEnvironment.name)}
             headingId="environment-teardown-heading"
-            onCompleted={leaveDeletedTree}
+            onCompleted={leaveDeletedEnvironment}
           />}
         </div>
       ) : (
@@ -134,7 +135,7 @@ function RouteComponent() {
               ...projectNodes,
             ]}
             headingId="project-teardown-heading"
-            onCompleted={leaveDeletedTree}
+            onCompleted={leaveDeletedProject}
           />
         </div>
       )}
