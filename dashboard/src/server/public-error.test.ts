@@ -1,10 +1,12 @@
 import { Cause, Data } from "effect";
 import { describe, expect, it, vi } from "vitest";
 import {
+  Conflict,
   encodePublicBoundaryError,
   encodePublicError,
   NotFound,
   publicErrorResponse,
+  Validation,
 } from "#/server/public-error";
 
 class DatabaseFailure extends Data.TaggedError("DatabaseFailure")<{
@@ -62,6 +64,20 @@ describe("encodePublicError", () => {
       code: "VALIDATION_FAILED",
       message: "The request is invalid.",
     });
+  });
+
+  it("sends a user-facing refusal's message and keeps every other one generic", () => {
+    expect(encodePublicError(new Validation({ message: "Can't reach your servers.", userFacing: true }))).toEqual({
+      _tag: "PublicError", code: "VALIDATION_FAILED", message: "Can't reach your servers.",
+    });
+    expect(encodePublicError(new Conflict({ message: "web is the Default Environment.", userFacing: true }))).toEqual({
+      _tag: "PublicError", code: "CONFLICT", message: "web is the Default Environment.",
+    });
+    expect(encodePublicError(new Conflict({ message: "row 0190 locked by inngest run" })).message)
+      .toBe("The request conflicts with the current state.");
+    // Only Validation and Conflict carry the flag through; an internal failure never does.
+    expect(encodePublicError({ _tag: "DatabaseFailure", userFacing: true, message: "db.internal" }).message)
+      .toBe("The request could not be completed.");
   });
 
   it("does not report expected typed failures", () => {
