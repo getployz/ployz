@@ -595,7 +595,7 @@ describe("PR Environment lifecycle", () => {
       expect(await off()).toBe(true);
       expect((await deploymentsOf(prId)).map((row) => row.status)).not.toContain("queued");
       // Deploying waits for it to finish; once it has, its services' Setup Commands run again.
-      expect(await runEffect(startPrEnvironment({ userId }, { organizationSlug, environmentId: prId }).pipe(Effect.flip)))
+      expect(await runEffect(startPrEnvironment({ userId }, { organizationSlug, environmentId: prId }).pipe(Effect.as(null), Effect.catch(Effect.succeed))))
         .toMatchObject({ _tag: "Conflict", message: "This environment is shutting down. Deploy it once it's off." });
       await finish(attempt);
       expect(await environmentOf(prId)).toMatchObject({ revision: before?.revision, intent: before?.intent });
