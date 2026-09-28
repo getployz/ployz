@@ -12,7 +12,7 @@ export const standing = (
 ) => !!prEnvironment && save.prEnvironmentId === prEnvironment.id
   && save.workingRevision === prEnvironment.revision && save.targetBranch === prEnvironment.targetBranch;
 
-const HeldOn = {
+const SaveScope = {
   organizationSlug: OrganizationSlug,
   prEnvironmentId: Uuid,
   destinationEnvironmentId: Uuid,
@@ -20,14 +20,14 @@ const HeldOn = {
 
 /** Save the kept rows of a PR Environment's changes for one Destination; `review` is the review string the sheet showed. */
 export const SaveConditionalSave = Schema.Struct({
-  ...HeldOn,
+  ...SaveScope,
   review: Schema.String,
   picks: Schema.mutable(Schema.Array(SavePickSchema)),
 });
 export type SaveConditionalSave = typeof SaveConditionalSave.Type;
 
 /** Withdraw the save (Undo). */
-export const WithdrawConditionalSave = Schema.Struct(HeldOn);
+export const WithdrawConditionalSave = Schema.Struct(SaveScope);
 export type WithdrawConditionalSave = typeof WithdrawConditionalSave.Type;
 
 /** Use a pull request's value that landed only as a hint beside the Destination's own undeployed edit. */

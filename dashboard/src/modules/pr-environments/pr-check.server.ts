@@ -11,7 +11,7 @@ import { environment, environmentBranch, project } from "#/modules/project/table
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { goesToComparison } from "./conditional-save.server";
+import { saveComparison } from "./conditional-save.server";
 import { standing } from "./conditional-save";
 import { PR_CHECK_NAME, prCheck } from "./pr-check";
 import { prDestinations } from "./pr-environment.repository.server";
@@ -47,7 +47,7 @@ const checkDestinationsOf = Effect.fn("PrEnvironments.checkDestinationsOf")(func
     .where(inArray(environment.id, destinationIds)) : [];
   const saves = yield* drizzle.select().from(conditionalSave).where(eq(conditionalSave.prEnvironmentId, prEnvironmentId));
   return yield* Effect.forEach(destinationIds, (destinationEnvironmentId) => Effect.gen(function* () {
-    const { compare } = yield* goesToComparison({
+    const { compare } = yield* saveComparison({
       projectSlug: pr.projectSlug, prEnvironment: { id: prEnvironmentId, namespace: pr.namespace }, branch: pr.branch, destinationEnvironmentId,
     });
     const save = saves.find((candidate) => candidate.destinationEnvironmentId === destinationEnvironmentId);

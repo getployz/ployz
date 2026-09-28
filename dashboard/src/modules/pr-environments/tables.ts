@@ -107,14 +107,14 @@ export type BranchRow = typeof environmentBranch.$inferSelect & { pullRequest: P
  * Destination had changed it too: `staged` as an ordinary change to deploy, or only a `hint` beside the Destination's own
  * undeployed edit.
  */
-export type HeldRow = { row: ChangeRow; option?: BranchOption; landed?: "staged" | "hint" };
+export type SavedRow = { row: ChangeRow; option?: BranchOption; landed?: "staged" | "hint" };
 
 export type ConditionalSaveState = (typeof conditionalSave.$inferSelect)["state"];
 
 /** A Conditional Save as the browser has it: no sealed values. */
 export type ConditionalSaveRow = {
   id: string; organizationId: string; projectId: string; prEnvironmentId: string | null; repositoryId: number; prNumber: number;
-  destinationEnvironmentId: string; rows: HeldRow[]; workingRevision: string; targetBranch: string;
+  destinationEnvironmentId: string; rows: SavedRow[]; workingRevision: string; targetBranch: string;
   savedAt: Date; state: ConditionalSaveState; landedSavedStateId: string | null;
 };
 
@@ -122,7 +122,7 @@ export type ConditionalSaveRow = {
  * What landing needs without reading the PR Environment, which may be gone by then: core's comparison inputs but the
  * Destination's (`into`, `provided`), sealed values included, and the arriving nodes' identity sources.
  */
-export type HeldLanding = {
+export type SaveLanding = {
   base: SavedEnvironmentIntent; from: SavedEnvironmentIntent; parent: SavedEnvironmentIntent | null;
   hostnames: BranchHostnames; identities: IdentitySources;
 };
@@ -151,10 +151,10 @@ export const conditionalSave = pgTable(
     destinationEnvironmentId: uuid("destination_environment_id")
       .notNull()
       .references(() => environment.id, { onDelete: "cascade" }),
-    rows: jsonb("rows").notNull().$type<HeldRow[]>(),
+    rows: jsonb("rows").notNull().$type<SavedRow[]>(),
     // Core's picks, new values sealed.
     picks: jsonb("picks").notNull().$type<BranchPick[]>(),
-    landing: jsonb("landing").notNull().$type<HeldLanding>(),
+    landing: jsonb("landing").notNull().$type<SaveLanding>(),
     workingRevision: uuid("working_revision").notNull(),
     targetBranch: text("target_branch").notNull(),
     savedByUserId: uuid("saved_by_user_id")

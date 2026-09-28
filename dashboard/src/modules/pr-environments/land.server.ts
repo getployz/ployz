@@ -27,7 +27,7 @@ import type { TakePullRequestValue } from "./conditional-save";
 import { actingMember } from "./plan-operations.server";
 import { trackedBranch } from "./pull-request";
 import { prDestinations } from "./pr-environment.repository.server";
-import { conditionalSave, prEnvironment, prEnvironmentPlan, type HeldRow } from "./tables";
+import { conditionalSave, prEnvironment, prEnvironmentPlan, type SaveLanding, type SavedRow } from "./tables";
 
 type ConditionalSave = typeof conditionalSave.$inferSelect;
 type Document = typeof environment.$inferSelect;
@@ -55,10 +55,7 @@ export const landConditionalSave = Effect.fn("PrEnvironments.landConditionalSave
   const latest = yield* loadLatestEnvironmentSavedState(document.id);
   if (!latest) return yield* Effect.die("A Destination has a Saved State.");
   const { intent: working } = yield* loadCurrentEnvironmentState(document.id);
-  const { base, from, parent, hostnames } = save.landing;
-  const compare = (into: SavedEnvironmentIntent) => ({
-    base, from, into, parent: parent ?? undefined, provided: usedLive(into), hostnames, fromKept: false,
-  });
+  const compare = (into: SavedEnvironmentIntent) => landingCompare(save.landing, into);
   // Each moving row's value on the receiving side, redacted as the review showed it.
   const valuesIn = (into: SavedEnvironmentIntent) => core("landing", () => new Map(branchChanges(compare(into)).rows
     .flatMap((row) => row.role === "move" ? [[row.key, withoutSealedCiphertext(row).into] as const] : [])));
@@ -97,7 +94,7 @@ export const landConditionalSave = Effect.fn("PrEnvironments.landConditionalSave
   const written = yield* landChanges({ project: owner, sources: save.landing.identities, document, into: working, next, picks: [...savedPicks, ...workingPicks] });
   const staged = new Set(workingPicks.map((pick) => pick.key));
   const notSaved = save.rows.filter(({ row }) => !unchanged(row.key))
-    .map((held): HeldRow => ({ ...held, landed: staged.has(held.row.key) ? "staged" : "hint" }));
+    .map((entry): SavedRow => ({ ...entry, landed: staged.has(entry.row.key) ? "staged" : "hint" }));
   yield* drizzle.delete(conditionalSave).where(and(eq(conditionalSave.destinationEnvironmentId, document.id),
     eq(conditionalSave.state, "landed"), ne(conditionalSave.id, save.id)));
   if (notSaved.length === 0) yield* drizzle.delete(conditionalSave).where(eq(conditionalSave.id, save.id));
@@ -130,16 +127,20 @@ export const takePullRequestValue = Effect.fn("PrEnvironments.takePullRequestVal
       return yield* new Conflict({ message: "That value isn't there to use any more." });
     }
     const { intent: working } = yield* loadCurrentEnvironmentState(document.id);
-    const { base, from, parent, hostnames } = save.landing;
-    const next = parseDashboardEnvironmentIntent((yield* core("picks", () => branchChanges({
-      base, from, into: working, parent: parent ?? undefined, provided: usedLive(working), hostnames, fromKept: false, picks: [pick],
-    }))).next);
+    const next = parseDashboardEnvironmentIntent((yield* core("picks", () => branchChanges({ ...landingCompare(save.landing, working), picks: [pick] }))).next);
     yield* landChanges({ project: context.project, sources: save.landing.identities, document, into: working, next, picks: [pick] });
     yield* drizzle.update(conditionalSave)
-      .set({ rows: save.rows.map((held): HeldRow => held.row.key === input.key ? { ...held, landed: "staged" } : held) })
+      .set({ rows: save.rows.map((entry): SavedRow => entry.row.key === input.key ? { ...entry, landed: "staged" } : entry) })
       .where(eq(conditionalSave.id, save.id));
   }));
 });
+
+/** Core's comparison into `into`, from what the save recorded: the PR Environment's side as it was saved. */
+function landingCompare(landing: SaveLanding, into: SavedEnvironmentIntent) {
+  return {
+    base: landing.base, from: landing.from, into, parent: landing.parent ?? undefined, provided: usedLive(into), hostnames: landing.hostnames, fromKept: false,
+  };
+}
 
 /** `next` with each variable `before` lacked under the id `saved` gave it (by service lineage and key), so both states agree. */
 function withVariableIdsOf(saved: SavedEnvironmentIntent, before: SavedEnvironmentIntent, next: SavedEnvironmentIntent): SavedEnvironmentIntent {
@@ -249,7 +250,7 @@ export const freezeMergedBy = Effect.fn("PrEnvironments.freezeMergedBy")(functio
  * The frozen Conditional Saves a push of `headSha` to `ref` carries: those whose merge commit it is, or descends from.
  * Asks GitHub, so call it before the admission transaction.
  */
-export const heldChangesCarriedBy = Effect.fn("PrEnvironments.heldChangesCarriedBy")(function* (push: Push) {
+export const savedChangesCarriedBy = Effect.fn("PrEnvironments.savedChangesCarriedBy")(function* (push: Push) {
   const { drizzle } = yield* Database;
   const saves = yield* drizzle.select().from(conditionalSave).where(and(ofTargetBranch(push), frozen));
   const carried: CarriedSave[] = [];
@@ -266,7 +267,7 @@ export const heldChangesCarriedBy = Effect.fn("PrEnvironments.heldChangesCarried
 const mergeCommitOf = (save: ConditionalSave) => save.mergeCommitSha ?? "";
 
 /**
- * Lands the frozen Conditional Saves among `ids` held on `document`, a Destination whose queue lock and document the
+ * Lands the frozen Conditional Saves among `ids` waiting on `document`, a Destination whose queue lock and document the
  * caller holds. Returns whether any landed, and the document as landing left it.
  */
 export const landCarried = Effect.fn("PrEnvironments.landCarried")(function* (ids: readonly string[], document: Document) {
