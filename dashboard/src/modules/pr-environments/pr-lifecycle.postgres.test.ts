@@ -442,7 +442,7 @@ describe("PR Environment lifecycle", () => {
       });
     }
     await harness.db.insert(schema.environmentSavedStateSnapshot).values({
-      organizationId, environmentId: hotfixId, actorId: userId, intent: { ...stagingIntent, environmentSlug: "shop-hotfix" } as never,
+      organizationId, environmentId: hotfixId, actorId: userId, intent: { ...stagingIntent, environmentSlug: "shop-hotfix" },
       volumeDeletionAuthorizations: [],
     });
 
