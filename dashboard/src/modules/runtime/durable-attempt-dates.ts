@@ -1,22 +1,24 @@
-import { Schema } from "effect";
-
-const DurableAttemptDates = Schema.Struct({
-  createdAt: Schema.DateFromString,
-  startedAt: Schema.NullOr(Schema.DateFromString),
-  terminalAt: Schema.NullOr(Schema.DateFromString),
-  updatedAt: Schema.DateFromString,
-});
+// A step's result comes back as JSON (strings) on replay, but in-process with its Dates intact when Inngest
+// checkpoints, so each date is taken either way.
+type AttemptDate = Date | string;
 
 type SerializedDurableAttemptDates = {
-  readonly createdAt: string;
-  readonly startedAt: string | null;
-  readonly terminalAt: string | null;
-  readonly updatedAt: string;
+  readonly createdAt: AttemptDate;
+  readonly startedAt: AttemptDate | null;
+  readonly terminalAt: AttemptDate | null;
+  readonly updatedAt: AttemptDate;
 };
+
+const toDate = (value: AttemptDate) => new Date(value);
 
 export function reviveDurableAttemptDates<
   T extends SerializedDurableAttemptDates,
 >(attempt: T) {
-  const dates = Schema.decodeUnknownSync(DurableAttemptDates)(attempt);
-  return { ...attempt, ...dates };
+  return {
+    ...attempt,
+    createdAt: toDate(attempt.createdAt),
+    startedAt: attempt.startedAt === null ? null : toDate(attempt.startedAt),
+    terminalAt: attempt.terminalAt === null ? null : toDate(attempt.terminalAt),
+    updatedAt: toDate(attempt.updatedAt),
+  };
 }
