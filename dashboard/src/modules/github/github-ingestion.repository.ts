@@ -3,6 +3,7 @@ import "@tanstack/react-start/server-only";
 export {
   cancelGithubDelivery,
   claimGithubDelivery,
+  completeGithubDelivery,
   failGithubDelivery,
   recordAndClaimGithubDelivery,
   recordGithubDelivery,
