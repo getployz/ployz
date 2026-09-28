@@ -6,19 +6,36 @@ import { eventStreamResponse, sseEvent } from "#/server/event-stream";
 const RETRY_MS = 3_000;
 const OFFLINE_RETRY_MS = 5_000;
 
-export type ContainerLogStreamEvent = LogEvent | { type: "ready" };
+const TAIL_BUDGET_MS = 3_000;
+
+type ContainerLogStreamEvent = LogEvent | { type: "live" };
 
 /**
- * `ready` follows the whole tail, so a viewer that sees it with no records knows the log is empty.
+ * `live` follows the tail, so a viewer that sees it with no records knows the log is empty.
+ * A tail slower than the budget stops holding everyone back: the rest of it is dropped and the follow begins,
+ * so there `live` only means the budget ran out.
  * The follow repeats the tail: whatever was written between the two reads arrives, and the rows' ids drop the rest.
  */
 export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow: AsyncIterable<LogEvent>): AsyncIterable<ContainerLogStreamEvent> {
-  yield* tail;
-  yield { type: "ready" };
+  const reader = tail[Symbol.asyncIterator]();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">(resolve => { timer = setTimeout(resolve, TAIL_BUDGET_MS, "late"); });
+  try {
+    for (;;) {
+      const next = await Promise.race([reader.next(), late]);
+      if (next === "late" || next.done) break;
+      yield next.value;
+    }
+  } finally {
+    clearTimeout(timer);
+    // A hung read queues this behind its pending `next()`; the request's abort is what releases it.
+    void reader.return?.()?.catch(() => {});
+  }
+  yield { type: "live" };
   yield* follow;
 }
 
-/** Pull-driven delivery preserves every log record rather than coalescing watch snapshots. `ready` becomes `live`. */
+/** Pull-driven delivery preserves every log record rather than coalescing watch snapshots. */
 export function containerLogResponse(request: Request, events: AsyncIterable<ContainerLogStreamEvent>, close: () => Promise<void>) {
   return eventStreamResponse(request.signal, () => containerLogEvents(events), { heartbeatMs: 15_000, retryMs: RETRY_MS, onClose: close });
 }
@@ -31,7 +48,7 @@ export function offlineLogResponse(request: Request) {
 async function* containerLogEvents(events: AsyncIterable<ContainerLogStreamEvent>) {
   try {
     for await (const event of events) {
-      if (event.type === "ready") yield sseEvent({ event: "live", data: {} });
+      if (event.type === "live") yield sseEvent({ event: "live", data: {} });
       else yield sseEvent({ event: "log", data: event.type === "record" ? { type: "record", record: projectContainerLog(event.record) } : event });
     }
   } catch {

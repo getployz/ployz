@@ -1,23 +1,44 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { LogEvent } from "@ployz/sdk";
 import { backfillThenFollow, containerLogResponse } from "./container-log-events.server";
 
-it("answers ready only after the whole tail, then follows", async () => {
+it("answers live only after the whole tail, then follows", async () => {
   const opened: string[] = [];
   const read = (name: string) => (async function* (): AsyncIterable<LogEvent> {
     opened.push(name);
     yield { type: "source_error", machineId: "m", containerId: "c", message: name };
   })();
-  const seen = [];
-  for await (const event of backfillThenFollow(read("tail"), read("follow"))) seen.push(event.type === "source_error" ? event.message : event.type);
-  expect(seen).toEqual(["tail", "ready", "follow"]);
+  const seen: string[] = [];
+  for await (const event of backfillThenFollow(read("tail"), read("follow"))) {
+    seen.push(event.type === "source_error" ? event.message : event.type);
+  }
+  expect(seen).toEqual(["tail", "live", "follow"]);
   expect(opened).toEqual(["tail", "follow"]);
+});
+
+it("stops waiting on a hung tail and follows anyway", async () => {
+  vi.useFakeTimers();
+  try {
+    async function* hung(): AsyncIterable<LogEvent> {
+      yield { type: "source_error", machineId: "m", containerId: "c", message: "fast" };
+      await new Promise(() => {});
+    }
+    async function* follow(): AsyncIterable<LogEvent> {
+      yield { type: "source_error", machineId: "m", containerId: "c", message: "follow" };
+    }
+    const events = backfillThenFollow(hung(), follow())[Symbol.asyncIterator]();
+    expect(await events.next()).toMatchObject({ value: { message: "fast" } });
+    const live = events.next();
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(await live).toMatchObject({ value: { type: "live" } });
+    expect(await events.next()).toMatchObject({ value: { message: "follow" } });
+  } finally { vi.useRealTimers(); }
 });
 
 it("streams every record in order and closes its runtime scope", async () => {
   let closed = 0;
   async function* events() {
-    yield { type: "ready" as const };
+    yield { type: "live" as const };
     for (let index = 0; index < 3; index++) yield { type: "source_error" as const, machineId: "m", containerId: "c", message: String(index) };
   }
   const response = containerLogResponse(new Request("http://localhost/logs"), events(), async () => { closed++; });
