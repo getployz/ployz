@@ -254,6 +254,10 @@ _Avoid_: Preview, preview deployment, review app
 A PR Environment's changes saved for one Destination, which go live with the pull request's merge commit: they are saved there in the same step that admits the deployment of that commit, so code and settings go out together. A setting the Destination left alone, or only edited without deploying, is saved; one it changed live becomes an ordinary change to deploy there instead; one it did both to keeps its own edit, and the pull request's value is only offered beside it. Changing the PR Environment's settings or the pull request's target Git branch withdraws it, and a pull request closed without merging drops it.
 _Avoid_: Auto-promote, deferred deploy, merge queue
 
+**Off**:
+An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its standing Conditional Saves stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. Only PR Environments shut down, from the Save sheet or at any time; undoing a save leaves one Off, and one whose pull request closes is removed as a running one is.
+_Avoid_: Paused, stopped, sleeping, scaled to zero
+
 **Cloud Deployment Stage**:
 The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
