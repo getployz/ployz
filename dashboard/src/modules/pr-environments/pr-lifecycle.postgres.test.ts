@@ -35,7 +35,7 @@ import { postPrCheck } from "./pr-check.server";
 import { createService } from "#/modules/environment-design/service-operations.server";
 import { createImageServiceSource } from "#/modules/environment-design/services";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
-import { mergeBranch } from "#/modules/branches/branch-merge.server";
+import { saveBranch } from "#/modules/branches/branch-save.server";
 import { resumeGithubWaitingTriggers } from "#/modules/github/github-ingestion.branch.repository";
 
 const organizationId = "00000000-0000-4000-8000-000000001101";
@@ -793,8 +793,8 @@ describe("PR Environment lifecycle", () => {
           .where(eq(schema.environmentSavedStateSnapshot.environmentId, stagingId))).length;
         const count = await snapshots();
 
-        const refused = await harness.runEffect(mergeBranch({ userId }, {
-          organizationSlug, branchEnvironmentId: prId, destinationRevision: (await environmentOf(stagingId))?.revision ?? "", review: "", picks: [], thenClose: false,
+        const refused = await harness.runEffect(saveBranch({ userId }, {
+          organizationSlug, branchEnvironmentId: prId, destinationRevision: (await environmentOf(stagingId))?.revision ?? "", review: "", picks: [], thenDelete: false,
         }).pipe(Effect.flip, Effect.provideService(OrganizationRuntime, runtime), Effect.provideService(InngestClient, inngest)));
         expect(refused).toMatchObject({ _tag: "Conflict", message: "Merge #142 on GitHub instead." });
 

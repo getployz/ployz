@@ -192,7 +192,7 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
 /** A Branch with nothing staged or running: what would merge into its Parent, else what's new there. */
 function BranchState({ review }: { review: BranchReviewView }) {
   const isMobile = useIsMobile();
-  const [first] = review.merge;
+  const [first] = review.save;
   if (first) {
     const row = presentRow(first, review.nameOf);
     return (

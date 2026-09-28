@@ -2,7 +2,7 @@ import { useMutation } from "@tanstack/react-query";
 import { getConditionalSavesCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { MergePick } from "#/modules/branches/branch-schemas";
+import type { SavePick } from "#/modules/branches/branch-schemas";
 import { approveConditionalSaveServerFn, giveConditionalSaveValueServerFn, withdrawConditionalSaveServerFn } from "./conditional-save-functions";
 
 /**
@@ -14,7 +14,7 @@ export function useConditionalSave(input: { organizationSlug: string; prEnvironm
   const after = () => reconcileCollection(saves);
   return {
     approve: useMutation({
-      mutationFn: async (approval: { review: string; picks: MergePick[] }) => {
+      mutationFn: async (approval: { review: string; picks: SavePick[] }) => {
         await approveConditionalSaveServerFn({ data: { ...input, ...approval } });
         await after();
       },

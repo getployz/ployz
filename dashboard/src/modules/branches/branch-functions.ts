@@ -1,10 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 import { createBranch, setBranchSetupDefaults } from "./branch-operations.server";
-import { mergeBranch } from "./branch-merge.server";
+import { saveBranch } from "./branch-save.server";
 import { makeOwnCopy, updateBranch } from "./branch-update.server";
 import { setBranchKept } from "./branch-close.server";
-import { CreateBranch, MakeOwnCopy, MergeBranch, SetBranchKept, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
+import { CreateBranch, MakeOwnCopy, SaveBranch, SetBranchKept, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -33,7 +33,7 @@ export const makeOwnCopyServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(MakeOwnCopy))
   .handler(({ context, data }) => runActor(context, makeOwnCopy(context.actor, data)));
 
-export const mergeBranchServerFn = createServerFn({ method: "POST" })
+export const saveBranchServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
-  .validator(strictValidator(MergeBranch))
-  .handler(({ context, data }) => runActor(context, mergeBranch(context.actor, data)));
+  .validator(strictValidator(SaveBranch))
+  .handler(({ context, data }) => runActor(context, saveBranch(context.actor, data)));

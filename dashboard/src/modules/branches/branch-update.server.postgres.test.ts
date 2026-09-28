@@ -103,7 +103,7 @@ describe("updateBranch", () => {
   ));
 
   /** Deploy the Environment's Working State by hand: a Saved revision, an attempt and its node snapshots. */
-  async function deploy(environmentId: string, status: "applied" | "queued" = "applied") {
+  async function deploy(environmentId: string, status: "applied" | "queued" | "failed" = "applied") {
     const { intent } = await provide(loadCurrentEnvironmentState(environmentId));
     clock += 1_000;
     const [saved] = await harness.db.insert(schema.environmentSavedStateSnapshot).values({
@@ -195,10 +195,24 @@ describe("updateBranch", () => {
     expect((await documentOf(branchId))?.intent.services.map((node) => node.lineageId).sort()).toEqual([dbLineage, webLineage].sort());
   });
 
-  it("is refused while the Branch has an active attempt", async () => {
+  it("is refused while the Branch has an active attempt, after a failed attempt, and from a starting point", async () => {
     const branchId = await branchOfWeb();
     await deploy(branchId, "queued");
     expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("still running") });
+
+    await harness.db.update(schema.environmentDeployment).set({ status: "applied" }).where(eq(schema.environmentDeployment.environmentId, branchId));
+    const edited = (await documentOf(branchId))?.intent;
+    const web = edited?.services.find((node) => node.lineageId === webLineage);
+    if (web?.config.source.type === "image") web.config.source.image = "web:9";
+    await harness.db.update(schema.environment).set({ intent: edited }).where(eq(schema.environment.id, branchId));
+    await deploy(branchId, "failed");
+    expect(await failure(update(branchId))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("aren't deployed") });
+
+    const { data } = await provide(createBranch({ userId }, {
+      organizationSlug: "acme", parentEnvironmentId: parentId, name: "recipe",
+      focus: [webLineage], picks: { preset: "only" }, keep: false, deployNow: false, setupCommands: [],
+    }));
+    expect(await failure(update(data.environment.id))).toMatchObject({ _tag: "Conflict", message: expect.stringContaining("aren't deployed") });
   });
 
   it("turns a Live Node into an Own Copy, with an empty copy of the Volume it mounts", async () => {

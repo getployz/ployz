@@ -4,7 +4,7 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { useMergeBranch } from "#/modules/branches/branch-commands";
+import { useSaveBranch } from "#/modules/branches/branch-commands";
 import { useBranchUnsettled } from "#/modules/branches/branch.collection";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
@@ -22,11 +22,11 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
   const destination = review.parent.name;
   const unsettled = useBranchUnsettled(params.organizationSlug, branch.id);
   const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branch.id);
-  const merge = useMergeBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: branch.name, destination: review.parent });
-  const rows = useRowPicks(review.merge, review.nameOf);
-  const [thenClose, setThenClose] = useState(true);
+  const merge = useSaveBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: branch.name, destination: review.parent });
+  const rows = useRowPicks(review.save, review.nameOf);
+  const [thenDelete, setThenClose] = useState(true);
 
-  const closes = !review.kept && !isDefault && thenClose;
+  const closes = !review.kept && !isDefault && thenDelete;
   const blocked = unsettled
     ?? (rows.ticked.length === 0 ? "Tick a change to merge."
     : rows.missing ? `Enter a new value for ${rows.missing.presented.label}.`
@@ -34,13 +34,13 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
 
   function submit() {
     merge.mutate({
-      branchEnvironmentId: branch.id, review: review.mergeReview, thenClose: closes, picks: rows.sent,
+      branchEnvironmentId: branch.id, review: review.saveReview, thenDelete: closes, picks: rows.sent,
     });
   }
 
   return (
-    <ReviewSection title={`Merge into ${destination}`} count={review.merge.length}>
-      {review.merge.length ? (
+    <ReviewSection title={`Merge into ${destination}`} count={review.save.length}>
+      {review.save.length ? (
         <>
           <RowPicks picks={rows} names={{ from: branch.name, parent: destination, destination }} verb="Merge" />
           {review.kept ? null : (
