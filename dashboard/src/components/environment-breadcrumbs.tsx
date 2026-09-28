@@ -27,7 +27,7 @@ import { useBranchReviews } from "#/modules/branches/use-branch-review";
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
 /**
- * `project / environment`, each crumb a switcher; places other than Canvas add their name. A Branch reads
+ * `project / environment`, each crumb a switcher; places other than Architecture add their name. A Branch reads
  * `project / parent ⑂ branch`, and its Parent's crumb opens the Parent.
  */
 export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
@@ -45,7 +45,7 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
       </Link>,
     ] : [],
     <EnvironmentCrumb key="environment" scope={scope} />,
-    ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
+    ...section === "architecture" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }
 

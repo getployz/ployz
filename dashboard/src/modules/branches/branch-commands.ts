@@ -42,7 +42,7 @@ export function useCreateBranch(projectSlug: string) {
     },
     onSuccess: (data, input) => navigate(getDashboardDestination({
       kind: "environment", organizationSlug: input.organizationSlug, projectSlug, environmentSlug: data.environment.namespace,
-    }, "canvas")),
+    }, "architecture")),
   });
 }
 
@@ -71,7 +71,7 @@ export function useMergeBranch(input: { organizationSlug: string; projectSlug: s
       if (merge.thenClose && !data.closed) toast.warning(`${input.branchName} is still open`, { description: "It couldn't close. Close it from its settings." });
       return navigate(getDashboardDestination({
         kind: "environment", organizationSlug: input.organizationSlug, projectSlug: input.projectSlug, environmentSlug: input.destination.namespace,
-      }, "canvas"));
+      }, "architecture"));
     },
   });
 }

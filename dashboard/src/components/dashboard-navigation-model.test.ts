@@ -18,7 +18,7 @@ describe("dashboard navigation model", () => {
   it("gives an Environment its four places, with the current one marked", () => {
     const { places } = createDashboardNavigation(environment, { section: "logs" });
 
-    expect(places.map((place) => place.label)).toEqual(["Canvas", "Deployments", "Logs", "Settings"]);
+    expect(places.map((place) => place.label)).toEqual(["Architecture", "Deployments", "Logs", "Settings"]);
     expect(places.map((place) => place.to)).toEqual([
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
       "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments",
@@ -32,26 +32,49 @@ describe("dashboard navigation model", () => {
     });
   });
 
-  it("offers no Environment places on organization pages", () => {
-    expect(createDashboardNavigation(organization, { section: "servers" }).places).toEqual([]);
-  });
-
-  it("lists the organization destinations, with Billing only when billing is configured", () => {
-    const withBilling = createDashboardNavigation(environment, { section: "canvas", billingEnabled: true }).organization;
-    expect(withBilling.map((item) => item.label)).toEqual(["Projects", "Servers", "Organization Settings", "Billing"]);
-    expect(withBilling.map((item) => item.to)).toEqual([
+  it("gives the organization three places, and an Environment only Projects and Servers of them", () => {
+    const { places, organization: none } = createDashboardNavigation(organization, { section: "servers" });
+    expect(places.map((place) => place.label)).toEqual(["Projects", "Servers", "Settings"]);
+    expect(places.map((place) => place.to)).toEqual([
       "/cloud/$organizationSlug/~",
       "/cloud/$organizationSlug/~/servers",
       "/cloud/$organizationSlug/~/settings",
-      "/cloud/$organizationSlug/~/billing",
     ]);
-    expect(withBilling.every((item) => !item.current && item.params.organizationSlug === "acme")).toBe(true);
+    expect(places.filter((place) => place.current).map((place) => place.label)).toEqual(["Servers"]);
+    expect(none).toEqual([]);
 
-    const selfHosted = createDashboardNavigation(organization, { section: "servers" }).organization;
-    expect(selfHosted.map((item) => item.label)).toEqual(["Projects", "Servers", "Organization Settings"]);
-    expect(selfHosted.find((item) => item.current)?.label).toBe("Servers");
-    expect(createDashboardNavigation(organization, { section: "servers", billingEnabled: true }).organizationRail
-      .map((item) => item.label)).toEqual(["Projects", "Servers"]);
+    const back = createDashboardNavigation(environment, { section: "logs" }).organization;
+    expect(back.map((place) => place.label)).toEqual(["Projects", "Servers"]);
+    expect(back.every((place) => !place.current && place.params.organizationSlug === "acme")).toBe(true);
+  });
+
+  it("lists Settings' sections, the first at the page's plain URL and the open one marked", () => {
+    const sections = (search?: { scope?: "environment" | "project" }, section: "settings" | "logs" = "settings") =>
+      createDashboardNavigation(environment, { section, search }).places.find((place) => place.label === "Settings")?.sections;
+
+    expect(sections()?.map(({ label, search, current }) => ({ label, search, current }))).toEqual([
+      { label: "Environment", search: {}, current: true },
+      { label: "Project", search: { scope: "project" }, current: false },
+    ]);
+    expect(sections({ scope: "project" })?.find((item) => item.current)?.label).toBe("Project");
+    expect(sections({}, "logs")?.some((item) => item.current)).toBe(false);
+    expect(createDashboardNavigation(environment, { section: "logs" }).places
+      .filter((place) => place.sections.length).map((place) => place.label)).toEqual(["Settings"]);
+  });
+
+  it("makes Billing a section of the organization's Settings, only when billing is configured", () => {
+    const settings = (section: "organization-settings" | "billing", search: { section?: "general" | "builds" }, billingEnabled: boolean) =>
+      createDashboardNavigation(organization, { section, search, billingEnabled }).places.find((place) => place.label === "Settings");
+
+    const billing = settings("billing", {}, true);
+    expect(billing?.current).toBe(true);
+    expect(billing?.sections.map(({ label, to, current }) => ({ label, to, current }))).toEqual([
+      { label: "General", to: "/cloud/$organizationSlug/~/settings", current: false },
+      { label: "Builds", to: "/cloud/$organizationSlug/~/settings", current: false },
+      { label: "Billing", to: "/cloud/$organizationSlug/~/billing", current: true },
+    ]);
+    expect(settings("organization-settings", { section: "builds" }, true)?.sections.find((item) => item.current)?.label).toBe("Builds");
+    expect(settings("organization-settings", {}, false)?.sections.map((item) => item.label)).toEqual(["General", "Builds"]);
   });
 
   it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {
@@ -81,8 +104,8 @@ describe("dashboard navigation model", () => {
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/settings`)).toBe("settings");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/`)).toBe("deployments");
     expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/deployments/$deploymentId`)).toBe("deployments");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("canvas");
-    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("canvas");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/`)).toBe("architecture");
+    expect(getDashboardSectionFromRouteId(`${environmentRoute}/_canvas/services/$serviceId`)).toBe("architecture");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/")).toBe("projects");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/billing")).toBe("billing");
     expect(getDashboardSectionFromRouteId("/_protected/cloud/$organizationSlug/_org/~/servers/$serverId")).toBe("servers");

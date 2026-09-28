@@ -7,7 +7,6 @@ import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { prefetchRemote } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
@@ -43,21 +42,9 @@ function RouteComponent() {
 
   return (
     <DashboardPage width="content">
-      {/* The top bar names the page. */}
-      <Tabs
-        className="gap-4"
-        value={section}
-        onValueChange={(value) => {
-          if (Schema.is(settingsSectionSchema)(value)) {
-            void navigate({ to: "/cloud/$organizationSlug/~/settings", params: { organizationSlug }, search: { section: value }, replace: true });
-          }
-        }}
-      >
-        <TabsList variant="line">
-          <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="builds">Builds</TabsTrigger>
-        </TabsList>
-        <TabsContent value="general" className="flex flex-col gap-8">
+      {/* The top bar names the page; the rail, or on phones the strip under the top bar, picks the section. */}
+      {section === "builds" ? <BuildsSettings organizationSlug={organizationSlug} /> : (
+        <div className="flex flex-col gap-8">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
           <TeardownDangerSection
@@ -72,11 +59,8 @@ function RouteComponent() {
               void navigate({ to: "/cloud", replace: true });
             }}
           />
-        </TabsContent>
-        <TabsContent value="builds">
-          <BuildsSettings organizationSlug={organizationSlug} />
-        </TabsContent>
-      </Tabs>
+        </div>
+      )}
     </DashboardPage>
   );
 }

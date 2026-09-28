@@ -63,7 +63,7 @@ export function CreateEnvironmentDialog({
             projectSlug: input.projectSlug,
             environmentSlug: receipt.data.namespace,
           },
-          "canvas",
+          "architecture",
         ),
       );
     },
