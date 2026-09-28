@@ -12,27 +12,52 @@ type ContainerLogStreamEvent = LogEvent | { type: "live" };
 
 /**
  * `live` follows the tail, so a viewer that sees it with no records knows the log is empty.
- * A tail slower than the budget stops holding everyone back: the rest of it is dropped and the follow begins,
- * so there `live` only means the budget ran out.
- * The follow repeats the tail: whatever was written between the two reads arrives, and the rows' ids drop the rest.
+ * A tail slower than the budget stops holding everyone back: the rest of it is dropped and `live` goes out anyway.
+ * The follow starts with the tail and is held until `live`, so nothing written in between falls through;
+ * it repeats the tail, and the rows' ids drop what the viewer already has.
  */
 export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow: AsyncIterable<LogEvent>): AsyncIterable<ContainerLogStreamEvent> {
-  const reader = tail[Symbol.asyncIterator]();
+  const tailReader = tail[Symbol.asyncIterator]();
+  const followReader = follow[Symbol.asyncIterator]();
+  const fromTail = () => tailReader.next().then(result => ({ from: "tail" as const, result }));
+  const fromFollow = () => followReader.next().then(result => ({ from: "follow" as const, result }));
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const late = new Promise<"late">(resolve => { timer = setTimeout(resolve, TAIL_BUDGET_MS, "late"); });
+  const late = new Promise<{ from: "late" }>(resolve => { timer = setTimeout(resolve, TAIL_BUDGET_MS, { from: "late" }); });
+  // ponytail: held records are unbounded, but only for the tail budget.
+  const held: LogEvent[] = [];
+  let followDone = false;
+  let nextTail = fromTail();
+  let nextFollow = fromFollow();
   try {
     for (;;) {
-      const next = await Promise.race([reader.next(), late]);
-      if (next === "late" || next.done) break;
-      yield next.value;
+      const next = await Promise.race(followDone ? [nextTail, late] : [nextTail, nextFollow, late]);
+      if (next.from === "late") break;
+      if (next.from === "tail") {
+        if (next.result.done) break;
+        yield next.result.value;
+        nextTail = fromTail();
+      } else if (next.result.done) followDone = true;
+      else {
+        held.push(next.result.value);
+        nextFollow = fromFollow();
+      }
+    }
+    clearTimeout(timer);
+    // A hung read queues this behind its pending `next()`; the request's abort is what releases it.
+    void tailReader.return?.()?.catch(() => {});
+    yield { type: "live" };
+    yield* held;
+    while (!followDone) {
+      const { result } = await nextFollow;
+      if (result.done) return;
+      yield result.value;
+      nextFollow = fromFollow();
     }
   } finally {
     clearTimeout(timer);
-    // A hung read queues this behind its pending `next()`; the request's abort is what releases it.
-    void reader.return?.()?.catch(() => {});
+    void tailReader.return?.()?.catch(() => {});
+    void followReader.return?.()?.catch(() => {});
   }
-  yield { type: "live" };
-  yield* follow;
 }
 
 /** Pull-driven delivery preserves every log record rather than coalescing watch snapshots. */
