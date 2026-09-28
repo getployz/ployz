@@ -19,6 +19,8 @@ import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { saveInput, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
+import type { SavePick } from "#/modules/branches/branch-schemas";
+import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { SaveConditionalSave, WithdrawConditionalSave } from "./conditional-save";
 import { conditionalSave, prEnvironment, type HeldRow } from "./tables";
 
@@ -71,7 +73,7 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
     yield* core("picks", () => branchChanges({ ...compare, picks }));
     const held = input.picks.flatMap((pick): HeldRow[] => {
       const row = byKey.get(pick.key);
-      return row ? [{ row: withoutSealedCiphertext(row), option: pick.option }] : [];
+      return row ? [{ row: withoutSealedCiphertext(savedValue(row, pick)), option: pick.option }] : [];
     });
     const values = {
       organizationId: project.organizationId, projectId: project.id,
@@ -93,6 +95,13 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
     return saved;
   }));
 });
+
+/** The row with the value it was saved with, as Details and the "Use" hint show it: a new secret stays hidden. */
+function savedValue(row: ChangeRow, pick: SavePick): ChangeRow {
+  if (row.role !== "move") return row;
+  if (pick.option === "new") return { ...row, from: row.choice?.secret ? { kind: "secret" } : { kind: "literal", value: pick.value } };
+  return pick.option === "leave_out" ? { ...row, from: null } : row;
+}
 
 /** Undo: the save is withdrawn. */
 export const withdrawConditionalSave = Effect.fn("PrEnvironments.withdrawConditionalSave")(function* (actor: Actor, input: WithdrawConditionalSave) {

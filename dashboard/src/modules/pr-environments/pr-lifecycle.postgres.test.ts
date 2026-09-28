@@ -27,7 +27,7 @@ import { readCollection } from "#/collections/read.server";
 import { createServiceVariable, updateServiceVariable } from "#/modules/environment-design/variable-operations.server";
 import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
-import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
+import { goesTo, presentRow, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { closePrEnvironment } from "#/modules/branches/branch-close.server";
 import { saveConditionalSave, withdrawConditionalSave } from "./conditional-save.server";
 import { shutDownPrEnvironment, startPrEnvironment } from "./off.server";
@@ -807,7 +807,9 @@ describe("PR Environment lifecycle", () => {
           preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
         }));
         const workerLineage = worker.data.service.lineageId;
+        // TIER goes with a value of staging's own.
         await approve(prId, (_, rows) => rows.map((row) => variableName(row) === "STRIPE_KEY" ? { key: row.key, option: "new" as const, value: "sk_live" }
+          : variableName(row) === "TIER" ? { key: row.key, option: "new" as const, value: "business" }
           : row.role === "move" && row.choice ? { key: row.key, option: "from" as const, value: "" } : { key: row.key, value: "" }));
         const [saved150] = await saves();
         expect(saved150?.rows.some(({ row }) => row.key === `${workerLineage}:node`)).toBe(true);
@@ -846,12 +848,14 @@ describe("PR Environment lifecycle", () => {
         await finishTeardown(prId);
         expect(await saves()).toHaveLength(1);
 
-        // Use: PR #150's TIER replaces staging's edit, as a change to deploy tagged like MODE.
-        const tier = marker?.rows.find(({ row }) => variableName(row) === "TIER")?.row.key ?? "";
+        // Use: PR #150's TIER, the value it saved, replaces staging's edit, as a change to deploy tagged like MODE.
+        const tierRow = marker?.rows.find(({ row }) => variableName(row) === "TIER")?.row;
+        expect(tierRow && presentRow(tierRow, () => "api").after).toBe("business");
+        const tier = tierRow?.key ?? "";
         const take = (key: string) => runEffect(takePullRequestValue({ userId }, { organizationSlug, conditionalSaveId: marker?.id ?? "", key })
           .pipe(Effect.as(null), Effect.catch(Effect.succeed)));
         expect(await take(tier)).toBeNull();
-        expect(variableIn((await environmentOf(stagingId))?.intent, "TIER")).toEqual(plain("pro"));
+        expect(variableIn((await environmentOf(stagingId))?.intent, "TIER")).toEqual(plain("business"));
         expect((await saves())[0]?.rows.map(({ landed }) => landed)).toEqual(["staged", "staged"]);
         expect(await take(tier)).toMatchObject({ _tag: "Conflict" });
       });
