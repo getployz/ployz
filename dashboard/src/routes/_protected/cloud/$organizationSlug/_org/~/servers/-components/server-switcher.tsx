@@ -20,29 +20,29 @@ export function ServerSwitcher() {
       <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch server</PopoverTitle>
         <SwitcherLoading isPending={state === "loading"}>
-        <Command label="Servers" value={serverId}>
-          {servers.length > 8 ? <CommandInput placeholder="Find a server…" /> : null}
-          <CommandList className="max-h-[min(20rem,45dvh)]">
-            <CommandEmpty>{state === "unreachable" ? "Can’t reach your servers right now" : "No servers found"}</CommandEmpty>
-            <CommandGroup>
-              {servers.map((server) => (
-                <CommandItem
-                  key={server.machine.id}
-                  value={server.machine.id}
-                  keywords={[server.name]}
-                  data-checked={server.machine.id === serverId}
-                  onSelect={() => {
-                    setOpen(false);
-                    void navigate({ to: "/cloud/$organizationSlug/~/servers/$serverId", params: { organizationSlug, serverId: server.machine.id } });
-                  }}
-                >
-                  <span className="min-w-0 flex-1 truncate">{server.name}</span>
-                  <ServerStatusLabel status={server.status} stale={state === "stale"} />
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </CommandList>
-        </Command>
+          <Command tabIndex={0} label="Servers" defaultValue={serverId}>
+            {servers.length > 8 ? <CommandInput placeholder="Find a server…" /> : null}
+            <CommandList className="max-h-[min(20rem,45dvh)]">
+              <CommandEmpty>{state === "unreachable" ? "Can’t reach your servers right now" : "No servers found"}</CommandEmpty>
+              <CommandGroup>
+                {servers.map((server) => (
+                  <CommandItem
+                    key={server.machine.id}
+                    value={server.machine.id}
+                    keywords={[server.name]}
+                    data-checked={server.machine.id === serverId}
+                    onSelect={() => {
+                      setOpen(false);
+                      void navigate({ to: "/cloud/$organizationSlug/~/servers/$serverId", params: { organizationSlug, serverId: server.machine.id } });
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{server.name}</span>
+                    <ServerStatusLabel status={server.status} stale={state === "stale"} />
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            </CommandList>
+          </Command>
         </SwitcherLoading>
       </PopoverContent>
     </Popover>
