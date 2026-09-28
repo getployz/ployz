@@ -86,11 +86,13 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
 const canvasUrl = "/cloud/acme/shop/production";
 const bar = async () => within(await screen.findByRole("group", { name: "Bottom bar" }));
 
-it("shows changes to deploy first: the count, the one change, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
+it("shows changes to deploy first: the count, the service, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
   expect(staged.getByText("1 change to deploy")).toBeTruthy();
-  expect(staged.getByText("api · Replicas 1 → 2")).toBeTruthy();
+  // Values are Details', so the bar stays small.
+  expect(staged.getByText("api")).toBeTruthy();
+  expect(staged.queryByText(/Replicas/)).toBeNull();
   expect(staged.getByRole("button", { name: /^Deploy/ }).textContent).toBe("Deploy⇧+Enter");
 
   fireEvent.click(staged.getByRole("button", { name: "Details" }));

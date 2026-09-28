@@ -293,15 +293,24 @@ Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt
 - One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
 - A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
-One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, in one row, the first that applies:
+One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, in one row, the first that applies. It keeps one small width whatever it says: its lines truncate, and values live in Details.
 
-1. **Changes to deploy.** The row takes the staged-intent surface: "N changes to deploy", the one change or the changed services' names, **Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
+1. **Changes to deploy.** The row takes the staged-intent surface: "N changes to deploy", the changed services' names, **Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
 2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
 3. **Changes that go live here with a pull request:** the quiet "3 changes go live with PR #142", the services they touch, and **Details**. They aren't changes to deploy.
 
 Nothing about a Branch sits in the bar: Save, Update, a shutdown and closing are the Branch button's.
 
-A Branch's panel shows its relationship to its Parent X: **For X**, what Save would put there, with **Save to X**; **New in X** (including Live Nodes their owner redeployed since this Branch last deployed) with **Update from X**, which says why while it must wait; and **Stays different**, each with a plain reason. A conflict, a setting the other side also changed since branching, reads old → new with a marker. A PR Environment has a **For X** per Destination while its pull request is open, which becomes **Saved for X**, going live when the pull request merges, with **Undo**.
+A Branch's panel answers one question first: what to do next. It leads with the Branch's first news, as the Branch button says it, in a card holding the panel's only solid button. The rest of its news follows a line each, most pressing first:
+
+- **N changes to save**, naming the services (on a PR Environment one per Destination, "go live when #142 merges"), with **Save to X**.
+- **N updates from X**, naming the services, including Live Nodes their owner redeployed since the Branch last deployed, with **Update**; while it must wait, the line says why instead. "N changed in fix-web too", in amber, warns of settings both sides changed.
+- A shutdown: **Shut down** again after a failure, "Shutting down", or "Off" with **Deploy pr-142**.
+- "Closes in N days" with **Keep it**.
+- **Saved for X**, going live when the pull request merges, with **Undo**.
+- Else "Up to date with X".
+
+A line with changes opens to them, each old → new, a conflict marked; values never crowd the lines. The pull request's check on GitHub and **N stay different** follow, each difference with a plain reason. Keep, Shut down and Close come last, a quiet line each: the Close dialog is the guard.
 
 **Save** never deploys and never waits for a deploy: it takes what the Branch has, deployed or not, while it deploys, after a failed deploy, or before it ever deployed. Its sheet is titled by the count ("3 changes for production"). Each service says what happens to it ("api will be updated", "cache will be added") and lists its settings as Change · Current · New: × leaves a change out, and tapping New gives X its own value; a new secret asks for X's value. One line says what happens next ("Nothing deploys yet. production gets 3 changes to deploy."), and one button says **Save to X**. The changes become X's changes to deploy, and the user lands on X's canvas. **Delete fix-api after saving** is on by default; a Kept Branch and the Default Environment don't show it. Deleting a Branch that is deploying cancels the deploy first. Update keeps its wait: it rewrites what the Branch runs.
 

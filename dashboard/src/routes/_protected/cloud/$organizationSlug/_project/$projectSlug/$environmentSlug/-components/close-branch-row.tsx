@@ -4,7 +4,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldTitle } from "#/components/ui/field";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { closeBranchServerFn } from "#/modules/branches/branch-functions";
@@ -53,18 +53,18 @@ export function CloseBranchRow({ organizationSlug, projectSlug, environmentId, n
 
   return (
     <>
-      <Field orientation="horizontal">
-        <FieldContent>
-          <FieldTitle>Close {name}</FieldTitle>
-          <FieldDescription>
-            {reopensWith === null ? deletes : `It comes back with the next push to PR #${reopensWith}.`}
-          </FieldDescription>
-        </FieldContent>
-        <Button variant="outline" disabled={closing} onClick={() => reopensWith === null ? setConfirming(true) : void close()}>
-          {closing ? <Spinner data-icon="inline-start" /> : null}
-          {reopensWith === null ? "Close branch" : "Close now"}
-        </Button>
-      </Field>
+      <Item size="sm">
+        <ItemContent>
+          <ItemTitle>Close {name}</ItemTitle>
+          <ItemDescription>{reopensWith === null ? deletes : `It comes back with the next push to PR #${reopensWith}.`}</ItemDescription>
+        </ItemContent>
+        <ItemActions>
+          <Button size="sm" variant="outline" disabled={closing} onClick={() => reopensWith === null ? setConfirming(true) : void close()}>
+            {closing ? <Spinner data-icon="inline-start" /> : null}
+            {reopensWith === null ? "Close" : "Close now"}
+          </Button>
+        </ItemActions>
+      </Item>
       <ConfirmDialog
         open={confirming}
         onOpenChange={setConfirming}

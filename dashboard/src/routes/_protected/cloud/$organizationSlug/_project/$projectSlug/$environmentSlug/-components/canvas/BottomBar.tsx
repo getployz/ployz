@@ -135,7 +135,7 @@ export function BottomBar({
   });
 
   const row = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? `${plural(totalChanges, "change")} to deploy` : "Unpublished changes"} detail={stagedDetail(groups, totalChanges)}>
+    <Row staged title={totalChanges > 0 ? `${plural(totalChanges, "change")} to deploy` : "Unpublished changes"} detail={stagedDetail(groups)}>
       <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       <Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy}>
@@ -184,15 +184,8 @@ export function BottomBar({
   );
 }
 
-/** The one change ("api · Replicas 1 → 2"), or the changed services' names. */
-function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: number) {
-  const [first] = groups;
-  const row = first?.rows[0];
-  if (totalChanges === 1 && first && row) {
-    return `${first.nodeName} · ${row.label} ${row.currentValue ? `${row.currentValue} → ` : ""}${row.newValue}`;
-  }
-  return groups.map((group) => group.nodeName).join(", ");
-}
+/** The changed services' names; their values are Details'. */
+const stagedDetail = (groups: CanvasEnvironmentChangeGroup[]) => groups.map((group) => group.nodeName).join(", ");
 
 /** "3 changes go live with PR #142". */
 const waitingTitle = (saves: ConditionalSaveRow[]) =>

@@ -8,6 +8,7 @@ import { useServerFn } from "@tanstack/react-start";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { isNotFound, toErrorMessage } from "#/lib/error-message";
 import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
@@ -37,9 +38,11 @@ type TeardownAttemptSummary = {
 
 /**
  * Deletes an Environment, project or organization, or closes a Kept Branch: the roots of real data, so the dialog lists
- * what goes and asks for `place`. Branches that aren't kept close with one plain confirm from their Manage panel instead.
+ * what goes and asks for `place`. Branches that aren't kept close with one plain confirm from their panel instead.
+ * `inline` makes it one quiet line with no Danger heading, for the Branch's panel: the typed dialog is the guard.
  */
 export function TeardownDangerSection({
+  inline = false,
   organizationSlug,
   scope,
   environmentId,
@@ -55,6 +58,7 @@ export function TeardownDangerSection({
   headingId,
   onCompleted,
 }: {
+  inline?: boolean;
   organizationSlug: string;
   scope: TeardownScope;
   environmentId?: string;
@@ -108,6 +112,46 @@ export function TeardownDangerSection({
     }
   }
 
+  const status = attempt ? <TeardownStatusAlert attempt={attempt} doing={doing} retrying={retrying} onRetry={() => void handleRetry()} /> : null;
+  const dialog = (
+    <DeletionDialog
+      open={open}
+      onOpenChange={setOpen}
+      title={abandon ? `Abandon ${name}'s servers?` : `${verb} ${name}?`}
+      place={place}
+      confirmLabel={abandon ? "Abandon" : verb}
+      items={items}
+      callbacks={{
+        load: async () => {
+          const { rust } = await loadDataLoss({ data: input });
+          return { items: withServerVolumes(items, rust), evidence: rust };
+        },
+        confirm: async (identities) => {
+          queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({ data: { ...input, identities, abandon } }));
+          toast(doing);
+        },
+      }}
+    />
+  );
+
+  if (inline) {
+    return (
+      <>
+        {status}
+        <Item size="sm">
+          <ItemContent>
+            <ItemTitle>{title}</ItemTitle>
+            <ItemDescription>{disabledReason ?? description}</ItemDescription>
+          </ItemContent>
+          <ItemActions>
+            <Button size="sm" variant="outline" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>{actionLabel}</Button>
+          </ItemActions>
+        </Item>
+        {dialog}
+      </>
+    );
+  }
+
   return (
     <>
       <section aria-labelledby={headingId}>
@@ -115,9 +159,7 @@ export function TeardownDangerSection({
           Danger
         </h2>
         <div className="mt-4 flex flex-col gap-4">
-          {attempt ? (
-            <TeardownStatusAlert attempt={attempt} doing={doing} retrying={retrying} onRetry={() => void handleRetry()} />
-          ) : null}
+          {status}
           <DangerRow
             title={abandon ? "Abandon this organization's servers" : title}
             description={abandon ? "Can't reach them. This deletes the organization and leaves the servers as they are." : description}
@@ -132,24 +174,7 @@ export function TeardownDangerSection({
           </DangerRow>
         </div>
       </section>
-      <DeletionDialog
-        open={open}
-        onOpenChange={setOpen}
-        title={abandon ? `Abandon ${name}'s servers?` : `${verb} ${name}?`}
-        place={place}
-        confirmLabel={abandon ? "Abandon" : verb}
-        items={items}
-        callbacks={{
-          load: async () => {
-            const { rust } = await loadDataLoss({ data: input });
-            return { items: withServerVolumes(items, rust), evidence: rust };
-          },
-          confirm: async (identities) => {
-            queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({ data: { ...input, identities, abandon } }));
-            toast(doing);
-          },
-        }}
-      />
+      {dialog}
     </>
   );
 }
