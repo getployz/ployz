@@ -42,7 +42,7 @@ export const shutDownPrEnvironment = Effect.fn("PrEnvironments.shutDown")(functi
     if (!branch) return yield* new NotFound({ message: "The PR environment was not found." });
     if (branch.off) return;
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
-    if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: `${name} is being removed.` });
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: `${name} is being removed.`, userFacing: true });
     yield* cancelActiveDeployments([input.environmentId]);
     yield* prepared.admit(actor.userId);
     yield* (yield* Database).drizzle.update(environmentBranch).set({ off: true }).where(eq(environmentBranch.environmentId, input.environmentId));
@@ -55,7 +55,7 @@ export const startPrEnvironment = Effect.fn("PrEnvironments.start")(function* (a
   const database = yield* Database;
   const deployment = yield* database.transaction(Effect.gen(function* () {
     const saved = yield* loadLatestEnvironmentSavedState(input.environmentId);
-    if (!saved) return yield* new Conflict({ message: "Nothing is saved here to deploy." });
+    if (!saved) return yield* new Conflict({ message: "Nothing is saved here to deploy.", userFacing: true });
     return yield* admitEnvironmentDeployment({
       environmentId: input.environmentId, savedStateSnapshotId: saved.id, message: null,
       triggerOrigin: { origin: "manual", actorId: actor.userId }, serviceActionPolicy: { kind: "all_affected_required" },

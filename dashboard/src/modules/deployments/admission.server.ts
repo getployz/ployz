@@ -516,7 +516,7 @@ export const admitEnvironmentDeployment = Effect.fn(
       return yield* new Conflict({ message: "This environment is being torn down." });
     }
     if ((yield* activeTeardownFor([input.environmentId], true)).size > 0) {
-      return yield* new Conflict({ message: "This environment is shutting down. Deploy it once it's off." });
+      return yield* new Conflict({ message: "This environment is shutting down. Deploy it once it's off.", userFacing: true });
     }
     // Deploying an Off Environment starts it again.
     yield* (yield* Database).drizzle.update(environmentBranch).set({ off: false })
