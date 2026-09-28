@@ -102,7 +102,7 @@ it("lists Environments as a tree, each Branch under its Parent, noting the defau
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
   await screen.findByRole("option", { name: "Production, default" });
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
-    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "pr-142, branch of Staging, #142, not deployed",
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "pr-142, branch of Staging, PR #142, not deployed",
     "New branch of Production", "Manage environments",
   ]);
   expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
@@ -154,9 +154,10 @@ it("notes what each Branch has to save and its updates, and offers Review of the
   vi.restoreAllMocks();
 });
 
-it("notes a PR Environment's pull request, and offers What #142 changes on it", async () => {
+it("notes a PR Environment's pull request, and offers Review and Shut down on it", async () => {
   await using app = await renderAt("/cloud/acme/store/pr-142/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: pr-142" }));
-  fireEvent.click(await screen.findByRole("option", { name: "What #142 changes" }));
+  expect(await screen.findByRole("option", { name: /^Shut down pr-142/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: "Review pr-142" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/pr-142/review"));
 });

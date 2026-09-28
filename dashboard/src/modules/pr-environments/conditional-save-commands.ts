@@ -1,14 +1,13 @@
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { getBranchesCollection, getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
+import { getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
 import type { SavePick } from "#/modules/branches/branch-schemas";
 import {
-  saveConditionalSaveServerFn, shutDownPrEnvironmentServerFn, startPrEnvironmentServerFn, takePullRequestValueServerFn, withdrawConditionalSaveServerFn,
+  saveConditionalSaveServerFn, takePullRequestValueServerFn, withdrawConditionalSaveServerFn,
 } from "./conditional-save-functions";
 
 /**
@@ -53,31 +52,4 @@ export function useTakePullRequestValue(organizationSlug: string, environmentId:
     },
     onError: (error) => toast.error(error.message),
   });
-}
-
-/** Shut down: the PR Environment goes Off, its rows kept. Deploy: it starts again. Both wait on the runtime. */
-export function usePrEnvironmentOff(input: { organizationSlug: string; environmentId: string; name: string }) {
-  const scope = useCollectionScope();
-  const { name, ...data } = input;
-  const settle = () => Promise.all([
-    reconcileCollection(getBranchesCollection(input.organizationSlug, scope)),
-    reconcileDeploymentCollections(input.organizationSlug, scope),
-  ]);
-  return {
-    shutDown: useMutation({
-      mutationFn: async () => {
-        await shutDownPrEnvironmentServerFn({ data });
-        await settle();
-      },
-      onSuccess: () => toast.success(`${name} shut down`, { description: "Starts again on the next push" }),
-      onError: (error) => toast.error(error.message),
-    }),
-    start: useMutation({
-      mutationFn: async () => {
-        await startPrEnvironmentServerFn({ data });
-        await settle();
-      },
-      onError: (error) => toast.error(error.message),
-    }),
-  };
 }

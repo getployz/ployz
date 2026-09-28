@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Kbd } from "#/components/ui/kbd";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useIsMobile } from "#/hooks/use-mobile";
-import { useBranchUnsettled, useOff, useStartingPoint } from "#/modules/branches/branch.collection";
+import { useBranchUnsettled, useShutdown, useStartingPoint } from "#/modules/branches/branch.collection";
 import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
@@ -21,8 +21,9 @@ import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modu
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWaitingSaves } from "#/modules/pr-environments/conditional-save.collection";
-import { useConditionalSave, usePrEnvironmentOff } from "#/modules/pr-environments/conditional-save-commands";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
+import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
+import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
+import type { ConditionalSaveRow, PrShutdown } from "#/modules/pr-environments/tables";
 import { useLandedNotes } from "../branch-review/landed-notes";
 import { GoesLiveSheet, SaveSheet } from "../branch-review/SaveSheet";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
@@ -95,9 +96,9 @@ export function BottomBar({
   const waiting = useWaitingSaves(params.organizationSlug, environmentId);
   const landed = useLandedNotes(environmentId, groups);
   const pr = review?.pullRequest ?? null;
-  const off = useOff(params.organizationSlug, environmentId);
+  const shutdown = useShutdown(params.organizationSlug, environmentId);
   const rows = bottomBarRows({
-    startingPoint: startingPoint !== undefined, staged: hasChanges, attempt: shown !== undefined, off, waiting: waiting.length > 0,
+    startingPoint: startingPoint !== undefined, staged: hasChanges, attempt: shown !== undefined, shutdown, waiting: waiting.length > 0,
     branch: review && {
       changes: review.changes, updates: review.updates,
       // A closed pull request takes no more saves.
@@ -160,7 +161,7 @@ export function BottomBar({
       </DropdownMenu>
     </Row>
   ) : rows.own === "attempt" && shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
-    : rows.own === "off" ? <OffState environmentId={environmentId} />
+    : rows.own === "shutdown" && shutdown ? <ShutdownState environmentId={environmentId} shutdown={shutdown} />
     : rows.own === "waiting" ? <WaitingState saves={waiting} /> : null;
   // Saying where only when more than one Destination has something.
   const several = rows.parent.filter(({ destination }) => destination !== null).length > 1;
@@ -244,13 +245,25 @@ function SavedState({ review, saved, pullRequest, environmentId, several }: {
   );
 }
 
-/** Off: shut down with its settings kept. The next push starts it again, or Deploy now. */
-function OffState({ environmentId }: { environmentId: string }) {
+/**
+ * A shutdown: running, then Off with its settings kept (the next push starts it again, or Deploy now), or failed, when
+ * Shut down runs again.
+ */
+function ShutdownState({ environmentId, shutdown }: { environmentId: string; shutdown: PrShutdown }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const document = useEnvironmentDocuments(params.organizationSlug).find((candidate) => candidate.id === environmentId);
-  const { start } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId, name: document?.name ?? params.environmentSlug });
+  const { start, shutDown } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId, name: document?.name ?? params.environmentSlug });
+  const icon = <PowerOffIcon className="size-4 text-muted-foreground" />;
+  if (shutdown === "running") return <Row icon={icon} title="Shutting down" detail="Deploy once it's off">{null}</Row>;
+  if (shutdown === "failed") {
+    return (
+      <Row icon={<PowerOffIcon className="size-4 text-destructive" />} title="Shutdown failed" detail="Some services may still run">
+        <Button size="sm" variant="outline" disabled={shutDown.isPending} onClick={() => shutDown.mutate()}>Shut down</Button>
+      </Row>
+    );
+  }
   return (
-    <Row icon={<PowerOffIcon className="size-4 text-muted-foreground" />} title="Off" detail="Starts again on the next push">
+    <Row icon={icon} title="Off" detail="Starts again on the next push">
       <Button size="sm" disabled={start.isPending} onClick={() => start.mutate()}>Deploy</Button>
     </Row>
   );

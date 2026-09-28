@@ -79,6 +79,8 @@ export const prEnvironment = pgTable(
     commits: integer("commits").notNull(),
     closed: boolean("closed").default(false).notNull(),
     retired: boolean("retired").default(false).notNull(),
+    // Its last shutdown, until it deploys again: `running`, then `off` (Off) or `failed`.
+    shutdown: text("shutdown").$type<PrShutdown>(),
   },
   (table) => [
     foreignKey({
@@ -89,8 +91,11 @@ export const prEnvironment = pgTable(
     // One current PR Environment per pull request in a project; a retired one can still be tearing down beside a new one.
     uniqueIndex("pr_environment_pull_request_idx").on(table.repositoryId, table.number, table.projectId).where(sql`not ${table.retired}`),
     index("pr_environment_organization_idx").on(table.organizationId),
+    check("pr_environment_shutdown_check", sql`${table.shutdown} in ('running', 'off', 'failed')`),
   ],
 );
+
+export type PrShutdown = "running" | "off" | "failed";
 
 export type PullRequest = typeof prEnvironment.$inferSelect;
 

@@ -9,6 +9,8 @@ export type CanvasServiceState = {
   hasRecordedTargetSnapshot: boolean;
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
   missingLiveValues: string[];
+  /** Its Environment is Off. */
+  off: boolean;
 };
 
 export type CanvasVolumeResourceState = {

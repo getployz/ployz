@@ -28,6 +28,7 @@ type UseCanvasFlowStateInput = {
   canvasNodes: CanvasResourceNode[];
   selectedNodeId: string | null;
   missingLiveValues: readonly MissingLiveValue[];
+  off: boolean;
 };
 
 function projectedNode(
@@ -60,6 +61,7 @@ export function useCanvasFlowState({
   canvasNodes,
   selectedNodeId,
   missingLiveValues,
+  off,
 }: UseCanvasFlowStateInput) {
   const workingNodes: EnvironmentNodeProjection[] = [
     ...servicesWithBoundEnv.map(
@@ -184,6 +186,7 @@ export function useCanvasFlowState({
         missingLiveValues: missingLiveValues
           .filter((value) => value.serviceId === service.service.id)
           .map((value) => `${value.from}.${value.key}`),
+        off,
       },
     ]),
   );

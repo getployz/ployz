@@ -30,6 +30,7 @@ import {
   defaultEnvironmentRefusal,
   type ConfirmTeardownInput,
   type RetryTeardownInput,
+  type TeardownAttemptScope,
   type TeardownClusterView,
   type TeardownRuntimePlan,
   type TeardownTargetInput,
@@ -428,7 +429,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
     readonly requestedByUserId: string;
     readonly identities: ConfirmTeardownInput["identities"];
     readonly abandon: boolean;
-    readonly shutdown?: boolean;
+    readonly scope: TeardownAttemptScope;
   },
 ) {
   const plan = planTeardownRuntime({
@@ -452,7 +453,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
       projectId: access.scope === "organization" ? null : access.project.id,
       environmentId:
         access.scope === "environment" ? access.environment.id : null,
-      scope: input.shutdown ? "shutdown" : access.scope,
+      scope: input.scope,
       confirmDataLoss: input.identities,
       targets,
     });
@@ -470,7 +471,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
 const admitTeardown = Effect.fn("Teardown.admit")(function* (
   access: TeardownAccess,
   runtime: ReachableRuntime,
-  input: Parameters<typeof startTeardown>[3] & { readonly expected?: readonly string[] },
+  input: Omit<Parameters<typeof startTeardown>[3], "scope"> & { readonly expected?: readonly string[] },
 ) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -484,7 +485,7 @@ const admitTeardown = Effect.fn("Teardown.admit")(function* (
     // Each Environment's deployment queue, by id: deployment admission waits, then sees this teardown and refuses. A
     // caller that holds documents took these first (lock order: lockProjectDefault), so here they don't wait.
     yield* lockEnvironmentDeploymentQueues(graph.environments.map((environment) => environment.id));
-    return yield* startTeardown(current, graph, runtime, input);
+    return yield* startTeardown(current, graph, runtime, { ...input, scope: current.scope });
   }));
 });
 
@@ -527,7 +528,7 @@ export const prepareShutdown = Effect.fn("Teardown.prepareShutdown")(
     const dataLoss = yield* teardownDataLoss(access, graph, runtime);
     return {
       admit: (requestedByUserId: string) => startTeardown(access, graph, runtime, {
-        requestedByUserId, identities: dataLoss.rust, abandon: false, shutdown: true,
+        requestedByUserId, identities: dataLoss.rust, abandon: false, scope: "shutdown",
       }),
     };
   },

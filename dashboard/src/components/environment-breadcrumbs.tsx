@@ -23,7 +23,8 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { environmentTree } from "#/modules/project/environment-tree";
 import { useBranchReviews } from "#/modules/branches/use-branch-review";
-import { usePrEnvironmentOff } from "#/modules/pr-environments/conditional-save-commands";
+import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
+import type { PrShutdown } from "#/modules/pr-environments/tables";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
@@ -153,6 +154,8 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
   );
 }
 
+const SHUTDOWN_NOTE = { running: "shutting down", off: "Off", failed: "shutdown failed" } satisfies Record<PrShutdown, string>;
+
 function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const { projects, environments, branches, isPending, isError, refetch } = useWorkspace(scope.organizationSlug);
   const { data: deployments } = useLiveQuery(getEnvironmentDeploymentsCollection(scope.organizationSlug, useCollectionScope()));
@@ -164,7 +167,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const current = findEnvironment(projects, environments, scope);
   const currentBranch = branches.find((branch) => branch.environmentId === current?.id);
   const prNumbers = new Map(branches.flatMap((branch) => branch.pullRequest ? [[branch.environmentId, branch.pullRequest.number]] : []));
-  const off = new Set(branches.flatMap((branch) => branch.off ? [branch.environmentId] : []));
+  const shutdowns = new Map(branches.flatMap((branch) => branch.pullRequest?.shutdown ? [[branch.environmentId, branch.pullRequest.shutdown]] : []));
   const { shutDown } = usePrEnvironmentOff({ organizationSlug: scope.organizationSlug, environmentId: current?.id ?? "", name: current?.name ?? "" });
   const tree = environmentTree(environments.filter((environment) => environment.projectId === project?.id), branches);
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
@@ -183,7 +186,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
                     prNumbers.has(environment.id) && `PR #${prNumbers.get(environment.id)}`,
-                    off.has(environment.id) && "Off",
+                    shutdowns.has(environment.id) && SHUTDOWN_NOTE[shutdowns.get(environment.id) ?? "off"],
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
                     !!review?.changes && `${review.changes} to save`,
@@ -214,7 +217,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                 }}>
                   <GitCompareArrowsIcon />Review {current.name}
                 </CommandItem>}
-                {current && currentBranch?.pullRequest && !currentBranch.off && <CommandItem value="shut-down" disabled={shutDown.isPending}
+                {current && currentBranch?.pullRequest && !["running", "off"].includes(currentBranch.pullRequest.shutdown ?? "") && <CommandItem value="shut-down" disabled={shutDown.isPending}
                   onSelect={() => {
                     setOpen(false);
                     shutDown.mutate();

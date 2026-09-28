@@ -35,6 +35,7 @@ import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
 import { useCanvasFlowState } from "./useCanvasFlowState";
 import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
+import { useShutdown } from "#/modules/branches/branch.collection";
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -106,6 +107,7 @@ export function CanvasFlow({
     selectedNodeId,
     // The latest attempt's: admission records them afresh, so a deploy that resolves them clears the amber.
     missingLiveValues: useEnvironmentDeployments(params.organizationSlug, environmentId)[0]?.deployment.missingLiveValues ?? [],
+    off: useShutdown(params.organizationSlug, environmentId) === "off",
   });
   // While picking a Branch, links into what it would use live are dashed.
   const picking = useBranchPicking();

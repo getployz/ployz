@@ -14,6 +14,7 @@ import * as deploymentCollections from "#/modules/deployments/deployment.collect
 import * as branchReviews from "#/modules/branches/use-branch-review";
 import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
 import * as saveCommands from "#/modules/pr-environments/conditional-save-commands";
+import * as offCommands from "#/modules/pr-environments/off-commands";
 import * as lineageNames from "#/modules/branches/use-lineage-names";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import type { ChangeRow } from "#/modules/branches/branch-review";
@@ -38,7 +39,7 @@ const update = vi.fn();
 const withdraw = vi.fn();
 const start = vi.fn();
 const shutDown = vi.fn();
-let off = false;
+let shutdown: "running" | "off" | "failed" | null = null;
 let unsettled: string | null = null;
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
@@ -55,9 +56,9 @@ beforeEach(() => {
   startingPoint = undefined;
   branch = null;
   held = [];
-  off = false;
-  vi.spyOn(branchCollections, "useOff").mockImplementation(() => off);
-  vi.spyOn(saveCommands, "usePrEnvironmentOff").mockImplementation(() => asTestDouble<ReturnType<typeof saveCommands.usePrEnvironmentOff>>()({
+  shutdown = null;
+  vi.spyOn(branchCollections, "useShutdown").mockImplementation(() => shutdown);
+  vi.spyOn(offCommands, "usePrEnvironmentOff").mockImplementation(() => asTestDouble<ReturnType<typeof offCommands.usePrEnvironmentOff>>()({
     start: { mutate: start, isPending: false }, shutDown: { mutate: shutDown, isPending: false },
   }));
   vi.spyOn(conditionalSaves, "useWaitingSaves").mockImplementation(() => held);
@@ -265,7 +266,16 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
 
   // Off, beside what it saved: Deploy starts it again.
   branch = pullRequest(saved);
-  off = true;
+  shutdown = "running";
+  open(canvasUrl);
+  expect((await bar()).getByText("Shutting down")).toBeTruthy();
+  cleanup();
+  shutdown = "failed";
+  open(canvasUrl);
+  fireEvent.click((await bar()).getByRole("button", { name: "Shut down" }));
+  expect(shutDown).toHaveBeenCalledOnce();
+  cleanup();
+  shutdown = "off";
   open(canvasUrl);
   const offBar = await bar();
   expect(offBar.getByText("Off")).toBeTruthy();
@@ -274,7 +284,7 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
   fireEvent.click(offBar.getByRole("button", { name: "Deploy" }));
   expect(start).toHaveBeenCalledOnce();
   cleanup();
-  off = false;
+  shutdown = null;
 
   open(canvasUrl);
   const waiting = await bar();
