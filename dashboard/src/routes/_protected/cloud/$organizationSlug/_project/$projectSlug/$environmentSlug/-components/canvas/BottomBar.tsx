@@ -24,8 +24,9 @@ import { useWaitingSaves } from "#/modules/pr-environments/conditional-save.coll
 import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
 import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
 import type { ConditionalSaveRow, PrShutdown } from "#/modules/pr-environments/tables";
-import { useLandedNotes } from "../branch-review/landed-notes";
-import { GoesLiveSheet, SaveSheet } from "../branch-review/SaveSheet";
+import { LandedNote, LandedRest, useLandedNotes } from "../branch-review/landed-notes";
+import { GoesLiveChanges, GoesLiveSheet, PrSaveSheet, SaveSheet } from "../branch-review/SaveSheet";
+import { goLive } from "#/modules/pr-environments/pr-check";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "../environment-route-paths";
@@ -80,8 +81,8 @@ export function BottomBar({
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const isMobile = useIsMobile();
   const [open, setOpen] = useState(false);
-  // The Save sheet open, for the Parent (null) or a PR Environment's Destination (its index).
-  const [saving, setSaving] = useState<{ destination: number | null } | null>(null);
+  // The Save sheet open: for the Parent, or a PR Environment's Destination (its id).
+  const [saving, setSaving] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
@@ -95,16 +96,15 @@ export function BottomBar({
   // Saved to go live with a pull request, not changes to deploy here: the bar's last state.
   const waiting = useWaitingSaves(params.organizationSlug, environmentId);
   const landed = useLandedNotes(environmentId, groups);
-  const pr = review?.pullRequest ?? null;
+  const lineageName = useLineageNames(params.organizationSlug);
   const shutdown = useShutdown(params.organizationSlug, environmentId);
   const rows = bottomBarRows({
-    startingPoint: startingPoint !== undefined, staged: hasChanges, attempt: shown !== undefined, shutdown, waiting: waiting.length > 0,
-    branch: review && {
-      changes: review.changes, updates: review.updates,
-      // A closed pull request takes no more saves.
-      destinations: pr && (pr.closed ? [] : review.goesTo.map((landing) => ({ changes: landing.rows.length, saved: landing.saved !== null }))),
-    },
+    startingPoint: startingPoint?.name ?? null, staged: hasChanges, attempt: shown?.deployment.id ?? null, shutdown, waiting: waiting.length > 0,
+    branch: review && { changes: review.changes, updates: review.updates, pullRequest: review.pullRequest, goesTo: review.goesTo },
   });
+  // Save opens on a row; a Destination that's gone closes its sheet.
+  const saveInto = saving === null ? undefined : rows.parent.find((row) => row.kind === "save" && (row.into?.landing.destination.id ?? PARENT) === saving);
+  if (saving !== null && !saveInto) setSaving(null);
 
   function deploy() {
     setOpen(false);
@@ -136,13 +136,13 @@ export function BottomBar({
     return () => document.removeEventListener("keydown", deployOnShiftEnter);
   });
 
-  const own = rows.own === "starting_point" && startingPoint ? (
-    <Row icon={<CircleDashedIcon className="size-4 text-muted-foreground" />} title={`${startingPoint.name} isn't deployed`} detail="A starting point for branches">
+  const own = rows.own?.kind === "starting_point" ? (
+    <Row icon={<CircleDashedIcon className="size-4 text-muted-foreground" />} title={`${rows.own.name} isn't deployed`} detail="A starting point for branches">
       <Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO} params={params} className={buttonVariants({ size: "sm" })}>
         <GitBranchPlusIcon data-icon="inline-start" />New branch
       </Link>
     </Row>
-  ) : rows.own === "staged" ? (
+  ) : rows.own?.kind === "staged" ? (
     <Row staged title={totalChanges > 0 ? `${plural(totalChanges, "change")} to deploy` : "Unpublished changes"} detail={stagedDetail(groups, totalChanges)}>
       <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
@@ -160,22 +160,23 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : rows.own === "attempt" && shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
-    : rows.own === "shutdown" && shutdown ? <ShutdownState environmentId={environmentId} shutdown={shutdown} />
-    : rows.own === "waiting" ? <WaitingState saves={waiting} /> : null;
+  ) : rows.own?.kind === "attempt" ? <AttemptState environmentId={environmentId} deploymentId={rows.own.deploymentId} />
+    : rows.own?.kind === "shutdown" ? <ShutdownState environmentId={environmentId} shutdown={rows.own.shutdown} />
+    : rows.own?.kind === "waiting" ? <WaitingState saves={waiting} /> : null;
   // Saying where only when more than one Destination has something.
-  const several = rows.parent.filter(({ destination }) => destination !== null).length > 1;
-  const parent = !review ? [] : rows.parent.map(({ row, destination }) => {
-    const landing = destination === null ? undefined : review.goesTo[destination];
-    const key = `${row}:${destination}`;
-    if (row === "update") return <UpdatesState key={key} review={review} environmentId={environmentId} />;
-    if (row === "saved") return landing?.saved && pr ? <SavedState key={key} review={review} saved={landing.saved} pullRequest={pr} environmentId={environmentId} several={several} /> : null;
+  const several = rows.parent.filter((row) => row.kind === "saved" || (row.kind === "save" && row.into)).length > 1;
+  const parent = !review ? [] : rows.parent.map((row) => {
+    if (row.kind === "update") return <UpdatesState key="update" review={review} environmentId={environmentId} />;
+    if (row.kind === "saved") {
+      return <SavedState key={`saved:${row.landing.destination.id}`} review={review} saved={row.saved} pullRequest={row.pullRequest} environmentId={environmentId} several={several} />;
+    }
+    const key = row.into?.landing.destination.id ?? PARENT;
     return (
-      <Row key={key} icon={<GitBranchIcon className="size-4 text-muted-foreground" />}
-        title={`${plural(landing?.rows.length ?? review.changes, "change")} to save`}
-        detail={!landing || !pr ? `into ${review.parent.name}`
-          : `${several ? `into ${landing.destination.name} · ` : ""}go live when PR #${pr.number} merges`}>
-        <Button size="sm" variant="outline" onClick={() => setSaving({ destination })}>Save</Button>
+      <Row key={`save:${key}`} icon={<GitBranchIcon className="size-4 text-muted-foreground" />}
+        title={`${plural(row.into?.landing.rows.length ?? review.changes, "change")} to save`}
+        detail={!row.into ? `into ${review.parent.name}`
+          : `${several ? `into ${row.into.landing.destination.name} · ` : ""}go live when PR #${row.into.pullRequest.number} merges`}>
+        <Button size="sm" variant="outline" onClick={() => setSaving(key)}>Save</Button>
       </Row>
     );
   });
@@ -188,17 +189,28 @@ export function BottomBar({
     onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
     onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
     onDiscardAll: async () => { if (await onDiscardAll()) setOpen(false); },
-    onDiscardNode, onDiscardRow, noteFor: landed.noteFor, landed: landed.rest,
+    onDiscardNode, onDiscardRow,
+    noteFor: (group: CanvasEnvironmentChangeGroup, path: string) => {
+      const note = landed.notes.find((candidate) => candidate.nodeId === group.nodeId && candidate.path === path);
+      return note ? <LandedNote note={note} /> : null;
+    },
+    after: (
+      <>
+        <LandedRest notes={landed.rest} />
+        {/* Saved to go live with pull requests: read-only here, never changes to deploy. */}
+        {waiting.length ? <GoesLiveChanges title={waitingTitle(waiting)} saves={waiting}
+          nameOf={(lineage, prEnvironmentId) => lineageName(lineage, prEnvironmentId ?? undefined)} /> : null}
+      </>
+    ),
   };
 
   return (
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
-      {saving && review ? (
-        <SaveSheet review={review} branchId={environmentId} landing={saving.destination === null ? undefined : review.goesTo[saving.destination]}
-          onClose={() => setSaving(null)} />
-      ) : null}
+      {saveInto?.kind === "save" && review ? saveInto.into
+        ? <PrSaveSheet key={saving} review={review} branchId={environmentId} landing={saveInto.into.landing} pullRequest={saveInto.into.pullRequest} onClose={() => setSaving(null)} />
+        : <SaveSheet key={saving} review={review} branchId={environmentId} onClose={() => setSaving(null)} /> : null}
     </>
   );
 }
@@ -213,29 +225,25 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
   return groups.map((group) => group.nodeName).join(", ");
 }
 
-const goLive = (n: number) => `${plural(n, "change")} go${n === 1 ? "es" : ""} live`;
+const PARENT = "parent";
 
-/** A PR Environment's changes saved for one Destination: they go live when its pull request merges. Undo is under ⋮. */
+/** "3 changes go live with PR #142". */
+const waitingTitle = (saves: ConditionalSaveRow[]) =>
+  `${goLive(saves.reduce((n, save) => n + save.rows.length, 0))} with ${listNames(saves.map((save) => `PR #${save.prNumber}`))}`;
+
+/** A PR Environment's changes saved for one Destination: they go live when its pull request merges. Details holds Undo. */
 function SavedState({ review, saved, pullRequest, environmentId, several }: {
   review: BranchReviewView; saved: ConditionalSaveRow; pullRequest: PullRequest; environmentId: string; several: boolean;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { withdraw } = useConditionalSave({
-    organizationSlug: params.organizationSlug, prEnvironmentId: environmentId, destinationEnvironmentId: saved.destinationEnvironmentId, prNumber: pullRequest.number,
+    organizationSlug: params.organizationSlug, prEnvironmentId: environmentId, destinationEnvironmentId: saved.destinationEnvironmentId,
   });
   const [details, setDetails] = useState(false);
   const into = several ? ` · into ${review.environmentName(saved.destinationEnvironmentId)}` : "";
   return (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={goLive(saved.rows.length)} detail={`when PR #${pullRequest.number} merges${into}`}>
       <Button size="sm" variant="outline" onClick={() => setDetails(true)}>Details</Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More save actions" title="More save actions" />}>
-          <MoreVerticalIcon />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem disabled={withdraw.isPending} onClick={() => withdraw.mutate()}>Undo</DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
       {details ? (
         <GoesLiveSheet title={`${goLive(saved.rows.length)} when PR #${pullRequest.number} merges`} saves={[saved]}
           nameOf={(lineage) => review.nameOf(lineage)} onClose={() => setDetails(false)}
@@ -276,7 +284,7 @@ function WaitingState({ saves }: { saves: ConditionalSaveRow[] }) {
   const documents = useEnvironmentDocuments(params.organizationSlug);
   const [details, setDetails] = useState(false);
   const nameOf = (lineage: string, prEnvironmentId: string | null) => lineageName(lineage, prEnvironmentId ?? undefined);
-  const title = `${goLive(saves.reduce((n, save) => n + save.rows.length, 0))} with ${listNames(saves.map((save) => `PR #${save.prNumber}`))}`;
+  const title = waitingTitle(saves);
   const nodes = [...new Set(saves.flatMap((save) => save.rows.map(({ row }) => nameOf(rowLineage(row), save.prEnvironmentId))))];
   const prEnvironments = documents.filter((document) => saves.some((save) => save.prEnvironmentId === document.id));
   return (
@@ -304,15 +312,11 @@ function UpdatesState({ review, environmentId }: { review: BranchReviewView; env
   if (review.updates === 0) return null;
   return (
     <Row title={`${plural(review.updates, "update")} from ${review.parent.name}`} detail={null}>
-      {unsettled || review.update.length === 0 ? <ReviewLink label="Details" />
+      {unsettled || review.update.length === 0
+        ? <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>Details</Link>
         : <Button size="sm" variant="outline" onClick={() => update(environmentId)}>Update</Button>}
     </Row>
   );
-}
-
-function ReviewLink({ label }: { label: string }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  return <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>{label}</Link>;
 }
 
 /**
