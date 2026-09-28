@@ -42,9 +42,9 @@ export function GoesToSection({ review, pr, landing, name, environmentId }: {
     <ReviewSection title={`Goes to ${destination} when #${pr.number} merges`} count={count}>
       {approval ? <HeldRows approval={approval} review={review} save={save} destination={destination} /> : landing.rows.length ? (
         <RowPicks picks={rows} names={{ from: name, parent: review.parent.name, destination }} verb={`Send to ${destination}`} />
-      ) : <p className="text-sm text-muted-foreground">Nothing here that {destination} doesn't have.</p>}
+      ) : <p className="text-sm text-muted-foreground">No changes.</p>}
       {!(approval || landing.rows.length) ? null
-        : pr.closed ? <FieldDescription>#{pr.number} is closed, so nothing here goes to {destination}.</FieldDescription>
+        : pr.closed ? <FieldDescription>#{pr.number} is closed.</FieldDescription>
         : (
         <div className="flex flex-col gap-2">
           {approval ? (
@@ -58,11 +58,6 @@ export function GoesToSection({ review, pr, landing, name, environmentId }: {
               {save.approve.isPending ? <Spinner data-icon="inline-start" /> : <CheckIcon data-icon="inline-start" />}Approve for {destination}
             </Button>
           )}
-          <FieldDescription>
-            {approval ? `When #${pr.number} merges, ${destination} deploys the code and these together.`
-              : rows.ticked.length === 0 ? "Tick a change to approve."
-              : `Nothing moves until someone approves. Unticked changes stay in ${name}.`}
-          </FieldDescription>
           {failed ? <FieldError>{failed.message}</FieldError> : null}
         </div>
       )}

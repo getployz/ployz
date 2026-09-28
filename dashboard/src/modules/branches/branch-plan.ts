@@ -91,7 +91,7 @@ export function presetSummary(preset: BranchPreset, plan: BranchPlan, only: Bran
     const before = new Set(namesWith(only, "own", nameOf));
     const added = own.filter((name) => !before.has(name));
     const copies = `${listNames(added)} ${added.length === 1 ? "gets a copy" : "get copies"} too`;
-    return live.length ? `${copies}.` : `${copies}, so nothing touches ${parent}'s data.`;
+    return `${copies}.`;
   }
   if (own.length === 0) return "Pick what changes.";
   const one = own.length === 1;

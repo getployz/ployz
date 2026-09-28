@@ -31,22 +31,16 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
         <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
         <ItemContent className="min-w-0">
           <ItemTitle>From {parent.name}</ItemTitle>
-          <ItemDescription>
-            {pullRequest
-              ? `PR environment for #${pullRequest.number} · ${pullRequest.title} · ${removeOnClose ? "removed when it closes" : "stays 7 days after its last deploy"}`
-              : `Its changes land in ${parent.name}.`}
-          </ItemDescription>
+          {pullRequest && <ItemDescription>
+            {`PR environment for #${pullRequest.number} · ${pullRequest.title} · ${removeOnClose ? "removed when it closes" : "stays 7 days after its last deploy"}`}
+          </ItemDescription>}
         </ItemContent>
         <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
       </Item>
       {!pullRequest && <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor="keep-branch">Keep this branch</FieldLabel>
-          <FieldDescription>
-            {branch.kept
-              ? `It stays after you merge it into ${parent.name}.`
-              : `It closes after you merge it into ${parent.name}, or 7 days after its last deploy.`}
-          </FieldDescription>
+          <FieldDescription>Otherwise it closes after merging, or after 7 days without a deploy.</FieldDescription>
         </FieldContent>
         <Switch id="keep-branch" checked={branch.kept}
           onCheckedChange={(kept) => keepBranch(branch.environmentId, kept)} />

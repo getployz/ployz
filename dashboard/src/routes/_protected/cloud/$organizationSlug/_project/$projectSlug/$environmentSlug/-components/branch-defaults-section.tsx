@@ -18,10 +18,7 @@ export function BranchDefaultsSection({ organizationSlug, environmentId }: { org
 
   return (
     <section aria-labelledby="branch-defaults-heading" className="flex flex-col gap-4">
-      <div>
-        <h2 id="branch-defaults-heading" className="text-lg font-semibold">Branches of {document.name}</h2>
-        <p className="text-sm text-muted-foreground">What a new branch of {document.name} starts with.</p>
-      </div>
+      <h2 id="branch-defaults-heading" className="text-lg font-semibold">Branches of {document.name}</h2>
       {document.intent.volumes.length > 0 && (
         <FieldSet>
           <FieldLegend variant="label">Data</FieldLegend>
@@ -43,7 +40,7 @@ export function BranchDefaultsSection({ organizationSlug, environmentId }: { org
         {own.length === 0 ? <FieldDescription>Add a service to run commands in.</FieldDescription> : <>
           <SetupCommandsField id="branch-defaults-setup" commands={setup.commands} services={own}
             onChange={setup.onChange} onBlur={setup.onBlur} />
-          <FieldDescription>Prefills every new branch. Each runs in the service's new image before it first starts, until it deploys once.</FieldDescription>
+          <FieldDescription>Runs once, before the service first starts.</FieldDescription>
         </>}
       </Field>
     </section>

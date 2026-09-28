@@ -48,7 +48,7 @@ export function BranchReviewPanel() {
               {review.goesTo.map((landing) => (
                 <GoesToSection key={landing.destination.id} review={review} pr={pr} landing={landing} name={name} environmentId={environmentId} />
               ))}
-              {review.check && !pr.closed ? <CheckSection check={review.check} pr={pr} /> : null}
+              {review.check && !pr.closed ? <CheckSection check={review.check} /> : null}
             </>
           ) : <MergeSection review={review} branch={{ id: environmentId, name }} />}
           <UpdateSection review={review} environmentId={environmentId} />
@@ -83,9 +83,7 @@ function landsIn(review: BranchReviewView) {
 function CodeSection({ review, pr }: { review: BranchReviewView; pr: PullRequest }) {
   const names = review.goesTo.map((landing) => landing.destination.name);
   return (
-    <ReviewSection title="Code" help={names.length
-      ? `Merging into ${pr.targetBranch} deploys ${listNames(names)}, because ${names.length === 1 ? "it deploys" : "they deploy"} ${pr.targetBranch}.`
-      : `Nothing here deploys ${pr.targetBranch}, so merging #${pr.number} moves no settings.`}>
+    <ReviewSection title="Code" help={names.length ? `Merging deploys ${listNames(names)}.` : "Merging moves no settings."}>
       <ItemGroup>
         <Item variant="outline" size="sm">
           <ItemMedia variant="icon"><GitPullRequestIcon /></ItemMedia>
@@ -103,9 +101,9 @@ function CodeSection({ review, pr }: { review: BranchReviewView; pr: PullRequest
 }
 
 /** The check Ployz posts on the pull request, as GitHub shows it. */
-function CheckSection({ check, pr }: { check: PrCheck; pr: PullRequest }) {
+function CheckSection({ check }: { check: PrCheck }) {
   return (
-    <ReviewSection title="On GitHub" help={`Ployz posts this check on #${pr.number}. Make it required in GitHub if merges should wait for it.`}>
+    <ReviewSection title="On GitHub" help="Make it required in GitHub to block merges.">
       <ItemGroup>
         <Item variant="outline" size="sm">
           <ItemMedia variant="icon">{check.passing ? <CircleCheckIcon className="text-success" /> : <TriangleAlertIcon className="text-warning" />}</ItemMedia>

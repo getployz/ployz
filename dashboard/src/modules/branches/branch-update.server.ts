@@ -138,7 +138,7 @@ const appliedIntentOf = (source: EnvironmentDocument) => Effect.gen(function* ()
 const ownerOf = Effect.fn("Branches.ownerOf")(function* (environmentId: string, lineageId: string) {
   const { parentId, branches, runs, projection } = yield* loadAncestorApplied(environmentId);
   const ownerId = parentId ? liveOwner(parentId, lineageId, branches, runs) : null;
-  if (!ownerId || !projection) return yield* new Conflict({ message: "No environment this branch comes from runs it." });
+  if (!ownerId || !projection) return yield* new Conflict({ message: "Nothing runs it." });
   const owner = yield* loadEnvironment(ownerId);
   return { owner, from: yield* loadAppliedIntent(owner.id, owner.namespace, projection) };
 });

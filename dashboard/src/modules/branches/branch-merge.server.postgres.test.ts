@@ -251,12 +251,12 @@ describe("mergeBranch", () => {
     expect(await refusal(await review(branch.id))).toMatch(/aren't deployed/);
     await deploy(branch.id);
     const seen = await review(branch.id);
-    expect(await refusal({ ...seen, review: "stale" })).toBe("Changes moved after this review. Review them again.");
+    expect(await refusal({ ...seen, review: "stale" })).toBe("Changed since you reviewed. Review again.");
     expect(await refusal({ ...seen, revision: randomUUID() })).toMatch(/Working State changed/);
     // The Branch moved after the review.
     await edit(branch.id, setImage("web:4"));
     await deploy(branch.id);
-    expect(await refusal(seen)).toBe("Changes moved after this review. Review them again.");
+    expect(await refusal(seen)).toBe("Changed since you reviewed. Review again.");
 
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
     expect(await teardowns()).toEqual([]);
