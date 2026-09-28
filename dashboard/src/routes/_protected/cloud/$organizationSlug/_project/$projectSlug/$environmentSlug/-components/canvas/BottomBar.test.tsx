@@ -13,6 +13,8 @@ import * as workspaces from "#/modules/environment-design/workspace.queries";
 import * as deploymentCollections from "#/modules/deployments/deployment.collection";
 import * as branchReviews from "#/modules/branches/use-branch-review";
 import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
+import * as saveCommands from "#/modules/pr-environments/conditional-save-commands";
+import * as lineageNames from "#/modules/branches/use-lineage-names";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
@@ -33,6 +35,7 @@ const cache = asTestDouble<CanvasEnvironmentChangeGroup>()({ ...replicas, nodeId
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
 const update = vi.fn();
+const withdraw = vi.fn();
 let unsettled: string | null = null;
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
@@ -49,8 +52,14 @@ beforeEach(() => {
   startingPoint = undefined;
   branch = null;
   held = [];
-  vi.spyOn(conditionalSaves, "useHeldChanges").mockImplementation(() => held);
-  vi.spyOn(conditionalSaves, "useStagedInstead").mockImplementation(() => []);
+  vi.spyOn(conditionalSaves, "useWaitingSaves").mockImplementation(() => held);
+  vi.spyOn(conditionalSaves, "useLandedSaves").mockImplementation(() => []);
+  vi.spyOn(saveCommands, "useConditionalSave").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof saveCommands.useConditionalSave>>()({ save: { mutate: vi.fn(), isPending: false }, withdraw: { mutate: withdraw, isPending: false } }));
+  vi.spyOn(saveCommands, "useTakePullRequestValue").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof saveCommands.useTakePullRequestValue>>()({ mutate: vi.fn(), isPending: false }));
+  vi.spyOn(lineageNames, "useLineageNames").mockImplementation(() => () => "web");
+  vi.spyOn(documents, "useEnvironmentDocuments").mockImplementation(() => []);
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);
@@ -60,7 +69,7 @@ beforeEach(() => {
   vi.spyOn(branchCommands, "useSaveBranch").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCommands.useSaveBranch>>()({ mutate: vi.fn(), isPending: false, isError: false }));
   vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() =>
-    asTestDouble<ReturnType<typeof documents.useEnvironmentDocument>>()({ name: "fix-web" }));
+    asTestDouble<ReturnType<typeof documents.useEnvironmentDocument>>()({ name: "fix-web", intent: { services: [] } }));
   vi.spyOn(workspaces, "useWorkspace").mockImplementation(() =>
     asTestDouble<ReturnType<typeof workspaces.useWorkspace>>()({ projects: [] }));
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
@@ -220,46 +229,53 @@ it("on a Branch, adds a second row: changes to save with Save beside every first
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
-it("on a PR Environment, keeps its own second row; on a Destination, what waits for a pull request once nothing else shows", async () => {
-  const approval = asTestDouble<ConditionalSaveRow>()({ id: "save" });
-  const pullRequest = (approved: boolean, check: NonNullable<branchReviews.BranchReviewView["check"]>) => asTestDouble<branchReviews.BranchReviewView>()({
-    ...branchReview([], 0),
-    pullRequest: { number: 142, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main", commits: 2, closed: false, retired: false },
-    goesTo: [{ destination: { id: "env-0", name: "production", namespace: "shop-production" }, rows: [imageRow("web:2")], review: "r", approval: approved ? approval : null }],
-    changes: 1, check,
+it("on a PR Environment, a row per Destination to save or saved; on a Destination, what goes live with a pull request", async () => {
+  const saved = asTestDouble<ConditionalSaveRow>()({
+    id: "save", prNumber: 142, prEnvironmentId: "env-1", destinationEnvironmentId: "env-0", rows: [{ row: imageRow("web:2") }, { row: imageRow("web:3") }],
   });
-  branch = pullRequest(false, { passing: false, reason: "Review and approve 1 change for production" });
+  const pullRequest = (save: ConditionalSaveRow | null) => asTestDouble<branchReviews.BranchReviewView>()({
+    ...branchReview([], 0),
+    pullRequest: { number: 142, repositoryId: 7, title: "Discounts", author: "maya", headBranch: "discounts", targetBranch: "main", commits: 2, closed: false, retired: false },
+    goesTo: [{ destination: { id: "env-0", name: "production", namespace: "shop-production" }, rows: [imageRow("web:2"), imageRow("web:3")], review: "r", saved: save }],
+    changes: save ? 0 : 2, environmentName: () => "production",
+  });
+  branch = pullRequest(null);
   open(canvasUrl);
-  const unapproved = await bar();
-  expect(unapproved.getByText("1 change for production")).toBeTruthy();
-  expect(unapproved.getByText("Not approved yet")).toBeTruthy();
-  expect(unapproved.getByRole("link", { name: "Review and approve" })).toBeTruthy();
-  cleanup();
-  branch = pullRequest(true, { passing: true, reason: "1 change approved for production by maya" });
-  open(canvasUrl);
-  const approved = await bar();
-  expect(approved.getByText("Approved")).toBeTruthy();
-  expect(approved.getByText("Lands when #142 merges")).toBeTruthy();
-  expect(approved.getByRole("link", { name: "Review" })).toBeTruthy();
-  cleanup();
-  // Approved, but the check still wants something: the bar says what.
-  branch = pullRequest(true, { passing: false, reason: "STRIPE_KEY needs a value for production" });
-  open(canvasUrl);
-  expect((await bar()).getByText("STRIPE_KEY needs a value for production")).toBeTruthy();
+  const unsaved = await bar();
+  expect(unsaved.getByText("2 changes to save")).toBeTruthy();
+  expect(unsaved.getByText("go live when PR #142 merges")).toBeTruthy();
+  fireEvent.click(unsaved.getByRole("button", { name: "Save" }));
+  const sheet = within(screen.getByRole("dialog", { name: "2 changes for production" }));
+  expect(sheet.getByText("PR #142 · Discounts")).toBeTruthy();
+  expect(sheet.getByText("web redeploys when PR #142 merges")).toBeTruthy();
+  expect(sheet.queryByRole("switch")).toBeNull();
+  expect(sheet.getByRole("button", { name: "Save to production" })).toBeTruthy();
   cleanup();
 
-  held = [asTestDouble<ConditionalSaveRow>()({ id: "save", prNumber: 142, approvedBy: "maya", rows: [{ row: imageRow("web:2"), missing: false }] })];
-  // A Branch that's also a Destination: what waits here, and beside it what it has to save.
+  branch = pullRequest(saved);
+  open(canvasUrl);
+  const waiting = await bar();
+  expect(waiting.getByText("2 changes go live")).toBeTruthy();
+  expect(waiting.getByText("when PR #142 merges")).toBeTruthy();
+  await act(async () => { fireEvent.click(waiting.getByRole("button", { name: "More save actions" })); });
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Undo" }));
+  expect(withdraw).toHaveBeenCalledOnce();
+  cleanup();
+
+  held = [saved];
+  // A Branch that's also a Destination: what goes live here, and beside it what it has to save.
   branch = branchReview([imageRow("web:2")], 0);
   open(canvasUrl);
   const both = await bar();
-  expect(both.getByText("Waiting for #142")).toBeTruthy();
+  expect(both.getByText("2 changes go live with PR #142")).toBeTruthy();
   expect(both.getByText("1 change to save")).toBeTruthy();
   cleanup();
   branch = null;
   open(canvasUrl);
-  const waiting = await bar();
-  expect(waiting.getByText("Waiting for #142")).toBeTruthy();
-  expect(waiting.getByText("1 change · approved by maya")).toBeTruthy();
-  expect(waiting.getByRole("button", { name: "Details" })).toBeTruthy();
+  const quiet = await bar();
+  expect(quiet.getByText("2 changes go live with PR #142")).toBeTruthy();
+  expect(quiet.queryByRole("button", { name: /^Deploy/ })).toBeNull();
+  fireEvent.click(quiet.getByRole("button", { name: "Details" }));
+  const details = within(screen.getByRole("dialog", { name: "2 changes go live with PR #142" }));
+  expect(details.getByText("web redeploys when PR #142 merges")).toBeTruthy();
 });

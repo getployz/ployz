@@ -3,7 +3,7 @@ export type OwnRow = "starting_point" | "staged" | "attempt" | "waiting";
 /** What a Branch has for a Destination: changes to save, changes saved to go live with its pull request, else updates from its Parent. */
 export type ParentRow = "save" | "saved" | "update";
 
-type Parent = { row: ParentRow; destination: number | null };
+export type ParentRowFor = { row: ParentRow; destination: number | null };
 
 export type BottomBarState = {
   startingPoint: boolean;
@@ -23,12 +23,12 @@ export type BottomBarState = {
  * Destinations, so Save is always one tap away: one for its Parent, or one per Destination of a PR Environment (by
  * index). A root has one row. Either is absent when it has nothing.
  */
-export function bottomBarRows(state: BottomBarState): { own: OwnRow | null; parent: Parent[] } {
+export function bottomBarRows(state: BottomBarState) {
   const own: OwnRow | null = state.startingPoint ? "starting_point" : state.staged ? "staged" : state.attempt ? "attempt" : state.waiting ? "waiting" : null;
   const branch = state.branch;
   if (!branch) return { own, parent: [] };
-  const destinations: Parent[] = branch.destinations
-    ? branch.destinations.flatMap((destination, index): Parent[] => destination.saved ? [{ row: "saved", destination: index }]
+  const destinations: ParentRowFor[] = branch.destinations
+    ? branch.destinations.flatMap((destination, index): ParentRowFor[] => destination.saved ? [{ row: "saved", destination: index }]
       : destination.changes > 0 ? [{ row: "save", destination: index }] : [])
     : branch.changes > 0 ? [{ row: "save", destination: null }] : [];
   return { own, parent: destinations.length || branch.updates === 0 ? destinations : [{ row: "update", destination: null }] };
