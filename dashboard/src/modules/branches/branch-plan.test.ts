@@ -40,7 +40,7 @@ describe("branch plan", () => {
     expect(presetSummary("only", only, only, nameOf, "production"))
       .toBe("web gets its own copy. What it uses comes from production, live.");
     expect(presetSummary("uses", uses, only, nameOf, "production"))
-      .toBe("postgres and postgres-data get copies too, so nothing touches production's data.");
+      .toBe("postgres and postgres-data get copies too.");
     expect(presetSummary("all", uses, only, nameOf, "production")).toBe("A full copy of production.");
     expect(presetSummary("only", planBranch({ ...input, focus: [], picks: { preset: "only" } }), only, nameOf, "production"))
       .toBe("Pick what changes.");

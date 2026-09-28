@@ -26,12 +26,7 @@ export function PrEnvironmentsSection({ organizationSlug, project, environments,
   if (plans.length === 0) return null;
   return (
     <section aria-labelledby="pr-environments-heading" className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <h2 id="pr-environments-heading" className="text-base font-semibold">PR environments</h2>
-        <p className="text-sm text-muted-foreground">
-          Each pull request can get its own environment, running its code.
-        </p>
-      </div>
+      <h2 id="pr-environments-heading" className="text-base font-semibold">PR environments</h2>
       <ItemGroup className="gap-2">
         {plans.map((plan) => {
           const startFrom = environments.find((environment) => environment.id === plan.startFromEnvironmentId);

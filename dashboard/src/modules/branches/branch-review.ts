@@ -148,9 +148,9 @@ function display(path: string, value: RowValue, nameOf: (lineage: string) => str
 export const DIFFER_REASONS = {
   live: "Used live, not copied",
   left_out: "Left out of this branch",
-  sizing: "Replicas and resource limits are sized per environment",
-  custom_domain: "Custom domains stay with each environment",
-  generated_address: "Each environment gets its own web address",
-  git_branch: "Each environment deploys its own Git branch",
-  data: "Volume size and data stay with each environment",
+  sizing: "Per environment",
+  custom_domain: "Per environment",
+  generated_address: "Per environment",
+  git_branch: "Per environment",
+  data: "Per environment",
 } satisfies Record<BranchReason, string>;

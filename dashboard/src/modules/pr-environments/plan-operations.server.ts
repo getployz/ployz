@@ -34,7 +34,7 @@ export const setPrEnvironmentPlan = Effect.fn("PrEnvironments.setPlan")(function
       return yield* new Validation({ message: "Pick an environment of this project to start from." });
     }
     if (startFrom != null && (yield* isPrEnvironment(startFrom))) {
-      return yield* new Validation({ message: "A PR environment can't be where PR environments start from." });
+      return yield* new Validation({ message: "Pick an environment that isn't a PR environment." });
     }
     const key = and(eq(prEnvironmentPlan.projectId, projectId), eq(prEnvironmentPlan.repositoryId, input.repositoryId));
     const [existing] = yield* drizzle.select().from(prEnvironmentPlan).where(key).for("update");

@@ -15,7 +15,7 @@ export function NameSection({ name, onName, error, addresses }: {
         aria-invalid={error !== null || undefined} autoComplete="off" spellCheck={false} />
       {error ? <FieldError>{error}</FieldError> : addresses.length > 0 && (
         <FieldDescription>
-          Its web addresses follow the name: {addresses.map((address, index) => (
+          Web addresses: {addresses.map((address, index) => (
             <span key={address}>{index > 0 && ", "}<code className="font-mono">{address}</code></span>
           ))}
         </FieldDescription>

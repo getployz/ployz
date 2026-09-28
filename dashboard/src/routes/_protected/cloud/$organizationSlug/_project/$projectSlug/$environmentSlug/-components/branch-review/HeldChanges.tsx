@@ -35,7 +35,7 @@ export function HeldChanges({ environmentId }: { environmentId: string }) {
   );
   const changed = stagedInstead.map((save) => (
     <ReviewSection key={save.id} title={`Changed since #${save.prNumber} was approved`} count={save.rows.length}
-      help={`#${save.prNumber} merged, but these changed here after its approval, so they weren't saved. Each is staged unless you'd staged your own change to it: save or discard them.`}>
+      help={`#${save.prNumber} merged without these.`}>
       {rowsOf(save)}
     </ReviewSection>
   ));
@@ -44,7 +44,7 @@ export function HeldChanges({ environmentId }: { environmentId: string }) {
     const line = waitingLine(save);
     return (
       <ReviewSection key={save.id} title={line.title} count={save.rows.length}
-        help={`Approved by ${approverName(save.approvedBy)}. They land when #${save.prNumber} merges, and change only in its review.`}>
+        help={`Approved by ${approverName(save.approvedBy)}.`}>
         {rowsOf(save)}
         {pr ? (
           <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={{ ...params, environmentSlug: pr.namespace }}

@@ -94,10 +94,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
             <Field orientation="horizontal">
               <FieldContent>
                 <span className="font-medium">Keep it after merging</span>
-                <FieldDescription>
-                  {keep ? `It stays after merging into ${parent.name}, like staging.`
-                    : `It merges into ${parent.name} when you're happy, then closes itself. Or after 7 days without a deploy.`}
-                </FieldDescription>
+                <FieldDescription>Otherwise it closes after merging, or after 7 days without a deploy.</FieldDescription>
               </FieldContent>
               <Switch id="branch-keep" checked={keep} onCheckedChange={setKeep} />
             </Field>
@@ -107,9 +104,7 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
           <Field orientation="horizontal">
             <FieldContent>
               <span className="font-medium">Deploy it now</span>
-              <FieldDescription>
-                {deployNow ? "Its copies start in about a minute." : "Nothing runs. It becomes a starting point that other branches copy."}
-              </FieldDescription>
+              {!deployNow && <FieldDescription>Saved as a starting point.</FieldDescription>}
             </FieldContent>
             <Switch id="branch-deploy-now" checked={deployNow} onCheckedChange={setDeployNow} />
           </Field>
