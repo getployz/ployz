@@ -165,7 +165,8 @@ function teardownStatusCopy(attempt: TeardownAttemptSummary, doing: string) {
     case "running":
       return { title: `${doing}…`, description: undefined };
     case "partial":
-      return { title: `${doing} didn't finish`, description: "Something new is on your servers. Try again to include it." };
+      // Partial says the runtime work is incomplete or its outcome unknown, never why: don't guess.
+      return { title: `${doing} didn't finish`, description: "Some of it may still be on your servers. Try again to finish." };
     case "cancelled":
       return { title: `${doing} was cancelled`, description: attempt.failureMessage };
     case "failed":
