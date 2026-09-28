@@ -1,16 +1,17 @@
 import { Suspense, type ReactNode } from "react";
 import { useQueryErrorResetBoundary } from "@tanstack/react-query";
-import { CatchBoundary, type ErrorComponentProps } from "@tanstack/react-router";
+import { CatchBoundary, Link, type ErrorComponentProps } from "@tanstack/react-router";
 import { useOrgStoreGate } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
+import { getDashboardDestination, getDashboardSectionLabel, type DashboardScope } from "./dashboard-navigation-model";
 import { HomeLink, PhoneTabBar, Rail } from "./dashboard-rail";
-import { EnvironmentCrumbs } from "./environment-breadcrumbs";
+import { Crumbs, EnvironmentCrumbs } from "./environment-breadcrumbs";
 import { NavigationProgress } from "./navigation-progress";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
 import { RouteContentSkeleton } from "./route-content-skeleton";
 import { RouteErrorAlert } from "./route-error-alert";
-import { useDashboardNavigation, useDashboardSection } from "./use-dashboard-section";
+import { buttonVariants } from "./ui/button-variants";
+import { useDashboardNavigation, useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
 import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
 export function DashboardShell({
@@ -22,6 +23,7 @@ export function DashboardShell({
 }) {
   const collectionScope = useCollectionScope();
   const section = useDashboardSection();
+  const Crumb = useRouteCrumb();
   const { places } = useDashboardNavigation(scope);
   return (
     <div className="flex h-dvh min-h-0 overflow-hidden">
@@ -33,7 +35,15 @@ export function DashboardShell({
           <HomeLink organizationSlug={scope.organizationSlug} className="min-wf-nav:hidden" />
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
-            : <h1 className="truncate font-semibold">{getDashboardSectionLabel(section)}</h1>}
+            : Crumb
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`.
+              ? <Crumbs items={[
+                  <Link key="section" {...getDashboardDestination(scope, section)} className={buttonVariants({ variant: "ghost", size: "sm" })}>
+                    {getDashboardSectionLabel(section)}
+                  </Link>,
+                  <Crumb key="crumb" />,
+                ]} />
+              : <h1 className="truncate font-semibold">{getDashboardSectionLabel(section)}</h1>}
           <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
         </header>
         <NavigationProgress />

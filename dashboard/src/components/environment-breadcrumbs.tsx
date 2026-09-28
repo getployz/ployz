@@ -86,7 +86,7 @@ export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: num
 
 const phonesHidden = "hidden min-wf-nav:inline-flex";
 
-function CrumbTrigger({ label, name, current }: { label: string; name: string; current?: boolean }) {
+export function CrumbTrigger({ label, name, current }: { label: string; name: string; current?: boolean }) {
   return (
     <PopoverTrigger render={<Button variant={current ? "outline" : "ghost"} size="sm"
       aria-label={`${label}: ${name}`} title={name} className="min-w-0" />}>
@@ -96,7 +96,7 @@ function CrumbTrigger({ label, name, current }: { label: string; name: string; c
   );
 }
 
-function SwitcherLoading({ isPending, retry, children }: { isPending: boolean; retry?: () => void; children: ReactNode }) {
+export function SwitcherLoading({ isPending, retry, children }: { isPending: boolean; retry?: () => void; children: ReactNode }) {
   if (isPending) return (
     <div role="status" aria-label="Loading" className="flex flex-col gap-2 p-2">
       <Skeleton className="h-7 w-full" /><Skeleton className="h-7 w-full" />

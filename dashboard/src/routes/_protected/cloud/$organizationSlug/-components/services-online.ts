@@ -1,6 +1,6 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getRuntimeCollections, type RuntimeLensStatus, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { getRuntimeCollections, isIncompleteObservation, type RuntimeLensStatus, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeStatus } from "#/providers/runtime-provider";
 
 /** Runtime evidence for services-online summaries; incomplete evidence counts as unavailable. */
@@ -8,7 +8,7 @@ export function useRuntimeServices(organizationSlug: string) {
   const scope = useCollectionScope();
   const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
   const { lensStatus, incompleteIds } = useRuntimeStatus();
-  const runtimeStatus: RuntimeLensStatus = incompleteIds.machines.length || incompleteIds.containers.length ? "unavailable" : lensStatus;
+  const runtimeStatus: RuntimeLensStatus = isIncompleteObservation(incompleteIds) ? "unavailable" : lensStatus;
   return { runtimeServices, runtimeStatus };
 }
 

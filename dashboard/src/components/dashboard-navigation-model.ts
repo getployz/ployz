@@ -1,10 +1,10 @@
 import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
+  Building2Icon,
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
-  ServerCogIcon,
   ServerIcon,
   SlidersHorizontalIcon,
   TerminalIcon,
@@ -49,12 +49,13 @@ const environmentPlaces = {
 } satisfies Record<EnvironmentPlace, Destination>;
 
 /** The organization's pages, in avatar-menu order. */
-const organizationOrder = ["projects", "servers", "server-settings", "billing"] as const;
+const organizationOrder = ["projects", "servers", "organization-settings", "billing"] as const;
 type OrganizationDestination = (typeof organizationOrder)[number];
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
-  "server-settings": { label: "Server Settings", icon: ServerCogIcon, path: "/cloud/$organizationSlug/~/settings" },
+  // Not plain "Settings": the avatar menu reads as personal, and on an Environment it sits beside the rail's Settings.
+  "organization-settings": { label: "Organization Settings", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
   // Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
 } satisfies Record<OrganizationDestination, Destination>;
@@ -149,8 +150,9 @@ export function createDashboardNavigation(
 const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/", "projects"],
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
-  ["/_protected/cloud/$organizationSlug/_org/~/settings", "server-settings"],
+  ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],
+  ["/_protected/cloud/$organizationSlug/_org/~/servers/$serverId", "servers"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId", "deployments"],
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs", "logs"],

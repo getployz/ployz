@@ -37,6 +37,7 @@ import { Route as ProtectedCloudOrganizationSlugOrgChar126SettingsRouteImport } 
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/index'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/route'
 import { Route as ProtectedCloudOrganizationSlugOrgChar126ServersIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/servers/index'
+import { Route as ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_org/~/servers/$serverId'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/route'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugSettingsRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings'
@@ -201,6 +202,12 @@ const ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute =
     path: '/~/servers/',
     getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
   } as any)
+const ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute =
+  ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRouteImport.update({
+    id: '/~/servers/$serverId',
+    path: '/~/servers/$serverId',
+    getParentRoute: () => ProtectedCloudOrganizationSlugOrgRouteRoute,
+  } as any)
 const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute =
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteImport.update(
     {
@@ -333,6 +340,7 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
+  '/cloud/$organizationSlug/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugSettingsRoute
   '/cloud/$organizationSlug/~/servers/': typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
@@ -368,6 +376,7 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/~/settings': typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   '/cloud/$organizationSlug/~': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/cloud/$organizationSlug/$projectSlug': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
+  '/cloud/$organizationSlug/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugSettingsRoute
   '/cloud/$organizationSlug/~/servers': typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
@@ -410,6 +419,7 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_org/~/': typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRouteWithChildren
+  '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId': typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugLogsRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugSettingsRoute
   '/_protected/cloud/$organizationSlug/_org/~/servers/': typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
@@ -449,6 +459,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~/'
     | '/cloud/$organizationSlug/$projectSlug/'
+    | '/cloud/$organizationSlug/~/servers/$serverId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings'
     | '/cloud/$organizationSlug/~/servers/'
@@ -484,6 +495,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/~/settings'
     | '/cloud/$organizationSlug/~'
     | '/cloud/$organizationSlug/$projectSlug'
+    | '/cloud/$organizationSlug/~/servers/$serverId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/logs'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings'
     | '/cloud/$organizationSlug/~/servers'
@@ -525,6 +537,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_org/~/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas'
+    | '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/logs'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings'
     | '/_protected/cloud/$organizationSlug/_org/~/servers/'
@@ -751,6 +764,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
     }
+    '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId': {
+      id: '/_protected/cloud/$organizationSlug/_org/~/servers/$serverId'
+      path: '/~/servers/$serverId'
+      fullPath: '/cloud/$organizationSlug/~/servers/$serverId'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugOrgRouteRoute
+    }
     '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas': {
       id: '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas'
       path: ''
@@ -842,6 +862,7 @@ interface ProtectedCloudOrganizationSlugOrgRouteRouteChildren {
   ProtectedCloudOrganizationSlugOrgChar126BillingRoute: typeof ProtectedCloudOrganizationSlugOrgChar126BillingRoute
   ProtectedCloudOrganizationSlugOrgChar126SettingsRoute: typeof ProtectedCloudOrganizationSlugOrgChar126SettingsRoute
   ProtectedCloudOrganizationSlugOrgChar126IndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126IndexRoute
+  ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute
   ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute: typeof ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute
 }
 
@@ -853,6 +874,8 @@ const ProtectedCloudOrganizationSlugOrgRouteRouteChildren: ProtectedCloudOrganiz
       ProtectedCloudOrganizationSlugOrgChar126SettingsRoute,
     ProtectedCloudOrganizationSlugOrgChar126IndexRoute:
       ProtectedCloudOrganizationSlugOrgChar126IndexRoute,
+    ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute:
+      ProtectedCloudOrganizationSlugOrgChar126ServersServerIdRoute,
     ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute:
       ProtectedCloudOrganizationSlugOrgChar126ServersIndexRoute,
   }

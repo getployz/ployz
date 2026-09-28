@@ -13,6 +13,7 @@ import {
   AlertTitle,
 } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
+import { DangerRow } from "./danger-row";
 import { Spinner } from "#/components/ui/spinner";
 import {
   confirmTeardownServerFn,
@@ -136,33 +137,30 @@ export function TeardownDangerSection({
               }}
             />
           ) : null}
-          <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">
-                {resolvedTitle}
-              </div>
+          <DangerRow
+            title={resolvedTitle}
+            description={resolvedDescription}
+            action={
+              <Button
+                variant="destructive"
+                className="shrink-0"
+                disabled={busy || disabledReason !== undefined}
+                onClick={() => setOpen(true)}
+              >
+                <Trash2Icon data-icon="inline-start" />
+                {resolvedActionLabel}
+              </Button>
+            }
+          >
+            {closes.length > 0 && (
               <p className="mt-1 text-sm text-foreground">
-                {resolvedDescription}
+                It closes {closes.length === 1 ? "its branch" : "its branches"} first: {closes.join(", ")}.
               </p>
-              {closes.length > 0 && (
-                <p className="mt-1 text-sm text-foreground">
-                  It closes {closes.length === 1 ? "its branch" : "its branches"} first: {closes.join(", ")}.
-                </p>
-              )}
-              {disabledReason && (
-                <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>
-              )}
-            </div>
-            <Button
-              variant="destructive"
-              className="shrink-0"
-              disabled={busy || disabledReason !== undefined}
-              onClick={() => setOpen(true)}
-            >
-              <Trash2Icon data-icon="inline-start" />
-              {resolvedActionLabel}
-            </Button>
-          </div>
+            )}
+            {disabledReason && (
+              <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>
+            )}
+          </DangerRow>
         </div>
       </section>
       <TeardownDataLossDialog
