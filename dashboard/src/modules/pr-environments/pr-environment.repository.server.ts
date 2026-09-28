@@ -24,16 +24,20 @@ export const prDestinations = Effect.fn("PrEnvironments.prDestinations")(functio
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, prEnvironmentId));
   if (!row) return [];
-  const latest = yield* drizzle.selectDistinctOn([environmentSavedStateSnapshot.environmentId], {
-    id: environmentSavedStateSnapshot.environmentId, intent: environmentSavedStateSnapshot.intent, prEnvironment: prEnvironment.environmentId,
-  }).from(environmentSavedStateSnapshot)
-    .innerJoin(environment, eq(environment.id, environmentSavedStateSnapshot.environmentId))
+  // Every Environment, with or without a Saved State, so each Parent chain is whole.
+  const rows = yield* drizzle.selectDistinctOn([environment.id], {
+    id: environment.id, intent: environmentSavedStateSnapshot.intent, prEnvironment: prEnvironment.environmentId,
+    parentId: environmentBranch.parentEnvironmentId,
+  }).from(environment)
+    .leftJoin(environmentSavedStateSnapshot, eq(environmentSavedStateSnapshot.environmentId, environment.id))
+    .leftJoin(environmentBranch, eq(environmentBranch.environmentId, environment.id))
     .leftJoin(prEnvironment, eq(prEnvironment.environmentId, environment.id))
     .where(eq(environment.projectId, row.projectId))
-    .orderBy(environmentSavedStateSnapshot.environmentId, desc(environmentSavedStateSnapshot.createdAt), desc(environmentSavedStateSnapshot.id));
-  const environments = yield* Effect.forEach(latest, (saved) => decodePersistedSavedEnvironmentIntent(saved.intent).pipe(
-    Effect.map((intent) => ({ id: saved.id, prEnvironment: saved.prEnvironment !== null, savedServices: intent.services.map((node) => node.config) })),
-  ));
+    .orderBy(environment.id, desc(environmentSavedStateSnapshot.createdAt), desc(environmentSavedStateSnapshot.id));
+  const environments = yield* Effect.forEach(rows, (candidate) => Effect.gen(function* () {
+    const savedServices = candidate.intent === null ? [] : (yield* decodePersistedSavedEnvironmentIntent(candidate.intent)).services.map((node) => node.config);
+    return { id: candidate.id, parentId: candidate.parentId, prEnvironment: candidate.prEnvironment !== null, savedServices };
+  }));
   return destinations({ environments, repositoryId: row.repositoryId, targetBranch: row.targetBranch });
 });
 

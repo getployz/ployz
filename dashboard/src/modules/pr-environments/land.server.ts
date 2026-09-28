@@ -338,7 +338,7 @@ export const settleAtClose = Effect.fn("PrEnvironments.settleAtClose")(function*
       const document = yield* loadEnvironmentDocument(prEnvironmentId, true);
       const ofPr = eq(conditionalSave.prEnvironmentId, prEnvironmentId);
       if (merge) {
-        // Only where it's still a Destination: elsewhere nothing deploys the merge commit, so it drops.
+        // Only where it's still a Destination: anywhere else the approval drops.
         const current = yield* prDestinations(prEnvironmentId);
         yield* drizzle.update(conditionalSave).set({ state: "frozen", mergeCommitSha: merge.commitSha, prEnvironmentId: null })
           .where(and(ofPr, eq(conditionalSave.workingRevision, document.revision), eq(conditionalSave.targetBranch, merge.targetBranch),
