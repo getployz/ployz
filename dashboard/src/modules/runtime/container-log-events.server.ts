@@ -42,8 +42,9 @@ export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow:
         nextFollow = fromFollow();
       }
     }
-    clearTimeout(timer);
+    // Released now, not only in `finally`, so a hung tail doesn't outlive the follow it handed over to.
     // A hung read queues this behind its pending `next()`; the request's abort is what releases it.
+    clearTimeout(timer);
     void tailReader.return?.()?.catch(() => {});
     yield { type: "live" };
     yield* held;
