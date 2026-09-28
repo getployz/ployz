@@ -4,6 +4,7 @@ import { Effect, Exit, Schema, Scope } from "effect";
 import type { LogFilter } from "@ployz/sdk";
 import { authorizeRuntimeOrganization } from "./authorize-runtime-organization.server";
 import { OrganizationRuntime } from "./organization-runtime.server";
+import { backfillThenFollow } from "./container-log-events.server";
 import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 import { environment } from "#/modules/project/tables";
@@ -55,6 +56,10 @@ export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function
     return yield* session.connected.logHistory({ filter, before: search.before, limit: 200, signal: request.signal })
       .pipe(Effect.map(page => ({ type: "history" as const, page })), Effect.ensuring(close));
   }
-  const events = yield* session.connected.logs({ filter, tail: 200, follow: true, signal: request.signal }).pipe(Effect.onError(() => close));
+  const options = { filter, tail: 200, signal: request.signal };
+  // Both reads start only when the response pulls them.
+  const tail = yield* session.connected.logs({ ...options, follow: false }).pipe(Effect.onError(() => close));
+  const follow = yield* session.connected.logs({ ...options, follow: true }).pipe(Effect.onError(() => close));
+  const events = backfillThenFollow(tail, follow);
   return { type: "stream" as const, events, close };
 });

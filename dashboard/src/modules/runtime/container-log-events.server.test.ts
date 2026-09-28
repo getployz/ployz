@@ -1,9 +1,23 @@
 import { expect, it } from "vitest";
-import { containerLogResponse } from "./container-log-events.server";
+import type { LogEvent } from "@ployz/sdk";
+import { backfillThenFollow, containerLogResponse } from "./container-log-events.server";
+
+it("answers ready only after the whole tail, then follows", async () => {
+  const opened: string[] = [];
+  const read = (name: string) => (async function* (): AsyncIterable<LogEvent> {
+    opened.push(name);
+    yield { type: "source_error", machineId: "m", containerId: "c", message: name };
+  })();
+  const seen = [];
+  for await (const event of backfillThenFollow(read("tail"), read("follow"))) seen.push(event.type === "source_error" ? event.message : event.type);
+  expect(seen).toEqual(["tail", "ready", "follow"]);
+  expect(opened).toEqual(["tail", "follow"]);
+});
 
 it("streams every record in order and closes its runtime scope", async () => {
   let closed = 0;
   async function* events() {
+    yield { type: "ready" as const };
     for (let index = 0; index < 3; index++) yield { type: "source_error" as const, machineId: "m", containerId: "c", message: String(index) };
   }
   const response = containerLogResponse(new Request("http://localhost/logs"), events(), async () => { closed++; });
@@ -18,7 +32,7 @@ it("ends the stream on an upstream failure, for the browser to retry, and releas
   let closed = false;
   const events = { [Symbol.asyncIterator]() { return { next: () => Promise.reject(new Error("private detail")) }; } };
   const response = containerLogResponse(new Request("http://localhost/logs"), events, async () => { closed = true; });
-  expect(await response.text()).toBe("retry: 3000\n\nevent: live\ndata: {}\n\n");
+  expect(await response.text()).toBe("retry: 3000\n\n");
   expect(closed).toBe(true);
 });
 
@@ -50,7 +64,6 @@ it("releases the runtime once and ends the stream when the request aborts during
   const response = containerLogResponse(new Request("http://localhost/logs", { signal: request.signal }), events, async () => { closed++; });
   const reader = response.body?.getReader();
   await reader?.read(); // retry
-  await reader?.read(); // live
   const read = reader?.read();
   await new Promise((resolve) => setTimeout(resolve, 10));
   request.abort();
