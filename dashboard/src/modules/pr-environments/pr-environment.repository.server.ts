@@ -25,7 +25,7 @@ export const prDestinations = Effect.fn("PrEnvironments.prDestinations")(functio
   const [row] = yield* drizzle.select().from(prEnvironment).where(eq(prEnvironment.environmentId, prEnvironmentId));
   if (!row) return [];
   // Every Environment, with or without a Saved State, so each Parent chain is whole.
-  const latest = yield* drizzle.selectDistinctOn([environment.id], {
+  const rows = yield* drizzle.selectDistinctOn([environment.id], {
     id: environment.id, intent: environmentSavedStateSnapshot.intent, prEnvironment: prEnvironment.environmentId,
     parentId: environmentBranch.parentEnvironmentId,
   }).from(environment)
@@ -34,10 +34,10 @@ export const prDestinations = Effect.fn("PrEnvironments.prDestinations")(functio
     .leftJoin(prEnvironment, eq(prEnvironment.environmentId, environment.id))
     .where(eq(environment.projectId, row.projectId))
     .orderBy(environment.id, desc(environmentSavedStateSnapshot.createdAt), desc(environmentSavedStateSnapshot.id));
-  const environments = yield* Effect.forEach(latest, (saved) => (saved.intent === null
-    ? Effect.succeed([])
-    : decodePersistedSavedEnvironmentIntent(saved.intent).pipe(Effect.map((intent) => intent.services.map((node) => node.config)))
-  ).pipe(Effect.map((savedServices) => ({ id: saved.id, parentId: saved.parentId, prEnvironment: saved.prEnvironment !== null, savedServices }))));
+  const environments = yield* Effect.forEach(rows, (row) => Effect.gen(function* () {
+    const savedServices = row.intent === null ? [] : (yield* decodePersistedSavedEnvironmentIntent(row.intent)).services.map((node) => node.config);
+    return { id: row.id, parentId: row.parentId, prEnvironment: row.prEnvironment !== null, savedServices };
+  }));
   return destinations({ environments, repositoryId: row.repositoryId, targetBranch: row.targetBranch });
 });
 

@@ -29,7 +29,7 @@ describe("destinations", () => {
     expect(into("dev", nested)).toEqual(["staging"]);
   });
 
-  it("lands in every top on the branch", () => {
+  it("lands in every Environment with none above it on the branch", () => {
     expect(into("main", [...project, env("eu", [tracking("main")])])).toEqual(["production", "eu"]);
   });
 

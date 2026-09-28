@@ -423,7 +423,7 @@ describe("PR Environment lifecycle", () => {
       .where(and(eq(schema.prEnvironment.projectId, projectId), eq(schema.prEnvironment.number, 143)))).toEqual([]);
   });
 
-  it("follows the pull request's target Git branch, and its Destinations with it, the top Environment on each", async () => {
+  it("follows the pull request's target Git branch, and its Destinations with it, none above it on the same branch", async () => {
     // staging tracks main; dev tracks dev. Each by its latest Saved State.
     const devId = "00000000-0000-4000-8000-000000001105";
     const devIntent = { ...stagingIntent, environmentSlug: "shop-dev", services: stagingIntent.services.map((node) => node.lineageId === apiLineage
@@ -432,9 +432,9 @@ describe("PR Environment lifecycle", () => {
     await harness.db.insert(schema.environmentSavedStateSnapshot).values([stagingId, devId].map((environmentId) => ({
       organizationId, environmentId, actorId: userId, intent: (environmentId === devId ? devIntent : stagingIntent) as never, volumeDeletionAuthorizations: [],
     })));
-    // Below staging, through a never-saved Starting point, hotfix also tracks main: it isn't a Destination.
-    const [draftId, hotfixId] = ["00000000-0000-4000-8000-000000001106", "00000000-0000-4000-8000-000000001107"];
-    for (const [id, name, parent] of [[draftId, "draft", stagingId], [hotfixId, "hotfix", draftId]] as const) {
+    // Below staging, through a never-deployed Starting point, hotfix also tracks main: it isn't a Destination.
+    const [starterId, hotfixId] = ["00000000-0000-4000-8000-000000001106", "00000000-0000-4000-8000-000000001107"];
+    for (const [id, name, parent] of [[starterId, "starter", stagingId], [hotfixId, "hotfix", starterId]] as const) {
       const intent = { ...stagingIntent, environmentSlug: `shop-${name}` };
       await harness.db.insert(schema.environment).values({ id, projectId, organizationId, name, namespace: `shop-${name}`, intent: intent as never });
       await harness.db.insert(schema.environmentBranch).values({

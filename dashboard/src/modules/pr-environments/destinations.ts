@@ -1,6 +1,6 @@
 import type { ServiceConfig } from "@ployz/sdk/config";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
-import { prEnvironmentIds, trackedBranch } from "./pull-request";
+import { prEnvironmentIds, trackedBranch, type PrBranch } from "./pull-request";
 
 /** One of a project's Environments, by its latest Saved State. */
 export type DestinationCandidate = {
@@ -40,7 +40,7 @@ export function trackedBranches(environments: ReadonlyArray<DestinationCandidate
 /** Each Environment as a Destination candidate in the browser, by its change state's latest Saved services. */
 export function destinationCandidates(
   environments: ReadonlyArray<{ id: string }>,
-  branches: ReadonlyArray<Parameters<typeof prEnvironmentIds>[0][number] & { parentEnvironmentId: string }>,
+  branches: ReadonlyArray<PrBranch & { parentEnvironmentId: string }>,
   states: ReadonlyArray<Pick<EnvironmentChangeStateProjection, "environmentId" | "saved">>,
 ): DestinationCandidate[] {
   const prEnvironments = prEnvironmentIds(branches);
