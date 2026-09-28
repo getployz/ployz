@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "7d701eea-fde5-4b84-8393-5d03d87322ea",
+  "id": "59eca4eb-40fb-4bd8-9062-3a6bd2ac8724",
   "prevIds": [
     "71e02c2d-4a69-41b3-a76e-a0ecfde70254"
   ],
@@ -12048,7 +12048,7 @@
       "table": "conditional_save"
     },
     {
-      "value": "\"shutdown\" in ('running', 'off', 'failed')",
+      "value": "\"shutdown\" in ('running','off','failed')",
       "name": "pr_environment_shutdown_check",
       "entityType": "checks",
       "schema": "public",

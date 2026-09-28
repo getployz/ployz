@@ -102,9 +102,10 @@ export function BottomBar({
     startingPoint: startingPoint?.name ?? null, staged: hasChanges, attempt: shown?.deployment.id ?? null, shutdown, waiting: waiting.length > 0,
     branch: review && { changes: review.changes, updates: review.updates, pullRequest: review.pullRequest, goesTo: review.goesTo },
   });
-  // Save opens on a row; a Destination that's gone closes its sheet.
-  const saveInto = saving === null ? undefined : rows.parent.find((row) => row.kind === "save" && (row.into?.landing.destination.id ?? PARENT) === saving);
-  if (saving !== null && !saveInto) setSaving(null);
+  // Save opens on a row; the sheet shows only while that row is there, so a Destination that's gone closes it.
+  type Row = (typeof rows.parent)[number];
+  const saveInto = saving === null ? undefined
+    : rows.parent.find((row): row is Extract<Row, { kind: "save" }> => row.kind === "save" && (row.into?.landing.destination.id ?? PARENT) === saving);
 
   function deploy() {
     setOpen(false);
@@ -208,7 +209,7 @@ export function BottomBar({
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
-      {saveInto?.kind === "save" && review ? saveInto.into
+      {saveInto && review ? saveInto.into
         ? <PrSaveSheet key={saving} review={review} branchId={environmentId} landing={saveInto.into.landing} pullRequest={saveInto.into.pullRequest} onClose={() => setSaving(null)} />
         : <SaveSheet key={saving} review={review} branchId={environmentId} onClose={() => setSaving(null)} /> : null}
     </>

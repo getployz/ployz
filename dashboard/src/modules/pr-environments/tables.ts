@@ -1,4 +1,4 @@
-import { updatedAt } from "#/db/tables";
+import { sqlStringLiterals, updatedAt } from "#/db/tables";
 
 import { organization } from "#/modules/organization/tables";
 import { user } from "#/modules/identity/tables";
@@ -91,11 +91,13 @@ export const prEnvironment = pgTable(
     // One current PR Environment per pull request in a project; a retired one can still be tearing down beside a new one.
     uniqueIndex("pr_environment_pull_request_idx").on(table.repositoryId, table.number, table.projectId).where(sql`not ${table.retired}`),
     index("pr_environment_organization_idx").on(table.organizationId),
-    check("pr_environment_shutdown_check", sql`${table.shutdown} in ('running', 'off', 'failed')`),
+    check("pr_environment_shutdown_check", sql`${table.shutdown} in (${sqlStringLiterals(PR_SHUTDOWN_STATES)})`),
   ],
 );
 
-export type PrShutdown = "running" | "off" | "failed";
+/** A PR Environment's last shutdown, until it deploys again: `running`, then `off` (Off) or `failed`. */
+export const PR_SHUTDOWN_STATES = ["running", "off", "failed"] as const;
+export type PrShutdown = (typeof PR_SHUTDOWN_STATES)[number];
 
 export type PullRequest = typeof prEnvironment.$inferSelect;
 

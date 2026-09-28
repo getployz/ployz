@@ -24,6 +24,14 @@ export const isShuttingDown = Effect.fn("PrEnvironments.isShuttingDown")(functio
   return row?.shutdown === "running";
 });
 
+/** A shutdown attempt ended, in its transaction: Off once it completed, else failed, when Shut down runs again. */
+export const settleShutdown = Effect.fn("PrEnvironments.settleShutdown")(function* (environmentId: string | null, completed: boolean) {
+  if (!environmentId) return;
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(prEnvironment).set({ shutdown: completed ? "off" : "failed" })
+    .where(and(eq(prEnvironment.environmentId, environmentId), eq(prEnvironment.shutdown, "running")));
+});
+
 /**
  * Deploying turns an Off (or failed) shutdown back on. Deployment admission calls it last, after its document: a
  * `pr_environment` row comes last in lock order (lockProjectDefault), so it never waits holding what another needs.

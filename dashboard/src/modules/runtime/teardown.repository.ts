@@ -10,7 +10,7 @@ import {
   type TeardownScope,
   type TeardownTargets,
 } from "#/modules/runtime/teardown";
-import { prEnvironment } from "#/modules/pr-environments/tables";
+import { settleShutdown } from "#/modules/pr-environments/pr-environment.repository.server";
 import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -302,12 +302,7 @@ export const completeTeardownAttempt = Effect.fn(
             message: "Teardown completion was not persisted.",
           });
         }
-        // A shutdown ends Off, or failed: Shut down can run again.
-        if (updated.scope === "shutdown" && updated.environmentId) {
-          yield* transaction.drizzle.update(prEnvironment)
-            .set({ shutdown: input.status === "completed" ? "off" : "failed" })
-            .where(and(eq(prEnvironment.environmentId, updated.environmentId), eq(prEnvironment.shutdown, "running")));
-        }
+        if (updated.scope === "shutdown") yield* settleShutdown(updated.environmentId, input.status === "completed");
         return parsedAttempt(updated);
       }),
     )
