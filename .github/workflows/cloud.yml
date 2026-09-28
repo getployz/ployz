@@ -8,8 +8,6 @@ on:
         type: string
         default: ''
     secrets:
-      RAILWAY_TOKEN:
-        required: false
       KACHE_S3_ACCESS_KEY_ID:
         required: false
       KACHE_S3_SECRET_ACCESS_KEY:
@@ -57,8 +55,6 @@ jobs:
         with:
           ref: ${{ inputs.release-tag }}
       - uses: ./.github/actions/setup-cloud
-      - name: Verify image publication ordering
-        run: python3 scripts/test-publish-cloud-image.py
       - name: Typecheck
         run: pnpm pr:check typecheck
       - name: Lint
@@ -144,12 +140,6 @@ jobs:
             for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
             require.resolve("inngest/connect");
           '
-      - name: Publish latest main and trigger Railway
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-        run: bash scripts/publish-cloud-image.sh
       - name: Publish release image
         if: inputs.release-tag != ''
         env:

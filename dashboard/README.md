@@ -87,22 +87,11 @@ kache/R2 compiler cache on misses), builds both entrypoints, and packages
 runtime container. CI uses Ubuntu 24.04; the runtime uses Node 24 on Debian Trixie
 so its glibc supports that native artifact.
 
-On every main push, the build job publishes `ghcr.io/getployz/ployz2-cloud:main`
-and triggers Railway immediately, without waiting for the parallel checks.
-New pushes cancel superseded runs. Publication and deployment also check that the
-commit is still main. A deployment already accepted by Railway is not cancelled
-by cancelling GitHub Actions.
-
-One-time setup:
-- Set the repository secret `RAILWAY_TOKEN` to a Railway project token scoped to
-  Ployz Dashboard's production environment.
-- Make the GHCR package public after its first publication (or configure Railway
-  with registry read credentials).
-- Set web and worker to that Docker image source instead of the GitHub repository.
-  Keep web's migrations/start command, and worker's start override, `/ready`,
-  and 30-minute drain. The service IDs live in `scripts/publish-cloud-image.sh`.
-- Disable scheduled image auto updates: CI runs `railway redeploy --from-source`
-  for both services after the image push.
+Railway builds web and worker from this repository's root `Dockerfile` on every
+push to main, so both run the same commit within a build of each other. Web runs
+migrations before it deploys; worker overrides the start command
+(`node .output/worker/index.mjs`) and keeps its `/ready` healthcheck and
+30-minute drain.
 
 Each release tag also publishes `ghcr.io/getployz/ployz-cloud:<tag>` from the
 same build, and attaches `ployz-cloud-compose.yml` (pinned to that tag) and

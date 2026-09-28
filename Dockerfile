@@ -16,19 +16,15 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS sdk
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
-# Railway requires its literal service ID; BuildKit on Ployz accepts the same cache IDs.
-# Compiled dependencies live in a layer, not a cache mount: the GitHub Actions cache exports
-# layers only, and the recipe ignores workspace versions, so a release bump keeps this layer.
+# No cache mounts: Railway builds web and worker from this file, and its cache IDs must carry one
+# service's literal ID. Compiled dependencies live in a layer instead, which every builder caches,
+# and the recipe ignores workspace versions, so a release bump keeps this layer.
 COPY --from=planner /app/core/recipe.json recipe.json
-RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    cargo chef cook --release --locked --recipe-path recipe.json -p ployz-sdk \
+RUN cargo chef cook --release --locked --recipe-path recipe.json -p ployz-sdk \
     && cargo chef cook --release --locked --recipe-path recipe.json -p ployz-config-wasm --target wasm32-unknown-unknown
 # Dashboard edits must not invalidate this layer.
 COPY core/ ./
-RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/registry,target=/usr/local/cargo/registry \
-    --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/usr/local/cargo/git,target=/usr/local/cargo/git \
-    bash scripts/build-cloud-sdk.sh
+RUN bash scripts/build-cloud-sdk.sh
 
 FROM node AS dashboard
 RUN npm install --global pnpm@11.7.0
@@ -36,7 +32,7 @@ WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/pnpm-lock.yaml dashboard/pnpm-workspace.yaml ./
 COPY dashboard/patches/ patches/
 COPY --from=sdk /app/core/crates/ployz-sdk /app/core/crates/ployz-sdk
-RUN --mount=type=cache,id=s/8089d161-49d3-4c77-b683-2bede5a784f5-/root/.local/share/pnpm/store,target=/root/.local/share/pnpm/store pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 COPY dashboard/ ./
 # The SDK was built above; do not run package.json's combined Rust + Vite build.
 RUN pnpm build:app && pnpm prune --prod
