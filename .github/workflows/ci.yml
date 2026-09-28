@@ -177,7 +177,6 @@ jobs:
     permissions:
       contents: read
       actions: write
-      packages: write
     secrets: inherit
 
   release-contracts:
