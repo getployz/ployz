@@ -1,35 +1,56 @@
 import { useMutation } from "@tanstack/react-query";
-import { getConditionalSavesCollection } from "#/collections/collections";
+import { toast } from "sonner";
+import { getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import type { MergePick } from "#/modules/branches/branch-schemas";
-import { approveConditionalSaveServerFn, giveConditionalSaveValueServerFn, withdrawConditionalSaveServerFn } from "./conditional-save-functions";
+import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
+import { reconcileOff } from "./off-commands";
+import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
+import type { SavePick } from "#/modules/branches/branch-schemas";
+import {
+  saveConditionalSaveServerFn, takePullRequestValueServerFn, withdrawConditionalSaveServerFn,
+} from "./conditional-save-functions";
 
 /**
- * Approve, Undo and a value given after approval, for one PR Environment and Destination. Awaited: the server recomputes
- * the rows and refuses a stale review, and seals new values. The Org Store row is read back before it counts as done.
+ * Save and Undo, for one PR Environment and Destination. Awaited: the server recomputes the rows and refuses a stale
+ * review, and seals new values. Pending edits to the PR Environment save first, so the review matches them. The Org
+ * Store row is read back before it counts as done.
  */
-export function useConditionalSave(input: { organizationSlug: string; prEnvironmentId: string; destinationEnvironmentId: string }) {
-  const saves = getConditionalSavesCollection(input.organizationSlug, useCollectionScope());
-  const after = () => reconcileCollection(saves);
+export function useConditionalSave(scope: { organizationSlug: string; prEnvironmentId: string; destinationEnvironmentId: string }) {
+  const collections = useCollectionScope();
+  const saves = getConditionalSavesCollection(scope.organizationSlug, collections);
+  const queue = useEnvironmentDocumentQueue(scope.organizationSlug);
   return {
-    approve: useMutation({
-      mutationFn: async (approval: { review: string; picks: MergePick[] }) => {
-        await approveConditionalSaveServerFn({ data: { ...input, ...approval } });
-        await after();
+    save: useMutation({
+      mutationFn: async (save: { review: string; picks: SavePick[]; shutDown: boolean }) => {
+        await queue.settled(scope.prEnvironmentId);
+        const saved = await saveConditionalSaveServerFn({ data: { ...scope, ...save } });
+        await Promise.all([reconcileCollection(saves), save.shutDown ? reconcileOff(scope.organizationSlug, collections) : null]);
+        return saved;
       },
     }),
     withdraw: useMutation({
       mutationFn: async () => {
-        await withdrawConditionalSaveServerFn({ data: input });
-        await after();
+        await withdrawConditionalSaveServerFn({ data: scope });
+        await reconcileCollection(saves);
       },
-    }),
-    give: useMutation({
-      mutationFn: async (value: { key: string; value: string }) => {
-        await giveConditionalSaveValueServerFn({ data: { ...input, ...value } });
-        await after();
-      },
+      onSuccess: () => toast.success("Undone"),
+      onError: (error) => toast.error(error.message),
     }),
   };
+}
+
+/** "Use": a merged pull request's value replaces the Environment's own undeployed edit, as a change to deploy. */
+export function useTakePullRequestValue(organizationSlug: string, environmentId: string) {
+  const scope = useCollectionScope();
+  const queue = useEnvironmentDocumentQueue(organizationSlug);
+  return useMutation({
+    mutationFn: async (input: { conditionalSaveId: string; key: string }) => {
+      await queue.settled(environmentId);
+      await takePullRequestValueServerFn({ data: { organizationSlug, ...input } });
+      await Promise.all([getEnvironmentsCollection, getConditionalSavesCollection].map((get) => reconcileCollection(get(organizationSlug, scope))));
+      refetchEnvironmentChangeStates(organizationSlug, scope);
+    },
+    onError: (error) => toast.error(error.message),
+  });
 }

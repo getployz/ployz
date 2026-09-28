@@ -1,33 +1,26 @@
 import { describe, expect, it } from "vitest";
 import { prCheck, type PrCheckDestination } from "./pr-check";
 
-const production = (over: Partial<PrCheckDestination> = {}): PrCheckDestination => ({ name: "production", changes: 3, approval: null, ...over });
-const approval = (over: Partial<NonNullable<PrCheckDestination["approval"]>> = {}) => ({
-  standing: true, changes: 3, missing: [], approvedBy: "maya", ...over,
-});
+const production = (over: Partial<PrCheckDestination> = {}): PrCheckDestination => ({ name: "production", changes: 3, save: null, ...over });
+const saved = (over: Partial<NonNullable<PrCheckDestination["save"]>> = {}) => ({ standing: true, changes: 3, ...over });
 
 describe("prCheck", () => {
   it.each<[string, PrCheckDestination[], boolean, string]>([
-    ["no Destination", [], true, "Nothing deploys the target Git branch"],
-    ["nothing to move", [production({ changes: 0 })], true, "No changes for production"],
-    ["not approved", [production()], false, "Review and approve 3 changes for production"],
-    ["one change, not approved", [production({ changes: 1 })], false, "Review and approve 1 change for production"],
-    ["changed since approval", [production({ approval: approval({ standing: false }) })], false, "Changed since approval · review again"],
-    ["a missing value", [production({ approval: approval({ missing: ["STRIPE_KEY"] }) })], false, "STRIPE_KEY needs a value for production"],
-    ["several missing values", [production({ approval: approval({ missing: ["STRIPE_KEY", "SENTRY_DSN"] }) })], false,
-      "STRIPE_KEY, SENTRY_DSN need a value for production"],
-    ["approved", [production({ approval: approval() })], true, "3 changes approved for production by maya"],
-    ["approved, then nothing left to move", [production({ changes: 0, approval: approval({ changes: 2 }) })], true,
-      "2 changes approved for production by maya"],
-    ["two Destinations, neither approved", [production(), production({ name: "staging-eu", changes: 2 })], false,
-      "Review and approve 5 changes for production and staging-eu"],
-    ["two Destinations, one approved", [production({ approval: approval() }), production({ name: "staging-eu", changes: 2 })], false,
-      "Review and approve 2 changes for staging-eu"],
-    ["two Destinations, both approved", [production({ approval: approval() }), production({ name: "staging-eu", approval: approval({ changes: 2, approvedBy: "sam" }) })],
-      true, "5 changes approved for production and staging-eu by maya and sam"],
-    ["two Destinations, one with nothing to move", [production({ approval: approval() }), production({ name: "staging-eu", changes: 0 })], true,
-      "3 changes approved for production by maya"],
+    ["no Destination", [], true, "No environment deploys main"],
+    ["nothing to save", [production({ changes: 0 })], true, "No changes for production"],
+    ["not saved", [production()], false, "3 changes to save in Ployz"],
+    ["one change, not saved", [production({ changes: 1 })], false, "1 change to save in Ployz"],
+    ["changed since saved", [production({ save: saved({ standing: false }) })], false, "Changed since saved · save again"],
+    ["saved", [production({ save: saved() })], true, "3 changes go live with this PR"],
+    ["one change saved", [production({ changes: 1, save: saved({ changes: 1 }) })], true, "1 change goes live with this PR"],
+    ["saved, then nothing left to save", [production({ changes: 0, save: saved({ changes: 2 }) })], true, "2 changes go live with this PR"],
+    ["two Destinations, neither saved", [production(), production({ name: "staging-eu", changes: 2 })], false, "5 changes to save in Ployz"],
+    ["two Destinations, one saved", [production({ save: saved() }), production({ name: "staging-eu", changes: 2 })], false, "2 changes to save in Ployz"],
+    ["two Destinations, both saved", [production({ save: saved() }), production({ name: "staging-eu", save: saved({ changes: 2 }) })], true,
+      "5 changes go live with this PR"],
+    ["two Destinations, one with nothing to save", [production({ save: saved() }), production({ name: "staging-eu", changes: 0 })], true,
+      "3 changes go live with this PR"],
   ])("%s", (_, destinations, passing, reason) => {
-    expect(prCheck(destinations)).toEqual({ passing, reason });
+    expect(prCheck(destinations, "main")).toEqual({ passing, reason });
   });
 });

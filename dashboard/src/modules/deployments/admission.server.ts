@@ -29,6 +29,7 @@ import {
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
 import { branchAdmission } from "#/modules/branches/branch-admission.server";
+import { clearShutdown, isShuttingDown } from "#/modules/pr-environments/pr-environment.repository.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import {
   organizationIdForDeployment,
@@ -514,7 +515,13 @@ export const admitEnvironmentDeployment = Effect.fn(
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
       return yield* new Conflict({ message: "This environment is being torn down." });
     }
+    // A shutdown is admitted under this queue lock too.
+    if (yield* isShuttingDown(input.environmentId)) {
+      return yield* new Conflict({ message: "This environment is shutting down. Deploy it once it's off.", userFacing: true });
+    }
     const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
-    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    const deployment = yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    yield* clearShutdown(input.environmentId);
+    return deployment;
   }));
 });

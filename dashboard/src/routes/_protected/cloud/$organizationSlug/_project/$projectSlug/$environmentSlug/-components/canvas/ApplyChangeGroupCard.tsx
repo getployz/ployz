@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ChevronDownIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Button } from "#/components/ui/button";
@@ -39,6 +39,7 @@ export function ApplyChangeGroupCard({
   onCloseDialog,
   onDiscardNode,
   onDiscardRow,
+  noteFor,
 }: {
   group: DisplayCanvasNodeDiffGroup;
   totalChanges: number;
@@ -46,6 +47,7 @@ export function ApplyChangeGroupCard({
   onCloseDialog: () => void;
   onDiscardNode: (group: CanvasNodeDiffGroup) => void;
   onDiscardRow: (group: CanvasNodeDiffGroup, path: string) => void;
+  noteFor?: (path: string) => ReactNode;
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const nodeKind = getCanvasNodeChangeKind(group);
@@ -170,6 +172,7 @@ export function ApplyChangeGroupCard({
                         tone="staged"
                         showCurrentValue={showCurrentValue}
                         showNewValue={showNewValue}
+                        note={noteFor?.(row.path)}
                         onDiscard={row.canDiscard ? () => {
                           if (totalChanges === 1) {
                             onCloseDialog();

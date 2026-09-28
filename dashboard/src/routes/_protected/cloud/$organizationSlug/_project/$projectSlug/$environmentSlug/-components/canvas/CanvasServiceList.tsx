@@ -53,6 +53,7 @@ function ServiceListItem({
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
     missingLiveValues: serviceState.missingLiveValues,
+    off: serviceState.off,
   });
   const observedContainers = runtime
     ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`

@@ -101,13 +101,13 @@ describe("closing a Branch", () => {
 
   it("closes its Branches first, confirms the runtime's report and records the creator and reason", async () => {
     const logs: unknown[] = [];
-    const attempt = await run(provide(closeBranch(fixWebId, "merged").pipe(
+    const attempt = await run(provide(closeBranch(fixWebId, "saved").pipe(
       Effect.flatMap((close) => close.admit),
       Effect.provide(Logger.layer([Logger.make((options) => logs.push(options.message))], { mergeWithExisting: true })),
     )));
 
     expect(logs).toContainEqual(["A Branch is closing.", {
-      environmentId: fixWebId, reason: "merged", requestedByUserId: creatorId, teardownAttemptId: attempt.id,
+      environmentId: fixWebId, reason: "saved", requestedByUserId: creatorId, teardownAttemptId: attempt.id,
     }]);
     expect(attempt.targets.environments.map((target) => target.environmentId)).toEqual([tryCacheId, fixWebId]);
     expect(await attemptRows()).toEqual([expect.objectContaining({
@@ -123,8 +123,8 @@ describe("closing a Branch", () => {
     expect((await harness.pool.query("select * from environment_branch")).rowCount).toBe(1);
   });
 
-  it("leaves a Branch kept after its Merge read it open, and Keep refuses a Branch already closing", async () => {
-    // Kept between the Merge's read and the close: the close re-reads it under the Branch row and starts nothing.
+  it("leaves a Branch kept after its Save read it open, and Keep refuses a Branch already closing", async () => {
+    // Kept between the Save's read and the close: the close re-reads it under the Branch row and starts nothing.
     await harness.pool.query("update environment_branch set kept = true where environment_id = $1", [fixWebId]);
     expect(await run(provide(tryCloseBranch(fixWebId)))).toBe(false);
     expect(await attemptRows()).toEqual([]);

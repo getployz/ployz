@@ -207,7 +207,7 @@ The Environment a project opens, chosen in the project's settings. There is no p
 _Avoid_: Remembered environment, primary environment, main environment
 
 **Branch**:
-An Environment made from another Environment, its Parent, that runs Own Copies of the nodes picked when it was made and uses what they need from its Parent as Live Nodes. A Branch closes, by teardown, when it merges unless it is a Kept Branch, and after 7 days without a deploy unless it is kept or was never deployed.
+An Environment made from another Environment, its Parent, that runs Own Copies of the nodes picked when it was made and uses what they need from its Parent as Live Nodes. A Branch closes, by teardown, when it is deleted after a Save unless it is a Kept Branch, and after 7 days without a deploy unless it is kept or was never deployed.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
 
 **Parent**:
@@ -215,11 +215,11 @@ The Environment a Branch was made from. An Environment without one, such as prod
 _Avoid_: Base, upstream, source environment
 
 **Destination**:
-Where a Branch's changes land: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
-_Avoid_: Target, merge target
+Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
+_Avoid_: Target, save target
 
 **Kept Branch**:
-A Branch that stays after merging and never closes on its own, such as staging.
+A Branch that stays after saving and never closes on its own, such as staging.
 _Avoid_: Long-lived environment, permanent branch
 
 **Own Copy**:
@@ -238,9 +238,9 @@ _Avoid_: Template, draft branch
 A command a Branch runs in one Own Copy's new image before that service first starts, after the nodes it uses are running. It runs again on later deploys until it succeeds once. It prepares the Own Copy's data, for example by seeding it.
 _Avoid_: Seed script, data hook, post-deploy hook
 
-**Merge**:
-Staging the changes a Branch has deployed, chosen change by change, in its Destination's Working State, where the Destination's own Review and Deploy ship them. Merging closes the Branch unless it is kept.
-_Avoid_: Promote, deploy to parent
+**Save**:
+Putting a Branch's changes, chosen change by change, into its Destination's Working State, where they become the Destination's changes to deploy. Save never waits for the Branch to deploy: it takes the Branch's Working State, whether or not it runs. The Branch is deleted after saving unless it is kept or the user opts out.
+_Avoid_: Merge (a GitHub merge only), promote, deploy to parent
 
 **Update**:
 Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
@@ -251,8 +251,12 @@ A Branch made automatically for one pull request from a Git branch of the same r
 _Avoid_: Preview, preview deployment, review app
 
 **Conditional Save**:
-A PR Environment's approved changes, held on its Destination and saved there in the same step that admits the deployment of the pull request's merge commit, so code and settings go out together. A setting lands only if the Destination still has the value it was approved against; otherwise it is staged instead. Changing the PR Environment's settings withdraws the approval, and a pull request closed without merging drops it.
+A PR Environment's changes saved for one Destination, which go live with the pull request's merge commit: they are saved there in the same step that admits the deployment of that commit, so code and settings go out together. A setting the Destination left alone, or only edited without deploying, is saved; one it changed live becomes an ordinary change to deploy there instead; one it did both to keeps its own edit, and the pull request's value is only offered beside it. Changing the PR Environment's settings or the pull request's target Git branch withdraws it, and a pull request closed without merging drops it.
 _Avoid_: Auto-promote, deferred deploy, merge queue
+
+**Off**:
+An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its standing Conditional Saves stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Save sheet or at any time; undoing a save leaves one Off, and one whose pull request closes is removed as a running one is.
+_Avoid_: Paused, stopped, sleeping, scaled to zero
 
 **Cloud Deployment Stage**:
 The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.

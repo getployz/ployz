@@ -19,39 +19,38 @@ import { variableValueColumnsForWrite } from "#/modules/environment-design/varia
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
-import { assertBranchSettled } from "./branch-guard.server";
 import { tryCloseBranch } from "./branch-close.server";
 import { core, landChanges, loadIdentitySources } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
-import { mergeInput, rowLineage, variableName } from "./branch-review";
-import type { MergeBranch, MergePick } from "./branch-schemas";
+import { saveInput, rowLineage, variableName } from "./branch-review";
+import type { SaveBranch, SavePick } from "./branch-schemas";
 
 /**
- * Stage the picked rows of a Branch's review in its Destination's Working State. Nothing is published or deployed
- * there, and nothing there is deleted. After commit the Branch closes, unless it is kept or `thenClose` is off.
+ * Save: stage the picked rows of a Branch's review in its Destination's Working State. Nothing is published or deployed
+ * there, and nothing there is deleted. It never waits for the Branch to deploy: the rows are its Working State, staged or
+ * not, running or not. After commit the Branch is deleted, unless it is kept or `thenDelete` is off.
  */
-export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: Actor, input: MergeBranch) {
+export const saveBranch = Effect.fn("Branches.saveBranch")(function* (actor: Actor, input: SaveBranch) {
   const context = yield* getEnvironmentContextForActorById(actor, {
     organizationSlug: input.organizationSlug, environmentId: input.branchEnvironmentId,
   });
   if (context === null) return yield* new NotFound({ message: "The branch was not found." });
   const { project } = context;
   const encryption = yield* SecretEncryption;
-  const merged = yield* withMutationResult(Effect.gen(function* () {
+  const saved = yield* withMutationResult(Effect.gen(function* () {
     const { drizzle } = yield* Database;
     // The Project, then the Branch row, before any queue (lock order: lockProjectDefault); its base advances below.
     const branch = yield* lockBranchScope(project.id, input.branchEnvironmentId, "update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
     const [pullRequest] = yield* drizzle.select({ number: prEnvironment.number }).from(prEnvironment).where(eq(prEnvironment.environmentId, branch.environmentId));
-    if (pullRequest) return yield* new Conflict({ message: `Merge #${pullRequest.number} on GitHub instead.` });
+    if (pullRequest) return yield* new Conflict({ message: `A PR environment's changes go live with PR #${pullRequest.number}.` });
     const destinationId = branch.parentEnvironmentId;
 
-    // 1–3. Lock the Destination, check its revision, and refuse a Branch that runs something other than its Working State.
-    // Both queues, by id, before the Destination's document (lock order: lockProjectDefault).
+    // 1–2. Lock the Destination and check its revision. Both queues, by id, before the Destination's document (lock
+    // order: lockProjectDefault).
     yield* lockEnvironmentDeploymentQueues([destinationId, input.branchEnvironmentId]);
     const document = yield* loadEnvironmentDocument(destinationId, true);
     yield* requireDocumentRevision(document, input.destinationRevision);
-    yield* assertBranchSettled(drizzle, input.branchEnvironmentId);
 
     // Recompute the rows from authoritative states, sealed values included, exactly as the browser did.
     const { intent: from } = yield* loadCurrentEnvironmentState(input.branchEnvironmentId);
@@ -60,7 +59,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     const deployed = projection.explicitStates.find((state) => state.environmentId === destinationId)?.applied.nodes.length ?? 0;
     const [destinationBranch] = yield* drizzle.select({ id: environmentBranch.environmentId }).from(environmentBranch)
       .where(eq(environmentBranch.environmentId, destinationId));
-    const compare = mergeInput({
+    const compare = saveInput({
       base: branch.base, kept: branch.kept, branch: from, parent: into,
       parentApplied: deployed ? yield* loadAppliedIntent(destinationId, document.namespace, projection) : null,
       hostnames: {
@@ -71,7 +70,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     const rows = branchChanges(compare);
     if (rows.review !== input.review) return yield* new Conflict({ message: "Changed since you reviewed. Review again." });
 
-    // 4. Apply the picks with core; new values are sealed here, never in the browser.
+    // 3. Apply the picks with core; new values are sealed here, never in the browser.
     // A new value, secret or not, lands; an empty one would leave the change behind in a Branch that may close.
     const empty = input.picks.find((pick) => pick.option === "new" && pick.value === "");
     if (empty) return yield* new Validation({ field: "picks", message: `Enter a new value for ${variableName(empty)}.` });
@@ -81,10 +80,10 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     const kept = (ids: string[], nextIds: string[]) => ids.every((id) => nextIds.includes(id));
     if (!kept(into.services.map((node) => node.id), next.services.map((node) => node.id))
       || !kept(into.volumes.map((node) => node.resourceId), next.volumes.map((node) => node.resourceId))) {
-      return yield* Effect.die("Merge would delete from the Destination.");
+      return yield* Effect.die("Save would delete from the Destination.");
     }
 
-    // 5. Identity rows for what arrives, then the Destination's Working State; the base advances by what landed.
+    // 4. Identity rows for what arrives, then the Destination's Working State; the base advances by what landed.
     const written = yield* landChanges({
       project, sources: yield* loadIdentitySources(input.branchEnvironmentId), document, into, next, picks,
       advance: changes.base ? { branchEnvironmentId: input.branchEnvironmentId, base: changes.base } : undefined,
@@ -92,37 +91,28 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     return { environment: written, kept: branch.kept };
   }));
 
-  // 6. The Merge stands whether or not the close starts; the user is told the Branch is still open.
-  const { environment, kept } = merged.data;
-  const closed = kept || !input.thenClose ? false : yield* tryCloseBranch(input.branchEnvironmentId);
+  // 5. The Save stands whether or not the delete starts; the user is told the Branch is still there.
+  const { environment, kept } = saved.data;
+  const closed = kept || !input.thenDelete ? false : yield* tryCloseBranch(input.branchEnvironmentId);
   return { data: { environment, closed } };
 });
 
 /**
- * The ticked rows as core's picks: new values sealed here, never in the browser (none for an empty one), and each
- * unticked variable of a ticked new service left out, which core would otherwise land with its default.
+ * The ticked rows as core's picks: new values sealed here, never in the browser, and each unticked variable of a ticked
+ * new service left out, which core would otherwise land with its default. The caller refuses an empty new value.
  */
 export function corePicks({ encryption, rows, into, picks }: {
-  encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly MergePick[];
+  encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly SavePick[];
 }): BranchPick[] {
   const refs = environmentVariableReferences(into);
   const ticked = picks.map((pick): BranchPick => {
     if (pick.option !== "new") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
-    if (pick.value === "") return { key: pick.key, choice: { option: "new" } };
     return { key: pick.key, choice: { option: "new", value: sealValue(encryption, rows, into, pick.key, pick.value, refs) } };
   });
   const newServices = new Set(ticked.flatMap((pick) => pick.key.endsWith(":node") ? [rowLineage(pick)] : []));
   const leftOut = rows.flatMap((row): BranchPick[] => row.role === "move" && row.choice && newServices.has(rowLineage(row))
     && !ticked.some((pick) => pick.key === row.key) ? [{ key: row.key, choice: { option: "leave_out" } }] : []);
   return [...ticked, ...leftOut];
-}
-
-/** `picks` with each new value still missing given an empty one, sealed as its row needs: what landing saves for it. */
-export function withEmptyValues({ encryption, rows, into, picks }: {
-  encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly BranchPick[];
-}): BranchPick[] {
-  return picks.map((pick) => pick.choice?.option === "new" && !pick.choice.value
-    ? { key: pick.key, choice: { option: "new", value: sealValue(encryption, rows, into, pick.key, "") } } : pick);
 }
 
 /** A new value for row `key`, sealed when the row is a secret. */

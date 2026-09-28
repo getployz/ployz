@@ -40,7 +40,7 @@ async function renderAt(path: string) {
   ]));
   queryClient.setQueryData(key("environment_branch"), orgStoreSeed([
     { environmentId: "store-fix-web", parentEnvironmentId: "store-production", pullRequest: null },
-    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", pullRequest: { number: 142 } },
+    { environmentId: "store-pr-142", parentEnvironmentId: "store-staging", pullRequest: { number: 142, shutdown: null } },
   ]));
   queryClient.setQueryData(key("environment_deployment"), orgStoreSeed([
     { id: "attempt", environmentId: "store-production" },
@@ -102,7 +102,7 @@ it("lists Environments as a tree, each Branch under its Parent, noting the defau
   fireEvent.click(screen.getByRole("button", { name: "Environment: Production" }));
   await screen.findByRole("option", { name: "Production, default" });
   expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-label") ?? option.textContent)).toEqual([
-    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "pr-142, branch of Staging, #142, not deployed",
+    "Production, default", "fix-web, branch of Production, not deployed", "Staging", "pr-142, branch of Staging, PR #142, not deployed",
     "New branch of Production", "Manage environments",
   ]);
   expect(screen.queryByRole("option", { name: /New environment/u })).toBeNull();
@@ -143,20 +143,21 @@ it("notes the Default Environment and opens the Project settings from Manage env
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
 });
 
-it("notes each Branch's changes and updates, and offers Review of the current Branch", async () => {
+it("notes what each Branch has to save and its updates, and offers Review of the current Branch", async () => {
   const review = asTestDouble<branchReviews.BranchReviewView>()({ changes: 2, updates: 1 });
   vi.spyOn(branchReviews, "useBranchReviews").mockReturnValue((id) => id === "store-fix-web" ? review : null);
   await using app = await renderAt("/cloud/acme/store/fix-web/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
-  expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 changes, 1 update" })).toBeTruthy();
+  expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 to save, 1 update" })).toBeTruthy();
   fireEvent.click(screen.getByRole("option", { name: "Review fix-web" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
   vi.restoreAllMocks();
 });
 
-it("notes a PR Environment's pull request, and offers What #142 changes on it", async () => {
+it("notes a PR Environment's pull request, and offers Review and Shut down on it", async () => {
   await using app = await renderAt("/cloud/acme/store/pr-142/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: pr-142" }));
-  fireEvent.click(await screen.findByRole("option", { name: "What #142 changes" }));
+  expect(await screen.findByRole("option", { name: /^Shut down pr-142/ })).toBeTruthy();
+  fireEvent.click(screen.getByRole("option", { name: "Review pr-142" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/pr-142/review"));
 });

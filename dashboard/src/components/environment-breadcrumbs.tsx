@@ -2,7 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, PowerOffIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
@@ -23,6 +23,9 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { environmentTree } from "#/modules/project/environment-tree";
 import { useBranchReviews } from "#/modules/branches/use-branch-review";
+import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
+import { canShutDown } from "#/modules/pr-environments/off";
+import type { PrShutdown } from "#/modules/pr-environments/tables";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
@@ -152,6 +155,8 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
   );
 }
 
+const SHUTDOWN_NOTE = { running: "shutting down", off: "Off", failed: "shutdown failed" } satisfies Record<PrShutdown, string>;
+
 function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const { projects, environments, branches, isPending, isError, refetch } = useWorkspace(scope.organizationSlug);
   const { data: deployments } = useLiveQuery(getEnvironmentDeploymentsCollection(scope.organizationSlug, useCollectionScope()));
@@ -163,6 +168,8 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const current = findEnvironment(projects, environments, scope);
   const currentBranch = branches.find((branch) => branch.environmentId === current?.id);
   const prNumbers = new Map(branches.flatMap((branch) => branch.pullRequest ? [[branch.environmentId, branch.pullRequest.number]] : []));
+  const shutdowns = new Map(branches.flatMap((branch) => branch.pullRequest?.shutdown ? [[branch.environmentId, branch.pullRequest.shutdown]] : []));
+  const { shutDown } = usePrEnvironmentOff({ organizationSlug: scope.organizationSlug, environmentId: current?.id ?? "", name: current?.name ?? "" });
   const tree = environmentTree(environments.filter((environment) => environment.projectId === project?.id), branches);
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(deployments.map((deployment) => deployment.environmentId));
@@ -179,10 +186,11 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   // Computed only while the switcher is open: core compares each Branch with its Parent.
                   const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
-                    prNumbers.has(environment.id) && `#${prNumbers.get(environment.id)}`,
+                    prNumbers.has(environment.id) && `PR #${prNumbers.get(environment.id)}`,
+                    shutdowns.has(environment.id) && SHUTDOWN_NOTE[shutdowns.get(environment.id) ?? "off"],
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
-                    !!review?.changes && `${review.changes} ${review.changes === 1 ? "change" : "changes"}`,
+                    !!review?.changes && `${review.changes} to save`,
                     !!review?.updates && `${review.updates} ${review.updates === 1 ? "update" : "updates"}`,
                   ].filter((note) => note !== false);
                   return (
@@ -208,7 +216,18 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   void navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
-                  <GitCompareArrowsIcon />{currentBranch.pullRequest ? `What #${currentBranch.pullRequest.number} changes` : `Review ${current.name}`}
+                  <GitCompareArrowsIcon />Review {current.name}
+                </CommandItem>}
+                {current && currentBranch?.pullRequest && canShutDown(currentBranch.pullRequest.shutdown) && <CommandItem value="shut-down" disabled={shutDown.isPending}
+                  onSelect={() => {
+                    setOpen(false);
+                    shutDown.mutate();
+                  }}>
+                  <PowerOffIcon />
+                  <span className="flex flex-col">
+                    Shut down {current.name}
+                    <span className="text-muted-foreground">Starts again on the next push</span>
+                  </span>
                 </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);

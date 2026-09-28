@@ -30,6 +30,7 @@ import {
   defaultEnvironmentRefusal,
   type ConfirmTeardownInput,
   type RetryTeardownInput,
+  type TeardownAttemptScope,
   type TeardownClusterView,
   type TeardownRuntimePlan,
   type TeardownTargetInput,
@@ -428,6 +429,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
     readonly requestedByUserId: string;
     readonly identities: ConfirmTeardownInput["identities"];
     readonly abandon: boolean;
+    readonly scope: TeardownAttemptScope;
   },
 ) {
   const plan = planTeardownRuntime({
@@ -451,7 +453,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
       projectId: access.scope === "organization" ? null : access.project.id,
       environmentId:
         access.scope === "environment" ? access.environment.id : null,
-      scope: access.scope,
+      scope: input.scope,
       confirmDataLoss: input.identities,
       targets,
     });
@@ -469,7 +471,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
 const admitTeardown = Effect.fn("Teardown.admit")(function* (
   access: TeardownAccess,
   runtime: ReachableRuntime,
-  input: Parameters<typeof startTeardown>[3] & { readonly expected?: readonly string[] },
+  input: Omit<Parameters<typeof startTeardown>[3], "scope"> & { readonly expected?: readonly string[] },
 ) {
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
@@ -483,7 +485,7 @@ const admitTeardown = Effect.fn("Teardown.admit")(function* (
     // Each Environment's deployment queue, by id: deployment admission waits, then sees this teardown and refuses. A
     // caller that holds documents took these first (lock order: lockProjectDefault), so here they don't wait.
     yield* lockEnvironmentDeploymentQueues(graph.environments.map((environment) => environment.id));
-    return yield* startTeardown(current, graph, runtime, input);
+    return yield* startTeardown(current, graph, runtime, { ...input, scope: current.scope });
   }));
 });
 
@@ -510,6 +512,25 @@ export const prepareSystemTeardown = Effect.fn("Teardown.prepareSystem")(
     const runtime = yield* reachableRuntime(access);
     const dataLoss = yield* teardownDataLoss(access, graph, runtime);
     return { access, runtime, expected: graph.environments.map((environment) => environment.id), identities: dataLoss.rust };
+  },
+);
+
+/**
+ * Shuts one Environment down with no one confirming: its runtime half only, every row kept. Prepare asks the runtime
+ * (holding no locks) for the data-loss report of its namespace alone, not its Branches'; `admit` confirms exactly that,
+ * as `requestedByUserId`: database work only, safe under a caller's locks, which must include its deployment queue.
+ */
+export const prepareShutdown = Effect.fn("Teardown.prepareShutdown")(
+  function* (input: { readonly organizationId: string; readonly environmentId: string }) {
+    const access = yield* loadEnvironmentAccess(input.environmentId, input.organizationId);
+    const graph = { projects: [access.project], environments: [{ ...access.environment, projectSlug: access.project.slug }] };
+    const runtime = yield* reachableRuntime(access);
+    const dataLoss = yield* teardownDataLoss(access, graph, runtime);
+    return {
+      admit: (requestedByUserId: string) => startTeardown(access, graph, runtime, {
+        requestedByUserId, identities: dataLoss.rust, abandon: false, scope: "shutdown",
+      }),
+    };
   },
 );
 

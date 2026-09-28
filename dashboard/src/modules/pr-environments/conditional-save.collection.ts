@@ -19,15 +19,15 @@ export function useConditionalSaves(organizationSlug: string): Array<Conditional
   });
 }
 
-/** The Conditional Saves held on `destinationId`, standing or frozen at the merge and not landed yet, oldest approval first. */
-export function useHeldChanges(organizationSlug: string, destinationId: string): ConditionalSaveRow[] {
+/** The Conditional Saves waiting on `destinationId` for their pull requests, standing or frozen at the merge and not landed yet, oldest first. */
+export function useWaitingSaves(organizationSlug: string, destinationId: string): ConditionalSaveRow[] {
   return useConditionalSaves(organizationSlug)
     .filter((save) => save.destinationEnvironmentId === destinationId && (save.standing || save.state === "frozen"))
-    .sort((a, b) => a.approvedAt.getTime() - b.approvedAt.getTime());
+    .sort((a, b) => a.savedAt.getTime() - b.savedAt.getTime());
 }
 
-/** Landed Conditional Saves whose rows `destinationId` had changed since approval, so they weren't saved there. */
-export function useStagedInstead(organizationSlug: string, destinationId: string) {
+/** Landed Conditional Saves whose rows `destinationId` had changed too: the `staged` and `hint` rows, until its next Saved revision. */
+export function useLandedSaves(organizationSlug: string, destinationId: string) {
   const savedStateId = useEnvironmentChangeStateProjection({ organizationSlug, environmentId: destinationId })?.saved?.snapshotId;
   return useConditionalSaves(organizationSlug)
     .filter((save) => save.destinationEnvironmentId === destinationId && save.state === "landed" && save.landedSavedStateId === savedStateId);

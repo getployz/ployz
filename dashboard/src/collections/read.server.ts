@@ -65,15 +65,15 @@ export const readCollection = Effect.fn("Collections.read")(function* (
         return yield* loadBranchRows(scoped(tables.environmentBranch));
       case "pr_environment_plan":
         return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
-      // Sealed picks and the landing copy stay on the server; held rows go without secret fingerprints.
+      // Sealed picks and the landing copy stay on the server; saved rows go without secret fingerprints.
       case "conditional_save": {
         const save = tables.conditionalSave;
         const rows: ConditionalSaveRow[] = (yield* database.drizzle.select({
           id: save.id, organizationId: save.organizationId, projectId: save.projectId, prEnvironmentId: save.prEnvironmentId,
           repositoryId: save.repositoryId, prNumber: save.prNumber, destinationEnvironmentId: save.destinationEnvironmentId,
           rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
-          approvedBy: tables.user.name, approvedAt: save.approvedAt, state: save.state, landedSavedStateId: save.landedSavedStateId,
-        }).from(save).leftJoin(tables.user, eq(tables.user.id, save.approvedByUserId)).where(scoped(save)))
+          savedAt: save.savedAt, state: save.state, landedSavedStateId: save.landedSavedStateId,
+        }).from(save).where(scoped(save)))
           .map((save) => ({ ...save, rows: save.rows.map((held) => ({ ...held, row: withoutRowFingerprints(held.row) })) }));
         return rows;
       }

@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { desc, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, isNotNull, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentSavedStateSnapshot } from "#/modules/deployments/tables";
 import { decodePersistedSavedEnvironmentIntent, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
@@ -14,6 +14,31 @@ export const isPrEnvironment = Effect.fn("PrEnvironments.isPrEnvironment")(funct
   const [row] = yield* drizzle.select({ environmentId: prEnvironment.environmentId }).from(prEnvironment)
     .where(eq(prEnvironment.environmentId, environmentId));
   return row !== undefined;
+});
+
+/** Whether a shutdown of the Environment is running: a deploy waits until it's Off. */
+export const isShuttingDown = Effect.fn("PrEnvironments.isShuttingDown")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ shutdown: prEnvironment.shutdown }).from(prEnvironment)
+    .where(eq(prEnvironment.environmentId, environmentId));
+  return row?.shutdown === "running";
+});
+
+/** A shutdown attempt ended, in its transaction: Off once it completed, else failed, when Shut down runs again. */
+export const settleShutdown = Effect.fn("PrEnvironments.settleShutdown")(function* (environmentId: string, status: "completed" | "failed") {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(prEnvironment).set({ shutdown: status === "completed" ? "off" : "failed" })
+    .where(and(eq(prEnvironment.environmentId, environmentId), eq(prEnvironment.shutdown, "running")));
+});
+
+/**
+ * Deploying turns an Off (or failed) shutdown back on. Deployment admission calls it last, after its document: a
+ * `pr_environment` row comes last in lock order (lockProjectDefault), so it never waits holding what another needs.
+ */
+export const clearShutdown = Effect.fn("PrEnvironments.clearShutdown")(function* (environmentId: string) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(prEnvironment).set({ shutdown: null })
+    .where(and(eq(prEnvironment.environmentId, environmentId), isNotNull(prEnvironment.shutdown)));
 });
 
 /**
