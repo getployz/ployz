@@ -86,14 +86,16 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
 const canvasUrl = "/cloud/acme/shop/production";
 const bar = async () => within(await screen.findByRole("group", { name: "Bottom bar" }));
 
-it("shows changes to deploy first: the count, the service, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
+it("shows changes to deploy first, as a small card: the count, then Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
   expect(staged.getByText("1 change to deploy")).toBeTruthy();
-  // Values are Details', so the bar stays small.
-  expect(staged.getByText("api")).toBeTruthy();
+  // What changed is Details' and the canvas's, so the card stays small.
+  expect(staged.queryByText("api")).toBeNull();
   expect(staged.queryByText(/Replicas/)).toBeNull();
-  expect(staged.getByRole("button", { name: /^Deploy/ }).textContent).toBe("Deploy⇧+Enter");
+  const deployButton = staged.getByRole("button", { name: /^Deploy/ });
+  expect(deployButton.textContent).toBe("Deploy");
+  expect(deployButton.getAttribute("aria-keyshortcuts")).toBe("Shift+Enter");
 
   fireEvent.click(staged.getByRole("button", { name: "Details" }));
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
@@ -123,12 +125,11 @@ it("holds Discard all while a discard is saving, so a second click can't fail", 
   expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
 });
 
-it("names the changed services, and keeps staged changes over a running Git-triggered deployment with Deploy next", async () => {
+it("keeps staged changes over a running Git-triggered deployment, with Deploy next", async () => {
   attempts = [attempt(running, "deploying", "Push to main", "github")];
   open(canvasUrl, [replicas, cache], 2);
   const staged = await bar();
   expect(staged.getByText("2 changes to deploy")).toBeTruthy();
-  expect(staged.getByText("api, cache")).toBeTruthy();
   expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
 });

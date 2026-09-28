@@ -39,7 +39,6 @@ const SPINNER_FILES = {
   "components/service-source-selector.tsx": "sync and submit in flight",
   "form/index.tsx": "submit in flight",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "retry in flight; the teardown running",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch-row.tsx": "close in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/domain-row.tsx": "Setting up while the Cluster Domain sync runs; Issuing certificate while the certificate is ordered",
   "routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection.tsx": "Setting up while the sync runs; Check again until the sync lands",
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
@@ -107,7 +106,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useCanvasChangeActions.ts": "publishing, discarding, and destructive review span many entities and deploy",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch-row.tsx": "closing a Branch is destructive, and the page leaves it once the close starts",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch.ts": "closing a Branch is destructive, and the page leaves it once the close starts",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "deleting a volume's data is destructive",
 };
 

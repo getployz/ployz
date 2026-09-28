@@ -8,7 +8,6 @@ import { useServerFn } from "@tanstack/react-start";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { isNotFound, toErrorMessage } from "#/lib/error-message";
 import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
@@ -39,10 +38,13 @@ type TeardownAttemptSummary = {
 /**
  * Deletes an Environment, project or organization, or closes a Kept Branch: the roots of real data, so the dialog lists
  * what goes and asks for `place`. Branches that aren't kept close with one plain confirm from their panel instead.
- * `inline` makes it one quiet line with no Danger heading, for the Branch's panel: the typed dialog is the guard.
+ * `inline` leaves out the Danger section, for a Branch's panel whose menu opens the dialog: only the attempt's status and
+ * the typed dialog render, and `open` is the panel's.
  */
 export function TeardownDangerSection({
   inline = false,
+  open: openProp,
+  onOpenChange,
   organizationSlug,
   scope,
   environmentId,
@@ -59,6 +61,8 @@ export function TeardownDangerSection({
   onCompleted,
 }: {
   inline?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   organizationSlug: string;
   scope: TeardownScope;
   environmentId?: string;
@@ -82,7 +86,9 @@ export function TeardownDangerSection({
   const confirmTeardown = useServerFn(confirmTeardownServerFn);
   const retryTeardown = useServerFn(retryTeardownServerFn);
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const [openState, setOpenState] = useState(false);
+  const open = openProp ?? openState;
+  const setOpen = onOpenChange ?? setOpenState;
   const [retrying, setRetrying] = useState(false);
   const input = { organizationSlug, scope, environmentId, projectSlug };
   const latestQuery = latestTeardownAttemptQueryOptions(input);
@@ -134,23 +140,7 @@ export function TeardownDangerSection({
     />
   );
 
-  if (inline) {
-    return (
-      <>
-        {status}
-        <Item size="sm">
-          <ItemContent>
-            <ItemTitle>{title}</ItemTitle>
-            <ItemDescription>{disabledReason ?? description}</ItemDescription>
-          </ItemContent>
-          <ItemActions>
-            <Button size="sm" variant="outline" disabled={busy || disabledReason !== undefined} onClick={() => setOpen(true)}>{actionLabel}</Button>
-          </ItemActions>
-        </Item>
-        {dialog}
-      </>
-    );
-  }
+  if (inline) return <>{status}{dialog}</>;
 
   return (
     <>

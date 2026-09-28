@@ -97,7 +97,7 @@ export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }:
         // A failed save shows in the sheet through save.isError, so the rejection needs no handler here.
         onClick={() => void save.mutateAsync({ review: landing.review, picks: rows.sent, shutDown: shutDownAfter }).then((saved) => {
           toast.success(`Goes live when PR #${pullRequest.number} merges`, saved.shutDown ? { description: `Shutting down ${name}` } : undefined);
-          if (shutDownAfter && !saved.shutDown) toast.warning(`${name} is still running`, { description: "It couldn't shut down. Try Shut down again." });
+          if (shutDownAfter && !saved.shutDown) toast.warning(`${name} is still running`, { description: "It couldn't shut down. Shut it down from the panel's ⋮." });
           onClose();
         }, () => {})} />}
       error={save.isError ? save.error.message : null} onClose={onClose}>

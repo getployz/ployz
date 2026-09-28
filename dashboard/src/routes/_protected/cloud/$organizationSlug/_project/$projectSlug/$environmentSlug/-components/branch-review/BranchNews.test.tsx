@@ -125,19 +125,16 @@ it("on a PR Environment, saves each Destination for the merge, and Undo takes a 
   expect(withdraw).toHaveBeenCalledOnce();
 });
 
-it("shuts a PR Environment down, waits while it shuts down, runs a failed one again, and deploys it once it's Off", async () => {
-  const shutdown = (state: PrShutdown | null) => open(<ShutdownRow environmentId="env-1" name="pr-142" shutdown={state} />);
-  shutdown(null);
-  fireEvent.click(await screen.findByRole("button", { name: "Shut down" }));
-  cleanup();
+it("says a PR Environment is shutting down, runs a failed shutdown again, and deploys it once it's Off", async () => {
+  const shutdown = (state: PrShutdown) => open(<ShutdownRow environmentId="env-1" name="pr-142" shutdown={state} />);
   shutdown("running");
   expect(await screen.findByText("Deploy once it's off")).toBeTruthy();
   expect(screen.queryByRole("button")).toBeNull();
   cleanup();
   shutdown("failed");
   expect(await screen.findByText("Some services may still run")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Shut down" }));
-  expect(shutDown).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "Shut down again" }));
+  expect(shutDown).toHaveBeenCalledOnce();
   cleanup();
   shutdown("off");
   fireEvent.click(await screen.findByRole("button", { name: "Deploy pr-142" }));

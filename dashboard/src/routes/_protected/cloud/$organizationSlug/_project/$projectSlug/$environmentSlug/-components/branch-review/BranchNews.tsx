@@ -1,8 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useParams } from "@tanstack/react-router";
 import {
-  ArrowDownIcon, ArrowUpIcon, ChevronDownIcon, CircleCheckIcon, ClockIcon, EqualNotIcon, GitPullRequestIcon, PowerOffIcon,
-  TriangleAlertIcon,
+  ArrowDownIcon, ArrowUpIcon, ChevronDownIcon, CircleCheckIcon, ClockIcon, GitPullRequestIcon, PowerOffIcon, TriangleAlertIcon,
 } from "lucide-react";
 import { RelativeTime } from "#/components/relative-time";
 import { Button } from "#/components/ui/button";
@@ -13,7 +12,7 @@ import { useBranchUnsettled, useKeepBranch } from "#/modules/branches/branch.col
 import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import type { BranchNews } from "#/modules/branches/branch-news";
 import { plural } from "#/modules/branches/branch-plan";
-import { DIFFER_REASONS, presentRow, type ChangeRow } from "#/modules/branches/branch-review";
+import { presentRow, type ChangeRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView } from "#/modules/branches/use-branch-review";
 import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
 import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
@@ -26,7 +25,7 @@ type Branch = { review: BranchReviewView; environmentId: string; name: string };
 
 /**
  * The Branch's news, most pressing first: the first leads in a card with the panel's one solid button, the rest are a
- * line each. A line with changes opens to them. Then the pull request's check on GitHub and what stays different.
+ * line each. A line with changes opens to them. Then the pull request's check on GitHub.
  */
 export function BranchNewsList({ news, ...branch }: Branch & { news: BranchNews[] }) {
   const { review } = branch;
@@ -37,13 +36,6 @@ export function BranchNewsList({ news, ...branch }: Branch & { news: BranchNews[
       {review.check && pr && !pr.closed ? (
         <NewsRow icon={review.check.passing ? <CircleCheckIcon className="text-success" /> : <TriangleAlertIcon className="text-warning" />}
           title={review.check.passing ? "Ready to merge on GitHub" : "Not ready to merge on GitHub"} detail={review.check.reason} />
-      ) : null}
-      {review.differ.length ? (
-        <NewsRow icon={<EqualNotIcon />} title={`${review.differ.length} ${review.differ.length === 1 ? "stays" : "stay"} different`}
-          detail={nodeNames(review.differ, review)}
-          changes={review.differ.map((row) => (
-            <ChangeRowItem key={row.key} row={presentRow(row, review.nameOf)} description={<ItemDescription>{differReason(row, review)}</ItemDescription>} />
-          ))} />
       ) : null}
     </ItemGroup>
   );
@@ -174,20 +166,18 @@ function UpdateNews({ lead, review, environmentId, count }: { lead: boolean; rev
   );
 }
 
-/**
- * A PR Environment's shutdown: Shut down while it runs; then what the shutdown is doing, and once it's Off, Deploy to
- * start it again. A failed one runs again.
- */
+/** A PR Environment's shutdown: what it's doing, Shut down again once it failed, and Deploy to start it once it's Off. */
 export function ShutdownRow({ lead = false, environmentId, name, shutdown }: {
-  lead?: boolean; environmentId: string; name: string; shutdown: PrShutdown | null;
+  lead?: boolean; environmentId: string; name: string; shutdown: PrShutdown;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { shutDown, start } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId, name });
-  const again = <Button size="sm" variant={actionVariant(lead)} disabled={shutDown.isPending} onClick={() => shutDown.mutate()}>Shut down</Button>;
   switch (shutdown) {
-    case null: return <NewsRow icon={<PowerOffIcon />} title={`Shut down ${name}`} detail="Starts again on the next push" action={again} />;
     case "running": return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shutting down" detail="Deploy once it's off" />;
-    case "failed": return <NewsRow lead={lead} icon={<PowerOffIcon className="text-destructive" />} title="Shutdown failed" detail="Some services may still run" action={again} />;
+    case "failed": return (
+      <NewsRow lead={lead} icon={<PowerOffIcon className="text-destructive" />} title="Shutdown failed" detail="Some services may still run"
+        action={<Button size="sm" variant={actionVariant(lead)} disabled={shutDown.isPending} onClick={() => shutDown.mutate()}>Shut down again</Button>} />
+    );
     case "off": return (
       <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off" detail="Starts again on the next push"
         action={<Button size="sm" variant={actionVariant(lead)} disabled={start.isPending} onClick={() => start.mutate()}>Deploy {name}</Button>} />
@@ -203,14 +193,4 @@ function ClosingNews({ lead, environmentId, days }: { lead: boolean; environment
     <NewsRow lead={lead} icon={<ClockIcon className="text-warning" />} title={`Closes in ${plural(days, "day")}`} detail="Without a deploy"
       action={<Button size="sm" variant={actionVariant(lead)} onClick={() => keepBranch(environmentId, true)}>Keep it</Button>} />
   );
-}
-
-/** Replicas in numbers, as "Runs 1 replica · staging runs 3"; any other row by its reason. */
-function differReason(row: ChangeRow, review: BranchReviewView) {
-  if (row.role !== "differ") return null;
-  const { after, before } = presentRow(row, review.nameOf);
-  if (row.key.endsWith(":replicas") && after && before) {
-    return `Runs ${after} ${after === "1" ? "replica" : "replicas"} · ${review.parent.name} runs ${before}`;
-  }
-  return DIFFER_REASONS[row.why];
 }
