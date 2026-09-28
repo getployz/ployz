@@ -19,7 +19,7 @@ export type ServiceDeploymentSemanticInput = {
   /** The Live values the latest attempt deployed empty, as `service.KEY`. */
   missingLiveValues: readonly string[];
   /** Its Environment is Off: nothing runs until it deploys again. */
-  off?: boolean;
+  off: boolean;
 };
 
 export type ServiceDeploymentSemantics = {

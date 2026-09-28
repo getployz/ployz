@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { environment, environmentBranch } from "#/modules/project/tables";
+import { environment } from "#/modules/project/tables";
 import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
 import { loadLatestEnvironmentSavedState } from "#/modules/environment-design/saved-state-repository.server";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
@@ -29,23 +29,26 @@ const prEnvironmentOf = Effect.fn("PrEnvironments.prEnvironmentOf")(function* (a
 });
 
 /**
- * Shuts a PR Environment down: Off. Under its Branch row and deployment queue, its active attempts are cancelled and a
+ * Shuts a PR Environment down. Under its Branch row and deployment queue, its active attempts are cancelled and a
  * shutdown admitted, which removes its services and their data from the servers and keeps every row, its standing saves
- * included. Already Off, it does nothing.
+ * included. The shutdown runs (`running`) until it ends Off, or `failed`, when Shut down can run again. Running or Off,
+ * it does nothing.
  */
 export const shutDownPrEnvironment = Effect.fn("PrEnvironments.shutDown")(function* (actor: Actor, input: OffCommand) {
   const { projectId, name, organizationId } = yield* prEnvironmentOf(actor, input);
   const prepared = yield* prepareShutdown({ organizationId, environmentId: input.environmentId });
   const database = yield* Database;
   yield* database.transaction(Effect.gen(function* () {
-    const branch = yield* lockBranchScope(projectId, input.environmentId, "update");
-    if (!branch) return yield* new NotFound({ message: "The PR environment was not found." });
-    if (branch.off) return;
+    const { drizzle } = yield* Database;
+    if (!(yield* lockBranchScope(projectId, input.environmentId, "update"))) return yield* new NotFound({ message: "The PR environment was not found." });
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
+    const [row] = yield* drizzle.select({ shutdown: prEnvironment.shutdown }).from(prEnvironment).where(eq(prEnvironment.environmentId, input.environmentId));
+    if (row?.shutdown === "running" || row?.shutdown === "off") return;
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) return yield* new Conflict({ message: `${name} is being removed.`, userFacing: true });
     yield* cancelActiveDeployments([input.environmentId]);
     yield* prepared.admit(actor.userId);
-    yield* (yield* Database).drizzle.update(environmentBranch).set({ off: true }).where(eq(environmentBranch.environmentId, input.environmentId));
+    // Last, as lock order puts a pr_environment row (lockProjectDefault).
+    yield* drizzle.update(prEnvironment).set({ shutdown: "running" }).where(eq(prEnvironment.environmentId, input.environmentId));
   }));
 }, Effect.scoped);
 

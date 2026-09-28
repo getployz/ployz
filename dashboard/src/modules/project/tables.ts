@@ -77,8 +77,6 @@ export const environmentBranch = pgTable(
     // Core's redacted, lineage-keyed configuration: sealed values are fingerprints only.
     base: jsonb("base").notNull().$type<SavedEnvironmentIntent>(),
     setupCommands: jsonb("setup_commands").default([]).notNull().$type<SetupCommand[]>(),
-    // Off: shut down, its services and their data gone from the servers and its rows kept, until it deploys again.
-    off: boolean("off").default(false).notNull(),
     createdByUserId: uuid("created_by_user_id")
       .notNull()
       .references(() => user.id, { onDelete: "restrict" }),

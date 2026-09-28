@@ -237,6 +237,7 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  *   3. Every Environment deployment queue the transaction will need, all of them before any document
  *      (`lockEnvironmentDeploymentQueues` sorts several by id; re-taking a held queue doesn't wait).
  *   4. Environment documents (`loadEnvironmentDocument(id, true)`).
+ *   5. PR Environment rows (`pr_environment`), each written in its own statement: a shutdown's state, its facts.
  * Per path:
  * - Create Branch: Project, Parent's Branch row (share); with Deploy now, the new Environment's queue, after writing its
  *   document: an exception that can't wait on anyone, since no other transaction can see the new Environment yet.
@@ -246,7 +247,9 @@ export const getEnvironmentForProjectByNamespace = Effect.fn(
  * - Idle sweep: Project, Branch row, the queues of every Environment the teardown removes.
  * - Keep: Project, Branch row. Default selection: Project.
  * - Teardown admission: Project(s), then the queues of every Environment it removes.
- * - Deployment admission, publish, discard and GitHub admission: the queue, then the document.
+ * - Deployment admission, publish, discard and GitHub admission: the queue, then the document; admission clears a
+ *   shutdown last.
+ * - Shut down: Project, Branch row, its queue, its PR Environment row.
  * - Edits: the document only.
  * Inserting a row that references the Project (a service, a volume) takes a KEY SHARE on the Project row through its
  * foreign key. FOR NO KEY UPDATE doesn't block that, so an edit holding its document never waits on a Project lock.

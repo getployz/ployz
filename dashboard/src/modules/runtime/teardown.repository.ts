@@ -10,6 +10,7 @@ import {
   type TeardownScope,
   type TeardownTargets,
 } from "#/modules/runtime/teardown";
+import { prEnvironment } from "#/modules/pr-environments/tables";
 import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -21,14 +22,14 @@ const ACTIVE_TEARDOWN_STATUSES = ["pending", "running"] as const;
 
 /**
  * Which of `environmentIds` an active teardown targets, whatever its scope (an Environment's, its Parent's, a project's).
- * A shutdown removes nothing: it counts only with `shutdowns`.
+ * A shutdown removes no Environment, so it doesn't count.
  */
-export const activeTeardownFor = Effect.fn("TeardownRepository.activeFor")(function* (environmentIds: readonly string[], shutdowns = false) {
+export const activeTeardownFor = Effect.fn("TeardownRepository.activeFor")(function* (environmentIds: readonly string[]) {
   if (environmentIds.length === 0) return new Set<string>();
   const { drizzle } = yield* Database;
   const active = yield* drizzle.select().from(schemaTeardownAttempt).where(and(
     inArray(schemaTeardownAttempt.status, [...ACTIVE_TEARDOWN_STATUSES]),
-    shutdowns ? undefined : ne(schemaTeardownAttempt.scope, "shutdown"),
+    ne(schemaTeardownAttempt.scope, "shutdown"),
     or(...environmentIds.map((environmentId) =>
       sql`${schemaTeardownAttempt.targets} -> 'environments' @> ${JSON.stringify([{ environmentId }])}::jsonb`)),
   ));
@@ -300,6 +301,12 @@ export const completeTeardownAttempt = Effect.fn(
           return yield* new Conflict({
             message: "Teardown completion was not persisted.",
           });
+        }
+        // A shutdown ends Off, or failed: Shut down can run again.
+        if (updated.scope === "shutdown" && updated.environmentId) {
+          yield* transaction.drizzle.update(prEnvironment)
+            .set({ shutdown: input.status === "completed" ? "off" : "failed" })
+            .where(and(eq(prEnvironment.environmentId, updated.environmentId), eq(prEnvironment.shutdown, "running")));
         }
         return parsedAttempt(updated);
       }),

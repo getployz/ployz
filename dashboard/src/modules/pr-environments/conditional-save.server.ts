@@ -19,8 +19,10 @@ import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { saveInput, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
+import type { SavePick } from "#/modules/branches/branch-schemas";
+import type { ChangeRow } from "#/modules/branches/branch-review";
 import type { SaveConditionalSave, WithdrawConditionalSave } from "./conditional-save";
-import { conditionalSave, prEnvironment, type HeldRow } from "./tables";
+import { conditionalSave, prEnvironment, type SavedRow } from "./tables";
 
 /** The PR Environment, checked against the actor's organization. */
 const prEnvironmentFor = Effect.fn("PrEnvironments.prEnvironmentFor")(function* (actor: Actor, input: { organizationSlug: string; prEnvironmentId: string }) {
@@ -54,7 +56,7 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
       return yield* new Conflict({ message: `Nothing deploys ${pullRequest.targetBranch} now. Review again.` });
     }
 
-    const { from, into, compare } = yield* goesToComparison({
+    const { from, into, compare } = yield* saveComparison({
       projectSlug: project.slug, prEnvironment: prEnvironmentRow, branch, destinationEnvironmentId: input.destinationEnvironmentId,
     });
     const { rows, review } = yield* core("review", () => branchChanges(compare));
@@ -69,15 +71,15 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
     const picks = corePicks({ encryption, rows, into, picks: input.picks });
     // Core refuses picks it couldn't land, such as a new service's variable without the service.
     yield* core("picks", () => branchChanges({ ...compare, picks }));
-    const held = input.picks.flatMap((pick): HeldRow[] => {
+    const savedRows = input.picks.flatMap((pick): SavedRow[] => {
       const row = byKey.get(pick.key);
-      return row ? [{ row: withoutSealedCiphertext(row), option: pick.option }] : [];
+      return row ? [{ row: withoutSealedCiphertext(savedValue(row, pick)), option: pick.option }] : [];
     });
     const values = {
       organizationId: project.organizationId, projectId: project.id,
       prEnvironmentId: input.prEnvironmentId, repositoryId: pullRequest.repositoryId, prNumber: pullRequest.number,
       destinationEnvironmentId: input.destinationEnvironmentId,
-      rows: held, picks,
+      rows: savedRows, picks,
       landing: {
         base: branch.base, from, parent: compare.parent ?? null, hostnames: compare.hostnames,
         identities: yield* loadIdentitySources(input.prEnvironmentId, new Set(picks.map(rowLineage))),
@@ -94,11 +96,18 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
   }));
 });
 
+/** The row with the value it was saved with, as Details and the "Use" hint show it: a new secret stays hidden. */
+function savedValue(row: ChangeRow, pick: SavePick): ChangeRow {
+  if (row.role !== "move") return row;
+  if (pick.option === "new") return { ...row, from: row.choice?.secret ? { kind: "secret" } : { kind: "literal", value: pick.value } };
+  return pick.option === "leave_out" ? { ...row, from: null } : row;
+}
+
 /** Undo: the save is withdrawn. */
 export const withdrawConditionalSave = Effect.fn("PrEnvironments.withdrawConditionalSave")(function* (actor: Actor, input: WithdrawConditionalSave) {
   yield* prEnvironmentFor(actor, input);
   const { drizzle } = yield* Database;
-  yield* drizzle.delete(conditionalSave).where(heldOn(input));
+  yield* drizzle.delete(conditionalSave).where(saveOn(input));
   yield* requestPrCheck(input.prEnvironmentId);
 });
 
@@ -107,7 +116,7 @@ export const withdrawConditionalSave = Effect.fn("PrEnvironments.withdrawConditi
  * the browser: its Working State into the Destination's, over its base, with the Parent's Applied State as "the
  * Parent's value".
  */
-export const goesToComparison = Effect.fn("PrEnvironments.goesToComparison")(function* (input: {
+export const saveComparison = Effect.fn("PrEnvironments.saveComparison")(function* (input: {
   projectSlug: string;
   prEnvironment: { id: string; namespace: string };
   branch: { base: SavedEnvironmentIntent; parentEnvironmentId: string };
@@ -132,7 +141,7 @@ export const goesToComparison = Effect.fn("PrEnvironments.goesToComparison")(fun
   return { from, into, compare };
 });
 
-const heldOn = (input: { prEnvironmentId: string; destinationEnvironmentId: string }) => and(
+const saveOn = (input: { prEnvironmentId: string; destinationEnvironmentId: string }) => and(
   eq(conditionalSave.prEnvironmentId, input.prEnvironmentId), eq(conditionalSave.destinationEnvironmentId, input.destinationEnvironmentId),
 );
 

@@ -29,7 +29,7 @@ import {
 import type { EncryptedSecretValue } from "#/db/tables";
 import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
 import { branchAdmission } from "#/modules/branches/branch-admission.server";
-import { environmentBranch } from "#/modules/project/tables";
+import { clearShutdown, isShuttingDown } from "#/modules/pr-environments/pr-environment.repository.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import {
   organizationIdForDeployment,
@@ -515,13 +515,13 @@ export const admitEnvironmentDeployment = Effect.fn(
     if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
       return yield* new Conflict({ message: "This environment is being torn down." });
     }
-    if ((yield* activeTeardownFor([input.environmentId], true)).size > 0) {
+    // A shutdown is admitted under this queue lock too.
+    if (yield* isShuttingDown(input.environmentId)) {
       return yield* new Conflict({ message: "This environment is shutting down. Deploy it once it's off.", userFacing: true });
     }
-    // Deploying an Off Environment starts it again.
-    yield* (yield* Database).drizzle.update(environmentBranch).set({ off: false })
-      .where(and(eq(environmentBranch.environmentId, input.environmentId), eq(environmentBranch.off, true)));
     const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
-    return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    const deployment = yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
+    yield* clearShutdown(input.environmentId);
+    return deployment;
   }));
 });

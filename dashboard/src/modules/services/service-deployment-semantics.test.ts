@@ -8,6 +8,7 @@ const deployed = {
   hasRecordedTargetSnapshot: true,
   latestDeploymentStatus: "applied" as const,
   missingLiveValues: [],
+  off: false,
 };
 
 describe("getServiceDeploymentSemantics", () => {

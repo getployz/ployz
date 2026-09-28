@@ -14,6 +14,7 @@ import * as deploymentCollections from "#/modules/deployments/deployment.collect
 import * as branchReviews from "#/modules/branches/use-branch-review";
 import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
 import * as saveCommands from "#/modules/pr-environments/conditional-save-commands";
+import * as offCommands from "#/modules/pr-environments/off-commands";
 import * as lineageNames from "#/modules/branches/use-lineage-names";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import type { ChangeRow } from "#/modules/branches/branch-review";
@@ -38,13 +39,13 @@ const update = vi.fn();
 const withdraw = vi.fn();
 const start = vi.fn();
 const shutDown = vi.fn();
-let off = false;
+let shutdown: "running" | "off" | "failed" | null = null;
 let unsettled: string | null = null;
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
 let branch: branchReviews.BranchReviewView | null = null;
 let held: ConditionalSaveRow[] = [];
-const imageRow = (from: string): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict: false, base: "web:1", from, into: "web:1" });
+const imageRow = (from: string, conflict = false): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict, base: "web:1", from, into: "web:1" });
 const branchReview = (save: ChangeRow[], updates: number) => asTestDouble<branchReviews.BranchReviewView>()({
   parent: { id: "env-0", name: "production", namespace: "shop-production" }, pullRequest: null, kept: false,
   save, saveReview: "r", changes: save.length, update: updates ? [imageRow("web:2")] : [], updates, nameOf: () => "web",
@@ -55,9 +56,9 @@ beforeEach(() => {
   startingPoint = undefined;
   branch = null;
   held = [];
-  off = false;
-  vi.spyOn(branchCollections, "useOff").mockImplementation(() => off);
-  vi.spyOn(saveCommands, "usePrEnvironmentOff").mockImplementation(() => asTestDouble<ReturnType<typeof saveCommands.usePrEnvironmentOff>>()({
+  shutdown = null;
+  vi.spyOn(branchCollections, "useShutdown").mockImplementation(() => shutdown);
+  vi.spyOn(offCommands, "usePrEnvironmentOff").mockImplementation(() => asTestDouble<ReturnType<typeof offCommands.usePrEnvironmentOff>>()({
     start: { mutate: start, isPending: false }, shutDown: { mutate: shutDown, isPending: false },
   }));
   vi.spyOn(conditionalSaves, "useWaitingSaves").mockImplementation(() => held);
@@ -193,7 +194,7 @@ it("shows a starting point's state over its staged nodes, with New branch and no
 });
 
 it("on a Branch, adds a second row: changes to save with Save beside every first row, else updates with Update", async () => {
-  branch = branchReview([imageRow("web:2"), imageRow("web:3")], 1);
+  branch = branchReview([imageRow("web:2"), imageRow("web:3", true)], 1);
   attempts = [attempt(running, "deploying", "Add worker")];
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
@@ -208,6 +209,8 @@ it("on a Branch, adds a second row: changes to save with Save beside every first
   const sheet = within(screen.getByRole("dialog", { name: "2 changes for production" }));
   expect(sheet.getByRole("region", { name: "web" }).textContent).toContain("web will be updated2 settings");
   expect(sheet.getByText("Nothing deploys yet. production gets 2 changes to deploy.")).toBeTruthy();
+  // production changed it too since branching.
+  expect(sheet.getAllByText("Changed in production too")).toHaveLength(1);
   expect(sheet.getByRole("switch", { name: "Delete fix-web after saving" })).toBeTruthy();
   expect(sheet.getByRole("button", { name: "Save to production" })).toBeTruthy();
   cleanup();
@@ -265,7 +268,16 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
 
   // Off, beside what it saved: Deploy starts it again.
   branch = pullRequest(saved);
-  off = true;
+  shutdown = "running";
+  open(canvasUrl);
+  expect((await bar()).getByText("Shutting down")).toBeTruthy();
+  cleanup();
+  shutdown = "failed";
+  open(canvasUrl);
+  fireEvent.click((await bar()).getByRole("button", { name: "Shut down" }));
+  expect(shutDown).toHaveBeenCalledOnce();
+  cleanup();
+  shutdown = "off";
   open(canvasUrl);
   const offBar = await bar();
   expect(offBar.getByText("Off")).toBeTruthy();
@@ -274,14 +286,15 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
   fireEvent.click(offBar.getByRole("button", { name: "Deploy" }));
   expect(start).toHaveBeenCalledOnce();
   cleanup();
-  off = false;
+  shutdown = null;
 
   open(canvasUrl);
   const waiting = await bar();
   expect(waiting.getByText("2 changes go live")).toBeTruthy();
   expect(waiting.getByText("when PR #142 merges")).toBeTruthy();
-  await act(async () => { fireEvent.click(waiting.getByRole("button", { name: "More save actions" })); });
-  fireEvent.click(await screen.findByRole("menuitem", { name: "Undo" }));
+  // Undo is in Details.
+  fireEvent.click(waiting.getByRole("button", { name: "Details" }));
+  fireEvent.click(within(screen.getByRole("dialog", { name: "2 changes go live when PR #142 merges" })).getByRole("button", { name: "Undo" }));
   expect(withdraw).toHaveBeenCalledOnce();
   cleanup();
 
@@ -301,4 +314,12 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
   fireEvent.click(quiet.getByRole("button", { name: "Details" }));
   const details = within(screen.getByRole("dialog", { name: "2 changes go live with PR #142" }));
   expect(details.getByText("web redeploys when PR #142 merges")).toBeTruthy();
+  cleanup();
+
+  // With changes to deploy, the saves still waiting are listed read-only in their Details.
+  open(canvasUrl, [replicas], 1);
+  const staged = await bar();
+  expect(staged.queryByText("2 changes go live with PR #142")).toBeNull();
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
+  expect(within(screen.getByRole("dialog", { name: "Environment changes" })).getByRole("region", { name: "2 changes go live with PR #142" })).toBeTruthy();
 });

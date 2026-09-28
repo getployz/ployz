@@ -50,7 +50,7 @@ export function branchReview(input: BranchReviewInput): BranchReview {
 /**
  * What a PR Environment moves into one Destination when its pull request merges: its Working State into the
  * Destination's, over its base, with `parent` the Parent's Applied State ("the Parent's value"). `review` is core's
- * compare-only review string, which an approval sends back so the server can refuse rows that moved since.
+ * compare-only review string, which Save sends back so the server can refuse rows that moved since.
  */
 export type GoesTo = { rows: ChangeRow[]; review: string };
 

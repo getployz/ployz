@@ -1,7 +1,7 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "356a3868-02f6-42a8-bd0e-687e17d29b94",
+  "id": "7d701eea-fde5-4b84-8393-5d03d87322ea",
   "prevIds": [
     "71e02c2d-4a69-41b3-a76e-a0ecfde70254"
   ],
@@ -1370,19 +1370,6 @@
       "generated": null,
       "identity": null,
       "name": "setup_commands",
-      "entityType": "columns",
-      "schema": "public",
-      "table": "environment_branch"
-    },
-    {
-      "type": "boolean",
-      "typeSchema": null,
-      "notNull": true,
-      "dimensions": 0,
-      "default": "false",
-      "generated": null,
-      "identity": null,
-      "name": "off",
       "entityType": "columns",
       "schema": "public",
       "table": "environment_branch"
@@ -6757,6 +6744,19 @@
       "table": "pr_environment"
     },
     {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "shutdown",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "pr_environment"
+    },
+    {
       "type": "uuid",
       "typeSchema": null,
       "notNull": true,
@@ -12046,6 +12046,13 @@
       "entityType": "checks",
       "schema": "public",
       "table": "conditional_save"
+    },
+    {
+      "value": "\"shutdown\" in ('running', 'off', 'failed')",
+      "name": "pr_environment_shutdown_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "pr_environment"
     }
   ],
   "renames": []

@@ -255,7 +255,7 @@ A PR Environment's changes saved for one Destination, which go live with the pul
 _Avoid_: Auto-promote, deferred deploy, merge queue
 
 **Off**:
-An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its standing Conditional Saves stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. Only PR Environments shut down, from the Save sheet or at any time; undoing a save leaves one Off, and one whose pull request closes is removed as a running one is.
+An Environment shut down with its settings kept: its services and their data are gone from the servers, while its Working and Saved State, its Branch, its pull request and its standing Conditional Saves stay. Deploy, or the next push admitted for it, deploys the same Environment again: Own Copies start empty and Setup Commands run again. It is Off once its shutdown has removed them; a shutdown that fails leaves it on, and Shut down runs again. Only PR Environments shut down, from the Save sheet or at any time; undoing a save leaves one Off, and one whose pull request closes is removed as a running one is.
 _Avoid_: Paused, stopped, sleeping, scaled to zero
 
 **Cloud Deployment Stage**:
