@@ -38,9 +38,10 @@ function nextFreePrefix(base: string, taken: Iterable<string>) {
 }
 
 type PublicDomainEditor =
-  | { kind: "managed"; index: number }
+  // By prefix and id, not list index: a concurrent change can reorder the lists under an open dialog.
+  | { kind: "managed"; prefix: string }
   | { kind: "generate" }
-  | { kind: "route"; index: number }
+  | { kind: "route"; id: string }
   | { kind: "add" }
   | null;
 
@@ -78,16 +79,16 @@ export function ServiceNetworkingSection({
     });
   }
 
-  const takenPrefixesFor = (index: number | null) => [
+  const takenPrefixesFor = (editing: string | null) => [
     ...managedPrefixesInUse,
     ...managedList
-      .filter((_, current) => current !== index)
-      .map((managed) => managed.prefix),
+      .map((managed) => managed.prefix)
+      .filter((prefix) => prefix !== editing),
   ];
   const editedManaged =
-    editor?.kind === "managed" ? managedList[editor.index] : undefined;
+    editor?.kind === "managed" ? managedList.find((managed) => managed.prefix === editor.prefix) : undefined;
   const editedRoute =
-    editor?.kind === "route" ? routes[editor.index] : undefined;
+    editor?.kind === "route" ? routes.find((route) => route.id === editor.id) : undefined;
 
   return (
     <FieldGroup>
@@ -130,7 +131,7 @@ export function ServiceNetworkingSection({
                 portLabel={portLabel(managed.targetPort)}
                 status={status}
                 changed={managedDiff.changed}
-                onEdit={() => setEditor({ kind: "managed", index })}
+                onEdit={() => setEditor({ kind: "managed", prefix: managed.prefix })}
                 onDelete={() => commitManaged(managedList.filter((_, current) => current !== index))}
               />
             );
@@ -154,7 +155,7 @@ export function ServiceNetworkingSection({
                 status={status}
                 dnsRecords={dnsRecordsFor(route.hostname, clusterDomain, ingressAddresses)}
                 changed={routesDiff.changed}
-                onEdit={() => setEditor({ kind: "route", index })}
+                onEdit={() => setEditor({ kind: "route", id: route.id })}
                 onDelete={() => commitRoutes(routes.filter((_, current) => current !== index))}
               />
             );
@@ -200,13 +201,13 @@ export function ServiceNetworkingSection({
           <ManagedDomainDialog
             managed={editedManaged}
             clusterDomain={clusterDomain}
-            takenPrefixes={takenPrefixesFor(editor.index)}
+            takenPrefixes={takenPrefixesFor(editor.prefix)}
             defaultTargetPort={defaultTargetPort}
             onClose={() => setEditor(null)}
             onSubmit={(next) =>
               commitManaged(
-                managedList.map((managed, index) =>
-                  index === editor.index ? next : managed
+                managedList.map((managed) =>
+                  managed.prefix === editor.prefix ? next : managed
                 )
               )
             }
@@ -226,8 +227,8 @@ export function ServiceNetworkingSection({
             onClose={() => setEditor(null)}
             onSubmit={(next) =>
               commitRoutes(
-                routes.map((route, index) =>
-                  index === editor.index ? next : route
+                routes.map((route) =>
+                  route.id === editor.id ? next : route
                 )
               )
             }

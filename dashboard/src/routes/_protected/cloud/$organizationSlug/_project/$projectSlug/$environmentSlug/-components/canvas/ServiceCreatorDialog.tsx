@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -32,8 +33,10 @@ export function ServiceCreatorDialog({
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
   ) => void | Promise<void>;
 }) {
+  // Escape or a click outside can't close it mid-create: the new service opens once it's saved.
+  const [creating, setCreating] = useState(false);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (next || !creating) onOpenChange(next); }}>
       <DialogContent
         className="max-w-md overflow-hidden"
         padding="none"
@@ -55,6 +58,7 @@ export function ServiceCreatorDialog({
           canvasPosition={position}
           onCreateVolume={onCreateVolume}
           onCreated={onCreated}
+          onPendingChange={setCreating}
         />
       </DialogContent>
     </Dialog>
