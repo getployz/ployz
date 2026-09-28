@@ -177,6 +177,8 @@ jobs:
     permissions:
       contents: read
       actions: write
+      # Release tags still publish the Cloud image.
+      packages: write
     secrets: inherit
 
   release-contracts:
