@@ -210,6 +210,7 @@ const loadTeardownGraph = Effect.fn("Teardown.loadGraph")(function* (
     if (defaultEnvironment !== undefined) {
       return yield* new Conflict({
         message: defaultEnvironmentRefusal(defaultEnvironment.name),
+        userFacing: true,
       });
     }
     return { projects: [access.project], environments };
@@ -342,7 +343,8 @@ const reachableRuntime = Effect.fn("Teardown.reachableRuntime")(function* (acces
   const runtime = yield* inspectRuntime(access.organization.id);
   if (access.scope !== "organization" && runtime.cluster.kind === "unreachable") {
     return yield* new Validation({
-      message: "The runtime is unreachable. Reconnect it before tearing down this target.",
+      message: "Can't reach your servers. Check they're online, then try again.",
+      userFacing: true,
     });
   }
   return runtime;
