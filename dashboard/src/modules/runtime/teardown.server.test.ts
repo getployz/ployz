@@ -90,6 +90,31 @@ describe("teardown provider outcomes", () => {
     }),
   );
 
+  effectIt.effect("finds nothing to destroy where the servers have nothing", () =>
+    Effect.gen(function* () {
+      const client = asTestDouble<Client>()({
+        destroyProject: async () => {
+          throw Object.assign(new Error("Project 'app-production' was not found in this Cluster observation. No changes made."), {
+            code: "not_found", details: null,
+          });
+        },
+        close: async () => undefined,
+      });
+      const runtime = makeOrganizationRuntimeLayer(() =>
+        Effect.succeed({ kind: "ready", generation: "grant-1", connections: [{ management: "ployz1:candidate" }] }),
+        noPairingChanges,
+      ).pipe(Layer.provide(makePloyzLayer({ connect: async () => client })));
+
+      const result = yield* Effect.scoped(destroyEnvironmentActivity({
+        organizationId: "org-1",
+        target: { environmentId: "env-1", projectId: "project-1", projectName: "app-production", cloudName: "acme/app/Production" },
+        confirmDataLoss: [],
+      })).pipe(Effect.provide(runtime));
+
+      expect(result).toEqual({ type: "success", completed: [] });
+    }),
+  );
+
   it("keeps its pending row retryable when dispatch fails", async () => {
     const failing = new Inngest({ id: "teardown-dispatch-fail-test" });
     failing.send = async () => {

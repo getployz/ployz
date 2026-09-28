@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { Ployz, PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { Ployz, PloyzProviderError, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   enrollmentExpiry,
@@ -294,8 +294,7 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
       }));
       // The assignment commits before dispatch; a lost response is never replayed.
       const registration = yield* session.register(assignment).pipe(Effect.catch((error): Effect.Effect<never, Conflict | PloyzProviderError> => {
-        const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))(error.cause);
-        return Option.isSome(rpc) && rpc.value.code === "conflict"
+        return rpcErrorCode(error) === "conflict"
           ? Effect.fail(new Conflict({ message: "The saved enrollment assignment conflicts with the Entry Machine's current observation." }))
           : Effect.fail(error);
       }));
