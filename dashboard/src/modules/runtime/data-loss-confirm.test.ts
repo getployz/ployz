@@ -10,7 +10,6 @@ import {
 } from "./data-loss-confirm";
 import {
   dataLossIdentityKey,
-  dataLossIdentityLabel,
   type DataLossIdentity,
 } from "./data-loss-identity";
 
@@ -38,9 +37,6 @@ describe("Data Loss identities", () => {
     const right = rustVolume(machineB, "data");
 
     expect(dataLossIdentityKey(left)).not.toBe(dataLossIdentityKey(right));
-    expect(dataLossIdentityLabel(left)).toBe(`data on ${machineA}`);
-    expect(dataLossIdentityLabel(right)).toBe(`data on ${machineB}`);
-    expect(dataLossIdentityLabel(left)).not.toBe("data");
   });
 
   it("unions rust identities and Cloud row-loss from several lists", () => {

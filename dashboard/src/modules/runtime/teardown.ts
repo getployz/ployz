@@ -18,7 +18,6 @@ export const TEARDOWN_SCOPES = [
 
 export type TeardownScope = (typeof TEARDOWN_SCOPES)[number];
 
-/** Why a Branch was closed: by hand, after merging it, or idle for too long. */
 /** Why an Environment that is its Project's Default Environment can't be torn down. */
 export const defaultEnvironmentRefusal = (name: string) => `${name} is the Default Environment. Choose another Default Environment first.`;
 
@@ -204,12 +203,12 @@ export function teardownCompletedDescription(
   switch (membership) {
     case "unknown":
       return outcome.pairingRevocationUnconfirmed
-        ? "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained."
-        : "Cloud management was dropped. Runtime membership remains unknown.";
+        ? "Ployz can't manage your servers anymore, but not all of them confirmed it."
+        : "Ployz let go of your servers without resetting them.";
     case "verified_zero":
-      return "The cluster was removed. Cloud recorded verified zero.";
+      return "Your servers were reset.";
     case "untouched":
-      return "Confirmed rust work ran, then Cloud rows were dropped.";
+      return "Everything in it is gone.";
     default: {
       const exhaustive: never = membership;
       return exhaustive;

@@ -196,15 +196,13 @@ describe("teardown Data Loss", () => {
         pairingRevocationUnconfirmed: false,
         runtimeMembership: "verified_zero",
       }),
-    ).toBe("The cluster was removed. Cloud recorded verified zero.");
+    ).toBe("Your servers were reset.");
     expect(
       teardownCompletedDescription({
         pairingRevocationUnconfirmed: true,
         runtimeMembership: "unknown",
       }),
-    ).toBe(
-      "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained.",
-    );
+    ).toBe("Ployz can't manage your servers anymore, but not all of them confirmed it.");
   });
 
   it("requires the current teardown target shape", () => {

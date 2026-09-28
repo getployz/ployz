@@ -54,11 +54,6 @@ export function VariableRow({
     dispatch({ type: "saveSucceeded" });
   }
 
-  function handleDelete() {
-    collection.delete(variable.id);
-    dispatch({ type: "deleteDialogChanged", open: false });
-  }
-
   function handleSeal() {
     if (variable.value.type !== "plain") return;
     onSealVariable({ ...variable, value: variable.value });
@@ -98,9 +93,7 @@ export function VariableRow({
         plainValue={plainValue}
         showMetadata={showMetadata}
         onCancelEdit={() => dispatch({ type: "editCancelled" })}
-        onOpenDeleteDialog={() =>
-          dispatch({ type: "deleteDialogChanged", open: true })
-        }
+        onDelete={() => collection.delete(variable.id)}
         onOpenEdit={(value) =>
           dispatch({ type: "editOpened", value })
         }
@@ -116,15 +109,10 @@ export function VariableRow({
       <VariableRowDialogs
         variableKey={variable.key}
         confirmSealOpen={state.confirmSealOpen}
-        confirmDeleteOpen={state.confirmDeleteOpen}
         onSealOpenChange={(open) =>
           dispatch({ type: "sealDialogChanged", open })
         }
-        onDeleteOpenChange={(open) =>
-          dispatch({ type: "deleteDialogChanged", open })
-        }
         onConfirmSeal={handleSeal}
-        onConfirmDelete={handleDelete}
       />
     </div>
   );

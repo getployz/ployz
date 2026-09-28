@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { ChevronRightIcon, GitBranchIcon } from "lucide-react";
 import { Field, FieldContent, FieldDescription, FieldLabel } from "#/components/ui/field";
@@ -9,12 +10,17 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useKeepBranch } from "#/modules/branches/branch.collection";
 import { defaultPrEnvironmentPlan } from "#/modules/pr-environments/repositories";
 
-/** A Branch's own settings: where it came from and lands, and whether it's kept. A PR Environment has no Keep. */
-export function BranchSettingsSection({ organizationSlug, projectSlug, branch, parent }: {
+/**
+ * A Branch's own settings: where it came from and lands, whether it's kept, and how it closes. A PR Environment has no
+ * Keep.
+ */
+export function BranchSettingsSection({ organizationSlug, projectSlug, branch, parent, children }: {
   organizationSlug: string;
   projectSlug: string;
   branch: BranchRow;
   parent: { name: string; namespace: string };
+  /** Its close row, when it closes from here rather than from Danger. */
+  children?: ReactNode;
 }) {
   const keepBranch = useKeepBranch(organizationSlug);
   const { data: plans } = useLiveSuspenseQuery(getPrEnvironmentPlansCollection(organizationSlug, useCollectionScope()));
@@ -45,6 +51,7 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
         <Switch id="keep-branch" checked={branch.kept}
           onCheckedChange={(kept) => keepBranch(branch.environmentId, kept)} />
       </Field>}
+      {children}
     </section>
   );
 }

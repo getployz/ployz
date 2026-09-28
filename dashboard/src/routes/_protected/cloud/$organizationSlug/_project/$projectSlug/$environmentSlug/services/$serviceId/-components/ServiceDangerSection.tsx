@@ -19,8 +19,7 @@ export function ServiceDangerSection({
           Delete this service
         </div>
         <p className="mt-1 text-sm text-destructive/85">
-          Permanently deletes all deployments and removes it from this
-          environment. This cannot be undone.
+          Deleted on your next deploy.
         </p>
       </div>
       <Button

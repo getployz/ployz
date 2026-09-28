@@ -40,7 +40,9 @@ import {
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
 import type { CanvasResourceNode } from "./types";
-import { DestructiveConfirmationDialog } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { DestructiveChangesDialog } from "./DestructiveChangesDialog";
+import { getServiceIcon } from "./service-node-helpers";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
 
 // Shared styling for every canvas edge: solid, primary colour, matching arrow. Links into Live Nodes are dashed.
@@ -77,6 +79,7 @@ export function CanvasFlow({
   const [destructiveConfirmationOpen, setDestructiveConfirmationOpen] =
     useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const branch = useWorkspace(params.organizationSlug).branches.find((row) => row.environmentId === environmentId);
   const navigate = useNavigate();
   const locationKey = useLocation({ select: (location) => location.href });
   const { onNodeDrag } = useCanvasPositionMutation({
@@ -153,6 +156,8 @@ export function CanvasFlow({
       : null,
     destructiveServiceIds,
     deletedDeployedVolumeIds,
+    // A Branch that isn't kept deletes with no typed confirmation: its Own Copies started empty.
+    confirmsRemovals: branch === undefined || branch.kept,
     commitMessage,
     setCommitMessage,
     setDestructiveConfirmationOpen,
@@ -279,19 +284,19 @@ export function CanvasFlow({
           await volumeCreator.createVolume(input);
         }}
       />
-      <DestructiveConfirmationDialog
+      <DestructiveChangesDialog
         open={destructiveConfirmationOpen}
         onOpenChange={setDestructiveConfirmationOpen}
-        confirmPhrase={params.environmentSlug}
-        serviceNames={destructiveServiceNames}
-        title={reviewAction === "deploy" ? "Deploy destructive changes?" : "Save destructive changes?"}
-        description={reviewAction === "deploy" ? "Review every Service and Volume removal. Confirmation publishes this revision and deploys it, including the reviewed removals." : "Review every Service and Volume removal. Confirmation saves this revision without changing running resources."}
-        actionLabel={reviewAction === "deploy" ? "Deploy removals" : "Save removals"}
-        pendingActionLabel={reviewAction === "deploy" ? "Deploying..." : "Saving..."}
-        callbacks={{
-          load: prepareDestructiveReview,
-          confirm: confirmDestructiveAction,
-        }}
+        organizationSlug={params.organizationSlug}
+        environmentId={environmentId}
+        action={reviewAction}
+        services={destructiveServiceIds.map((id, index) => {
+          const service = servicesWithBoundEnv.find((row) => row.service.id === id)?.service;
+          return { kind: "service" as const, name: destructiveServiceNames[index] ?? id, icon: service && getServiceIcon(service) };
+        })}
+        volumes={deletedDeployedVolumeIds.map((id) => volumeResourcesById.get(id)?.resource.resource.name ?? id)}
+        prepare={prepareDestructiveReview}
+        confirm={confirmDestructiveAction}
       />
     </>
   );

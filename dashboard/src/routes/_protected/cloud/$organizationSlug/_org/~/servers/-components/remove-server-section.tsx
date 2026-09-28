@@ -2,16 +2,15 @@ import { useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
-import {
-  MachineRemoveDataLossDialog,
-  type DataLossConfirmResult,
-} from "#/components/data-loss/data-loss-confirm-dialog";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import { Button } from "#/components/ui/button";
 import {
   enqueueMachineRemoveServerFn,
   getMachineRemoveAttemptServerFn,
   loadMachineDataLossServerFn,
 } from "#/modules/machines/machine-removal.functions";
+import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
+import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 
@@ -20,7 +19,7 @@ async function waitForMachineRemoveAttempt(
   organizationSlug: string,
   attemptId: string,
   signal: AbortSignal,
-): Promise<"removed" | "aborted" | DataLossConfirmResult> {
+): Promise<"removed" | "aborted" | { missing: DataLossIdentity[] }> {
   for (;;) {
     if (signal.aborted) return "aborted";
     const attempt = await getMachineRemoveAttemptServerFn({
@@ -35,10 +34,7 @@ async function waitForMachineRemoveAttempt(
       case "succeeded":
         return "removed";
       case "missing_identities":
-        return {
-          state: "missing_identities",
-          identities: attempt.missingIdentities,
-        };
+        return { missing: attempt.missingIdentities };
       case "failed":
       case "cancelled":
         throw new Error(attempt.failureMessage);
@@ -50,7 +46,13 @@ async function waitForMachineRemoveAttempt(
   }
 }
 
-/** Removing a Server is destructive and waits on the runtime; once it is gone, the page returns to Servers. */
+const volumes = (rust: DataLossList["rust"]) =>
+  rust.map((identity): DeletionItem => ({ kind: "volume", name: identity.id.name }));
+
+/**
+ * Removing a Server resets it and takes it out of the cluster; its volumes stay on its disk, unused. It waits on the
+ * runtime, and once the Server is gone the page returns to Servers.
+ */
 export function RemoveServerSection({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -66,7 +68,7 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
       <h2 id="remove-server-heading" className="sr-only">Remove server</h2>
       <DangerRow
         title={`Remove ${machine.name}`}
-        description="Deletes the data stored on it and resets it. Services that run only here stop."
+        description="Resets it and takes it out of the cluster. Services that run only here stop."
         action={
           <Button variant="destructive" className="shrink-0" onClick={() => onOpenChange(true)}>
             <Trash2Icon data-icon="inline-start" />
@@ -74,28 +76,36 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
           </Button>
         }
       />
-      <MachineRemoveDataLossDialog
+      <DeletionDialog
         open={open}
         onOpenChange={onOpenChange}
-        confirmPhrase={machine.name}
+        title={`Remove ${machine.name}?`}
+        place={machine.name}
+        confirmLabel="Remove"
+        sentence={<>Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.</>}
         callbacks={{
-          load: () =>
-            loadMachineDataLossServerFn({
+          load: async () => {
+            const { rust } = await loadMachineDataLossServerFn({
               data: { organizationSlug, machineId: machine.id },
-            }),
-          confirm: async (rust) => {
+            });
+            return { items: volumes(rust), evidence: rust };
+          },
+          confirm: async (identities) => {
             abortRef.current?.abort();
             const abort = new AbortController();
             abortRef.current = abort;
             const queued = await enqueueMachineRemoveServerFn({
-              data: { organizationSlug, machineId: machine.id, confirmDataLoss: rust },
+              data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
             });
             const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id, abort.signal);
+            if (result === "aborted") return;
             if (result === "removed") {
-              toast.success(`${machine.name} removed`);
+              toast(`${machine.name} removed`);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
+              return;
             }
-            return result === "removed" || result === "aborted" ? undefined : result;
+            const { rust } = withMissingDataLossIdentities({ rust: identities, cloud: [] }, result.missing);
+            return { items: volumes(rust), evidence: rust };
           },
         }}
       />
