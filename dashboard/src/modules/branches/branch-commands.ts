@@ -93,7 +93,7 @@ export function useUpdateBranch(organizationSlug: string) {
       save: (revision) => updateBranchServerFn({ data: { organizationSlug, environmentId, revision } }),
     }),
     makeOwnCopy: (environmentId: string, lineageId: string) => queue.enqueue({
-      environmentId, failureMessage: "Could not make it an own copy.", afterSave,
+      environmentId, failureMessage: "Could not make it separate.", afterSave,
       save: (revision) => makeOwnCopyServerFn({ data: { organizationSlug, environmentId, revision, lineageId } }),
     }),
   };

@@ -1,26 +1,26 @@
 import { useState } from "react";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel, FieldLegend, FieldSet } from "#/components/ui/field";
+import { FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
+import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
 import { useDeploymentAttempt } from "#/modules/deployments/deployment.collection";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { ancestors } from "#/modules/project/environment-tree";
 import { useCreateBranch } from "#/modules/branches/branch-commands";
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { branchHostnameSuffix, branchNameError, branchSetupCommands, branchNamespace, defaultBranchName, ownLineages } from "#/modules/branches/branch-plan";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useBranchPicking } from "./branch-picking";
-import { DataSection } from "./DataSection";
 import { NameSection } from "./NameSection";
-import { WhatComesAlongSection } from "./WhatComesAlongSection";
+import { ServicesSection } from "./ServicesSection";
+import { SetupSection } from "./SetupSection";
 
 /**
- * "New branch of X": pick what gets an Own Copy, name it, create and deploy it, or keep it as a starting point. The picks
+ * "New branch of X": name it, pick what gets an Own Copy, create and deploy it, or just create it as a starting point. The picks
  * live in `BranchPickingProvider`, shared with the canvas under the panel. `focus` is the lineage it opened on. With `fix`,
  * a failed attempt, the focused service carries the change that failed while it keeps its own copy (Fix it on a branch).
  */
@@ -37,15 +37,12 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
   const taken = new Set(environments.map((environment) => environment.namespace));
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
-  const [deployNow, setDeployNow] = useState(true);
   const [setupCommands, setSetupCommands] = useState(() => document?.branchSetupCommands ?? []);
   if (!picking) return null;
 
-  const { parent, intent, plan, presets, focus, picks } = picking;
+  const { parent, intent, plan, focus, picks } = picking;
   const own = ownLineages(plan);
   const nameOf = (lineage: string) => lineageName(lineage, environmentId);
-  const rootId = ancestors(parent.id, branches).at(-1);
-  const root = environments.find((environment) => environment.id === rootId) ?? parent;
 
   // The failed service, while it keeps its own copy: its node in the attempt, and the Parent's service it failed on.
   const failedService = intent.services.find((node) => node.lineageId === initialFocus);
@@ -63,18 +60,18 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
     .flatMap((node) => node.config.managedHostnames.map(({ prefix }) =>
       `${prefix.endsWith(fromSuffix) ? prefix.slice(0, prefix.length - fromSuffix.length) : prefix}${intoSuffix}${clusterDomain ? `.${clusterDomain}` : ""}`));
 
-  const blocked = own.length === 0 ? "Pick something to copy" : null;
+  const blocked = own.length === 0 ? "Pick something to change" : null;
+  const submit = (deployNow: boolean) => {
+    if (blocked || nameError || create.isPending) return;
+    create.mutate({
+      organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
+      fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
+      // Only a Branch with an Own Copy of data shows Setup command; a command for a service that isn't own is dropped.
+      setupCommands: branchSetupCommands(plan, setupCommands),
+    });
+  };
   return (
-    <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => {
-      event.preventDefault();
-      if (blocked || nameError || create.isPending) return;
-      create.mutate({
-        organizationSlug: params.organizationSlug, parentEnvironmentId: parent.id, name: branchName.trim(), focus, picks, keep, deployNow,
-        fix: failedNode && fix ? { deploymentId: fix, serviceId: failedNode.nodeId } : undefined,
-        // Only a Branch with an Own Copy of data shows Then run; a command for a service that isn't own is dropped.
-        setupCommands: branchSetupCommands(plan, setupCommands),
-      });
-    }}>
+    <form className="flex h-full min-h-0 flex-col" onSubmit={(event) => { event.preventDefault(); submit(true); }}>
       <CanvasInspectorHeader params={params}>
         <span className="font-medium">{failedNode ? `Fix ${failedNode.name} on a branch` : "New branch"}</span>
         <p className="text-sm break-words text-muted-foreground">
@@ -82,40 +79,32 @@ export function NewBranchPanel({ focus: initialFocus, fix }: { focus: string | n
             ? `: ${failedChange.label.toLowerCase()} ${failedChange.newValue}${moreChanges > 0 ? ` and ${moreChanges} more` : ""}` : ""}` : null}
         </p>
       </CanvasInspectorHeader>
-      <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
-        <WhatComesAlongSection plan={plan} presets={presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr} parentName={parent.name}
-          ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle} />
-        <DataSection plan={plan} liveOwner={picking.liveOwner} parentName={parent.name} rootName={root.id === parent.id ? null : root.name} nameOf={nameOf}
-          setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
+      <FieldGroup className="min-h-0 flex-1 gap-8 overflow-y-auto p-4">
+        <FieldDescription>A copy of {parent.name} to change things in without touching it.</FieldDescription>
         <NameSection name={branchName} onName={setName} error={nameError} addresses={addresses} />
+        <ServicesSection picking={picking} nameOf={nameOf} target={branchName.trim() || "this branch"} who="This branch" />
+        <SetupSection plan={plan} nameOf={nameOf} setupCommands={setupCommands} onSetupCommands={setSetupCommands} />
         <FieldSet>
-          <FieldLegend>When it's done</FieldLegend>
-          <FieldLabel htmlFor="branch-keep">
-            <Field orientation="horizontal">
-              <FieldContent>
-                <span className="font-medium">Keep it after saving</span>
-                <FieldDescription>Otherwise it can be deleted after saving, and closes after 7 days without a deploy.</FieldDescription>
-              </FieldContent>
-              <Switch id="branch-keep" checked={keep} onCheckedChange={setKeep} />
-            </Field>
-          </FieldLabel>
+          <FieldLegend>After saving</FieldLegend>
+          <FieldDescription>Otherwise it can be deleted once its changes are saved, and closes after 7 days without a deploy.</FieldDescription>
+          <Item variant="muted" render={<label htmlFor="branch-keep" />}>
+            <ItemMedia><Switch id="branch-keep" checked={keep} onCheckedChange={setKeep} /></ItemMedia>
+            <ItemContent><ItemTitle>Keep it after saving</ItemTitle></ItemContent>
+          </Item>
         </FieldSet>
-        <FieldLabel htmlFor="branch-deploy-now">
-          <Field orientation="horizontal">
-            <FieldContent>
-              <span className="font-medium">Deploy it now</span>
-              {!deployNow && <FieldDescription>Saved as a starting point.</FieldDescription>}
-            </FieldContent>
-            <Switch id="branch-deploy-now" checked={deployNow} onCheckedChange={setDeployNow} />
-          </Field>
-        </FieldLabel>
       </FieldGroup>
       <div className="flex shrink-0 flex-col gap-2 border-t p-4">
         {create.isError && <FieldError>{create.error.message}</FieldError>}
-        <Button type="submit" disabled={Boolean(blocked || nameError) || create.isPending}>
-          {create.isPending && <Spinner data-icon="inline-start" />}
-          {blocked ?? (deployNow ? "Create and deploy" : "Create without deploying")}
-        </Button>
+        {blocked ? <Button type="submit" disabled>{blocked}</Button> : (
+          <div className="flex gap-2">
+            <Button type="submit" className="flex-1" disabled={Boolean(nameError) || create.isPending}>
+              {create.isPending && create.variables?.deployNow && <Spinner data-icon="inline-start" />}Create and deploy
+            </Button>
+            <Button type="button" variant="outline" className="flex-1" disabled={Boolean(nameError) || create.isPending} onClick={() => submit(false)}>
+              {create.isPending && !create.variables?.deployNow && <Spinner data-icon="inline-start" />}Just create
+            </Button>
+          </div>
+        )}
       </div>
     </form>
   );

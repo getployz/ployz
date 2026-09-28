@@ -60,6 +60,12 @@ function usePickingState(newBranch: { focus: string | null } | null, prPlan: { r
     /** The Environment a Live Node here comes from. */
     ownerName: (lineage: string) => ownerOf(parent.id, lineage)?.environment.name ?? parent.name,
     setPreset: (preset: BranchPreset) => setPicks({ preset }, focus),
+    /** The node's role if it were toggled, for the choice sheet. */
+    toggled(lineage: string) {
+      const on = !own.includes(lineage);
+      return planBranch({ ...planned, picks: { own: on ? [...own, lineage] : own.filter((candidate) => candidate !== lineage) } })
+        .nodes.find((node) => node.lineageId === lineage);
+    },
     toggle(lineage: string) {
       const on = !own.includes(lineage);
       setPicks({ own: on ? [...own, lineage] : own.filter((candidate) => candidate !== lineage) },
@@ -83,9 +89,11 @@ export function BranchPickingProvider({ newBranch, prPlan, children }: {
 /** The open panel's picks; null when nothing is being picked. */
 export const useBranchPicking = () => use(BranchPickingContext);
 
+type PlanNode = BranchPlan["nodes"][number];
+
 export type NodePick = {
-  role: BranchPlan["nodes"][number]["role"];
-  /** Words for what the node becomes: "Own copy", "Own copy · from the PR", "production's, live", "Left out". */
+  role: PlanNode["role"];
+  /** Words for what the node becomes: "Separate", "New, empty", "PR's code", "production's", "Not included". */
   label: string;
   /** It runs the pull request's code, another copy needs it, or the Parent doesn't own it: clicking changes nothing. */
   fixed: boolean;
@@ -94,17 +102,21 @@ export type NodePick = {
   toggle: () => void;
 };
 
-/** What a canvas node becomes in the Branch being picked; null when nothing is being picked or the plan omits it. */
-export function useNodePick(lineageId: string | undefined): NodePick | null {
-  const picking = useBranchPicking();
-  const node = picking?.plan.nodes.find((candidate) => candidate.lineageId === lineageId);
-  if (!picking || !node) return null;
+/** What `node` becomes in the Branch being picked. */
+export function nodePick(picking: BranchPicking, node: PlanNode): NodePick {
   return {
     role: node.role,
-    label: node.role === "live" ? `${picking.ownerName(node.lineageId)}'s, live` : node.role === "left_out" ? "Left out"
-      : picking.fromPr.has(node.lineageId) ? "Own copy · from the PR" : "Own copy",
+    label: node.role === "live" ? `${picking.ownerName(node.lineageId)}'s` : node.role === "left_out" ? "Not included"
+      : picking.fromPr.has(node.lineageId) ? "PR's code" : node.nodeType === "volume" ? "New, empty" : "Separate",
     fixed: picking.fixed(node),
     ownsData: node.role === "live" && (picking.liveOwner(node.lineageId)?.ownsData ?? node.nodeType === "volume"),
     toggle: () => picking.toggle(node.lineageId),
   };
+}
+
+/** What a canvas node becomes in the Branch being picked; null when nothing is being picked or the plan omits it. */
+export function useNodePick(lineageId: string | undefined): NodePick | null {
+  const picking = useBranchPicking();
+  const node = picking?.plan.nodes.find((candidate) => candidate.lineageId === lineageId);
+  return picking && node ? nodePick(picking, node) : null;
 }

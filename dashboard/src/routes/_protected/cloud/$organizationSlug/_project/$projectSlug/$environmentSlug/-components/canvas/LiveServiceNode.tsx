@@ -12,9 +12,9 @@ import { LiveLabel } from "./PickableNode";
 import { liveNodeId } from "./nodes";
 import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 
-/** "production's, live", or why it has no owner. */
+/** "production's", or why it has no owner. */
 export const liveNodeLabel = (liveNode: LiveNode) =>
-  liveNode.owner ? `${liveNode.owner.environment.name}'s, live` : "Live, but nothing runs it";
+  liveNode.owner ? `${liveNode.owner.environment.name}'s` : "Shared, but nothing runs it";
 
 /** How a Live Node is doing where it runs. */
 export function useLiveNodeHealth(liveNode: LiveNode) {
