@@ -13,8 +13,10 @@ import {
   teardownCompletedDescription,
   teardownIsRetryable,
   teardownOutcome,
+  TeardownTargetInput,
   type TeardownTargets,
 } from "./teardown";
+import { strictValidator } from "#/server/tanstack";
 
 const machineA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
 const machineB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as MachineId;
@@ -227,4 +229,16 @@ describe("teardown Data Loss", () => {
     ).toThrow();
   });
 
+});
+
+describe("TeardownTargetInput", () => {
+  it("accepts the unused target key as undefined, as the client sends it", () => {
+    const input = {
+      organizationSlug: "acme",
+      scope: "environment",
+      environmentId: "0190a0a0-0000-7000-8000-000000000000",
+      projectSlug: undefined,
+    };
+    expect(strictValidator(TeardownTargetInput)["~standard"].validate(input)).toEqual({ value: input });
+  });
 });

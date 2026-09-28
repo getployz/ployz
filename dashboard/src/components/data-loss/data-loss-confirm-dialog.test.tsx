@@ -76,7 +76,7 @@ describe("DataLossConfirmDialog", () => {
     );
 
     const cloud = await screen.findByRole("region", {
-      name: "Cloud records to remove (not sent to rust)",
+      name: "Cloud records to remove",
     });
     expect(within(cloud).getByText("environment")).toBeTruthy();
     expect(within(cloud).getByText("acme/web/production")).toBeTruthy();
@@ -179,6 +179,31 @@ describe("DataLossConfirmDialog", () => {
       (screen.getByLabelText(/Type node-1 to confirm/) as HTMLInputElement).value,
     ).toBe("");
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("shows a server function's public error and gathers again on Retry", async () => {
+    const load = vi
+      .fn()
+      .mockRejectedValueOnce({
+        _tag: "PublicError",
+        code: "VALIDATION_FAILED",
+        message: "The request is invalid.",
+      })
+      .mockResolvedValueOnce(teardownList);
+    render(
+      <TeardownDataLossDialog
+        open
+        onOpenChange={vi.fn()}
+        confirmPhrase="web"
+        callbacks={{ load, confirm: vi.fn() }}
+      />,
+    );
+
+    expect(await screen.findByText("The request is invalid.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText(`data on ${machineA}`)).toBeTruthy();
+    expect(load).toHaveBeenCalledTimes(2);
   });
 
   it("does not echo the load into confirm without the typed phrase", async () => {

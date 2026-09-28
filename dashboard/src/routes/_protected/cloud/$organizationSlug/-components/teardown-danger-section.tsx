@@ -188,7 +188,7 @@ function teardownStatusCopy(attempt: TeardownAttemptSummary) {
     case "running":
       return {
         title: "Tearing down",
-        description: "Inngest is destroying confirmed Data Loss, then Cloud rows.",
+        description: "Destroying the confirmed Data Loss, then the Cloud records.",
       };
     case "partial":
       return {
