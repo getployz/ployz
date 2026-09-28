@@ -32,10 +32,10 @@ export function compileSdkPreparationInput(input: {
   variableProducers?: readonly EnvironmentSnapshotVariableProducer[];
 }) {
   const { variableProducers = [], ...deployment } = input;
-  return { ...deployment, dependencies: deploymentDependencies(input.snapshots, variableProducers) };
+  // Cloud freezes the complete Attempt Target, including removal of old service names.
+  return { ...deployment, selected: [], dependencies: deploymentDependencies(input.snapshots, variableProducers) };
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
   return parseRuntimePreview(value);
 }
-

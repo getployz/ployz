@@ -40,6 +40,8 @@ pub struct LowerDeploymentInput {
     volumes: Vec<LowerDeploymentVolume>,
     #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
+    /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
+    selected: Option<Vec<ServiceAttempt>>,
 }
 
 #[derive(Deserialize)]
@@ -286,12 +288,14 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             .map_err(lowering_error)?;
         target.push(spec);
     }
-    let selected = target
-        .iter()
-        .map(|spec| ServiceAttempt {
-            name: spec.name.clone(),
-        })
-        .collect();
+    let selected = input.selected.unwrap_or_else(|| {
+        target
+            .iter()
+            .map(|spec| ServiceAttempt {
+                name: spec.name.clone(),
+            })
+            .collect()
+    });
     Ok(DeployIntent::new(
         input.project_name,
         target,

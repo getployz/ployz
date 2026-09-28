@@ -147,7 +147,7 @@ describe("deploy intent lowering", () => {
         force_recreate: false,
         skip_health_monitor: false,
         placement_seed: 0,
-        selected: [{ name: "api" }],
+        selected: [],
       },
     });
   });
@@ -173,7 +173,7 @@ describe("deploy intent lowering", () => {
       volumes: [{ volumeResourceId: tombstonedVolumeResourceId }],
     });
 
-    expect(intent.options.selected).toEqual([{ name: "api" }]);
+    expect(intent.options.selected).toEqual([]);
     expect(intent.target).toHaveLength(1);
     const spec = intent.target[0];
     expect(spec).toMatchObject({ name: "api" });
