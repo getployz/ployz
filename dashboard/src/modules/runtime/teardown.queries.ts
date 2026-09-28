@@ -1,4 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
+import { isNotFound } from "#/lib/error-message";
 import { teardownIsBusy, type TeardownScope } from "#/modules/runtime/teardown";
 import { loadLatestTeardownAttemptServerFn } from "#/modules/runtime/teardown.functions";
 
@@ -25,5 +26,7 @@ export function latestTeardownAttemptQueryOptions(
       const row = query.state.data;
       return row != null && teardownIsBusy(row.status) ? 2_000 : false;
     },
+    // Not found means it's gone, which retrying won't change.
+    retry: (failures, error) => !isNotFound(error) && failures < 3,
   });
 }
