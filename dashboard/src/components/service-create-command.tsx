@@ -1,7 +1,7 @@
 import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { preloadGithubRepos } from "#/modules/github/github.collection";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
@@ -164,6 +164,13 @@ function GitPanel(props: GitPanelProps) {
   return <GitRepoSelector {...props} />;
 }
 
+type CreationTarget = {
+  projectSlug: string;
+  environmentSlug: string;
+  environmentId: string;
+  canvasPosition: { x: number; y: number };
+};
+
 function useServiceCreateActions({
   props,
   setPanel,
@@ -239,9 +246,7 @@ function useServiceCreateActions({
 
   function resetPanelState() {
     setQuery("");
-    createEmptyProjectMutation.reset();
-    createServiceMutation.reset();
-    createVolumeMutation.reset();
+    setFailure(null);
   }
 
   function setActivePanel(nextPanel: InitialPanel) {
@@ -249,14 +254,25 @@ function useServiceCreateActions({
     setPanel({ kind: nextPanel });
   }
 
-  const isPending =
-    createEmptyProjectMutation.isPending ||
-    createServiceMutation.isPending ||
-    createVolumeMutation.isPending;
-  const error =
-    createEmptyProjectMutation.error ??
-    createServiceMutation.error ??
-    createVolumeMutation.error;
+  // A retry after a failed step reuses the project already created instead of making another.
+  const createdProjectRef = useRef<CreationTarget | null>(null);
+  // Stays set from the click until navigation finishes, covering the gaps between mutations.
+  const [creating, setCreating] = useState(false);
+  // Every command runs through whileCreating, so this holds each failure, mutation or not.
+  const [failure, setFailure] = useState<unknown>(null);
+
+  async function whileCreating(action: () => Promise<void>) {
+    if (creating) return;
+    setCreating(true);
+    setFailure(null);
+    try {
+      await action();
+    } catch (error) {
+      setFailure(error);
+    } finally {
+      setCreating(false);
+    }
+  }
 
   async function getServiceModeEnvironment() {
     if (props.mode !== "service") {
@@ -276,17 +292,19 @@ function useServiceCreateActions({
     };
   }
 
-  async function createProjectTarget() {
+  async function createProjectTarget(): Promise<CreationTarget> {
+    if (createdProjectRef.current) return createdProjectRef.current;
     const receipt = await createEmptyProjectMutation.mutateAsync();
-    return {
+    createdProjectRef.current = {
       projectSlug: receipt.data.project.slug,
       environmentSlug: receipt.data.environment.namespace,
       environmentId: receipt.data.environment.id,
       canvasPosition: { x: 0, y: 0 },
     };
+    return createdProjectRef.current;
   }
 
-  async function getCreationTarget() {
+  async function getCreationTarget(): Promise<CreationTarget> {
     return props.mode === "service"
       ? getServiceModeEnvironment()
       : createProjectTarget();
@@ -307,7 +325,10 @@ function useServiceCreateActions({
     });
   }
 
-  async function createServiceFromSource(source: ServiceSource) {
+  const createServiceFromSource = (source: ServiceSource) =>
+    whileCreating(() => createServiceFromSourceNow(source));
+
+  async function createServiceFromSourceNow(source: ServiceSource) {
     const target = await getCreationTarget();
     const result = await createServiceMutation.mutateAsync({
       environmentId: target.environmentId,
@@ -366,16 +387,16 @@ function useServiceCreateActions({
       return;
     }
     if (itemId === "volume") {
-      void createVolume();
+      void whileCreating(createVolume);
       return;
     }
 
-    void createProjectTarget().then(navigateToEnvironment);
+    void whileCreating(() => createProjectTarget().then(navigateToEnvironment));
   }
 
   return {
-    error,
-    isPending,
+    error: failure,
+    isPending: creating,
     selectCreateItem,
     setActivePanel,
     createServiceFromSource,

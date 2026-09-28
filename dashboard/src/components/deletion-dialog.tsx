@@ -120,7 +120,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
   }
 
   return (
-    <AlertDialog open onOpenChange={onOpenChange}>
+    <AlertDialog open onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
       <AlertDialogContent
         render={<form onSubmit={(event) => { event.preventDefault(); void confirm(); }} />}
         className="sm:max-w-md"

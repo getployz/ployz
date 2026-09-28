@@ -69,6 +69,8 @@ function RouteComponent() {
   const [pending, setPending] = useState(false);
   const createEmbeddedCheckout = useServerFn(createEmbeddedCheckoutServerFn);
   const activeCheckoutRef = useRef<{ close(): void } | null>(null);
+  // Identifies this organization's visit; a checkout that resolves after it ends must not open.
+  const visitRef = useRef<object | null>(null);
 
   const closeActiveCheckout = useCallback(() => {
     const activeCheckout = activeCheckoutRef.current;
@@ -77,8 +79,12 @@ function RouteComponent() {
   }, []);
 
   useEffect(() => {
-    return closeActiveCheckout;
-  }, [closeActiveCheckout]);
+    visitRef.current = {};
+    return () => {
+      visitRef.current = null;
+      closeActiveCheckout();
+    };
+  }, [organizationSlug, closeActiveCheckout]);
 
   /** Cancellation and payment changes happen in the Polar portal. */
   async function openBillingPortal() {
@@ -100,18 +106,26 @@ function RouteComponent() {
   }
 
   async function openCheckout() {
+    const visit = visitRef.current;
+    const left = () => visitRef.current !== visit;
     try {
       setPending(true);
       const checkout = await createEmbeddedCheckout({
         data: { organizationSlug },
       });
+      if (left()) return;
 
       closeActiveCheckout();
 
       const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
+      if (left()) return;
       const activeCheckout = await PolarEmbedCheckout.create(checkout.url, {
         theme: "light",
       });
+      if (left()) {
+        activeCheckout.close();
+        return;
+      }
 
       activeCheckout.addEventListener("close", () => {
         if (activeCheckoutRef.current === activeCheckout) {
@@ -120,7 +134,7 @@ function RouteComponent() {
       });
       activeCheckoutRef.current = activeCheckout;
     } catch {
-      toast.error("Unable to start checkout.");
+      if (!left()) toast.error("Unable to start checkout.");
     } finally {
       setPending(false);
     }

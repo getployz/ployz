@@ -148,10 +148,10 @@ export function ServiceBuildLogs({ organizationSlug, deploymentId, image }: { or
   const ids = new Set(steps.map((step) => step.id));
   return <>
     {build.isError ? <p role="alert">Could not load build logs. <Button variant="ghost" size="sm" disabled={build.isFetching} onClick={() => void build.refetch()}>Retry</Button></p> : null}
-    <BuildLogViewer key={`${deploymentId}:${image}`}>
+    {build.isError && !build.data ? null : <BuildLogViewer key={`${deploymentId}:${image}`}>
       {build.isPending ? <LogSkeleton label="Loading build logs" time={LOG_TIME_COLUMN.build} /> : <BuildLogs steps={steps} output={(build.data?.output ?? []).filter((row) => ids.has(row.stepId))}
         finished={build.data?.finished ?? true} evidence={build.data?.imageBuilds.find((row) => row.image === image)} timeZone={timeZone} now={now} />}
-    </BuildLogViewer>
+    </BuildLogViewer>}
   </>;
 }
 

@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
+import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import { createEmptyServiceSource } from "#/modules/environment-design/services";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -54,15 +56,21 @@ export function useServiceCreator(
 
   async function createBlankService(position: FlowPosition) {
     const placement = computePlacement(position);
-    const receipt = await createService({
-      data: {
-        organizationSlug: params.organizationSlug,
-        environmentId,
-        source: createEmptyServiceSource(),
-        x: placement.x,
-        y: placement.y,
-      },
-    });
+    let receipt;
+    try {
+      receipt = await createService({
+        data: {
+          organizationSlug: params.organizationSlug,
+          environmentId,
+          source: createEmptyServiceSource(),
+          x: placement.x,
+          y: placement.y,
+        },
+      });
+    } catch (error) {
+      toast.error(toErrorMessage(error, "The service couldn’t be created. Try again."));
+      return;
+    }
     await applyCreatedService(params.organizationSlug, collectionScope, receipt.data);
     await navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
