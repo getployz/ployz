@@ -22,7 +22,12 @@ export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow:
   const tailReader = tail[Symbol.asyncIterator]();
   const followReader = follow[Symbol.asyncIterator]();
   const fromTail = () => tailReader.next().then(result => ({ from: "tail" as const, result }));
-  const fromFollow = () => followReader.next().then(result => ({ from: "follow" as const, result }));
+  const fromFollow = () => {
+    const read = followReader.next().then(result => ({ from: "follow" as const, result }));
+    // A read parked at HELD_MAX sits outside any race until `live`; awaiting it then still throws.
+    read.catch(() => {});
+    return read;
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<{ from: "late" }>(resolve => { timer = setTimeout(resolve, TAIL_BUDGET_MS, { from: "late" }); });
   const held: LogEvent[] = [];
