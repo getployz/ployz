@@ -26,7 +26,7 @@ import {
   projectServiceDeploymentConfig,
 } from "#/modules/environment-design/services";
 import { InngestClient } from "#/modules/inngest/client";
-import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { PloyzProviderError, type PloyzSession } from "#/modules/runtime/ployz.server";
 import {
   confirmTeardown,
   loadTeardownDataLoss,
@@ -226,6 +226,25 @@ describe("teardown Data Loss observation", () => {
     );
 
     expect(failure).toBeInstanceOf(Validation);
+  });
+
+  it("finds nothing to lose where the servers have nothing, and says when they don't answer", async () => {
+    const answering = (code: string) => connectedRuntime(asTestDouble<PloyzSession>()({
+      dataLossIfProjectDestroyed: () => Effect.fail(new PloyzProviderError({
+        operation: "load project data loss",
+        cause: { code, message: "Project 'app-production' was not found in this Cluster observation. No changes made.", details: null },
+      })),
+    }));
+    const load = (runtime: OrganizationRuntimeService) => loadTeardownDataLoss(
+      { userId },
+      { organizationSlug: "acme", scope: "project", projectSlug: "app" },
+    ).pipe(Effect.provideService(OrganizationRuntime, runtime), Effect.scoped);
+
+    const neverDeployed = await harness.runEffect(load(answering("not_found")));
+    expect(neverDeployed.rust).toEqual([]);
+
+    const silent = await harness.runEffect(load(answering("unavailable")).pipe(Effect.flip));
+    expect(silent).toMatchObject({ _tag: "Validation", message: "Can't reach your servers. Check they're online, then try again." });
   });
 
   it("persists no Runtime project authority when confirming without a connection", async () => {

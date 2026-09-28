@@ -1,4 +1,5 @@
 import "@tanstack/react-start/server-only";
+import type { DeployOutcome, ExecutionError } from "@ployz/sdk";
 
 import { eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
@@ -23,6 +24,7 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import {
   PloyzProviderError,
   Ployz,
+  rpcErrorCode,
 } from "#/modules/runtime/ployz.server";
 import {
   incompleteTeardownOutcome,
@@ -97,6 +99,10 @@ export const destroyEnvironmentActivity = Effect.fn(
     input.target.projectName,
     { confirmed: [...input.confirmDataLoss] },
     true,
+  ).pipe(
+    // Nothing of it on the servers (never deployed, or already gone): there is nothing to destroy.
+    Effect.catchIf((error) => rpcErrorCode(error) === "not_found",
+      () => Effect.succeed<DeployOutcome<ExecutionError>>({ type: "success", completed: [] })),
   );
 });
 

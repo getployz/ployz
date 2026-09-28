@@ -17,7 +17,7 @@ import {
 } from "#/modules/runtime/data-loss-confirm";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { type PloyzSession } from "#/modules/runtime/ployz.server";
+import { rpcErrorCode, type PloyzSession } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   cloudEnvironmentName,
@@ -339,15 +339,12 @@ function targetsFor(
   };
 }
 
+const unreachable = () => new Validation({ message: "Can't reach your servers. Check they're online, then try again.", userFacing: true });
+
 /** The organization's runtime; a project or Environment teardown refuses one it can't reach. */
 const reachableRuntime = Effect.fn("Teardown.reachableRuntime")(function* (access: TeardownAccess) {
   const runtime = yield* inspectRuntime(access.organization.id);
-  if (access.scope !== "organization" && runtime.cluster.kind === "unreachable") {
-    return yield* new Validation({
-      message: "Can't reach your servers. Check they're online, then try again.",
-      userFacing: true,
-    });
-  }
+  if (access.scope !== "organization" && runtime.cluster.kind === "unreachable") return yield* unreachable();
   return runtime;
 });
 type ReachableRuntime = Effect.Success<ReturnType<typeof reachableRuntime>>;
@@ -381,7 +378,11 @@ const teardownDataLoss = Effect.fn("Teardown.dataLoss")(function* (
     } else {
       const observed = yield* Effect.all(
         graph.environments.map((environment) =>
-          runtime.client.dataLossIfProjectDestroyed(environment.namespace, true),
+          runtime.client.dataLossIfProjectDestroyed(environment.namespace, true).pipe(
+            // Nothing of it on the servers (never deployed, or already gone): nothing there to lose.
+            Effect.catchIf((error) => rpcErrorCode(error) === "not_found", () => Effect.succeed({ data_loss: [] })),
+            Effect.catchIf((error) => rpcErrorCode(error) === "unavailable", () => Effect.fail(unreachable())),
+          ),
         ),
       );
       rust = observed.flatMap((dataLoss) => dataLoss.data_loss);
