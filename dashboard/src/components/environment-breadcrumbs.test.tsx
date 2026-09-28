@@ -143,12 +143,12 @@ it("notes the Default Environment and opens the Project settings from Manage env
   await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/store/staging/settings?scope=project"));
 });
 
-it("notes each Branch's changes and updates, and offers Review of the current Branch", async () => {
+it("notes what each Branch has to save and its updates, and offers Review of the current Branch", async () => {
   const review = asTestDouble<branchReviews.BranchReviewView>()({ changes: 2, updates: 1 });
   vi.spyOn(branchReviews, "useBranchReviews").mockReturnValue((id) => id === "store-fix-web" ? review : null);
   await using app = await renderAt("/cloud/acme/store/fix-web/logs");
   fireEvent.click(screen.getByRole("button", { name: "Environment: fix-web" }));
-  expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 changes, 1 update" })).toBeTruthy();
+  expect(await screen.findByRole("option", { name: "fix-web, branch of Production, not deployed, 2 to save, 1 update" })).toBeTruthy();
   fireEvent.click(screen.getByRole("option", { name: "Review fix-web" }));
   await waitFor(() => expect(app.router.state.location.pathname).toBe("/cloud/acme/store/fix-web/review"));
   vi.restoreAllMocks();
