@@ -78,23 +78,3 @@ export const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" :
 const names = new Intl.ListFormat("en-GB", { type: "conjunction" });
 /** "a", "a and b", "a, b and c". */
 export const listNames = (list: string[]) => names.format(list);
-
-const namesWith = (plan: BranchPlan, role: PlanNode["role"], nameOf: (lineage: string) => string) =>
-  plan.nodes.filter((node) => node.role === role).map((node) => nameOf(node.lineageId));
-
-/** What a preset will do, in words, from its plan and the "Only what changes" plan it extends. */
-export function presetSummary(preset: BranchPreset, plan: BranchPlan, only: BranchPlan, nameOf: (lineage: string) => string, parent: string) {
-  const own = namesWith(plan, "own", nameOf);
-  const live = namesWith(plan, "live", nameOf);
-  if (preset === "all") return `A full copy of ${parent}.`;
-  if (preset === "uses") {
-    const before = new Set(namesWith(only, "own", nameOf));
-    const added = own.filter((name) => !before.has(name));
-    const copies = `${listNames(added)} ${added.length === 1 ? "gets a copy" : "get copies"} too`;
-    return `${copies}.`;
-  }
-  if (own.length === 0) return "Pick what changes.";
-  const one = own.length === 1;
-  const copies = `${listNames(own)} ${one ? "gets its own copy" : "get their own copies"}.`;
-  return live.length ? `${copies} What ${one ? "it uses" : "they use"} comes from ${parent}, live.` : copies;
-}
