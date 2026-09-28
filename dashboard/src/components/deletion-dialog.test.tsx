@@ -90,6 +90,19 @@ describe("DeletionDialog", () => {
     expect(screen.getAllByRole("listitem")[0]?.textContent).toContain("leftover");
   });
 
+  it("marks what the servers add to an empty Cloud list, but nothing in a list only the servers know", async () => {
+    const load = vi.fn().mockResolvedValue(check([volume("leftover", 3)]));
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Delete empty?" place="shop/empty" confirmLabel="Delete" items={[]}
+      callbacks={{ load, confirm: vi.fn() }} />);
+    await screen.findByText("New");
+    cleanup();
+
+    render(<DeletionDialog open onOpenChange={vi.fn()} title="Remove hel-1?" place="hel-1" confirmLabel="Remove"
+      callbacks={{ load, confirm: vi.fn() }} />);
+    await screen.findByText("leftover");
+    expect(screen.queryByText("New")).toBeNull();
+  });
+
   it("says what failed and retries the servers", async () => {
     const load = vi.fn()
       .mockRejectedValueOnce(new Error("Can't reach your servers. Check they're online, then try again."))

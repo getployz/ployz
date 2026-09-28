@@ -49,7 +49,8 @@ export type DeletionDialogProps<Evidence> = {
   /** Where it all is, and what the user types to confirm: "shop/staging". */
   place: string;
   confirmLabel: string;
-  /** What Cloud already knows, shown while the servers are asked. */
+  /** What Cloud knows goes, shown while the servers are asked; the servers' additions to it are new. None for a list only
+   *  the servers know, such as a server's volumes. */
   items?: readonly DeletionItem[];
   /** Replaces "You're deleting from {place}:". */
   sentence?: ReactNode;
@@ -66,11 +67,11 @@ type Check<Evidence> = { status: "checking" } | { status: "ready"; evidence: Evi
 
 const FAILED = "Something went wrong. Try again.";
 
-function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, items: known = [], sentence, callbacks }:
+function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, items: known, sentence, callbacks }:
   Omit<DeletionDialogProps<Evidence>, "open">) {
   const inputId = useId();
   const [typed, setTyped] = useState("");
-  const [items, setItems] = useState(known);
+  const [items, setItems] = useState(known ?? []);
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [changed, setChanged] = useState(false);
   const [check, setCheck] = useState<Check<Evidence>>({ status: "checking" });
@@ -81,15 +82,15 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
     void loadOnOpen();
   }, []);
 
-  /** Shows a check. Whatever it adds to a list already on screen appeared while the user looked, so it is new. */
-  function show(next: DeletionCheck<Evidence>, before: readonly DeletionItem[]) {
-    const listed = new Set(before.map(deletionItemKey));
-    setFresh(new Set(before.length === 0 ? [] : next.items.map(deletionItemKey).filter((key) => !listed.has(key))));
+  /** Shows a check. Whatever it adds to the list it's compared with appeared while the user looked, so it is new. */
+  function show(next: DeletionCheck<Evidence>, before: readonly DeletionItem[] | undefined) {
+    const listed = new Set(before?.map(deletionItemKey));
+    setFresh(new Set(before === undefined ? [] : next.items.map(deletionItemKey).filter((key) => !listed.has(key))));
     setItems(next.items);
     setCheck({ status: "ready", evidence: next.evidence });
   }
 
-  async function reload(before: readonly DeletionItem[]) {
+  async function reload(before: readonly DeletionItem[] | undefined) {
     setCheck({ status: "checking" });
     try {
       show(await callbacks.load(), before);
@@ -135,7 +136,7 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
           {check.status === "failed" ? (
             <p className="text-sm text-destructive">
               {check.message}{" "}
-              <Button type="button" variant="link" className="h-auto p-0 text-destructive underline" onClick={() => void reload(items)}>
+              <Button type="button" variant="link" className="h-auto p-0 text-destructive underline" onClick={() => void reload(known)}>
                 Retry
               </Button>
             </p>

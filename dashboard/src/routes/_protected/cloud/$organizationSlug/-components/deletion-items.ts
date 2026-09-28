@@ -3,7 +3,7 @@ import { useOrgStoreStatus } from "#/collections/org-store";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { DeletionItem } from "#/components/deletion-dialog";
 import { withoutVirtualProps } from "#/lib/tanstack-db";
-import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { getServicesCollection, getVolumeResourcesCollection } from "#/modules/services/services.collection";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 
@@ -40,7 +40,7 @@ export function useDeletionNodes(organizationSlug: string, within: Partial<Where
   // Where a node is below the scope: "production" in a project, "shop/production" in the organization.
   const where = (row: Where) => {
     if (within.environmentSlug !== undefined) return undefined;
-    const environment = environments.find((candidate) => candidate.namespace === row.environmentSlug)?.name ?? row.environmentSlug;
+    const environment = findEnvironment(projects, environments, row)?.name ?? row.environmentSlug;
     return within.projectSlug !== undefined
       ? environment
       : `${projects.find((project) => project.slug === row.projectSlug)?.name ?? row.projectSlug}/${environment}`;
