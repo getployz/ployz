@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 import { branchChanges } from "@ployz/sdk/config";
 import type { Actor } from "#/modules/identity/actor";
 import { Database } from "#/server/database.server";
@@ -36,7 +36,7 @@ const prEnvironmentFor = Effect.fn("PrEnvironments.prEnvironmentFor")(function* 
  * pull request's merge commit. The rows are recomputed from authoritative states exactly as the browser did; a different
  * review string is refused. It stores what landing needs, so landing never reads the PR Environment. Saving again
  * replaces it. With `shutDown`, the PR Environment then shuts down, in the same call, so the opt-in never depends on the
- * browser staying around; the save stands if the shutdown fails.
+ * browser staying around. The save stands if the shutdown fails: `shutDown` is false then, and the failure is logged.
  */
 export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave")(function* (actor: Actor, input: SaveConditionalSave) {
   const { project, environment: prEnvironmentRow } = yield* prEnvironmentFor(actor, input);
@@ -95,8 +95,13 @@ export const saveConditionalSave = Effect.fn("PrEnvironments.saveConditionalSave
     yield* requestPrCheck(input.prEnvironmentId);
     return saved;
   }));
-  if (input.shutDown) yield* shutDownPrEnvironment(actor, { organizationSlug: input.organizationSlug, environmentId: input.prEnvironmentId });
-  return saved;
+  const shutDown = input.shutDown && (yield* shutDownPrEnvironment(actor, { organizationSlug: input.organizationSlug, environmentId: input.prEnvironmentId }).pipe(
+    Effect.as(true),
+    Effect.catchCause((cause) => Cause.hasInterrupts(cause)
+      ? Effect.failCause(cause)
+      : Effect.logWarning("A saved PR Environment did not shut down.", { environmentId: input.prEnvironmentId, cause }).pipe(Effect.as(false))),
+  ));
+  return { ...saved, shutDown };
 });
 
 /** The row with the value it was saved with, as Details and the "Use" hint show it: a new secret stays hidden. */

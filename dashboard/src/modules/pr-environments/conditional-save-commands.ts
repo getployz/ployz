@@ -1,10 +1,10 @@
 import { useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { getBranchesCollection, getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
+import { getConditionalSavesCollection, getEnvironmentsCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
-import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
+import { reconcileOff } from "./off-commands";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
 import type { SavePick } from "#/modules/branches/branch-schemas";
 import {
@@ -24,11 +24,9 @@ export function useConditionalSave(scope: { organizationSlug: string; prEnvironm
     save: useMutation({
       mutationFn: async (save: { review: string; picks: SavePick[]; shutDown: boolean }) => {
         await queue.settled(scope.prEnvironmentId);
-        await saveConditionalSaveServerFn({ data: { ...scope, ...save } });
-        await Promise.all([
-          reconcileCollection(saves),
-          ...save.shutDown ? [reconcileCollection(getBranchesCollection(scope.organizationSlug, collections)), reconcileDeploymentCollections(scope.organizationSlug, collections)] : [],
-        ]);
+        const saved = await saveConditionalSaveServerFn({ data: { ...scope, ...save } });
+        await Promise.all([reconcileCollection(saves), save.shutDown ? reconcileOff(scope.organizationSlug, collections) : null]);
+        return saved;
       },
     }),
     withdraw: useMutation({

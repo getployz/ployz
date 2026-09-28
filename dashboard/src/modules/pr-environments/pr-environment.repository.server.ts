@@ -25,10 +25,9 @@ export const isShuttingDown = Effect.fn("PrEnvironments.isShuttingDown")(functio
 });
 
 /** A shutdown attempt ended, in its transaction: Off once it completed, else failed, when Shut down runs again. */
-export const settleShutdown = Effect.fn("PrEnvironments.settleShutdown")(function* (environmentId: string | null, completed: boolean) {
-  if (!environmentId) return;
+export const settleShutdown = Effect.fn("PrEnvironments.settleShutdown")(function* (environmentId: string, status: "completed" | "failed") {
   const { drizzle } = yield* Database;
-  yield* drizzle.update(prEnvironment).set({ shutdown: completed ? "off" : "failed" })
+  yield* drizzle.update(prEnvironment).set({ shutdown: status === "completed" ? "off" : "failed" })
     .where(and(eq(prEnvironment.environmentId, environmentId), eq(prEnvironment.shutdown, "running")));
 });
 

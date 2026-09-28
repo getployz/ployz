@@ -151,12 +151,14 @@ describe("PR Environment lifecycle", () => {
       return Schema.decodeUnknownEffect(request.schema)(response).pipe(Effect.orDie);
     },
   };
+  // Whether the runtime fails to answer, as when it's unreachable.
+  let runtimeFails = false;
   const runtime = {
     cancel: () => Effect.void,
     open: () => Effect.succeed({
       status: "connected" as const,
       connected: asTestDouble<PloyzSession>()({
-        dataLossIfProjectDestroyed: (namespace: ProjectName) => Effect.succeed({
+        dataLossIfProjectDestroyed: (namespace: ProjectName) => runtimeFails ? Effect.die("The runtime did not answer.") : Effect.succeed({
           data_loss: [{ kind: "docker_volume" as const, id: { machine_id: "a".repeat(32) as MachineId, name: `${namespace}-data` } }],
           unknown_machines: [],
         }),
@@ -571,12 +573,17 @@ describe("PR Environment lifecycle", () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
-      // Saving with "Shut down pr-142 now" shuts it down in the same call.
-      await approve(prId, tickAll, true);
+      const shutdown = async () => (await prEnvironment(142))?.shutdown ?? null;
+      // Saving with "Shut down pr-142 now" shuts it down in the same call. A shutdown that fails leaves the save standing.
+      runtimeFails = true;
+      expect(await approve(prId, tickAll, true)).toMatchObject({ shutDown: false });
+      expect(await stands(prId)).toBe(true);
+      expect(await shutdown()).toBe(null);
+      runtimeFails = false;
+      expect(await approve(prId, tickAll, true)).toMatchObject({ shutDown: true });
       expect(await stands(prId)).toBe(true);
       await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.environmentId, prId));
       const before = await environmentOf(prId);
-      const shutdown = async () => (await prEnvironment(142))?.shutdown ?? null;
       /** The teardown workflow ends a shutdown: its runtime half done, or failed. */
       const finish = async (attempt: typeof schema.teardownAttempt.$inferSelect, status: "completed" | "failed" = "completed") => {
         const inngestRunId = `run-${attempt.id}`;

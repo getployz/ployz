@@ -94,8 +94,10 @@ export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }:
       info={saveInfo(rows, destination) ?? redeployLine(rows.ticked.map(({ presented }) => presented), [pullRequest.number])}
       actions={<SaveButton picks={rows} destination={destination} pending={save.isPending}
         // Awaited, not a per-call callback: saving turns the row to saved, which closes this sheet.
-        onClick={() => void save.mutateAsync({ review: landing.review, picks: rows.sent, shutDown: shutDownAfter }).then(() => {
-          toast.success(`Goes live when PR #${pullRequest.number} merges`, shutDownAfter ? { description: `Shutting down ${name}` } : undefined);
+        // A failed save shows in the sheet through save.isError, so the rejection needs no handler here.
+        onClick={() => void save.mutateAsync({ review: landing.review, picks: rows.sent, shutDown: shutDownAfter }).then((saved) => {
+          toast.success(`Goes live when PR #${pullRequest.number} merges`, saved.shutDown ? { description: `Shutting down ${name}` } : undefined);
+          if (shutDownAfter && !saved.shutDown) toast.warning(`${name} is still running`, { description: "It couldn't shut down. Shut it down from the environment switcher." });
           onClose();
         }, () => {})} />}
       error={save.isError ? save.error.message : null} onClose={onClose}>
