@@ -19,7 +19,8 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 function TopBar() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ strict: false });
   if (!organizationSlug || !projectSlug || !environmentSlug) return null;
-  return <EnvironmentCrumbs key={`${projectSlug}/${environmentSlug}`} scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />;
+  // Like the shell's: the bar outlives the page.
+  return <EnvironmentCrumbs scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }} />;
 }
 
 async function renderAt(path: string) {
@@ -81,6 +82,16 @@ it("switches project from its crumb, noting the Environment each opens, and keep
   expect(await screen.findByRole("button", { name: "Environment: Docs preview" })).toBeTruthy();
 });
 
+it("closes the More menu once a project picked in it opens", async () => {
+  await using app = await renderAt("/cloud/acme/store/staging/settings");
+  fireEvent.click(screen.getByRole("button", { name: "More breadcrumbs" }));
+  const menu = await screen.findByRole("dialog", { name: "More breadcrumbs" });
+  fireEvent.click(within(menu).getByRole("button", { name: "Project: Store" }));
+  fireEvent.click(await screen.findByRole("option", { name: "Docs, opens Docs preview" }));
+  await waitFor(() => expect(app.router.state.location.href).toBe("/cloud/acme/docs/preview/settings"));
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "More breadcrumbs" })).toBeNull());
+});
+
 it("opens Projects from All projects", async () => {
   await using app = await renderAt("/cloud/acme/store/production/logs");
   fireEvent.click(screen.getByRole("button", { name: "Project: Store" }));
@@ -129,8 +140,9 @@ it("reads project / Parent ⑂ Branch on a Branch, and the Parent's crumb opens 
 });
 
 it("keeps every crumb but the last two in a More menu", async () => {
-  render(<Crumbs items={[<a key="a" href="/a">First</a>, <a key="b" href="/b">Second</a>, <a key="c" href="/c">Third</a>]} />);
-  fireEvent.click(screen.getByRole("button", { name: "More breadcrumbs" }));
+  const root = createRootRoute({ component: () => <Crumbs items={[<a key="a" href="/a">First</a>, <a key="b" href="/b">Second</a>, <a key="c" href="/c">Third</a>]} /> });
+  render(<RouterProvider router={createRouter({ routeTree: root, history: createMemoryHistory() })} />);
+  fireEvent.click(await screen.findByRole("button", { name: "More breadcrumbs" }));
   const menu = await screen.findByRole("dialog", { name: "More breadcrumbs" });
   expect(within(menu).getAllByRole("link").map((link) => link.textContent)).toEqual(["First"]);
 });
