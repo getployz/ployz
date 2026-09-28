@@ -233,6 +233,12 @@ function asSdkFailure(operation: string, cause: unknown, secrets: readonly strin
   return new PloyzProviderError({ operation, cause });
 }
 
+/** The code of the runtime's RPC error a failure carries, such as "not_found"; undefined for any other failure. */
+export function rpcErrorCode(error: PloyzSdkError) {
+  const rpc = Schema.decodeUnknownOption(Schema.Struct({ code: Schema.String }))("cause" in error ? error.cause : undefined);
+  return Option.isSome(rpc) ? rpc.value.code : undefined;
+}
+
 function sdkPromise<A>(operation: string, run: (signal: AbortSignal) => Promise<A>, secrets: readonly string[] = []) {
   return Effect.tryPromise({
     try: run,
