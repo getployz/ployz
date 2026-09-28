@@ -131,7 +131,7 @@ function Plan({ repositoryId, project, environments: all, branches }: {
               </SelectGroup>
             </SelectContent>
           </Select>
-          {!startFrom && <FieldError>Its environment was torn down. Pick another.</FieldError>}
+          {!startFrom && <FieldError>Its environment was deleted. Pick another.</FieldError>}
         </Field>
         {picking && <>
           <WhatComesAlongSection plan={picking.plan} presets={picking.presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr}

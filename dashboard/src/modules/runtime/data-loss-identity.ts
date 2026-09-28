@@ -34,7 +34,3 @@ export const dataLossIdentitySchema = Schema.Struct({
 export function dataLossIdentityKey(identity: DataLossIdentity): string {
   return `${identity.kind}\0${identity.id.machine_id}\0${identity.id.name}`;
 }
-
-export function dataLossIdentityLabel(identity: DataLossIdentity): string {
-  return `${identity.id.name} on ${identity.id.machine_id}`;
-}

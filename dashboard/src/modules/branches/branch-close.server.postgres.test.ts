@@ -11,7 +11,7 @@ import { admitSystemTeardown, confirmTeardown, loadTeardownDataLoss, prepareSyst
 import { Conflict } from "#/server/public-error";
 import { setProjectDefaultEnvironment } from "#/modules/environment-design/workspace-operations.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { closeBranch, setBranchKept, sweepIdleBranches, tryCloseBranch } from "./branch-close.server";
+import { closeBranch, closeBranchByHand, setBranchKept, sweepIdleBranches, tryCloseBranch } from "./branch-close.server";
 import { createBranch } from "./branch-operations.server";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import * as schema from "#/db/schema";
@@ -187,6 +187,23 @@ describe("closing a Branch", () => {
       organizationSlug: "acme", scope: "environment", environmentId: tryCacheId, identities: [],
     })));
     expect(manual).toMatchObject({ requestedByUserId: userId });
+  });
+
+  it("closes a Branch by hand as the person asking; a kept one, or one with Branches, takes the typed teardown", async () => {
+    const typed = { _tag: "Conflict", message: "Type its name under Danger to close this branch." };
+    expect(await run(provide(closeBranchByHand({ userId }, { organizationSlug: "acme", environmentId: fixWebId }).pipe(Effect.flip))))
+      .toMatchObject(typed);
+
+    expect(await run(provide(closeBranchByHand({ userId }, { organizationSlug: "acme", environmentId: tryCacheId }))))
+      .toEqual({ id: expect.any(String) });
+    expect(await attemptRows()).toEqual([expect.objectContaining({
+      requested_by_user_id: userId, confirm_data_loss: [volumeOf("app-try-cache")],
+    })]);
+
+    await harness.pool.query("update environment_branch set kept = true where environment_id = $1", [fixStagingId]);
+    expect(await run(provide(closeBranchByHand({ userId }, { organizationSlug: "acme", environmentId: fixStagingId }).pipe(Effect.flip))))
+      .toMatchObject(typed);
+    expect(await attemptRows()).toHaveLength(1);
   });
 
   /** Everything but production last deployed 8 days ago; fix-web still has try-cache open, so only fix-staging is due. */
