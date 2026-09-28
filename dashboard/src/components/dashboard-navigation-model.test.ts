@@ -50,6 +50,8 @@ describe("dashboard navigation model", () => {
     const selfHosted = createDashboardNavigation(organization, { section: "servers" }).organization;
     expect(selfHosted.map((item) => item.label)).toEqual(["Projects", "Servers", "Organization Settings"]);
     expect(selfHosted.find((item) => item.current)?.label).toBe("Servers");
+    expect(createDashboardNavigation(organization, { section: "servers", billingEnabled: true }).organizationRail
+      .map((item) => item.label)).toEqual(["Projects", "Servers"]);
   });
 
   it("keeps a section across scopes where it exists, else falls back to the scope's home", () => {

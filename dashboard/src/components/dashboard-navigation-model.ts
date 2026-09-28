@@ -18,8 +18,6 @@ type RegisteredRouteId =
 
 interface Destination {
   label: string;
-  /** The rail's narrower label, when `label` doesn't fit. */
-  shortLabel?: string;
   icon: LucideIcon;
   path: RegisteredPath;
 }
@@ -50,14 +48,16 @@ const environmentPlaces = {
   },
 } satisfies Record<EnvironmentPlace, Destination>;
 
-/** The organization's pages, in rail order. */
+/** The organization's pages, in avatar-menu order. */
 const organizationOrder = ["projects", "servers", "organization-settings", "billing"] as const;
 type OrganizationDestination = (typeof organizationOrder)[number];
+/** The ones the desktop rail also shows; the rest stay in the avatar menu. */
+const organizationRailOrder: readonly DashboardSection[] = ["projects", "servers"];
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
-  // Not plain "Settings": on an Environment it sits in the rail beside the Environment's Settings.
-  "organization-settings": { label: "Organization Settings", shortLabel: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
+  // Not plain "Settings": the avatar menu reads as personal, and on an Environment it sits beside the rail's Settings.
+  "organization-settings": { label: "Organization Settings", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
   // Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
 } satisfies Record<OrganizationDestination, Destination>;
@@ -85,7 +85,6 @@ export type DashboardDestination = ReturnType<typeof getDashboardDestination>;
 export type DashboardNavItem = DashboardDestination & {
   section: DashboardSection;
   label: string;
-  shortLabel?: string;
   icon: LucideIcon;
   current: boolean;
 };
@@ -126,28 +125,29 @@ export function getDashboardSectionLabel(section: DashboardSection) {
 
 /**
  * The only enumeration of destinations. `places` are the Environment's four places for the rail and the
- * phone tab bar (none on organization pages); `organization` fills the rail on desktop and the avatar menu on phones.
+ * phone tab bar (none on organization pages); `organization` fills the avatar menu, less `organizationRail` on desktop.
  */
 export function createDashboardNavigation(
   scope: DashboardScope,
   { section, billingEnabled = false }: { section: DashboardSection; billingEnabled?: boolean },
 ) {
-  const item = (target: DashboardScope, key: DashboardSection, { label, shortLabel, icon }: Destination): DashboardNavItem => ({
+  const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
     section: key,
     label,
-    shortLabel,
     icon,
     current: key === section,
     ...getDashboardDestination(target, key),
   });
   const organizationScope = { kind: "all" as const, organizationSlug: scope.organizationSlug };
+  const organization = organizationOrder
+    .filter((key) => billingEnabled || key !== "billing")
+    .map((key) => item(organizationScope, key, organizationDestinations[key]));
   return {
     places: scope.kind === "all"
       ? []
       : environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
-    organization: organizationOrder
-      .filter((key) => billingEnabled || key !== "billing")
-      .map((key) => item(organizationScope, key, organizationDestinations[key])),
+    organization,
+    organizationRail: organization.filter((destination) => organizationRailOrder.includes(destination.section)),
   };
 }
 

@@ -47,21 +47,24 @@ const themes = [
   { value: "dark", label: "Dark" },
 ] as const;
 
-/** The avatar menu: organization pages (phones only; the rail has them on desktop), switching organization, Theme and Log out. */
+/** The avatar menu: organization pages (on desktop, only those the rail lacks), switching organization, Theme and Log out. */
 export default function DashboardAccountMenu({
   scope,
   side = "bottom",
-  withOrganizationPages = true,
+  inRail = false,
 }: {
   scope: DashboardScope;
   side?: "bottom" | "right";
-  withOrganizationPages?: boolean;
+  inRail?: boolean;
 }) {
   const auth = useAuth();
   const signOut = useSignOut();
   const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
-  const { organization } = useDashboardNavigation(scope);
+  const navigation = useDashboardNavigation(scope);
+  const organization = inRail
+    ? navigation.organization.filter((item) => !navigation.organizationRail.includes(item))
+    : navigation.organization;
   const section = useDashboardSection();
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
 
@@ -106,11 +109,11 @@ export default function DashboardAccountMenu({
           </div>
         </div>
 
-        {withOrganizationPages || organizations.length > 1 ? (
+        {organization.length || organizations.length > 1 ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuGroup>
-              {withOrganizationPages && organization.map((item) => (
+              {organization.map((item) => (
                 <DropdownMenuItem key={item.section}
                   render={<Link to={item.to} params={item.params} search={item.search}
                     activeOptions={{ exact: true }} aria-current={item.current ? "page" : undefined} />}>

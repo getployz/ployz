@@ -137,7 +137,7 @@ it("puts the logo, the four places, the organization's pages and the avatar in t
   const { rail } = await show();
   const links = within(rail).getAllByRole("link");
   expect(links.map((link) => link.getAttribute("aria-label") ?? link.textContent)).toEqual(
-    ["Projects", "Canvas", "Deployments", "Logs", "Settings", "Projects", "Servers", "Organization"],
+    ["Projects", "Canvas", "Deployments", "Logs", "Settings", "Projects", "Servers"],
   );
   expect(links[0]?.getAttribute("href")).toBe("/cloud/acme/~");
   expect(links[0]?.getAttribute("title")).toBe("Projects");
@@ -159,10 +159,10 @@ it("offers the same places in the phone tab bar and follows the route", async ()
   expect(within(tabs).getByRole("link", { name: "Logs" }).getAttribute("aria-current")).toBeNull();
 });
 
-it("leaves the organization's pages out of the desktop avatar menu, and applies a theme choice", async () => {
+it("leaves the rail's pages out of the desktop avatar menu, and applies a theme choice", async () => {
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
-  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Switch organization", "Log out"]);
+  expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Organization Settings", "Switch organization", "Log out"]);
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);
   expect(screen.getAllByText("test@example.com").length).toBeGreaterThan(0);
   fireEvent.click(within(menu).getByRole("menuitemradio", { name: "Dark" }));
@@ -180,15 +180,16 @@ it("holds the organization's pages in the phone avatar menu", async () => {
   expect(within(menu).getByRole("menuitem", { name: "Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
 });
 
-it("shows Billing in the rail only when billing is configured", async () => {
+it("shows Billing in the avatar menu only when billing is configured", async () => {
   const { rail } = await show({ billingEnabled: true });
-  expect(within(rail).getByRole("link", { name: "Billing" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
+  const menu = await openAccountMenu(rail);
+  expect(within(menu).getByRole("menuitem", { name: "Billing" }).getAttribute("href")).toBe("/cloud/acme/~/billing");
 });
 
-it("leads the rail with the organization's pages on organization pages", async () => {
+it("leads the rail with Projects and Servers on organization pages", async () => {
   const { rail } = await show({ scope: "all" });
   expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent))
-    .toEqual(["Projects", "Projects", "Servers", "Organization"]);
+    .toEqual(["Projects", "Projects", "Servers"]);
   expect(within(rail).queryByRole("separator")).toBeNull();
   expect(within(rail).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual(["Open account menu"]);
   expect(screen.queryByRole("navigation", { name: "Environment places" })).toBeNull();

@@ -15,8 +15,8 @@ export function HomeLink({ organizationSlug, className }: { organizationSlug: st
 }
 
 /**
- * Desktop: the logo, the Environment's places, then the organization's pages, the avatar at the bottom.
- * On organization pages the organization's pages lead; on an Environment they sit below a divider, at the bottom.
+ * Desktop: the logo, the Environment's places, then Projects and Servers, the avatar at the bottom.
+ * On organization pages Projects and Servers lead; on an Environment they sit below a divider, at the bottom.
  */
 export function Rail({ organizationSlug, places, organization, account }: {
   organizationSlug: string;
@@ -60,7 +60,7 @@ function Place({ place, className }: { place: DashboardNavItem; className: strin
         className,
       )}>
       <place.icon className="size-5" aria-hidden />
-      {place.shortLabel ?? place.label}
+      {place.label}
     </Link>
   );
 }
