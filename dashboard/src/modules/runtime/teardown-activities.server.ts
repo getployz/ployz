@@ -38,6 +38,7 @@ import {
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
+import { requestProjectPrChecks } from "#/modules/pr-environments/pr-check-request.server";
 
 export const loadTeardownAttemptActivity = Effect.fn("Teardown.loadAttempt")(
   loadTeardownAttempt,
@@ -163,6 +164,8 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
         yield* transaction.drizzle
           .delete(schemaEnvironment)
           .where(inArray(schemaEnvironment.id, environmentIds));
+        // A Destination gone changes the checks of its project's pull requests.
+        for (const projectId of projectIds) yield* requestProjectPrChecks(projectId);
       }
       if (
         (attempt.scope === "project" || attempt.scope === "organization") &&

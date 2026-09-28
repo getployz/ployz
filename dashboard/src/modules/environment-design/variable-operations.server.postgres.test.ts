@@ -24,6 +24,7 @@ import {
   createServiceVariable,
   updateServiceVariable,
 } from "./variable-operations.server";
+import { InngestLive } from "#/modules/inngest/client";
 
 it.live(
   "authorizes variable writes, redacts secrets, and commits related rows atomically",
@@ -42,9 +43,10 @@ it.live(
           ),
         ),
       );
-      const layer = Layer.merge(
+      const layer = Layer.mergeAll(
         DatabaseLive.pipe(Layer.provide(config)),
         SecretEncryptionLive.pipe(Layer.provide(config)),
+        InngestLive.pipe(Layer.provide(config)),
       );
 
       yield* Effect.gen(function* () {

@@ -160,6 +160,8 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const [open, setOpen] = useState(false);
   const project = projects.find((candidate) => candidate.slug === scope.projectSlug);
   const current = findEnvironment(projects, environments, scope);
+  const currentBranch = branches.find((branch) => branch.environmentId === current?.id);
+  const prNumbers = new Map(branches.flatMap((branch) => branch.pullRequest ? [[branch.environmentId, branch.pullRequest.number]] : []));
   const tree = environmentTree(environments.filter((environment) => environment.projectId === project?.id), branches);
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(deployments.map((deployment) => deployment.environmentId));
@@ -176,6 +178,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   // Computed only while the switcher is open: core compares each Branch with its Parent.
                   const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
+                    prNumbers.has(environment.id) && `#${prNumbers.get(environment.id)}`,
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
                     !!review?.changes && `${review.changes} ${review.changes === 1 ? "change" : "changes"}`,
@@ -198,13 +201,13 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
               </CommandGroup>
               <CommandSeparator />
               <CommandGroup>
-                {current && branches.some((branch) => branch.environmentId === current.id) && <CommandItem value="review" onSelect={() => {
+                {current && currentBranch && <CommandItem value="review" onSelect={() => {
                   setOpen(false);
                   const { organizationSlug, projectSlug, environmentSlug } = scope;
                   void navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
-                  <GitCompareArrowsIcon />Review {current.name}
+                  <GitCompareArrowsIcon />{currentBranch.pullRequest ? `What #${currentBranch.pullRequest.number} changes` : `Review ${current.name}`}
                 </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);

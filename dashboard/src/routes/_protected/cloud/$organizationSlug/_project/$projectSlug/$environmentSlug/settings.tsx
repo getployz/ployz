@@ -27,6 +27,9 @@ import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
+import { PrEnvironmentsSection } from "./-components/pr-environments-section";
+import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
+import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
 const settingsTab = Schema.Literals(["environment", "project"]);
@@ -42,7 +45,8 @@ export const Route = createFileRoute(
     const environment = await requireEnvironment(context, params);
     await prefetchRemote(context,
       latestTeardownAttemptQueryOptions({ organizationSlug, scope: "environment", environmentId: environment.id }),
-      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "project", projectSlug }));
+      latestTeardownAttemptQueryOptions({ organizationSlug, scope: "project", projectSlug }),
+      missingPrEnvironmentGrantsQueryOptions(organizationSlug));
   },
   component: RouteComponent,
 });
@@ -141,6 +145,8 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
     .filter((environment) => environment.projectId === project.id)
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
   const defaultEnvironment = project.resolvedEnvironment;
+  // A PR Environment can't be the Default Environment.
+  const prEnvironments = prEnvironmentIds(branches);
 
   return (
     <>
@@ -156,7 +162,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
             </SelectTrigger>
             <SelectContent>
               <SelectGroup>
-                {environments.map((environment) => (
+                {environments.filter((environment) => !prEnvironments.has(environment.id)).map((environment) => (
                   <SelectItem key={environment.id} value={environment.id} label={environment.name}>{environment.name}</SelectItem>
                 ))}
               </SelectGroup>
@@ -202,6 +208,7 @@ function ProjectSettings({ organizationSlug, project, branches, environmentSlug 
           })}
         </ItemGroup>
       </section>
+      <PrEnvironmentsSection organizationSlug={organizationSlug} project={project} environments={environments} branches={branches} />
       {creating && <CreateEnvironmentDialog onOpenChange={setCreating} organizationSlug={organizationSlug} projectSlug={project.slug} />}
     </>
   );

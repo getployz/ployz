@@ -11,6 +11,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { postgresTestDatabase } from "#/test/postgres";
 import { executeProcessGithubPullRequestReceived } from "#/modules/github/inngest-ingestion/process";
+import type { PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
 import { handleGithubWebhookRequest } from "./-webhook.handler";
 
 const webhookSecret = "github-webhook-secret";
@@ -179,7 +180,7 @@ it.live(
         const answers = [];
         for (const [deliveryId, payload] of [
           ["delivery-pr-labeled", pullRequest("labeled", 1, { id: 42 })],
-          ["delivery-pr-title-edit", pullRequest("edited", 1, { id: 42 }, { changes: { title: { from: "Old" } } })],
+          ["delivery-pr-body-edit", pullRequest("edited", 1, { id: 42 }, { changes: { body: { from: "Old" } } })],
           ["delivery-pr-opened", pullRequest("opened", 1, { id: 42 })],
           ["delivery-pr-retarget", pullRequest("edited", 1, { id: 42 }, { changes: { base: { ref: { from: "dev" } } } })],
           ["delivery-pr-fork", pullRequest("synchronize", 2, { id: 7 })],
@@ -193,7 +194,7 @@ it.live(
         }
         assert.deepStrictEqual(answers, [
           ["delivery-pr-labeled", 200],
-          ["delivery-pr-title-edit", 200],
+          ["delivery-pr-body-edit", 200],
           ["delivery-pr-opened", 200],
           ["delivery-pr-retarget", 200],
           ["delivery-pr-fork", 200],
@@ -221,7 +222,8 @@ it.live(
           expect.objectContaining({ deliveryId: "delivery-pr-deleted-fork", pullRequestKey: "17:42:3" }),
         ]);
 
-        const runEffect = Effect.runPromiseWith(yield* Effect.context<Database>());
+        // No project has a plan for this repository, so only the database is reached.
+        const runEffect = Effect.runPromiseWith(yield* Effect.context<Database>()) as PullRequestEffectRunner;
         for (const [index, event] of sent.entries()) {
           const input = {
             event: event as { name: string; data: unknown },

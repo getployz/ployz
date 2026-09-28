@@ -46,6 +46,7 @@ import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlu
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/index'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId'
+import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId'
 import { Route as ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRouteImport } from './routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId'
 
@@ -280,6 +281,15 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveL
         ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute,
     } as any,
   )
+const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute =
+  ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRouteImport.update(
+    {
+      id: '/pr-environments/$repositoryId',
+      path: '/pr-environments/$repositoryId',
+      getParentRoute: () =>
+        ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute,
+    } as any,
+  )
 const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute =
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRouteImport.update(
     {
@@ -331,6 +341,7 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute
+  '/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute
@@ -364,6 +375,7 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/review': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasReviewRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute
+  '/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute
   '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute
@@ -406,6 +418,7 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute
+  '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute
   '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/': typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute
@@ -444,6 +457,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId'
+    | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/'
@@ -477,6 +491,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/review'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId'
+    | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId'
     | '/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments'
@@ -518,6 +533,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/live/$lineageId'
+    | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId'
     | '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/'
@@ -798,6 +814,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRouteImport
       parentRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute
     }
+    '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId': {
+      id: '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId'
+      path: '/pr-environments/$repositoryId'
+      fullPath: '/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId'
+      preLoaderRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRouteImport
+      parentRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRouteRoute
+    }
     '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId': {
       id: '/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId'
       path: '/resources/$resourceId'
@@ -845,6 +868,7 @@ interface ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasR
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasIndexRoute
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute
+  ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute
   ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute: typeof ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsIndexRoute
@@ -862,6 +886,8 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasRoute
       ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasDeploymentsDeploymentIdRoute,
     ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute:
       ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasLiveLineageIdRoute,
+    ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute:
+      ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasPrEnvironmentsRepositoryIdRoute,
     ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute:
       ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasResourcesResourceIdRoute,
     ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServicesServiceIdRoute:

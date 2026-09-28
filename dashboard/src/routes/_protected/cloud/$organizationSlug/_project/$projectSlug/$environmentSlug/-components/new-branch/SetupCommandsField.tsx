@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { PlusIcon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
@@ -54,4 +55,26 @@ export function SetupCommandsField({ id, commands, services, onChange, onBlur }:
       )}
     </div>
   );
+}
+
+/**
+ * Setup Commands saved at once, never staged: while typing, the whole list; once committed (a pick, a removal, a blur),
+ * only whole commands save, and only when they changed. Submitted values then show from `saved` (optimistic rows), so a
+ * failed save's rollback shows too; blank rows wait below them until typed.
+ */
+export function useSavedSetupCommands(saved: SetupCommand[], save: (whole: SetupCommand[]) => void) {
+  const [draft, setDraft] = useState<SetupCommand[] | null>(null);
+  const [blanks, setBlanks] = useState<SetupCommand[]>([]);
+  const commands = draft ?? [...saved, ...blanks];
+  function commit(next: SetupCommand[]) {
+    const whole = next.filter((setup) => setup.command.trim()).map((setup) => ({ lineageId: setup.lineageId, command: setup.command.trim() }));
+    if (JSON.stringify(whole) !== JSON.stringify(saved)) save(whole);
+    setDraft(null);
+    setBlanks(next.filter((setup) => !setup.command.trim()));
+  }
+  return {
+    commands,
+    onChange: (next: SetupCommand[], typed?: boolean) => { setDraft(next); if (!typed) commit(next); },
+    onBlur: () => commit(commands),
+  };
 }

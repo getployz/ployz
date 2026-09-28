@@ -31,7 +31,6 @@ import {
   githubCheckSuiteReceivedEventDataSchema,
   githubPullRequestReceivedEventDataSchema,
   githubPushReceivedEventDataSchema,
-  type GithubPullRequestReceivedEventData,
   type GithubPushReceivedEventData,
 } from "#/modules/github/github-ingestion.contracts";
 import {
@@ -56,8 +55,11 @@ import {
   planGithubBranchEvaluation,
 } from "#/modules/github/github-branch-evaluation";
 import { runInngestEffect } from "#/server/run.server";
+import { freezeMergedBy, heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
+import { requestPullRequestChecks } from "#/modules/pr-environments/pr-check-request.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type GithubIngestionEffectRunner = <A, E extends Error>(
@@ -214,6 +216,17 @@ async function processPushAttempt(input: {
         ),
       )
     : [];
+  const push = liveBranch.state === "present" && needsCandidates ? {
+    installationId: payload.installationId,
+    repository,
+    repositoryId: payload.repositoryId,
+    ref: payload.ref,
+    headSha: liveBranch.headSha,
+  } : null;
+  if (push) await step.run(`freeze-merged-held-changes-${attempt}`, () => runEffect(freezeMergedBy(push)));
+  const carried = push
+    ? await step.run(`list-carried-held-changes-${attempt}`, () => runEffect(heldChangesCarriedBy(push)))
+    : [];
   const plan = await step.run(`plan-branch-evaluation-${attempt}`, () => {
     const planned = planGithubBranchEvaluation({
       cursor,
@@ -241,6 +254,7 @@ async function processPushAttempt(input: {
         processingRunId,
         expectedCursor: cursor,
         plan,
+        carried,
       }).pipe(
         Effect.map(
           (value): BranchApplyOutcome => ({ kind: "applied", value }),
@@ -446,22 +460,13 @@ export async function executeProcessGithubCheckSuiteReceived(
   throw new Error("GitHub check-suite testimony stayed unpublished.");
 }
 
-/**
- * What a recorded pull request delivery does. Forks never go further. Nothing acts on
- * same-repository pull requests yet: the PR Environment lifecycle replaces that branch.
- */
-function planPullRequestDelivery(payload: GithubPullRequestReceivedEventData) {
-  if (payload.headRepositoryId !== payload.repositoryId) return "ignored_fork" as const;
-  return "ignored_pull_request" as const;
-}
-
 export async function executeProcessGithubPullRequestReceived(
   input: {
     event: UntrustedInngestEnvelope;
     step: Pick<GithubIngestionStepTools, "run">;
     runId: string;
   },
-  runEffect: <A, E extends Error>(effect: Effect.Effect<A, E, Database>) => Promise<A>,
+  runEffect: PullRequestEffectRunner,
 ) {
   const payload = await input.step.run("decode-pull-request-event", () =>
     decodeInngestEnvelope(GithubPullRequestReceivedEnvelope)(input.event).data,
@@ -483,7 +488,16 @@ export async function executeProcessGithubPullRequestReceived(
   if (receipt.disposition === "terminal" || receipt.disposition === "owned_elsewhere") {
     return receipt;
   }
-  const outcome = planPullRequestDelivery(payload);
+  // Forks never go further. Otherwise act on the pull request as GitHub has it now, not as this delivery saw it.
+  const outcome = payload.headRepositoryId !== payload.repositoryId
+    ? "ignored_fork" as const
+    : await input.step.run("apply-pull-request", () => runEffect(applyPullRequest({
+      installationId: payload.installationId, repositoryId: payload.repositoryId, number: payload.number,
+    })));
+  // Its own step, after the lifecycle: every PR Environment of the pull request posts its check again.
+  if (outcome === "pull_request_projected") {
+    await input.step.run("request-pr-checks", () => runEffect(requestPullRequestChecks(payload.repositoryId, payload.number)));
+  }
   await input.step.run("complete-delivery", () =>
     runEffect(
       completeGithubDelivery(

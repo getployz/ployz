@@ -224,17 +224,9 @@ export const githubPullRequestWebhookSchema = Schema.Struct({
   installationId: githubIdSchema,
   repositoryId: githubIdSchema,
   number: githubIdSchema,
-  title: Schema.String,
-  author: Schema.Struct({ login: nonEmptyStringSchema, isBot: Schema.Boolean }),
   // Null when the pull request's fork was deleted.
   headRepositoryId: Schema.NullOr(githubIdSchema),
-  headBranch: githubBranchNameSchema,
   headSha: githubExactShaSchema,
-  targetBranch: githubBranchNameSchema,
-  draft: Schema.Boolean,
-  merged: Schema.Boolean,
-  mergeCommitSha: Schema.NullOr(githubExactShaSchema),
-  commitCount: Schema.Finite.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });
 
 export const githubPushReceivedEventInputSchema = Schema.Struct({

@@ -11,6 +11,12 @@ export type { BranchPicks, BranchPlan, BranchPreset };
 
 type PlanNode = BranchPlan["nodes"][number];
 
+export const presetTitles = {
+  only: "Only what changes",
+  uses: "Plus what it uses",
+  all: "Everything",
+} satisfies Record<BranchPreset, string>;
+
 /** Picking can't toggle it: the Parent doesn't own it (`owned`), or another copy needs it. */
 export const pickFixed = (node: PlanNode, owned: ReadonlySet<string>) =>
   !owned.has(node.lineageId) || (node.role === "own" && node.because !== "picked");
@@ -65,6 +71,9 @@ export function defaultBranchName(projectSlug: string, base: string, taken: Read
   // A base too long for any suffix: the name field shows why.
   return base;
 }
+
+/** "1 change", "2 changes". */
+export const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 
 const names = new Intl.ListFormat("en-GB", { type: "conjunction" });
 /** "a", "a and b", "a, b and c". */

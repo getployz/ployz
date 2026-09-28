@@ -286,11 +286,7 @@ describe("GitHub webhook contracts", () => {
 function pullRequestPayload(overrides: {
   action?: string;
   changes?: object;
-  user?: object;
   headRepo?: object | null;
-  draft?: boolean;
-  merged?: boolean;
-  mergeCommitSha?: string | null;
 } = {}) {
   return {
     action: overrides.action ?? "opened",
@@ -302,17 +298,16 @@ function pullRequestPayload(overrides: {
       number: 142,
       title: "Add billing",
       body: "private description",
-      user: overrides.user ?? { login: "maya", type: "User" },
+      user: { login: "maya", type: "User" },
       head: {
         ref: "feature/billing",
         sha: "C".repeat(40),
         repo: overrides.headRepo === undefined ? { id: 42 } : overrides.headRepo,
       },
       base: { ref: "main", sha: "d".repeat(40), repo: { id: 42 } },
-      draft: overrides.draft ?? false,
-      merged: overrides.merged ?? false,
-      merge_commit_sha:
-        overrides.mergeCommitSha === undefined ? "e".repeat(40) : overrides.mergeCommitSha,
+      draft: false,
+      merged: false,
+      merge_commit_sha: "e".repeat(40),
       commits: 3,
     },
   };
@@ -325,27 +320,19 @@ function decodePullRequest<Payload>(payload: Payload) {
 }
 
 describe("GitHub pull request contracts", () => {
-  it("decodes a same-repository pull request into its facts", () => {
+  it("decodes a same-repository pull request into its identity and head", () => {
     expect(decodePullRequest(pullRequestPayload())).toEqual({
       kind: "pull_request",
       action: "opened",
       installationId: 17,
       repositoryId: 42,
       number: 142,
-      title: "Add billing",
-      author: { login: "maya", isBot: false },
       headRepositoryId: 42,
-      headBranch: "feature/billing",
       headSha: "c".repeat(40),
-      targetBranch: "main",
-      draft: false,
-      merged: false,
-      mergeCommitSha: null,
-      commitCount: 3,
     });
   });
 
-  it("decodes forks, deleted forks, bots and drafts", () => {
+  it("decodes forks and deleted forks", () => {
     expect(decodePullRequest(pullRequestPayload({ headRepo: { id: 7 } }))).toMatchObject({
       repositoryId: 42,
       headRepositoryId: 7,
@@ -353,41 +340,22 @@ describe("GitHub pull request contracts", () => {
     expect(decodePullRequest(pullRequestPayload({ headRepo: null }))).toMatchObject({
       headRepositoryId: null,
     });
-    expect(
-      decodePullRequest(
-        pullRequestPayload({ user: { login: "dependabot[bot]", type: "Bot" } }),
-      ),
-    ).toMatchObject({ author: { login: "dependabot[bot]", isBot: true } });
-    expect(decodePullRequest(pullRequestPayload({ draft: true }))).toMatchObject({
-      draft: true,
-    });
   });
 
-  it("keeps the merge commit only for a merged closed pull request", () => {
-    expect(
-      decodePullRequest(pullRequestPayload({ action: "closed", merged: true })),
-    ).toMatchObject({ action: "closed", merged: true, mergeCommitSha: "e".repeat(40) });
-    expect(
-      decodePullRequest(pullRequestPayload({ action: "closed", mergeCommitSha: null })),
-    ).toMatchObject({ action: "closed", merged: false, mergeCommitSha: null });
-    expect(
-      Result.isFailure(
-        decodeGithubPullRequestPayload(
-          pullRequestPayload({ action: "closed", merged: true, mergeCommitSha: null }),
-        ),
-      ),
-    ).toBe(true);
-  });
-
-  it("records edits only when the target Git branch changed", () => {
+  it("records edits only when the title or target Git branch changed", () => {
     expect(
       decodePullRequest(
         pullRequestPayload({ action: "edited", changes: { base: { ref: { from: "dev" } } } }),
       ),
-    ).toMatchObject({ action: "edited", targetBranch: "main" });
+    ).toMatchObject({ action: "edited" });
     expect(
       decodePullRequest(
         pullRequestPayload({ action: "edited", changes: { title: { from: "Old" } } }),
+      ),
+    ).toMatchObject({ action: "edited" });
+    expect(
+      decodePullRequest(
+        pullRequestPayload({ action: "edited", changes: { body: { from: "Old" } } }),
       ),
     ).toBeNull();
   });

@@ -10,6 +10,7 @@ import type {
   GithubPullRequestAction,
   GithubServiceCandidate,
 } from "#/modules/github/github-ingestion.contracts";
+import type { CarriedSave } from "#/modules/pr-environments/carried";
 import type { BranchEvaluationPlan } from "#/modules/github/github-branch-evaluation";
 
 type GithubPushDeliveryBase = {
@@ -184,6 +185,8 @@ export type ApplyGithubBranchEvaluationInput = GithubBranchIdentity & {
   processingRunId: string;
   expectedCursor: GithubBranchCursor | null;
   plan: BranchEvaluationPlan;
+  // The frozen Conditional Saves the pushed commit carries; asked of GitHub before applying.
+  carried: readonly CarriedSave[];
 };
 
 export type ApplyGithubCheckSuiteTestimonyInput = {

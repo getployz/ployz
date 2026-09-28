@@ -180,6 +180,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       expect(EffectResult.isSuccess(plan)).toBe(true);
       if (EffectResult.isFailure(plan)) return;
       const apply = repository.applyGithubBranchEvaluation({
+        carried: [],
         deliveryId,
         receiptSequence: receipt.success.receiptSequence,
         processingRunId,
@@ -572,6 +573,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     if (EffectResult.isFailure(plan)) throw plan.failure;
     const committed = await runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+      carried: [],
       deliveryId: input.deliveryId,
         receiptSequence: recorded.success.receiptSequence,
       processingRunId: "run-push-crash",
@@ -589,6 +591,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     }
     const replayed = await runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+      carried: [],
       deliveryId: input.deliveryId,
         receiptSequence: recorded.success.receiptSequence,
       processingRunId: "run-push-crash",
@@ -979,6 +982,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     `);
     const applied = await runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+      carried: [],
       deliveryId,
         receiptSequence: recorded.success.receiptSequence,
       processingRunId: "run-rollback",
@@ -1065,6 +1069,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     if (EffectResult.isFailure(initialPlan)) return;
     await runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+      carried: [],
       deliveryId: "cas-initial",
       receiptSequence: initialSequence,
       processingRunId: "run-cas-initial",
@@ -1129,6 +1134,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
     const results = await Promise.all([
       runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+        carried: [],
         deliveryId: "cas-left",
         receiptSequence: leftSequence,
         processingRunId: "run-cas-left",
@@ -1141,6 +1147,7 @@ describe("GitHub ingestion PostgreSQL persistence", () => {
       ),
       runGithubRepositoryResult(
       repository.applyGithubBranchEvaluation({
+        carried: [],
         deliveryId: "cas-right",
         receiptSequence: rightSequence,
         processingRunId: "run-cas-right",

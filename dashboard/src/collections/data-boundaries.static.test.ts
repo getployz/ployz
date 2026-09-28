@@ -35,6 +35,7 @@ const SPINNER_FILES = {
   "components/destructive-volume/volume-destruction-confirmation-dialog.tsx": "submit in flight",
   "components/deployment-logs.tsx": "deployment step running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/GoesToSection.tsx": "approval, Undo or a new value in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/MergeSection.tsx": "merge in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/starting-point-settings-section.tsx": "deploy in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
@@ -98,6 +99,7 @@ const HOOK_FILES_NOT_COMMANDS = {
 const COMMAND_FILES = {
   "components/cancel-deployment-dialog.tsx": "cancelling a deployment waits on the runtime",
   "modules/deployments/deployment-commands.ts": "deploy and retry start runtime work",
+  "modules/pr-environments/conditional-save-commands.ts": "approve: the server assigns the approval's id; approve, Undo and a given value each change the pull request's check on GitHub, an external service",
   "modules/branches/branch-commands.ts": "createBranch: the server assigns a new Branch's ids, and creating it deploys; mergeBranch is destructive",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",

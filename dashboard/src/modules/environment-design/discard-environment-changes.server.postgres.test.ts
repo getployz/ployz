@@ -42,6 +42,7 @@ import {
   updateService,
 } from "./service-operations.server";
 import { createImageServiceSource } from "./services";
+import { InngestLive } from "#/modules/inngest/client";
 
 it.live(
   "discards one authorized field, node, or environment back to its reviewed baseline",
@@ -65,6 +66,7 @@ it.live(
         Layer.succeed(Polar, { mode: "self_hosted" }),
       ).pipe(
         Layer.merge(SecretEncryptionLive.pipe(Layer.provide(config))),
+        Layer.merge(InngestLive.pipe(Layer.provide(config))),
       );
 
       yield* Effect.gen(function* () {

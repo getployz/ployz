@@ -8,6 +8,7 @@ import {
 import {
   compareInstallationRepositoryCommits as compareInstallationRepositoryCommitsEffect,
   fetchInstallationCheckSuite as fetchInstallationCheckSuiteEffect,
+  fetchInstallationPullRequest,
   resolveGithubBranchHead as resolveGithubBranchHeadEffect,
   resolveGithubRepository as resolveGithubRepositoryEffect,
   GithubApiLive,
@@ -766,4 +767,18 @@ it("downloads public archives at the pinned SHA without credentials", async () =
   expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.github.com/repos/owner/repo/tarball/${sha}`);
   expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).has("Authorization")).toBe(false);
   expect(fetchMock.mock.calls[1]?.[1]?.headers).toBeUndefined();
+});
+
+describe("fetchInstallationPullRequest", () => {
+  it("reads a deleted author as GitHub's ghost, not a bot", async () => {
+    mockFetchSequence(installationTokenResponse(), jsonResponse({
+      number: 7, state: "closed", title: "Old change", user: null,
+      head: { ref: "feature", sha: "c".repeat(40) }, base: { ref: "main" },
+      merged: false, merge_commit_sha: null, commits: 1,
+    }));
+
+    const result = await Effect.runPromise(fetchInstallationPullRequest(4_901, 9_301, 7).pipe(Effect.provide(GithubTestLive)));
+
+    expect(result.author).toEqual({ login: "ghost", isBot: false });
+  });
 });
