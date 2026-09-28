@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useLoaderData, useParams } from "@tanstack/react-router";
+import { Link, useLoaderData, useParams } from "@tanstack/react-router";
 import { CircleCheckIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
@@ -8,35 +8,55 @@ import { listNames } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView } from "#/modules/branches/use-branch-review";
 import { PR_CHECK_NAME, type PrCheck } from "#/modules/pr-environments/pr-check";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useLiveSuspenseQuery } from "@tanstack/react-db";
+import { getPrEnvironmentPlansCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { defaultPrEnvironmentPlan } from "#/modules/pr-environments/repositories";
+import { BranchSections } from "../branch-settings-section";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { DifferSection } from "./DifferSection";
 import { UpdateSection } from "./UpdateSection";
 
 /**
- * A Branch's review page: what's new in its Parent, and what stays different. Save lives in the bottom bar's sheet. A
- * Kept Branch gets the same page. A PR Environment's page also shows its check on GitHub.
+ * A Branch's Manage panel, its one home: where it came from, its check on GitHub, what's new in its Parent, what stays
+ * different, and Keep, Shut down and Close. Save stays in the bottom bar's sheet, beside this panel's Manage button.
  */
 export function BranchReviewPanel() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const name = useEnvironmentDocument(params.organizationSlug, environmentId)?.name ?? params.environmentSlug;
   const review = useBranchReview(params.organizationSlug, environmentId);
+  const { environments, branches } = useWorkspace(params.organizationSlug);
+  const branch = branches.find((row) => row.environmentId === environmentId);
+  const parent = environments.find((row) => row.id === branch?.parentEnvironmentId);
+  const { data: plans } = useLiveSuspenseQuery(getPrEnvironmentPlansCollection(params.organizationSlug, useCollectionScope()));
+  const plan = plans.find((row) => row.projectId === branch?.projectId && row.repositoryId === branch.pullRequest?.repositoryId);
   const pr = review?.pullRequest ?? null;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
-        <span className="font-medium">Review {name}</span>
-        {review ? <p className="truncate text-sm text-muted-foreground">{name} ⑂ {review.parent.name}{landsIn(review)}</p> : null}
+        <span className="font-medium">{name}</span>
+        {parent ? <p className="truncate text-sm text-muted-foreground">
+          Branch of <Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: parent.namespace }}
+            className="underline underline-offset-4">{parent.name}</Link>{review ? landsIn(review) : ""}
+        </p> : null}
       </CanvasInspectorHeader>
-      {review ? (
-        <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
+      {review && branch && parent ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto p-4">
+          {branch.pullRequest ? <p className="text-sm text-muted-foreground">
+            {`PR environment for #${branch.pullRequest.number} · ${branch.pullRequest.title} · ${(plan ?? defaultPrEnvironmentPlan).removeOnClose
+              ? "closes with the pull request" : "stays 7 days after its last deploy"}`}
+          </p> : null}
           {review.check && pr && !pr.closed ? <CheckSection check={review.check} /> : null}
           <UpdateSection review={review} environmentId={environmentId} />
           <DifferSection review={review} />
+          <BranchSections organizationSlug={params.organizationSlug} projectSlug={params.projectSlug} environmentSlug={params.environmentSlug}
+            branch={branch} name={name} parent={parent} />
         </div>
       ) : (
-        <Empty><EmptyDescription>Only branches have a review page.</EmptyDescription></Empty>
+        <Empty><EmptyDescription>Only branches have this panel.</EmptyDescription></Empty>
       )}
     </div>
   );

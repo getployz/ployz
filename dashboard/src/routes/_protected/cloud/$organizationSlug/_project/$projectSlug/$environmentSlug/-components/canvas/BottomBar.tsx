@@ -181,10 +181,18 @@ export function BottomBar({
     : rows.own?.kind === "waiting" ? <WaitingState saves={waiting} /> : null;
   // Saying where only when more than one Destination has something.
   const several = rows.parent.filter((row) => row.kind === "saved" || (row.kind === "save" && row.into)).length > 1;
-  const parent = !review ? [] : rows.parent.map((row) => {
-    if (row.kind === "update") return <UpdatesState key="update" review={review} environmentId={environmentId} />;
+  // Manage, the Branch's one home, rides the last parent row; with none, the Branch gets a quiet row of its own.
+  const manage = <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "ghost" })}>Manage</Link>;
+  const parentRows = !review ? [] : rows.parent.filter((row) => row.kind !== "update" || review.updates > 0);
+  const parent = !review ? [] : parentRows.length === 0 ? [
+    <Row key="branch" icon={<GitBranchIcon className="size-4 text-muted-foreground" />} title={`Up to date with ${review.parent.name}`} detail={null}>
+      {manage}
+    </Row>,
+  ] : parentRows.map((row, index) => {
+    const extra = index === parentRows.length - 1 ? manage : null;
+    if (row.kind === "update") return <UpdatesState key="update" review={review} environmentId={environmentId} extra={extra} />;
     if (row.kind === "saved") {
-      return <SavedState key={`saved:${row.landing.destination.id}`} review={review} saved={row.saved} pullRequest={row.pullRequest} environmentId={environmentId} several={several} />;
+      return <SavedState key={`saved:${row.landing.destination.id}`} review={review} saved={row.saved} pullRequest={row.pullRequest} environmentId={environmentId} several={several} extra={extra} />;
     }
     const key = row.into?.landing.destination.id ?? PARENT;
     return (
@@ -193,6 +201,7 @@ export function BottomBar({
         detail={!row.into ? `into ${review.parent.name}`
           : `${several ? `into ${row.into.landing.destination.name} · ` : ""}go live when PR #${row.into.pullRequest.number} merges`}>
         <Button size="sm" variant="outline" onClick={() => setSaving(key)}>Save</Button>
+        {extra}
       </Row>
     );
   });
@@ -248,8 +257,8 @@ const waitingTitle = (saves: ConditionalSaveRow[]) =>
   `${goLive(saves.reduce((n, save) => n + save.rows.length, 0))} with ${listNames(saves.map((save) => `PR #${save.prNumber}`))}`;
 
 /** A PR Environment's changes saved for one Destination: they go live when its pull request merges. Details holds Undo. */
-function SavedState({ review, saved, pullRequest, environmentId, several }: {
-  review: BranchReviewView; saved: ConditionalSaveRow; pullRequest: PullRequest; environmentId: string; several: boolean;
+function SavedState({ review, saved, pullRequest, environmentId, several, extra }: {
+  review: BranchReviewView; saved: ConditionalSaveRow; pullRequest: PullRequest; environmentId: string; several: boolean; extra: ReactNode;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { withdraw } = useConditionalSave({
@@ -260,6 +269,7 @@ function SavedState({ review, saved, pullRequest, environmentId, several }: {
   return (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={goLive(saved.rows.length)} detail={`when PR #${pullRequest.number} merges${into}`}>
       <Button size="sm" variant="outline" onClick={() => setDetails(true)}>Details</Button>
+      {extra}
       {details ? (
         <GoesLiveSheet title={`${goLive(saved.rows.length)} when PR #${pullRequest.number} merges`} saves={[saved]}
           nameOf={(lineage) => review.nameOf(lineage)} onClose={() => setDetails(false)}
@@ -319,18 +329,16 @@ function WaitingState({ saves }: { saves: ConditionalSaveRow[] }) {
 
 /**
  * Updates from the Parent: Update stages them here. While the Branch deploys or has changes to deploy, or when only Live
- * Nodes changed, Details opens the review page, which says why.
+ * Nodes changed, only Manage shows: its panel says why.
  */
-function UpdatesState({ review, environmentId }: { review: BranchReviewView; environmentId: string }) {
+function UpdatesState({ review, environmentId, extra }: { review: BranchReviewView; environmentId: string; extra: ReactNode }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { update } = useUpdateBranch(params.organizationSlug);
   const unsettled = useBranchUnsettled(params.organizationSlug, environmentId);
-  if (review.updates === 0) return null;
   return (
     <Row title={`${plural(review.updates, "update")} from ${review.parent.name}`} detail={null}>
-      {unsettled || review.update.length === 0
-        ? <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} className={buttonVariants({ size: "sm", variant: "outline" })}>Details</Link>
-        : <Button size="sm" variant="outline" onClick={() => update(environmentId)}>Update</Button>}
+      {unsettled || review.update.length === 0 ? null : <Button size="sm" variant="outline" onClick={() => update(environmentId)}>Update</Button>}
+      {extra}
     </Row>
   );
 }

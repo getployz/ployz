@@ -207,7 +207,7 @@ it("shows a starting point's state over its staged nodes, with New branch and no
   expect(router.state.location.href).toBe(`${canvasUrl}/new-branch`);
 });
 
-it("on a Branch, adds a second row: changes to save with Save beside every first row, else updates with Update", async () => {
+it("on a Branch, adds a second row: changes to save with Save, else updates with Update, else up to date; Manage rides it", async () => {
   branch = branchReview([imageRow("web:2"), imageRow("web:3", true)], 1);
   attempts = [attempt(running, "deploying", "Add worker")];
   open(canvasUrl, [replicas], 1);
@@ -243,15 +243,18 @@ it("on a Branch, adds a second row: changes to save with Save beside every first
   fireEvent.click(updates.getByRole("button", { name: "Update" }));
   expect(update).toHaveBeenCalledWith("env-1");
   cleanup();
-  // Update waits for the Branch: Details opens the review page, which says why.
+  // Update waits for the Branch: only Manage shows, and its panel says why.
   unsettled = "Wait for this branch's deployment to finish.";
   open(canvasUrl);
-  expect((await bar()).getByRole("link", { name: "Details" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
+  const waiting = await bar();
+  expect(waiting.queryByRole("button", { name: "Update" })).toBeNull();
+  expect(waiting.getByRole("link", { name: "Manage" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
   cleanup();
   branch = branchReview([], 0);
   open(canvasUrl);
-  await act(async () => {});
-  expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
+  const quiet = await bar();
+  expect(quiet.getByText("Up to date with production")).toBeTruthy();
+  expect(quiet.getByRole("link", { name: "Manage" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
 });
 
 it("on a PR Environment, a row per Destination to save or saved; on a Destination, what goes live with a pull request", async () => {

@@ -37,7 +37,7 @@ type TeardownAttemptSummary = {
 
 /**
  * Deletes an Environment, project or organization, or closes a Kept Branch: the roots of real data, so the dialog lists
- * what goes and asks for `place`. Branches that aren't kept close with one click from the Branch section instead.
+ * what goes and asks for `place`. Branches that aren't kept close with one plain confirm from their Manage panel instead.
  */
 export function TeardownDangerSection({
   organizationSlug,
