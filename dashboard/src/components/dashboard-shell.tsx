@@ -10,7 +10,6 @@ import { NavigationProgress } from "./navigation-progress";
 import { OrganizationCollectionRefreshNotice } from "./organization-collection-refresh-notice";
 import { RouteContentSkeleton } from "./route-content-skeleton";
 import { RouteErrorAlert } from "./route-error-alert";
-import { buttonVariants } from "./ui/button-variants";
 import { useDashboardNavigation, useDashboardSection, useRouteCrumb } from "./use-dashboard-section";
 import DashboardAccountMenu from "#/routes/_protected/cloud/$organizationSlug/_org/-components/DashboardAccountMenu";
 
@@ -36,9 +35,10 @@ export function DashboardShell({
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
             : Crumb
-              // A detail page declares its crumb: `Servers / hel-1 ⌄`.
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`. The section keeps the list page's title look, so it doesn't jump.
               ? <Crumbs items={[
-                  <Link key="section" {...getDashboardDestination(scope, section)} className={buttonVariants({ variant: "ghost", size: "sm" })}>
+                  <Link key="section" {...getDashboardDestination(scope, section)}
+                    className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
                     {getDashboardSectionLabel(section)}
                   </Link>,
                   <Crumb key="crumb" />,
