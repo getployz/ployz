@@ -298,8 +298,7 @@ fn seal_plan(
 
 fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<Planned, PlanError> {
     let bound = bind(intent)?;
-    let warnings = hostname_policy_for(&intent.project_name, &bound.requested, snapshot)?;
-    assemble_plan(intent, bound, snapshot, warnings)
+    assemble_plan(intent, bound, snapshot)
 }
 
 fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
@@ -327,8 +326,9 @@ fn hostname_policy_for(
     project_name: &ProjectName,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
+    retiring: &[QualifiedService],
 ) -> Result<Vec<DeployWarning>, PlanError> {
-    reject_hostname_conflicts(project_name, requested, snapshot)?;
+    reject_hostname_conflicts(project_name, requested, snapshot, retiring)?;
     let mut warnings = Vec::new();
     if !snapshot.is_observer_complete()
         && requested
@@ -344,9 +344,17 @@ fn assemble_plan(
     intent: &DeployIntent,
     bound: BoundIntent,
     snapshot: &DeploySnapshot,
-    mut warnings: Vec<DeployWarning>,
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
+    let services = snapshot.services_in(&intent.project_name);
+    let would_remove = obsolete_services(intent, &services);
+    let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
+    let retiring = if prune_refusal.is_none() {
+        would_remove.as_slice()
+    } else {
+        &[]
+    };
+    let mut warnings = hostname_policy_for(&intent.project_name, &requested, snapshot, retiring)?;
     warnings.extend(storage_eligibility_warnings(
         &requested,
         &intent.project_name,
@@ -357,7 +365,6 @@ fn assemble_plan(
     }
     let mut volume_plan = VolumePlan::new(snapshot, &intent.project_name, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
-    let services = snapshot.services_in(&intent.project_name);
     let mut reservations = PlacementReservations::new(snapshot);
     volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
     let mut placement = reservations.into_placement(snapshot);
@@ -412,11 +419,9 @@ fn assemble_plan(
     }
     let volumes = volume_plan.finish(&mut service_operations)?;
     let mut operations = service_operations;
-    let would_remove = obsolete_services(intent, &services);
-    let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
     let preserved_volumes = preserved_owned_volumes(&intent.project_name, &target, snapshot);
     if prune_refusal.is_none() {
-        operations.extend(removal_operations(&services, &would_remove));
+        operations.extend(removal_operations(&services, retiring));
     }
     Ok(Planned {
         operations,
@@ -432,8 +437,17 @@ fn reject_hostname_conflicts(
     project_name: &ProjectName,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
+    retiring: &[QualifiedService],
 ) -> Result<(), PlanError> {
-    let owners = hostname_owners(snapshot.containers.iter());
+    // A full Deploy may transfer a hostname from a Service it retires after
+    // desired work succeeds. Recompute ownership so other publishers still block it.
+    let retiring = retiring.iter().collect::<BTreeSet<_>>();
+    let owners = hostname_owners(
+        snapshot
+            .containers
+            .iter()
+            .filter(|container| !retiring.contains(&container.identity())),
+    );
     let mut claimed = BTreeMap::<&IngressHost, QualifiedService>::new();
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
