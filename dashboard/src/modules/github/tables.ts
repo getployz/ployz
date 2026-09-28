@@ -1,5 +1,7 @@
 import { createdAt, sqlStringLiterals, updatedAt } from "#/db/tables";
 
+import { GITHUB_PULL_REQUEST_ACTIONS, type GithubPullRequestAction } from "#/modules/github/github-ingestion.contracts";
+
 import { GITHUB_CHECK_SUITE_ACTIONS, GITHUB_CHECK_SUITE_CONCLUSIONS, GITHUB_CHECK_SUITE_STATUSES, type GithubCheckSuiteAction, type GithubCheckSuiteConclusion, type GithubCheckSuiteStatus } from "#/modules/github/github-check-suite-vocabulary";
 
 import { user } from "#/modules/identity/tables";
@@ -20,7 +22,11 @@ export type {
   GithubCheckSuiteStatus,
 };
 
-export const GITHUB_WEBHOOK_EVENT_KINDS = ["push", "check_suite"] as const;
+export const GITHUB_WEBHOOK_EVENT_KINDS = [
+  "push",
+  "check_suite",
+  "pull_request",
+] as const;
 
 export type GithubWebhookEventKind =
   (typeof GITHUB_WEBHOOK_EVENT_KINDS)[number];
@@ -46,6 +52,8 @@ export const GITHUB_WEBHOOK_OUTCOMES = [
   "ignored_stale",
   "ignored_unconfigured_repository",
   "ignored_no_matching_service",
+  "ignored_fork",
+  "ignored_pull_request",
   "malformed",
   "identity_unresolved",
   "unsupported_action",
@@ -190,6 +198,10 @@ export const githubWebhookDelivery = pgTable(
     checkSuiteConclusion: text(
       "check_suite_conclusion",
     ).$type<GithubCheckSuiteConclusion | null>(),
+    pullRequestNumber: bigint("pull_request_number", { mode: "number" }),
+    pullRequestAction: text(
+      "pull_request_action",
+    ).$type<GithubPullRequestAction | null>(),
     processingRunId: text("processing_run_id"),
     processingStartedAt: timestamp("processing_started_at", {
       mode: "date",
@@ -217,11 +229,11 @@ export const githubWebhookDelivery = pgTable(
       .where(sql`${table.processingRunId} is not null`),
     check(
       "github_webhook_delivery_identity_check",
-      sql`length(trim(${table.deliveryId})) > 0 and ${table.receiptSequence} > 0 and (${table.installationId} is null or ${table.installationId} > 0) and (${table.repositoryId} is null or ${table.repositoryId} > 0) and (${table.checkSuiteId} is null or ${table.checkSuiteId} > 0)`,
+      sql`length(trim(${table.deliveryId})) > 0 and ${table.receiptSequence} > 0 and (${table.installationId} is null or ${table.installationId} > 0) and (${table.repositoryId} is null or ${table.repositoryId} > 0) and (${table.checkSuiteId} is null or ${table.checkSuiteId} > 0) and (${table.pullRequestNumber} is null or ${table.pullRequestNumber} > 0)`,
     ),
     check(
       "github_webhook_delivery_event_kind_check",
-      sql`${table.eventKind} in ('push','check_suite')`,
+      sql`${table.eventKind} in ('push','check_suite','pull_request')`,
     ),
     check(
       "github_webhook_delivery_processing_state_check",
@@ -229,7 +241,7 @@ export const githubWebhookDelivery = pgTable(
     ),
     check(
       "github_webhook_delivery_outcome_check",
-      sql`${table.outcome} is null or ${table.outcome} in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged','ignored_stale','ignored_unconfigured_repository','ignored_no_matching_service','malformed','identity_unresolved','unsupported_action','processing_failed','cancelled')`,
+      sql`${table.outcome} is null or ${table.outcome} in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged','ignored_stale','ignored_unconfigured_repository','ignored_no_matching_service','ignored_fork','ignored_pull_request','malformed','identity_unresolved','unsupported_action','processing_failed','cancelled')`,
     ),
     check(
       "github_webhook_delivery_branch_state_check",
@@ -258,6 +270,12 @@ export const githubWebhookDelivery = pgTable(
       } in (${sqlStringLiterals(GITHUB_CHECK_SUITE_CONCLUSIONS)})`,
     ),
     check(
+      "github_webhook_delivery_pull_request_action_check",
+      sql`${table.pullRequestAction} is null or ${
+        table.pullRequestAction
+      } in (${sqlStringLiterals(GITHUB_PULL_REQUEST_ACTIONS)})`,
+    ),
+    check(
       "github_webhook_delivery_head_sha_check",
       sql`${table.headSha} is null or ${table.headSha} ~ '^[0-9a-f]{40}$'`,
     ),
@@ -268,7 +286,7 @@ export const githubWebhookDelivery = pgTable(
         or
         (${table.processingState} = 'processing' and ${table.processingRunId} is not null and ${table.processingStartedAt} is not null and ${table.outcome} is null and ${table.failureCode} is null and ${table.processedAt} is null)
         or
-        (${table.processingState} = 'processed' and ${table.processingRunId} is not null and ${table.processingStartedAt} is not null and ${table.outcome} in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged','ignored_stale','ignored_unconfigured_repository','ignored_no_matching_service') and ${table.failureCode} is null and ${table.processedAt} is not null)
+        (${table.processingState} = 'processed' and ${table.processingRunId} is not null and ${table.processingStartedAt} is not null and ${table.outcome} in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged','ignored_stale','ignored_unconfigured_repository','ignored_no_matching_service','ignored_fork','ignored_pull_request') and ${table.failureCode} is null and ${table.processedAt} is not null)
         or
         (${table.processingState} = 'rejected' and (
           (${table.outcome} = 'malformed' and ${table.failureCode} = 'malformed_payload')
@@ -298,6 +316,8 @@ export const githubWebhookDelivery = pgTable(
               and ${table.checkSuiteAction} is null
               and ${table.checkSuiteStatus} is null
               and ${table.checkSuiteConclusion} is null
+              and ${table.pullRequestNumber} is null
+              and ${table.pullRequestAction} is null
               and (
                 (${table.branchState} = 'active' and ${table.headSha} is not null)
                 or (${table.branchState} = 'deleted' and ${table.headSha} is null)
@@ -310,6 +330,20 @@ export const githubWebhookDelivery = pgTable(
               and ${table.checkSuiteId} is not null
               and ${table.checkSuiteAction} is not null
               and ${table.checkSuiteStatus} is not null
+              and ${table.pullRequestNumber} is null
+              and ${table.pullRequestAction} is null
+            )
+            or (
+              ${table.eventKind} = 'pull_request'
+              and ${table.ref} is null
+              and ${table.branchState} is null
+              and ${table.headSha} is not null
+              and ${table.checkSuiteId} is null
+              and ${table.checkSuiteAction} is null
+              and ${table.checkSuiteStatus} is null
+              and ${table.checkSuiteConclusion} is null
+              and ${table.pullRequestNumber} is not null
+              and ${table.pullRequestAction} is not null
             )
           )
         )
@@ -318,9 +352,10 @@ export const githubWebhookDelivery = pgTable(
     check(
       "github_webhook_delivery_outcome_kind_check",
       sql`(
-        ${table.outcome} not in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged')
+        ${table.outcome} not in ('branch_projected','branch_deleted','branch_rebased_all_services','check_suite_projected','check_suite_unchanged','ignored_fork','ignored_pull_request')
         or (${table.outcome} in ('branch_projected','branch_deleted','branch_rebased_all_services') and ${table.eventKind} = 'push')
         or (${table.outcome} in ('check_suite_projected','check_suite_unchanged') and ${table.eventKind} = 'check_suite')
+        or (${table.outcome} in ('ignored_fork','ignored_pull_request') and ${table.eventKind} = 'pull_request')
       )`,
     ),
   ],

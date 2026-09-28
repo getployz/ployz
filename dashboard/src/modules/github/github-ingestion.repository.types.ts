@@ -1,4 +1,4 @@
-import type { GithubWebhookFailureCode, GithubWebhookOutcome } from "#/modules/github/tables";
+import type { GithubWebhookEventKind, GithubWebhookFailureCode, GithubWebhookOutcome } from "#/modules/github/tables";
 import { Data } from "effect";
 import type {
   GithubBranchCursor,
@@ -7,6 +7,7 @@ import type {
   GithubCheckSuiteStatus,
   GithubEnvironmentTriggerInput,
   GithubEnvironmentTriggerSelection,
+  GithubPullRequestAction,
   GithubServiceCandidate,
 } from "#/modules/github/github-ingestion.contracts";
 import type { BranchEvaluationPlan } from "#/modules/github/github-branch-evaluation";
@@ -35,9 +36,20 @@ export type GithubCheckSuiteDeliveryInput = {
   checkSuiteConclusion: GithubCheckSuiteConclusion | null;
 };
 
+export type GithubPullRequestDeliveryInput = {
+  deliveryId: string;
+  eventKind: "pull_request";
+  installationId: number;
+  repositoryId: number;
+  pullRequestNumber: number;
+  pullRequestAction: GithubPullRequestAction;
+  headSha: string;
+};
+
 export type GithubDeliveryInput =
   | GithubPushDeliveryInput
-  | GithubCheckSuiteDeliveryInput;
+  | GithubCheckSuiteDeliveryInput
+  | GithubPullRequestDeliveryInput;
 
 export type GithubDeliveryAdmissionInput = GithubDeliveryInput & {
   processingRunId: string;
@@ -100,7 +112,7 @@ export type GithubDeliveryReceipt =
 
 export type GithubMalformedDeliveryInput = {
   deliveryId: string;
-  eventKind: "push" | "check_suite";
+  eventKind: GithubWebhookEventKind;
   rejection: "malformed" | "unsupported_action";
 };
 

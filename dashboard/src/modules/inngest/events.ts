@@ -12,11 +12,14 @@ import {
   githubCheckSuiteReceivedEventDataSchema,
   githubCheckSuiteTransitionEventDataSchema,
   githubEnvironmentTriggerPersistedEventDataSchema,
+  githubPullRequestReceivedEventDataSchema,
   githubPushReceivedEventDataSchema,
   type GithubCheckSuiteReceivedEventData,
   type GithubCheckSuiteReceivedEventInput,
   type GithubCheckSuiteTransitionEventData,
   type GithubEnvironmentTriggerPersistedEventData,
+  type GithubPullRequestReceivedEventData,
+  type GithubPullRequestReceivedEventInput,
   type GithubPushReceivedEventData,
   type GithubPushReceivedEventInput,
 } from "#/modules/github/github-ingestion.contracts";
@@ -80,6 +83,7 @@ export const githubCheckSuiteTransitionedEvent =
   "github/check-suite.transitioned";
 export const githubPushReceivedEvent = "github/push.received";
 export const githubCheckSuiteReceivedEvent = "github/check-suite.received";
+export const githubPullRequestReceivedEvent = "github/pull-request.received";
 export const volumeRemoveRequestedEvent = "cloud/volume-remove.requested";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
@@ -142,6 +146,8 @@ export type {
   GithubCheckSuiteReceivedEventInput,
   GithubCheckSuiteTransitionEventData,
   GithubEnvironmentTriggerPersistedEventData,
+  GithubPullRequestReceivedEventData,
+  GithubPullRequestReceivedEventInput,
   GithubPushReceivedEventData,
   GithubPushReceivedEventInput,
 };
@@ -173,6 +179,10 @@ export const githubPushReceivedEventType = eventType(
 export const githubCheckSuiteReceivedEventType = eventType(
   githubCheckSuiteReceivedEvent,
   { schema: staticSchema<GithubCheckSuiteReceivedEventData>() },
+);
+export const githubPullRequestReceivedEventType = eventType(
+  githubPullRequestReceivedEvent,
+  { schema: staticSchema<GithubPullRequestReceivedEventData>() },
 );
 export const volumeRemoveRequestedEventType = eventType(
   volumeRemoveRequestedEvent,
@@ -375,6 +385,25 @@ export function createGithubCheckSuiteReceivedEvent(
   } as const;
 }
 
+export function createGithubPullRequestReceivedEvent(
+  input: GithubPullRequestReceivedEventInput,
+) {
+  const data = Schema.decodeUnknownSync(
+    githubPullRequestReceivedEventDataSchema,
+  )(
+    {
+      ...input,
+      pullRequestKey: `${input.installationId}:${input.repositoryId}:${input.number}`,
+    },
+    { onExcessProperty: "error" },
+  );
+  return {
+    id: data.deliveryId,
+    name: githubPullRequestReceivedEvent,
+    data,
+  } as const;
+}
+
 type PolarSubscriptionWebhookPayload =
   | WebhookSubscriptionCreatedPayload
   | WebhookSubscriptionUpdatedPayload
@@ -449,6 +478,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
+  | ReturnType<typeof createGithubPullRequestReceivedEvent>
   | ReturnType<typeof createGithubBuildRunCompletedEvent>;
 
 /**
