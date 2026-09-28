@@ -22,12 +22,12 @@ interface Destination {
   path: RegisteredPath;
 }
 
-/** An Environment's four places, in rail order. */
-const environmentPlaceOrder = ["canvas", "deployments", "logs", "settings"] as const;
+/** An Environment's four places, in rail order. Architecture is its canvas. */
+const environmentPlaceOrder = ["architecture", "deployments", "logs", "settings"] as const;
 type EnvironmentPlace = (typeof environmentPlaceOrder)[number];
 const environmentPlaces = {
-  canvas: {
-    label: "Canvas",
+  architecture: {
+    label: "Architecture",
     icon: WorkflowIcon,
     path: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
   },
@@ -48,15 +48,15 @@ const environmentPlaces = {
   },
 } satisfies Record<EnvironmentPlace, Destination>;
 
-/** The organization's pages, in avatar-menu order. */
-const organizationOrder = ["projects", "servers", "organization-settings", "billing"] as const;
-type OrganizationDestination = (typeof organizationOrder)[number];
+/** The organization's three places, in rail order. */
+const organizationPlaceOrder = ["projects", "servers", "organization-settings"] as const;
+type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billing";
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
-  // Not plain "Settings": the avatar menu reads as personal, and on an Environment it sits beside the rail's Settings.
-  "organization-settings": { label: "Organization Settings", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
-  // Only Ployz-hosted Cloud has billing.
+  // Not "Settings": that always means an Environment's.
+  "organization-settings": { label: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
+  // A section of Organization, with its own page. Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
 } satisfies Record<OrganizationDestination, Destination>;
 
@@ -85,9 +85,19 @@ export type DashboardNavItem = DashboardDestination & {
   label: string;
   icon: LucideIcon;
   current: boolean;
+  /** Its page's sections, in order; empty for a page without any. */
+  sections: DashboardNavSection[];
 };
 
-/** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Canvas or Projects). */
+export type DashboardNavSection = ReturnType<typeof placeSections>[number];
+
+/** The search keys that pick a Settings page's section. */
+export interface DashboardSectionSearch {
+  scope?: "environment" | "project";
+  section?: "general" | "builds";
+}
+
+/** Where `section` lives in `scope`; a section the scope lacks falls back to its home (Architecture or Projects). */
 export function getDashboardDestination(
   scope: DashboardScope,
   section: DashboardSection,
@@ -105,7 +115,7 @@ export function getDashboardDestination(
   return linkOptions({
     to: isEnvironmentPlace(section)
       ? environmentPlaces[section].path
-      : environmentPlaces.canvas.path,
+      : environmentPlaces.architecture.path,
     params: {
       organizationSlug: scope.organizationSlug,
       projectSlug: scope.projectSlug,
@@ -121,29 +131,78 @@ export function getDashboardSectionLabel(section: DashboardSection) {
     : organizationDestinations[section].label;
 }
 
+/** The open section of a page with sections: Settings' `scope`, Organization's `section`, or Billing. */
+function openSection(section: DashboardSection, search: DashboardSectionSearch) {
+  switch (section) {
+    case "settings":
+      return search.scope ?? "environment";
+    case "organization-settings":
+      return search.section ?? "general";
+    case "billing":
+      return "billing";
+    default:
+      return undefined;
+  }
+}
+
+/** The sections of `place`'s page. A page's first section is its plain URL. */
+function placeSections(
+  scope: DashboardScope,
+  place: DashboardSection,
+  open: ReturnType<typeof openSection>,
+  billingEnabled: boolean,
+) {
+  if (scope.kind === "environment" && place === "settings") {
+    const params = { organizationSlug: scope.organizationSlug, projectSlug: scope.projectSlug, environmentSlug: scope.environmentSlug };
+    const to = environmentPlaces.settings.path;
+    return [
+      { label: "Environment", current: open === "environment", ...linkOptions({ to, params, search: {} }) },
+      { label: "Project", current: open === "project", ...linkOptions({ to, params, search: { scope: "project" as const } }) },
+    ];
+  }
+  if (scope.kind === "all" && place === "organization-settings") {
+    const params = { organizationSlug: scope.organizationSlug };
+    const to = organizationDestinations["organization-settings"].path;
+    return [
+      { label: "General", current: open === "general", ...linkOptions({ to, params, search: {} }) },
+      { label: "Builds", current: open === "builds", ...linkOptions({ to, params, search: { section: "builds" as const } }) },
+      ...billingEnabled
+        ? [{ label: "Billing", current: open === "billing", ...linkOptions({ to: organizationDestinations.billing.path, params, search: {} }) }]
+        : [],
+    ];
+  }
+  return [];
+}
+
 /**
- * The only enumeration of destinations. `places` are the Environment's four places for the rail and the
- * phone tab bar (none on organization pages); `organization` fills the avatar menu.
+ * The only enumeration of destinations. `places` are the scope's places: the rail's first group and the phone tab
+ * bar. On an Environment, `organization` is the way back that the rail adds below them: Projects and Servers.
  */
 export function createDashboardNavigation(
   scope: DashboardScope,
-  { section, billingEnabled = false }: { section: DashboardSection; billingEnabled?: boolean },
+  { section, search = {}, billingEnabled = false }: {
+    section: DashboardSection;
+    search?: DashboardSectionSearch;
+    billingEnabled?: boolean;
+  },
 ) {
+  const open = openSection(section, search);
+  // Billing is a section of Organization, so Organization is the current place there.
+  const currentPlace = section === "billing" ? "organization-settings" : section;
   const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
     section: key,
     label,
     icon,
-    current: key === section,
+    current: key === currentPlace,
+    sections: placeSections(target, key, open, billingEnabled),
     ...getDashboardDestination(target, key),
   });
   const organizationScope = { kind: "all" as const, organizationSlug: scope.organizationSlug };
+  const organization = organizationPlaceOrder.map((key) => item(organizationScope, key, organizationDestinations[key]));
+  if (scope.kind === "all") return { places: organization, organization: [] };
   return {
-    places: scope.kind === "all"
-      ? []
-      : environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
-    organization: organizationOrder
-      .filter((key) => billingEnabled || key !== "billing")
-      .map((key) => item(organizationScope, key, organizationDestinations[key])),
+    places: environmentPlaceOrder.map((key) => item(scope, key, environmentPlaces[key])),
+    organization: organization.filter((place) => place.section !== "organization-settings"),
   };
 }
 
@@ -161,9 +220,12 @@ const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/pr-environments/$repositoryId", "settings"],
 ]);
 
-/** The current place from the deepest route: the canvas and its panels are Canvas. */
+/** The current place from the deepest route: the canvas and its panels are Architecture. */
 export function getDashboardSectionFromRouteId(
   routeId?: RegisteredRouteId,
 ): DashboardSection {
-  return (routeId && sectionByRouteId.get(routeId)) || "canvas";
+  return (routeId && sectionByRouteId.get(routeId)) || "architecture";
 }
+
+/** The canvas's layout: Architecture and every panel over the canvas, Deployments among them, render inside it. */
+export const canvasRouteId: RegisteredRouteId = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas";

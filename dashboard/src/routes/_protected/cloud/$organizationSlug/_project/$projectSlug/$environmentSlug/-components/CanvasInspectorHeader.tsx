@@ -27,7 +27,7 @@ export function CanvasInspectorHeader({ params, children }: {
   const presentation = useContext(InspectorPresentation);
   if (!presentation) throw new Error("Canvas inspector header must be inside its workspace");
   const { takeover, toggleFullscreen, returnTo } = presentation;
-  const back = returnTo ? "Back to service" : "Back to Canvas";
+  const back = returnTo ? "Back to service" : "Back to Architecture";
   const returnLink = (
     <Link {...inspectorExit(params, returnTo)}
       className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-back")}

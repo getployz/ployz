@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { Building2Icon, LogOutIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
@@ -27,7 +27,7 @@ import {
   getDashboardDestination,
   type DashboardScope,
 } from "#/components/dashboard-navigation-model";
-import { useDashboardNavigation, useDashboardSection } from "#/components/use-dashboard-section";
+import { useDashboardSection } from "#/components/use-dashboard-section";
 import { organizationStateQueryOptions } from "#/modules/environment-design/workspace.queries";
 import { toast } from "sonner";
 import { Result } from "effect";
@@ -47,7 +47,7 @@ const themes = [
   { value: "dark", label: "Dark" },
 ] as const;
 
-/** The avatar menu: organization pages, switching organization, Theme and Log out. */
+/** The avatar menu: switching organization, Theme and Log out. The organization's pages are places. */
 export default function DashboardAccountMenu({
   scope,
   side = "bottom",
@@ -59,7 +59,6 @@ export default function DashboardAccountMenu({
   const signOut = useSignOut();
   const navigate = useNavigate();
   const { userTheme, setTheme } = useTheme();
-  const { organization } = useDashboardNavigation(scope);
   const section = useDashboardSection();
   const organizations = useQuery(organizationStateQueryOptions(scope.organizationSlug)).data?.organizations ?? [];
 
@@ -104,37 +103,30 @@ export default function DashboardAccountMenu({
           </div>
         </div>
 
-        <DropdownMenuSeparator />
-
-        <DropdownMenuGroup>
-          {organization.map((item) => (
-            <DropdownMenuItem key={item.section}
-              render={<Link to={item.to} params={item.params} search={item.search}
-                activeOptions={{ exact: true }} aria-current={item.current ? "page" : undefined} />}>
-              <item.icon />
-              {item.label}
-            </DropdownMenuItem>
-          ))}
-          {organizations.length > 1 ? (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <Building2Icon />
-                Switch organization
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
-                  void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
-                }}>
-                  {organizations.map((candidate) => (
-                    <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
-                      {candidate.name}
-                    </DropdownMenuRadioItem>
-                  ))}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          ) : null}
-        </DropdownMenuGroup>
+        {organizations.length > 1 ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuGroup>
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>
+                  <Building2Icon />
+                  Switch organization
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  <DropdownMenuRadioGroup value={scope.organizationSlug} onValueChange={(slug: string) => {
+                    void navigate(getDashboardDestination({ kind: "all", organizationSlug: slug }, section));
+                  }}>
+                    {organizations.map((candidate) => (
+                      <DropdownMenuRadioItem key={candidate.id} value={candidate.slug}>
+                        {candidate.name}
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            </DropdownMenuGroup>
+          </>
+        ) : null}
 
         <DropdownMenuSeparator />
 

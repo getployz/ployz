@@ -13,7 +13,6 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
@@ -32,13 +31,13 @@ import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environment
 import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
 import { Route as EnvironmentLayoutRoute } from "./route";
 
-const settingsTab = Schema.Literals(["environment", "project"]);
+const settingsSection = Schema.Literals(["environment", "project"]);
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/settings",
 )({
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
-    scope: Schema.optional(settingsTab.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
+    scope: Schema.optional(settingsSection.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
   loader: async ({ params, context }) => {
     const { organizationSlug, projectSlug } = params;
@@ -53,7 +52,7 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const { organizationSlug, projectSlug, environmentSlug } = Route.useParams();
-  const { scope: tab = "environment" } = Route.useSearch();
+  const { scope: section = "environment" } = Route.useSearch();
   const { environmentId } = EnvironmentLayoutRoute.useLoaderData();
   const navigate = useNavigate({ from: Route.fullPath });
   const { projects, environments, branches } = useWorkspace(organizationSlug);
@@ -76,18 +75,9 @@ function RouteComponent() {
 
   return (
     <DashboardPage width="content">
-      <Tabs value={tab} onValueChange={(value) => {
-        if (Schema.is(settingsTab)(value)) void navigate({ search: { scope: value }, replace: true });
-      }}>
-        <TabsList variant="line">
-          <TabsTrigger value="environment">
-            Environment <span className="text-muted-foreground">{environment?.name ?? environmentSlug}</span>
-          </TabsTrigger>
-          <TabsTrigger value="project">
-            Project <span className="text-muted-foreground">{project?.name ?? projectSlug}</span>
-          </TabsTrigger>
-        </TabsList>
-        <TabsContent value="environment" className="mt-6 flex flex-col gap-8">
+      {/* The rail, or on phones the strip under the top bar, picks the section. */}
+      {section === "environment" ? (
+        <div className="flex flex-col gap-8">
           {branch && parent && (
             <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent} />
           )}
@@ -109,8 +99,9 @@ function RouteComponent() {
             headingId="environment-teardown-heading"
             onCompleted={leaveDeletedTree}
           />
-        </TabsContent>
-        <TabsContent value="project" className="mt-6 flex flex-col gap-8">
+        </div>
+      ) : (
+        <div className="flex flex-col gap-8">
           {project && <ProjectSettings organizationSlug={organizationSlug} project={project} branches={branches} environmentSlug={environmentSlug} />}
           <TeardownDangerSection
             organizationSlug={organizationSlug}
@@ -123,8 +114,8 @@ function RouteComponent() {
             headingId="project-teardown-heading"
             onCompleted={leaveDeletedTree}
           />
-        </TabsContent>
-      </Tabs>
+        </div>
+      )}
     </DashboardPage>
   );
 }
