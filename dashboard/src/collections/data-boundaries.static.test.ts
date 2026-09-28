@@ -36,7 +36,7 @@ const SPINNER_FILES = {
   "components/deployment-logs.tsx": "deployment step running",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/NewBranchPanel.tsx": "create in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/GoesToSection.tsx": "approval, Undo or a new value in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/MergeSection.tsx": "merge in flight",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/SaveSheet.tsx": "save in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/starting-point-settings-section.tsx": "deploy in flight",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "create in flight",
   "components/service-create-command.tsx": "create in flight",

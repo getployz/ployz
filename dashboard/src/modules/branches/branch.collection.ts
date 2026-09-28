@@ -70,7 +70,7 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
 }
 
 /** Whether anything is staged here: Working State differs from Applied State, as the server's gate reads it. */
-export function useHasStagedChanges(organizationSlug: string, environmentId: string) {
+function useHasStagedChanges(organizationSlug: string, environmentId: string) {
   const document = useEnvironmentDocument(organizationSlug, environmentId);
   const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
   return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? []);

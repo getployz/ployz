@@ -44,8 +44,8 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   );
 }
 
-/** The staged-changes review itself: commit message, the changes, Discard, Save and Deploy. A Branch's review page shows it inline. */
-export function StagedChanges({
+/** The staged-changes review itself: commit message, the changes, Discard, Save and Deploy. */
+function StagedChanges({
   groups,
   totalChanges,
   canDeploy,
@@ -59,11 +59,10 @@ export function StagedChanges({
   onDiscardNode,
   onDiscardRow,
   held,
-  inline = false,
-}: EnvironmentChangesReviewProps & { inline?: boolean }) {
+}: EnvironmentChangesReviewProps) {
   return (
     <>
-      <div className={`shrink-0 ${inline ? "" : "border-b px-6 py-3"}`}>
+      <div className="shrink-0 border-b px-6 py-3">
         <InputGroup>
           <InputGroupInput
             aria-label="Commit message"
@@ -73,7 +72,7 @@ export function StagedChanges({
           />
         </InputGroup>
       </div>
-        <div className={inline ? "py-3" : "min-h-0 flex-1 overflow-y-auto px-6 py-6"}>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <div className="flex flex-col gap-3">
             {groups.map((group) => (
               <ApplyChangeGroupCard
@@ -86,11 +85,11 @@ export function StagedChanges({
                 onDiscardRow={(_, path) => onDiscardRow(group, path)}
               />
             ))}
-            {inline ? null : held}
+            {held}
           </div>
         </div>
 
-      <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${inline ? "" : "border-t px-6 py-4"}`}>
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
         {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" onClick={onDiscardAll}>Discard all changes</Button> : null}
         <Button variant="outline" disabled={!canSave} onClick={onSave}>Save without deploying</Button>
         {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}

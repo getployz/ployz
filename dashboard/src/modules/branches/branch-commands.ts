@@ -19,7 +19,7 @@ import { useEnvironmentDocumentQueue } from "#/modules/environment-design/enviro
 import { createBranchServerFn, makeOwnCopyServerFn, saveBranchServerFn, updateBranchServerFn } from "./branch-functions";
 import type { CreateBranch, SaveBranch } from "./branch-schemas";
 
-/** Every Org Store table creating, merging or updating a Branch writes rows into. */
+/** Every Org Store table creating, saving or updating a Branch writes rows into. */
 const branchTables = [
   getEnvironmentsCollection, getEnvironmentSummariesCollection, getBranchesCollection, getRawServicesCollection,
   getRawEnvironmentResourcesCollection, getCanvasPositionsCollection, getEnvironmentNodeIntroductionsCollection,
@@ -47,28 +47,29 @@ export function useCreateBranch(projectSlug: string) {
 }
 
 /**
- * Stages the picked rows in the Destination, then opens its canvas, whose bottom bar shows them. Awaited: it is
- * destructive. Pending edits to the Destination save first, so the Merge checks the revision they leave.
+ * Save: stages the picked rows in the Destination, then opens its canvas, whose bottom bar shows them as changes to
+ * deploy. Awaited: it is destructive. Pending edits to the Destination save first, so the Save checks the revision they
+ * leave.
  */
-export function useSaveBranch(input: { organizationSlug: string; projectSlug: string; branchName: string; destination: { id: string; namespace: string } }) {
+export function useSaveBranch(input: {
+  organizationSlug: string; projectSlug: string; branchName: string; destination: { id: string; name: string; namespace: string };
+}) {
   const scope = useCollectionScope();
   const navigate = useNavigate();
   const queue = useEnvironmentDocumentQueue(input.organizationSlug);
   return useMutation({
-    mutationFn: async (merge: Omit<SaveBranch, "organizationSlug" | "destinationRevision">) => {
+    mutationFn: async (save: Omit<SaveBranch, "organizationSlug" | "destinationRevision">) => {
       await queue.settled(input.destination.id);
       const destinationRevision = getEnvironmentsCollection(input.organizationSlug, scope).get(input.destination.id)?.revision;
       if (!destinationRevision) throw new Error("Still loading. Try again.");
-      const { data } = await saveBranchServerFn({ data: {
-        organizationSlug: input.organizationSlug, branchEnvironmentId: merge.branchEnvironmentId, destinationRevision,
-        review: merge.review, picks: merge.picks, thenDelete: merge.thenDelete,
-      } });
+      const { data } = await saveBranchServerFn({ data: { ...save, organizationSlug: input.organizationSlug, destinationRevision } });
       await Promise.all(branchTables.map((get) => reconcileCollection(get(input.organizationSlug, scope))));
       refetchEnvironmentChangeStates(input.organizationSlug, scope);
       return data;
     },
-    onSuccess: (data, merge) => {
-      if (merge.thenDelete && !data.closed) toast.warning(`${input.branchName} is still open`, { description: "It couldn't close. Close it from its settings." });
+    onSuccess: (data, save) => {
+      toast.success(`Saved to ${input.destination.name}`, { description: data.closed ? `${input.branchName} deleted` : undefined });
+      if (save.thenDelete && !data.closed) toast.warning(`${input.branchName} is still here`, { description: "It couldn't be deleted. Delete it from its settings." });
       return navigate(getDashboardDestination({
         kind: "environment", organizationSlug: input.organizationSlug, projectSlug: input.projectSlug, environmentSlug: input.destination.namespace,
       }, "architecture"));

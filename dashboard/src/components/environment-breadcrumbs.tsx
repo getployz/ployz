@@ -182,7 +182,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                     prNumbers.has(environment.id) && `#${prNumbers.get(environment.id)}`,
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
-                    !!review?.changes && `${review.changes} ${review.changes === 1 ? "change" : "changes"}`,
+                    !!review?.changes && `${review.changes} to save`,
                     !!review?.updates && `${review.updates} ${review.updates === 1 ? "update" : "updates"}`,
                   ].filter((note) => note !== false);
                   return (
