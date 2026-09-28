@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
+import { useStillHere } from "#/hooks/use-still-here";
 import { useServerFn } from "@tanstack/react-start";
 import { getEnvironmentsCollection, getEnvironmentSummariesCollection, environmentSummary } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -32,7 +33,7 @@ export function CreateEnvironmentDialog({
 }) {
   const collectionScope = useCollectionScope();
   const [name, setName] = useState("");
-  const router = useRouter();
+  const markHere = useStillHere();
   const navigate = useNavigate();
   const createEnvironment = useServerFn(createEnvironmentServerFn);
   const mutation = useMutation({
@@ -40,7 +41,7 @@ export function CreateEnvironmentDialog({
       organizationSlug: string;
       projectSlug: string;
       name: string;
-      locationKey: string | undefined;
+      stillHere: () => boolean;
     }) =>
       createEnvironment({
         data: {
@@ -53,7 +54,7 @@ export function CreateEnvironmentDialog({
       await getEnvironmentsCollection(input.organizationSlug, collectionScope).writeCommitted(receipt.data);
       await getEnvironmentSummariesCollection(input.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data));
       // A completed creation still belongs to its original scope after navigation.
-      if (router.state.location.state.key !== input.locationKey) return;
+      if (!input.stillHere()) return;
       onOpenChange(false);
       await navigate(
         getDashboardDestination(
@@ -86,7 +87,7 @@ export function CreateEnvironmentDialog({
                 organizationSlug,
                 projectSlug,
                 name: name.trim(),
-                locationKey: router.state.location.state.key,
+                stillHere: markHere(),
               });
           }}
         >

@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { useNavigate, useRouter } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
+import { useStillHere } from "#/hooks/use-still-here";
 import { toErrorMessage } from "#/lib/error-message";
 import { closeBranchServerFn } from "#/modules/branches/branch-functions";
 
@@ -30,17 +31,17 @@ export function useCloseBranch({ organizationSlug, projectSlug, environmentId, n
 }) {
   const closeBranch = useServerFn(closeBranchServerFn);
   const navigate = useNavigate();
-  const router = useRouter();
+  const markHere = useStillHere();
   const [closing, setClosing] = useState(false);
 
   async function close() {
     // Someone who moved on while it closed stays where they went.
-    const from = router.state.location.state.key;
+    const stillHere = markHere();
     setClosing(true);
     try {
       await closeBranch({ data: { organizationSlug, environmentId } });
       toast(`Closing ${name}`);
-      if (router.state.location.state.key === from) void navigate({
+      if (stillHere()) void navigate({
         to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
         params: { organizationSlug, projectSlug, environmentSlug: parentNamespace },
       });
