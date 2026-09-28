@@ -2,18 +2,51 @@ import { expect, it, vi } from "vitest";
 import type { LogEvent } from "@ployz/sdk";
 import { backfillThenFollow, containerLogResponse } from "./container-log-events.server";
 
-it("answers live only after the whole tail, then follows", async () => {
-  const opened: string[] = [];
-  const read = (name: string) => (async function* (): AsyncIterable<LogEvent> {
-    opened.push(name);
-    yield { type: "source_error", machineId: "m", containerId: "c", message: name };
-  })();
-  const seen: string[] = [];
-  for await (const event of backfillThenFollow(read("tail"), read("follow"))) {
-    seen.push(event.type === "source_error" ? event.message : event.type);
+it("answers live only after the whole tail, holding what the follow read meanwhile", async () => {
+  const record = (message: string): LogEvent => ({ type: "source_error", machineId: "m", containerId: "c", message });
+  let finishTail = () => {};
+  const tailFinished = new Promise<void>(resolve => { finishTail = resolve; });
+  async function* tail(): AsyncIterable<LogEvent> {
+    yield record("tail");
+    await tailFinished;
   }
-  expect(seen).toEqual(["tail", "live", "follow"]);
-  expect(opened).toEqual(["tail", "follow"]);
+  async function* follow(): AsyncIterable<LogEvent> {
+    // Written while the tail was still draining: without the follow already running, it would fall between the reads.
+    yield record("during tail");
+    finishTail();
+    yield record("after");
+  }
+  // Frozen time: only a follow already running can finish the tail; the budget never fires.
+  vi.useFakeTimers();
+  try {
+    const seen: string[] = [];
+    for await (const event of backfillThenFollow(tail(), follow())) {
+      seen.push(event.type === "source_error" ? event.message : event.type);
+    }
+    expect(seen).toEqual(["tail", "live", "during tail", "after"]);
+  } finally { vi.useRealTimers(); }
+});
+
+it("holds at most a bounded backlog while the tail loads, and loses none of it", async () => {
+  vi.useFakeTimers();
+  try {
+    let pulled = 0;
+    const hung: AsyncIterable<LogEvent> = { [Symbol.asyncIterator]() { return { next: () => new Promise<IteratorResult<LogEvent>>(() => {}) }; } };
+    async function* flood(): AsyncIterable<LogEvent> {
+      for (;;) {
+        pulled++;
+        yield { type: "source_error", machineId: "m", containerId: "c", message: String(pulled) };
+      }
+    }
+    const events = backfillThenFollow(hung, flood())[Symbol.asyncIterator]();
+    const first = events.next();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(pulled).toBeLessThanOrEqual(1_001);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(await first).toMatchObject({ value: { type: "live" } });
+    expect(await events.next()).toMatchObject({ value: { message: "1" } });
+    await events.return?.(undefined);
+  } finally { vi.useRealTimers(); }
 });
 
 it("stops waiting on a hung tail and follows anyway", async () => {
