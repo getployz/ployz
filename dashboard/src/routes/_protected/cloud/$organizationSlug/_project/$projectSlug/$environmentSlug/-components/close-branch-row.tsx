@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
@@ -31,6 +31,12 @@ export function CloseBranchRow({ organizationSlug, projectSlug, environmentId, n
   const navigate = useNavigate();
   const [confirming, setConfirming] = useState(false);
   const [closing, setClosing] = useState(false);
+  // Someone who moved on while it closed stays where they went.
+  const left = useRef(false);
+  useEffect(() => {
+    left.current = false;
+    return () => { left.current = true; };
+  }, []);
   const deletes = own.length === 0 ? "Nothing runs here yet." : `Deletes its own ${own.length === 1 ? "copy" : "copies"} of ${joined(own)}.`;
 
   async function close() {
@@ -38,7 +44,7 @@ export function CloseBranchRow({ organizationSlug, projectSlug, environmentId, n
     try {
       await closeBranch({ data: { organizationSlug, environmentId } });
       toast(`Closing ${name}`);
-      void navigate({
+      if (!left.current) void navigate({
         to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug",
         params: { organizationSlug, projectSlug, environmentSlug: parentNamespace },
       });
