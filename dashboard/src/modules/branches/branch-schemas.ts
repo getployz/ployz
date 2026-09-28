@@ -56,7 +56,7 @@ export const MakeOwnCopy = Schema.Struct({
 });
 export type MakeOwnCopy = typeof MakeOwnCopy.Type;
 
-/** A kept Branch stays after merging and never closes for being idle. */
+/** A kept Branch stays after saving and never closes for being idle. */
 export const SetBranchKept = Schema.Struct({
   organizationSlug: OrganizationSlug,
   environmentId: Uuid,
@@ -65,23 +65,23 @@ export const SetBranchKept = Schema.Struct({
 export type SetBranchKept = typeof SetBranchKept.Type;
 
 /**
- * One ticked merge row. A variable row names its option; `value` is a new value in plain text ("" for none), sealed on
+ * One ticked save row. A variable row names its option; `value` is a new value in plain text ("" for none), sealed on
  * the server when the row is a secret.
  */
-export const MergePickSchema = Schema.Struct({
+export const SavePickSchema = Schema.Struct({
   key: Schema.String,
   option: Schema.optional(Schema.Literals(["from", "parent", "new", "leave_out"])),
   value: Schema.String,
 });
-export type MergePick = typeof MergePickSchema.Type;
+export type SavePick = typeof SavePickSchema.Type;
 
-/** Stage the ticked rows of a Branch's review in its Destination; `review` is the review string the user saw. */
-export const MergeBranch = Schema.Struct({
+/** Save: stage the ticked rows in the Destination, then delete the Branch when `thenDelete`; `review` is what the user saw. */
+export const SaveBranch = Schema.Struct({
   organizationSlug: OrganizationSlug,
   branchEnvironmentId: Uuid,
   destinationRevision: Uuid,
   review: Schema.String,
-  picks: Schema.mutable(Schema.Array(MergePickSchema)),
-  thenClose: Schema.Boolean,
+  picks: Schema.mutable(Schema.Array(SavePickSchema)),
+  thenDelete: Schema.Boolean,
 });
-export type MergeBranch = typeof MergeBranch.Type;
+export type SaveBranch = typeof SaveBranch.Type;

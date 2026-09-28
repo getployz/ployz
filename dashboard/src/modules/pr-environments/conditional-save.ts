@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { MergePickSchema } from "#/modules/branches/branch-schemas";
+import { SavePickSchema } from "#/modules/branches/branch-schemas";
 import { OrganizationSlug, Uuid } from "#/modules/environment-design/workspace-schemas";
 
 /**
@@ -22,7 +22,7 @@ const HeldOn = {
 export const ApproveConditionalSave = Schema.Struct({
   ...HeldOn,
   review: Schema.String,
-  picks: Schema.mutable(Schema.Array(MergePickSchema)),
+  picks: Schema.mutable(Schema.Array(SavePickSchema)),
 });
 export type ApproveConditionalSave = typeof ApproveConditionalSave.Type;
 

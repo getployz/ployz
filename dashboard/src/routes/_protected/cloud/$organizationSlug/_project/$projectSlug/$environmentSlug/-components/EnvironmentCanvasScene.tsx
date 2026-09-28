@@ -31,7 +31,7 @@ import {
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
-import { BottomBarSlot, StagedReviewSlot } from "./canvas/BottomBar";
+import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
@@ -223,12 +223,10 @@ export function EnvironmentCanvasScene() {
   const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, branchReview, prPlan } = useCanvasInspectorSelection();
   const lighting = useOpenDeployment();
   const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
-  const [stagedReviewSlot, setStagedReviewSlot] = useState<HTMLElement | null>(null);
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
     <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
-    <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
@@ -250,7 +248,6 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
-    </StagedReviewSlot.Provider>
     </BranchPickingProvider>
     </BottomBarSlot.Provider>
   );

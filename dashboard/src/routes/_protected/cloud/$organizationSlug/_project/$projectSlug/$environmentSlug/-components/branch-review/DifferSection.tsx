@@ -7,13 +7,13 @@ import { ChangeRowItem } from "./ChangeRowItem";
 /** Settings each Environment keeps as its own, so they never move, each with its reason. */
 export function DifferSection({ review }: { review: BranchReviewView }) {
   return (
-    <ReviewSection title="Meant to differ">
+    <ReviewSection title="Stays different">
       {review.differ.length ? <ItemGroup className="gap-1">
         {review.differ.map((row) => (
           <ChangeRowItem key={row.key} row={presentRow(row, review.nameOf)}
             description={<ItemDescription>{reason(row, review)}</ItemDescription>} />
         ))}
-      </ItemGroup> : <p className="text-sm text-muted-foreground">Nothing here is meant to differ.</p>}
+      </ItemGroup> : <p className="text-sm text-muted-foreground">Nothing stays different.</p>}
     </ReviewSection>
   );
 }

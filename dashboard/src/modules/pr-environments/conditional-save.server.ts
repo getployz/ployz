@@ -14,9 +14,9 @@ import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { core, loadIdentitySources } from "#/modules/branches/branch-operations.server";
-import { corePicks, sealValue, withEmptyValues } from "#/modules/branches/branch-merge.server";
+import { corePicks, sealValue, withEmptyValues } from "#/modules/branches/branch-save.server";
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
-import { mergeInput, rowLineage } from "#/modules/branches/branch-review";
+import { saveInput, rowLineage } from "#/modules/branches/branch-review";
 import { requestPrCheck } from "./pr-check-request.server";
 import { prDestinations } from "./pr-environment.repository.server";
 import { standing, type ApproveConditionalSave, type GiveConditionalSaveValue, type WithdrawConditionalSave } from "./conditional-save";
@@ -144,7 +144,7 @@ export const goesToComparison = Effect.fn("PrEnvironments.goesToComparison")(fun
     .where(eq(environment.id, input.destinationEnvironmentId));
   if (!destination) return yield* new NotFound({ message: "The destination was not found." });
   const [parent] = yield* drizzle.select({ namespace: environment.namespace }).from(environment).where(eq(environment.id, input.branch.parentEnvironmentId));
-  const compare = mergeInput({
+  const compare = saveInput({
     base: input.branch.base, kept: false, branch: from, parent: into,
     parentApplied: parent ? yield* appliedIntent(input.branch.parentEnvironmentId, parent.namespace) : null,
     hostnames: {

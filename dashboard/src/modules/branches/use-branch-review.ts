@@ -14,17 +14,17 @@ export type { PullRequest };
 type EnvironmentName = { id: string; name: string; namespace: string };
 
 export type BranchReviewView = BranchReview & {
-  /** The Destination of a Merge: the Parent. */
+  /** Where Save puts the changes: the Parent. */
   parent: EnvironmentName;
   kept: boolean;
   live: LiveUpdate[];
   /** A PR Environment's pull request; null for any other Branch. */
   pullRequest: PullRequest | null;
-  /** A PR Environment's changes for each of its Destinations, which it never Merges into. Empty for any other Branch. */
+  /** A PR Environment's changes for each of its Destinations, which it never Saves into directly. Empty for any other Branch. */
   goesTo: Array<GoesTo & { destination: EnvironmentName; approval: ConditionalSaveRow | null }>;
   /** A PR Environment's "Ployz · ready to merge" check, as Ployz posts it on the pull request; null for any other Branch. */
   check: PrCheck | null;
-  /** "N changes": what would merge, or on a PR Environment what goes to its Destinations. */
+  /** "N to save": what Save would put in the Parent, or on a PR Environment what goes to its Destinations. */
   changes: number;
   /** "N updates": the Parent's deployed changes the Branch lacks, plus Live Nodes redeployed since. */
   updates: number;
@@ -87,7 +87,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
     const check = pr && prCheck(landings.map(({ destination, rows, save }) => checkDestination(destination.name, rows.length, save)));
     return {
       ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings, check,
-      changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.merge.length,
+      changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.save.length,
       updates: review.update.length + live.length,
       nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",
     };

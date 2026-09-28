@@ -11,18 +11,17 @@ import { environmentBranch as schemaEnvironmentBranch, project as schemaProject 
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
 import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { lockBranchScope } from "#/modules/environment-design/workspace-repository.server";
-import { loadEnvironmentDocument } from "#/modules/environment-design/working-state-repository.server";
-import { branchUnsettled } from "./branch-guard.server";
+import { cancelActiveDeployments } from "#/modules/deployments/deployment-command.server";
 import { admitSystemTeardown, prepareSystemTeardown } from "#/modules/runtime/teardown.server";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
 import type { SetBranchKept } from "./branch-schemas";
 
 /** Why the system closes a Branch; a person closes one through the teardown's typed confirmation. */
-export type BranchCloseReason = "merged" | "idle" | "pull_request_closed";
+export type BranchCloseReason = "saved" | "idle" | "pull_request_closed";
 
 /**
- * The system closes a Branch (after a Merge, or when it sits idle) through the Environment teardown, which takes its
+ * The system closes a Branch (deleted after a Save, or when it sits idle) through the Environment teardown, which takes its
  * own Branches first. It runs as the Branch's creator. This asks the runtime, holding nothing, and returns `admit`, which
  * writes the teardown attempt (inside the caller's transaction, under its locks) and logs the close with its reason once
  * that commits.
@@ -61,19 +60,19 @@ const tryClose = <E, R>(environmentId: string, why: string, close: Effect.Effect
 );
 
 
-/** Closes a merged Branch unless it was kept meanwhile; false when it doesn't close, and the Merge stands. */
+/**
+ * Deletes a saved Branch unless it was kept meanwhile; false when it isn't deleted, and the Save stands. Under every queue
+ * the teardown takes, each active attempt is cancelled first, so a Branch deletes even while it deploys.
+ */
 export const tryCloseBranch = (environmentId: string) => Effect.gen(function* () {
   const database = yield* Database;
-  return yield* tryClose(environmentId, "A merged Branch did not close.",
-    closeBranch(environmentId, "merged").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
+  return yield* tryClose(environmentId, "A saved Branch was not deleted.",
+    closeBranch(environmentId, "saved").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       const row = yield* lockBranchScope(close.projectId, environmentId, "update");
       if (!row || row.kept) return null;
-      // Anything staged or deploying since the Merge stays: under the Branch's queue and document locks, which a deploy and
-      // an edit take, the Branch must still run exactly its Working State. Every queue the teardown takes comes first.
-      const { drizzle } = yield* Database;
       yield* lockEnvironmentDeploymentQueues(close.environmentIds);
-      yield* loadEnvironmentDocument(environmentId, true);
-      return (yield* branchUnsettled(drizzle, environmentId)) ? null : yield* close.admit;
+      yield* cancelActiveDeployments(close.environmentIds);
+      return yield* close.admit;
     })))));
 });
 
@@ -90,7 +89,7 @@ export const closePrEnvironment = (environmentId: string) => Effect.gen(function
 }).pipe(Effect.scoped);
 
 /**
- * A kept Branch stays after merging and never closes for being idle. Under its Branch row, which a close holds while it
+ * A kept Branch stays after saving and never closes for being idle. Under its Branch row, which a close holds while it
  * admits, so Keep never reports success for a Branch already closing.
  */
 export const setBranchKept = Effect.fn("Branches.setKept")(function* (actor: Actor, input: SetBranchKept) {
@@ -129,7 +128,7 @@ export const sweepIdleBranches = Effect.fn("Branches.sweepIdle")(function* (now:
     "An idle Branch did not close; the next sweep retries it.",
     closeBranch(environmentId, "idle").pipe(Effect.flatMap((close) => database.transaction(Effect.gen(function* () {
       // The rule again, in lock order (lockProjectDefault): the Project (a new Branch of it and a Default change wait),
-      // the Branch row (Keep, Merge and Update wait), then the queues the teardown takes (a deploy waits).
+      // the Branch row (Keep, Save and Update wait), then the queues the teardown takes (a deploy waits).
       yield* lockBranchScope(close.projectId, environmentId, "update");
       yield* lockEnvironmentDeploymentQueues(close.environmentIds);
       if (!(yield* idleBranches(now, environmentId)).includes(environmentId)) return null;

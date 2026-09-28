@@ -7,6 +7,9 @@ import {
 } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as branchCollections from "#/modules/branches/branch.collection";
+import * as branchCommands from "#/modules/branches/branch-commands";
+import * as documents from "#/modules/environment-design/environment-document.collection";
+import * as workspaces from "#/modules/environment-design/workspace.queries";
 import * as deploymentCollections from "#/modules/deployments/deployment.collection";
 import * as branchReviews from "#/modules/branches/use-branch-review";
 import * as conditionalSaves from "#/modules/pr-environments/conditional-save.collection";
@@ -29,14 +32,16 @@ const replicas: CanvasEnvironmentChangeGroup = asTestDouble<CanvasEnvironmentCha
 const cache = asTestDouble<CanvasEnvironmentChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
+const update = vi.fn();
+let unsettled: string | null = null;
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
 let branch: branchReviews.BranchReviewView | null = null;
 let held: ConditionalSaveRow[] = [];
 const imageRow = (from: string): ChangeRow => ({ key: `web-lineage:source.image`, role: "move", conflict: false, base: "web:1", from, into: "web:1" });
-const branchReview = (merge: ChangeRow[], updates: number) => asTestDouble<branchReviews.BranchReviewView>()({
-  parent: { id: "env-0", name: "production", namespace: "shop-production" },
-  merge, changes: merge.length, updates, nameOf: () => "web",
+const branchReview = (save: ChangeRow[], updates: number) => asTestDouble<branchReviews.BranchReviewView>()({
+  parent: { id: "env-0", name: "production", namespace: "shop-production" }, pullRequest: null, kept: false,
+  save, saveReview: "r", changes: save.length, update: updates ? [imageRow("web:2")] : [], updates, nameOf: () => "web",
 });
 
 beforeEach(() => {
@@ -49,7 +54,15 @@ beforeEach(() => {
   vi.spyOn(branchCollections, "useStartingPoint").mockImplementation(() =>
     asTestDouble<ReturnType<typeof branchCollections.useStartingPoint>>()(startingPoint));
   vi.spyOn(branchReviews, "useBranchReview").mockImplementation(() => branch);
-  vi.spyOn(branchCollections, "useHasStagedChanges").mockImplementation(() => false);
+  unsettled = null;
+  vi.spyOn(branchCollections, "useBranchUnsettled").mockImplementation(() => unsettled);
+  vi.spyOn(branchCommands, "useUpdateBranch").mockImplementation(() => ({ update, makeOwnCopy: vi.fn() }));
+  vi.spyOn(branchCommands, "useSaveBranch").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof branchCommands.useSaveBranch>>()({ mutate: vi.fn(), isPending: false, isError: false }));
+  vi.spyOn(documents, "useEnvironmentDocument").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof documents.useEnvironmentDocument>>()({ name: "fix-web" }));
+  vi.spyOn(workspaces, "useWorkspace").mockImplementation(() =>
+    asTestDouble<ReturnType<typeof workspaces.useWorkspace>>()({ projects: [] }));
   vi.spyOn(deploymentCollections, "useEnvironmentDeployments").mockImplementation(() =>
     asTestDouble<ReturnType<typeof deploymentCollections.useEnvironmentDeployments>>()(attempts));
   vi.spyOn(deploymentCollections, "useDeploymentAttempt").mockImplementation((_organization, _environment, id) =>
@@ -92,14 +105,14 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
 const canvasUrl = "/cloud/acme/shop/production";
 const bar = async () => within(await screen.findByRole("group", { name: "Bottom bar" }));
 
-it("shows staged changes first: the count, the one change, Review, Deploy (⇧+Enter) and Discard under ⋮", async () => {
+it("shows changes to deploy first: the count, the one change, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
-  expect(staged.getByText("1 change")).toBeTruthy();
+  expect(staged.getByText("1 change to deploy")).toBeTruthy();
   expect(staged.getByText("api · Replicas 1 → 2")).toBeTruthy();
   expect(staged.getByRole("button", { name: /^Deploy/ }).textContent).toBe("Deploy⇧+Enter");
 
-  fireEvent.click(staged.getByRole("button", { name: "Review" }));
+  fireEvent.click(staged.getByRole("button", { name: "Details" }));
   expect(screen.getByRole("dialog", { name: "Environment changes" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "Close" }));
 
@@ -117,7 +130,7 @@ it("names the changed services, and keeps staged changes over a running Git-trig
   attempts = [attempt(running, "deploying", "Push to main", "github")];
   open(canvasUrl, [replicas, cache], 2);
   const staged = await bar();
-  expect(staged.getByText("2 changes")).toBeTruthy();
+  expect(staged.getByText("2 changes to deploy")).toBeTruthy();
   expect(staged.getByText("api, cache")).toBeTruthy();
   expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
@@ -153,7 +166,7 @@ it("shows a starting point's state over its staged nodes, with New branch and no
   const shown = await bar();
   expect(shown.getByText("template isn't deployed")).toBeTruthy();
   expect(shown.getByText("A starting point for branches")).toBeTruthy();
-  expect(shown.queryByText("2 changes")).toBeNull();
+  expect(shown.queryByText("2 changes to deploy")).toBeNull();
   expect(shown.queryByRole("button", { name: /^Deploy/ })).toBeNull();
   await act(async () => { fireEvent.keyDown(document.body, { key: "Enter", shiftKey: true }); });
   expect(onDeploy).not.toHaveBeenCalled();
@@ -162,28 +175,44 @@ it("shows a starting point's state over its staged nodes, with New branch and no
   expect(router.state.location.href).toBe(`${canvasUrl}/new-branch`);
 });
 
-it("on a Branch, then shows what would merge into its Parent, else what's new there, after the staged and running states", async () => {
+it("on a Branch, adds a second row: changes to save with Save beside every first row, else updates with Update", async () => {
   branch = branchReview([imageRow("web:2"), imageRow("web:3")], 1);
   attempts = [attempt(running, "deploying", "Add worker")];
   open(canvasUrl, [replicas], 1);
-  // Staged changes come first, and Review opens the Branch's review page.
-  expect((await bar()).getByRole("link", { name: "Review" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
+  const staged = await bar();
+  expect(staged.getByText("1 change to deploy")).toBeTruthy();
+  expect(staged.getByText("2 changes to save")).toBeTruthy();
+  expect(staged.getByText("into production")).toBeTruthy();
   cleanup();
   open(canvasUrl);
-  expect((await bar()).getByText("Deploying · Add worker")).toBeTruthy();
+  const deploying = await bar();
+  expect(deploying.getByText("Deploying · Add worker")).toBeTruthy();
+  fireEvent.click(deploying.getByRole("button", { name: "Save" }));
+  const sheet = within(screen.getByRole("dialog", { name: "2 changes for production" }));
+  expect(sheet.getByRole("region", { name: "web" }).textContent).toContain("web will be updated2 settings");
+  expect(sheet.getByText("Nothing deploys yet. production gets 2 changes to deploy.")).toBeTruthy();
+  expect(sheet.getByRole("switch", { name: "Delete fix-web after saving" })).toBeTruthy();
+  expect(sheet.getByRole("button", { name: "Save to production" })).toBeTruthy();
   cleanup();
+  startingPoint = { name: "recipe" };
+  open(canvasUrl);
+  const recipe = await bar();
+  expect(recipe.getByText("recipe isn't deployed")).toBeTruthy();
+  expect(recipe.getByRole("button", { name: "Save" })).toBeTruthy();
+  cleanup();
+  startingPoint = undefined;
   attempts = [];
-  open(canvasUrl);
-  const changes = await bar();
-  expect(changes.getByText("2 changes for production")).toBeTruthy();
-  expect(changes.getByText("web · Container image web:1 → web:2")).toBeTruthy();
-  expect(changes.getByRole("link", { name: "Review and merge" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
-  cleanup();
   branch = branchReview([], 1);
   open(canvasUrl);
   const updates = await bar();
   expect(updates.getByText("1 update from production")).toBeTruthy();
-  expect(updates.getByRole("link", { name: "Review" })).toBeTruthy();
+  fireEvent.click(updates.getByRole("button", { name: "Update" }));
+  expect(update).toHaveBeenCalledWith("env-1");
+  cleanup();
+  // Update waits for the Branch: Details opens the review page, which says why.
+  unsettled = "Wait for this branch's deployment to finish.";
+  open(canvasUrl);
+  expect((await bar()).getByRole("link", { name: "Details" }).getAttribute("href")).toBe(`${canvasUrl}/review`);
   cleanup();
   branch = branchReview([], 0);
   open(canvasUrl);
@@ -191,7 +220,7 @@ it("on a Branch, then shows what would merge into its Parent, else what's new th
   expect(screen.queryByRole("group", { name: "Bottom bar" })).toBeNull();
 });
 
-it("on a PR Environment, says whether it's approved; on a Destination, what waits for a pull request once nothing else shows", async () => {
+it("on a PR Environment, keeps its own second row; on a Destination, what waits for a pull request once nothing else shows", async () => {
   const approval = asTestDouble<ConditionalSaveRow>()({ id: "save" });
   const pullRequest = (approved: boolean, check: NonNullable<branchReviews.BranchReviewView["check"]>) => asTestDouble<branchReviews.BranchReviewView>()({
     ...branchReview([], 0),
@@ -220,14 +249,17 @@ it("on a PR Environment, says whether it's approved; on a Destination, what wait
   cleanup();
 
   held = [asTestDouble<ConditionalSaveRow>()({ id: "save", prNumber: 142, approvedBy: "maya", rows: [{ row: imageRow("web:2"), missing: false }] })];
+  // A Branch that's also a Destination: what waits here, and beside it what it has to save.
   branch = branchReview([imageRow("web:2")], 0);
   open(canvasUrl);
-  expect((await bar()).getByText("1 change for production")).toBeTruthy();
+  const both = await bar();
+  expect(both.getByText("Waiting for #142")).toBeTruthy();
+  expect(both.getByText("1 change to save")).toBeTruthy();
   cleanup();
   branch = null;
   open(canvasUrl);
   const waiting = await bar();
   expect(waiting.getByText("Waiting for #142")).toBeTruthy();
   expect(waiting.getByText("1 change · approved by maya")).toBeTruthy();
-  expect(waiting.getByRole("button", { name: "Review" })).toBeTruthy();
+  expect(waiting.getByRole("button", { name: "Details" })).toBeTruthy();
 });

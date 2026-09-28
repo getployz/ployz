@@ -1,4 +1,4 @@
-import { useContext, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useLoaderData, useParams } from "@tanstack/react-router";
 import { CircleCheckIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
@@ -8,26 +8,23 @@ import { listNames, plural } from "#/modules/branches/branch-plan";
 import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modules/branches/use-branch-review";
 import { PR_CHECK_NAME, type PrCheck } from "#/modules/pr-environments/pr-check";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { StagedReviewSlot } from "../canvas/BottomBar";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { DifferSection } from "./DifferSection";
 import { GoesToSection } from "./GoesToSection";
 import { HeldChanges } from "./HeldChanges";
-import { MergeSection } from "./MergeSection";
 import { UpdateSection } from "./UpdateSection";
 
 /**
- * A Branch's review page, the whole relationship with its Parent in four sections: what's staged here, what would merge
- * into the Destination (the Parent), what's new in the Parent, and what's meant to differ. A Kept Branch gets the same page.
- * A PR Environment never Merges: its page shows its pull request's code, then what goes to each of its Destinations.
+ * A Branch's review page: what's new in its Parent, and what stays different. Save lives in the bottom bar's sheet. A
+ * Kept Branch gets the same page. A PR Environment's page first shows its pull request's code, then what goes to each of
+ * its Destinations.
  */
 export function BranchReviewPanel() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const name = useEnvironmentDocument(params.organizationSlug, environmentId)?.name ?? params.environmentSlug;
   const review = useBranchReview(params.organizationSlug, environmentId);
-  const { setSlot } = useContext(StagedReviewSlot);
   const pr = review?.pullRequest ?? null;
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -37,10 +34,6 @@ export function BranchReviewPanel() {
       </CanvasInspectorHeader>
       {review ? (
         <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto p-4">
-          <ReviewSection title={`Not deployed to ${name} yet`}>
-            {/* The bottom bar owns the change actions and renders the staged-changes review here. */}
-            <div ref={setSlot} />
-          </ReviewSection>
           <HeldChanges environmentId={environmentId} />
           {pr ? (
             <>
@@ -50,7 +43,7 @@ export function BranchReviewPanel() {
               ))}
               {review.check && !pr.closed ? <CheckSection check={review.check} /> : null}
             </>
-          ) : <MergeSection review={review} branch={{ id: environmentId, name }} />}
+          ) : null}
           <UpdateSection review={review} environmentId={environmentId} />
           <DifferSection review={review} />
         </div>
@@ -73,10 +66,10 @@ export function ReviewSection({ title, count, help, children }: { title: string;
   );
 }
 
-/** " · lands in production" when changes land somewhere other than the Parent. */
+/** " · into production" when changes go somewhere other than the Parent. */
 function landsIn(review: BranchReviewView) {
   const names = review.goesTo.map((landing) => landing.destination.name);
-  return names.length && !(names.length === 1 && names[0] === review.parent.name) ? ` · lands in ${listNames(names)}` : "";
+  return names.length && !(names.length === 1 && names[0] === review.parent.name) ? ` · into ${listNames(names)}` : "";
 }
 
 /** The pull request, and where merging it on GitHub deploys. */

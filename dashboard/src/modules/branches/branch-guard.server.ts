@@ -11,10 +11,11 @@ import { hasUndeployedChanges } from "#/modules/environment-design/environment-c
 import { loadCurrentEnvironmentSnapshotProjection } from "#/modules/environment-design/working-state-repository.server";
 
 /**
- * Why a Branch runs something other than its Working State, or null: an active attempt (queued included), or a non-empty
- * Environment Change Set. Holds the Branch's queue lock to commit, so no deploy is admitted meanwhile.
+ * Update and Own Copy rewrite what a Branch runs, so they refuse while it runs something other than its Working State:
+ * an active attempt (queued included), or a non-empty Environment Change Set. Holds the Branch's queue lock to commit, so
+ * no deploy is admitted meanwhile. Save never waits.
  */
-export const branchUnsettled = Effect.fn("Branches.branchUnsettled")(function* (
+export const assertBranchSettled = Effect.fn("Branches.assertBranchSettled")(function* (
   tx: DatabaseService["drizzle"], branchEnvironmentId: string,
 ) {
   yield* lockEnvironmentDeploymentQueue(branchEnvironmentId);
@@ -22,18 +23,11 @@ export const branchUnsettled = Effect.fn("Branches.branchUnsettled")(function* (
     eq(environmentDeployment.environmentId, branchEnvironmentId),
     inArray(environmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
   )).limit(1);
-  if (active) return "A deploy of this branch is still running. Wait for it to finish.";
+  if (active) return yield* new Conflict({ message: "A deploy of this branch is still running. Wait for it to finish." });
   const working = yield* loadCurrentEnvironmentSnapshotProjection(branchEnvironmentId);
   const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId: branchEnvironmentId });
   const applied = [...projection.appliedSavedNodeByKey.values()].filter((node) => node.environmentId === branchEnvironmentId);
-  return hasUndeployedChanges(working.nodeSnapshots, applied)
-    ? "This branch has changes that aren't deployed. Deploy or discard them first." : null;
-});
-
-/** Merge and Update move only what a Branch runs: refused unless it is settled (branchUnsettled). */
-export const assertBranchSettled = Effect.fn("Branches.assertBranchSettled")(function* (
-  tx: DatabaseService["drizzle"], branchEnvironmentId: string,
-) {
-  const unsettled = yield* branchUnsettled(tx, branchEnvironmentId);
-  if (unsettled) return yield* new Conflict({ message: unsettled });
+  if (hasUndeployedChanges(working.nodeSnapshots, applied)) {
+    return yield* new Conflict({ message: "This branch has changes that aren't deployed. Deploy or discard them first." });
+  }
 });

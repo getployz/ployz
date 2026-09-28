@@ -25,14 +25,14 @@ export type BranchReviewInput = {
 export type LiveUpdate = { lineageId: string; ownerEnvironmentId: string; deployedAt: Date };
 
 export type BranchReview = {
-  /** Branch Working → Destination Working, against the base. */
-  merge: ChangeRow[];
+  /** Branch Working → Destination Working, against the base: what Save puts in the Destination. */
+  save: ChangeRow[];
   /** Parent Applied → Branch Working, against the base. */
   update: ChangeRow[];
-  /** Settings each side keeps as its own, from the merge comparison. */
+  /** Settings each side keeps as its own, from the save comparison. */
   differ: ChangeRow[];
-  /** Core's review string of the merge rows; Merge sends it, and the server refuses it once the rows moved. */
-  mergeReview: string;
+  /** Core's review string of the save rows; Save sends it, and the server refuses it once the rows moved. */
+  saveReview: string;
 };
 
 const moves = (rows: ChangeRow[]) => rows.filter((row) => row.role === "move");
@@ -42,9 +42,9 @@ const moves = (rows: ChangeRow[]) => rows.filter((row) => row.role === "move");
  * from authoritative states before applying picks.
  */
 export function branchReview(input: BranchReviewInput): BranchReview {
-  const { rows: merge, review: mergeReview } = branchChanges(mergeInput(input));
+  const { rows: save, review: saveReview } = branchChanges(saveInput(input));
   const update = input.parentApplied ? branchChanges(updateInput(input, input.parentApplied)).rows : [];
-  return { merge: moves(merge), update: moves(update), differ: merge.filter((row) => row.role === "differ"), mergeReview };
+  return { save: moves(save), update: moves(update), differ: save.filter((row) => row.role === "differ"), saveReview };
 }
 
 /**
@@ -56,11 +56,11 @@ export type GoesTo = { rows: ChangeRow[]; review: string };
 
 /** `input.parent` is the Destination's Working State here, and `parentApplied` the Parent's Applied State. */
 export function goesTo(input: BranchReviewInput): GoesTo {
-  const { rows, review } = branchChanges(mergeInput(input));
+  const { rows, review } = branchChanges(saveInput(input));
   return { rows: moves(rows), review };
 }
 
-export const mergeInput = (input: BranchReviewInput) => ({
+export const saveInput = (input: BranchReviewInput) => ({
   base: input.base, from: input.branch, into: input.parent, parent: input.parentApplied ?? undefined,
   provided: usedLive(input.parent), hostnames: { from: input.hostnames.branch, into: input.hostnames.parent }, fromKept: input.kept,
 });
