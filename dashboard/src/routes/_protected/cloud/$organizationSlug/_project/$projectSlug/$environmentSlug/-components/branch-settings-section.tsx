@@ -4,10 +4,12 @@ import { FieldDescription, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Switch } from "#/components/ui/switch";
 import type { BranchRow } from "#/collections/collections";
-import { useKeepBranch } from "#/modules/branches/branch.collection";
+import { useIdleClose, useKeepBranch } from "#/modules/branches/branch.collection";
+import { plural } from "#/modules/branches/branch-plan";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { canShutDown } from "#/modules/pr-environments/off";
 import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
+import type { PrShutdown } from "#/modules/pr-environments/tables";
 import { descendants } from "#/modules/project/environment-tree";
 import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useDeletionNodes, useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
@@ -15,8 +17,9 @@ import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSl
 import { CloseBranchRow } from "./close-branch-row";
 
 /**
- * What a Branch's Manage panel does to the Branch itself: Keep it, shut a PR Environment down, and close it. A Branch
- * that isn't kept and has none of its own closes with one plain confirm; the rest go through Danger, typed.
+ * What a Branch's panel does to the Branch itself: Keep it, shut a PR Environment down or start it again, and close it.
+ * A Branch that isn't kept, isn't the Default Environment and has none of its own closes with one plain confirm; the
+ * rest go through Danger, typed.
  */
 export function BranchSections({ organizationSlug, projectSlug, environmentSlug, branch, name, parent }: {
   organizationSlug: string;
@@ -28,34 +31,35 @@ export function BranchSections({ organizationSlug, projectSlug, environmentSlug,
 }) {
   const navigate = useNavigate();
   const keepBranch = useKeepBranch(organizationSlug);
+  const idle = useIdleClose(organizationSlug, branch.environmentId);
   const { projects, environments, branches } = useWorkspace(organizationSlug);
-  const { shutDown } = usePrEnvironmentOff({ organizationSlug, environmentId: branch.environmentId, name });
   const own = useDeletionNodes(organizationSlug, { projectSlug, environmentSlug });
   const place = useEnvironmentPlace(organizationSlug, branch.environmentId);
   const project = projects.find((row) => row.slug === projectSlug);
   // A teardown takes the Branch's own Branches with it, deepest first.
   const closing = descendants(branch.environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
-  const defaultEnvironment = closing.find((row) => row.id === project?.defaultEnvironmentId);
-  const closesHere = !branch.kept && closing.length === 0;
+  const defaultEnvironment = environments.find((row) => row.id === project?.defaultEnvironmentId
+    && (row.id === branch.environmentId || closing.includes(row)));
+  const closesHere = !branch.kept && closing.length === 0 && !defaultEnvironment;
   const { pullRequest } = branch;
   return (
     <>
-      {!pullRequest && (
+      {/* A PR Environment closes with its pull request; it's offered Keep only once it's about to close itself. */}
+      {(!pullRequest || idle.kind === "warn") && (
         <FieldSet>
           <FieldLegend>Keep</FieldLegend>
-          <FieldDescription>Otherwise it can be deleted after saving, and closes after 7 days without a deploy.</FieldDescription>
+          <FieldDescription>
+            {idle.kind === "warn" ? `Closes in ${plural(idle.daysLeft, "day")} without a deploy.`
+              : "Otherwise it can be deleted after saving, and closes after 7 days without a deploy."}
+          </FieldDescription>
           <Item variant="muted" render={<label htmlFor="keep-branch" />}>
             <ItemMedia><Switch id="keep-branch" checked={branch.kept} onCheckedChange={(kept) => keepBranch(branch.environmentId, kept)} /></ItemMedia>
             <ItemContent><ItemTitle>Keep this branch</ItemTitle></ItemContent>
           </Item>
         </FieldSet>
       )}
-      {pullRequest && !pullRequest.closed && canShutDown(pullRequest.shutdown) && (
-        <FieldSet className="items-start">
-          <FieldLegend>Shut down</FieldLegend>
-          <FieldDescription>Stops its services and keeps its settings. It starts again on the next push.</FieldDescription>
-          <Button variant="outline" disabled={shutDown.isPending} onClick={() => shutDown.mutate()}>Shut down {name}</Button>
-        </FieldSet>
+      {pullRequest && !pullRequest.closed && (
+        <ShutdownSection organizationSlug={organizationSlug} environmentId={branch.environmentId} name={name} shutdown={pullRequest.shutdown} />
       )}
       {closesHere ? (
         <FieldSet>
@@ -83,5 +87,28 @@ export function BranchSections({ organizationSlug, projectSlug, environmentSlug,
         />
       )}
     </>
+  );
+}
+
+const SHUTDOWN_LINE = {
+  none: "Stops its services and keeps its settings. It starts again on the next push.",
+  running: "Shutting down. Deploy once it's off.",
+  off: "Off, with its settings kept. It starts again on the next push.",
+  failed: "Shutdown failed. Some services may still run.",
+} satisfies Record<PrShutdown | "none", string>;
+
+/** A PR Environment with an open pull request: Shut down, what it's doing, and Deploy to start it again once it's Off. */
+export function ShutdownSection({ organizationSlug, environmentId, name, shutdown }: {
+  organizationSlug: string; environmentId: string; name: string; shutdown: PrShutdown | null;
+}) {
+  const { shutDown, start } = usePrEnvironmentOff({ organizationSlug, environmentId, name });
+  return (
+    <FieldSet className="items-start">
+      <FieldLegend>{shutdown === "off" ? "Off" : "Shut down"}</FieldLegend>
+      <FieldDescription>{SHUTDOWN_LINE[shutdown ?? "none"]}</FieldDescription>
+      {shutdown === "off" ? <Button disabled={start.isPending} onClick={() => start.mutate()}>Deploy {name}</Button>
+        : canShutDown(shutdown) ? <Button variant="outline" disabled={shutDown.isPending} onClick={() => shutDown.mutate()}>Shut down {name}</Button>
+        : null}
+    </FieldSet>
   );
 }

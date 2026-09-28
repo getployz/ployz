@@ -16,7 +16,6 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { defaultEnvironmentRefusal } from "#/modules/runtime/teardown";
 import { useSetDefaultEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { useStartingPoint } from "#/modules/branches/branch.collection";
 import { cn } from "#/lib/utils";
 import { BranchIndent } from "#/components/environment-tree";
 import { descendants, environmentTree } from "#/modules/project/environment-tree";
@@ -24,7 +23,6 @@ import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$o
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { useDeletionNodes, useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { BranchDefaultsSection } from "./-components/branch-defaults-section";
-import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { PrEnvironmentsSection } from "./-components/pr-environments-section";
 import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
@@ -60,7 +58,6 @@ function RouteComponent() {
   const project = projects.find((row) => row.slug === projectSlug);
   const environment = environments.find((row) => row.id === environmentId);
   const branch = branches.find((row) => row.environmentId === environmentId);
-  const startingPoint = useStartingPoint(organizationSlug, environmentId);
   // A teardown takes the Environment's Branches with it, deepest first.
   const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
   const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
@@ -88,11 +85,9 @@ function RouteComponent() {
             params={{ organizationSlug, projectSlug, environmentSlug }} />}>
             <ItemMedia variant="icon"><GitBranchIcon /></ItemMedia>
             <ItemContent><ItemTitle>Manage {name}</ItemTitle>
-              <ItemDescription>{branch.pullRequest ? "Update, shut down or close it" : "Update, keep or close it"} from its panel.</ItemDescription></ItemContent>
+              <ItemDescription>{branch.pullRequest ? "Save, shut down or close it" : "Save, keep or close it"} from its panel.</ItemDescription></ItemContent>
             <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
           </Item>}
-          {startingPoint && <StartingPointSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug}
-            environmentSlug={environmentSlug} environmentId={environmentId} />}
           <BranchDefaultsSection organizationSlug={organizationSlug} environmentId={environmentId} />
           {!branch && <TeardownDangerSection
             organizationSlug={organizationSlug}

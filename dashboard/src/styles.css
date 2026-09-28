@@ -236,9 +236,7 @@
   border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--background); box-shadow: var(--shadow-md);
   white-space: nowrap;
 }
-/* A Branch's second row sits beside the first on desktop and under it on phones. */
 .bottom-bar-row { display: flex; flex: 1 1 auto; align-items: center; gap: 0.25rem; min-width: 0; padding: 0.25rem; }
-.bottom-bar-row + .bottom-bar-row { border-left: 1px solid var(--border); }
 /* Changes to deploy: their row takes the staged-intent surface. */
 .bottom-bar-row[data-staged] { background: var(--changed-soft); }
 .bottom-bar:has(> [data-staged]) { border-color: var(--changed-border); }
@@ -316,10 +314,8 @@
 /* Desktop panels stop above the bottom bar; the mobile full-screen panel leaves room under it. */
 .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 4rem; }
 @media (max-width: 860px) {
-  .bottom-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; flex-direction: column; width: auto; min-width: 0; max-width: none; }
-  .bottom-bar-row + .bottom-bar-row { border-left: 0; border-top: 1px solid var(--border); }
+  .bottom-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; width: auto; min-width: 0; max-width: none; }
   .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 0; padding-bottom: 4rem; }
-  .environment-canvas-scene:has(.bottom-bar-row + .bottom-bar-row) :is(.canvas-inspector-pane, .canvas-node-list) { padding-bottom: 7.5rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-inspector-pane { transition: none; }

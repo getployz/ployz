@@ -17,11 +17,12 @@ import { BranchSections } from "../branch-settings-section";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { DifferSection } from "./DifferSection";
+import { SaveSection } from "./SaveSection";
 import { UpdateSection } from "./UpdateSection";
 
 /**
- * A Branch's Manage panel, its one home: where it came from, its check on GitHub, what's new in its Parent, what stays
- * different, and Keep, Shut down and Close. Save stays in the bottom bar's sheet, beside this panel's Manage button.
+ * A Branch's panel, its one home, opened by its button at the canvas's top right: where it came from, what Save would put
+ * in its Parent, its check on GitHub, what's new in its Parent, what stays different, and Keep, Shut down and Close.
  */
 export function BranchReviewPanel() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -49,6 +50,7 @@ export function BranchReviewPanel() {
             {`PR environment for #${branch.pullRequest.number} · ${branch.pullRequest.title} · ${(plan ?? defaultPrEnvironmentPlan).removeOnClose
               ? "closes with the pull request" : "stays 7 days after its last deploy"}`}
           </p> : null}
+          <SaveSection review={review} environmentId={environmentId} />
           {review.check && pr && !pr.closed ? <CheckSection check={review.check} /> : null}
           <UpdateSection review={review} environmentId={environmentId} />
           <DifferSection review={review} />
