@@ -3,7 +3,7 @@ import { useEnvironmentDocuments } from "#/modules/environment-design/environmen
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { destinationCandidates, destinations } from "#/modules/pr-environments/destinations";
 import { useConditionalSaves } from "#/modules/pr-environments/conditional-save.collection";
-import { checkDestination, prCheck, type PrCheck } from "#/modules/pr-environments/pr-check";
+import { prCheck, type PrCheck } from "#/modules/pr-environments/pr-check";
 import type { ConditionalSaveRow, PullRequest } from "#/modules/pr-environments/tables";
 import { branchHostnameSuffix } from "./branch-plan";
 import { useLineageNames } from "./use-lineage-names";
@@ -20,11 +20,14 @@ export type BranchReviewView = BranchReview & {
   live: LiveUpdate[];
   /** A PR Environment's pull request; null for any other Branch. */
   pullRequest: PullRequest | null;
-  /** A PR Environment's changes for each of its Destinations, which it never Saves into directly. Empty for any other Branch. */
-  goesTo: Array<GoesTo & { destination: EnvironmentName; approval: ConditionalSaveRow | null }>;
+  /**
+   * A PR Environment's changes for each of its Destinations, and its standing Conditional Save there. Each has its own
+   * Save sheet. Empty for any other Branch.
+   */
+  goesTo: Array<GoesTo & { destination: EnvironmentName; saved: ConditionalSaveRow | null }>;
   /** A PR Environment's "Ployz · ready to merge" check, as Ployz posts it on the pull request; null for any other Branch. */
   check: PrCheck | null;
-  /** "N to save": what Save would put in the Parent, or on a PR Environment what goes to its Destinations. */
+  /** "N to save": what Save would put in the Parent, or on a PR Environment what it hasn't saved for its Destinations. */
   changes: number;
   /** "N updates": the Parent's deployed changes the Branch lacks, plus Live Nodes redeployed since. */
   updates: number;
@@ -76,7 +79,7 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
       return destination ? [{
         destination,
         save,
-        approval: save?.standing ? save : null,
+        saved: save?.standing ? save : null,
         ...goesTo({
           base: row.base, kept: false, branch: branch.intent, parent: destination.intent,
           parentApplied: stateById.get(parent.id)?.applied.intent ?? null,
@@ -84,10 +87,12 @@ export function useBranchReviews(organizationSlug: string): (environmentId: stri
         }),
       }] : [];
     }) : [];
-    const check = pr && prCheck(landings.map(({ destination, rows, save }) => checkDestination(destination.name, rows.length, save)));
+    const check = pr && prCheck(landings.map(({ destination, rows, save }) => ({
+      name: destination.name, changes: rows.length, save: save && { standing: save.standing, changes: save.rows.length },
+    })), pr.targetBranch);
     return {
       ...review, live, parent, kept: row.kept, pullRequest: pr, goesTo: landings, check,
-      changes: pr ? landings.reduce((sum, landing) => sum + landing.rows.length, 0) : review.save.length,
+      changes: pr ? landings.reduce((sum, landing) => sum + (landing.saved ? 0 : landing.rows.length), 0) : review.save.length,
       updates: review.update.length + live.length,
       nameOf: (lineage) => lineageName(lineage, environmentId), environmentName: (id) => environmentById.get(id)?.name ?? "another environment",
     };

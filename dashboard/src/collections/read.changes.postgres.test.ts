@@ -261,7 +261,7 @@ describe("every Org Store collection reads its changes from the Organization cha
     await sql(`insert into pr_environment_plan (organization_id, project_id, repository_id, installation_id, repository, start_from_environment_id)
       values ($1, $2, 42, 7, 'acme/app', $3)`, [organizationId, projectId, environmentId]);
     await sql(`insert into conditional_save (organization_id, project_id, pr_environment_id, repository_id, pr_number, destination_environment_id,
-      rows, picks, landing, working_revision, target_branch, approved_by_user_id)
+      rows, picks, landing, working_revision, target_branch, saved_by_user_id)
       values ($1, $2, $3, 42, 142, $4, '[]', '[]', '{}', gen_random_uuid(), 'main', $5)`, [organizationId, projectId, branchId, environmentId, userId]);
     await sql(`insert into pr_environment (environment_id, organization_id, project_id, repository_id, number, title, author, head_branch, target_branch, commits)
       values ($1, $2, $3, 42, 142, 'Discounts', 'maya', 'discounts', 'main', 1)`, [branchId, organizationId, projectId]);

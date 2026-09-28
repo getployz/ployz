@@ -1,21 +1,22 @@
 import { createServerFn } from "@tanstack/react-start";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
-import { ApproveConditionalSave, GiveConditionalSaveValue, WithdrawConditionalSave } from "./conditional-save";
+import { saveConditionalSave, withdrawConditionalSave } from "./conditional-save.server";
+import { takePullRequestValue } from "./land.server";
+import { SaveConditionalSave, TakePullRequestValue, WithdrawConditionalSave } from "./conditional-save";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
-export const approveConditionalSaveServerFn = createServerFn({ method: "POST" })
+export const saveConditionalSaveServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
-  .validator(strictValidator(ApproveConditionalSave))
-  .handler(({ context, data }) => runActor(context, approveConditionalSave(context.actor, data)));
+  .validator(strictValidator(SaveConditionalSave))
+  .handler(({ context, data }) => runActor(context, saveConditionalSave(context.actor, data)));
 
 export const withdrawConditionalSaveServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(WithdrawConditionalSave))
   .handler(({ context, data }) => runActor(context, withdrawConditionalSave(context.actor, data)));
 
-export const giveConditionalSaveValueServerFn = createServerFn({ method: "POST" })
+export const takePullRequestValueServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
-  .validator(strictValidator(GiveConditionalSaveValue))
-  .handler(({ context, data }) => runActor(context, giveConditionalSaveValue(context.actor, data)));
+  .validator(strictValidator(TakePullRequestValue))
+  .handler(({ context, data }) => runActor(context, takePullRequestValue(context.actor, data)));

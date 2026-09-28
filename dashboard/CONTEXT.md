@@ -251,7 +251,7 @@ A Branch made automatically for one pull request from a Git branch of the same r
 _Avoid_: Preview, preview deployment, review app
 
 **Conditional Save**:
-A PR Environment's approved changes, held on its Destination and saved there in the same step that admits the deployment of the pull request's merge commit, so code and settings go out together. A setting lands only if the Destination still has the value it was approved against; otherwise it is staged instead. Changing the PR Environment's settings withdraws the approval, and a pull request closed without merging drops it.
+A PR Environment's changes saved for one Destination, which go live with the pull request's merge commit: they are saved there in the same step that admits the deployment of that commit, so code and settings go out together. A setting the Destination left alone, or only edited without deploying, is saved; one it changed live becomes an ordinary change to deploy there instead; one it did both to keeps its own edit, and the pull request's value is only offered beside it. Changing the PR Environment's settings or the pull request's target Git branch withdraws it, and a pull request closed without merging drops it.
 _Avoid_: Auto-promote, deferred deploy, merge queue
 
 **Cloud Deployment Stage**:

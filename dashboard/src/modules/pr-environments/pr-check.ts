@@ -1,62 +1,32 @@
 import { listNames, plural } from "#/modules/branches/branch-plan";
-import { variableName } from "#/modules/branches/branch-review";
-import type { HeldRow } from "./tables";
 
 /** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
 export const PR_CHECK_NAME = "Ployz · ready to merge";
 
-/** One Destination of a PR Environment: how many changes go there now, and its Conditional Save if any. */
+/** One Destination of a PR Environment: how many changes go there now, and its Conditional Save there, if any. */
 export type PrCheckDestination = {
   name: string;
   changes: number;
-  approval: { standing: boolean; changes: number; missing: string[]; approvedBy: string | null } | null;
+  save: { standing: boolean; changes: number } | null;
 };
 
 export type PrCheck = { passing: boolean; reason: string };
 
-/** Who approved, for display; an approver who has since been deleted is "a former member". */
-export const approverName = (approvedBy: string | null) => approvedBy ?? "a former member";
-
-/** A Destination as the check reads it: `changes` going there now, and its Conditional Save, whether or not it stands. */
-export function checkDestination(
-  name: string, changes: number, save: { standing: boolean; rows: HeldRow[]; approvedBy: string | null } | null,
-): PrCheckDestination {
-  return {
-    name, changes,
-    approval: save && {
-      standing: save.standing, changes: save.rows.length, approvedBy: save.approvedBy,
-      missing: save.rows.filter((held) => held.missing).map((held) => variableName(held.row)),
-    },
-  };
-}
-
 const sum = (list: number[]) => list.reduce((total, n) => total + n, 0);
 
 /**
- * Whether a PR Environment's settings are sorted for merging: every Destination with changes has a standing approval
- * with every value it needs. Browser and server both call it, so the review, the bar and GitHub say the same thing.
+ * Whether a PR Environment's settings are ready for its pull request to merge: every Destination with changes has a
+ * standing Conditional Save. Browser and server both call it, so the bar, the review and GitHub say the same thing.
  */
-export function prCheck(destinations: PrCheckDestination[]): PrCheck {
-  if (!destinations.length) return { passing: true, reason: "Nothing deploys the target Git branch" };
-  const held = destinations.filter((destination) => destination.changes > 0 || destination.approval?.standing);
-  if (!held.length) return { passing: true, reason: `No changes for ${listNames(destinations.map((d) => d.name))}` };
-  const unapproved = held.filter((destination) => !destination.approval);
-  if (unapproved.length) {
-    return {
-      passing: false,
-      reason: `Review and approve ${plural(sum(unapproved.map((d) => d.changes)), "change")} for ${listNames(unapproved.map((d) => d.name))}`,
-    };
+export function prCheck(destinations: PrCheckDestination[], targetBranch: string): PrCheck {
+  if (!destinations.length) return { passing: true, reason: `No environment deploys ${targetBranch}` };
+  const waiting = destinations.filter((destination) => destination.changes > 0 || destination.save?.standing);
+  if (!waiting.length) return { passing: true, reason: `No changes for ${listNames(destinations.map((d) => d.name))}` };
+  if (waiting.some((destination) => destination.save && !destination.save.standing)) {
+    return { passing: false, reason: "Changed since saved · save again" };
   }
-  const approvals = held.flatMap((destination) => destination.approval ? [{ ...destination.approval, name: destination.name }] : []);
-  if (approvals.some((approval) => !approval.standing)) return { passing: false, reason: "Changed since approval · review again" };
-  const lacking = approvals.filter((approval) => approval.missing.length);
-  if (lacking.length) {
-    const keys = [...new Set(lacking.flatMap((approval) => approval.missing))];
-    return { passing: false, reason: `${keys.join(", ")} need${keys.length === 1 ? "s" : ""} a value for ${listNames(lacking.map((a) => a.name))}` };
-  }
-  const approvers = [...new Set(approvals.flatMap((approval) => approval.approvedBy ?? []))];
-  return {
-    passing: true,
-    reason: `${plural(sum(approvals.map((a) => a.changes)), "change")} approved for ${listNames(approvals.map((a) => a.name))}${approvers.length ? ` by ${listNames(approvers)}` : ""}`,
-  };
+  const unsaved = waiting.filter((destination) => !destination.save);
+  if (unsaved.length) return { passing: false, reason: `${plural(sum(unsaved.map((d) => d.changes)), "change")} to save in Ployz` };
+  const saved = sum(waiting.map((d) => d.save?.changes ?? 0));
+  return { passing: true, reason: `${plural(saved, "change")} go${saved === 1 ? "es" : ""} live with this PR` };
 }

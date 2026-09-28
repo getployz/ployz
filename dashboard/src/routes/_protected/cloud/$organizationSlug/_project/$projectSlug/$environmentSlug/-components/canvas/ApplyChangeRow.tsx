@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Trash2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
@@ -17,12 +18,15 @@ export function ApplyChangeRow({
   tone,
   showCurrentValue,
   showNewValue,
+  note,
   onDiscard,
 }: {
   row: Pick<DiffRow, "kind" | "label" | "currentValue" | "newValue">;
   tone: ApplyChangeTone;
   showCurrentValue: boolean;
   showNewValue: boolean;
+  /** Under the new value, such as the pull request it came from. */
+  note?: ReactNode;
   onDiscard?: () => void;
 }) {
   return (
@@ -44,6 +48,7 @@ export function ApplyChangeRow({
       {showNewValue ? (
         <TableCell>
           <ValueCell kind={row.kind} value={row.newValue} tone={tone} side="new" />
+          {note ? <div className="mt-1">{note}</div> : null}
         </TableCell>
       ) : null}
       {tone === "staged" ? (

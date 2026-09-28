@@ -153,7 +153,7 @@ function Plan({ repositoryId, project, environments: all, branches }: {
             </Field>
           </FieldLabel>
           <FieldDescription>
-            {landings.length > 0 ? `Merges: approved settings go to ${landings.join(", ")}.` : "Merges: no settings move."}
+            {landings.length > 0 ? `Saved changes go live in ${landings.join(", ")} when the pull request merges.` : "Merging changes no settings."}
           </FieldDescription>
         </FieldSet>
         <FieldLabel htmlFor="pr-plan-bots">

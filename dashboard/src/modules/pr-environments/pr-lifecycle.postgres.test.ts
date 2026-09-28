@@ -28,13 +28,13 @@ import { withoutSealedCiphertext, type SavedEnvironmentIntent } from "#/modules/
 import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { closePrEnvironment } from "#/modules/branches/branch-close.server";
-import { approveConditionalSave, giveConditionalSaveValue, withdrawConditionalSave } from "./conditional-save.server";
+import { saveConditionalSave, withdrawConditionalSave } from "./conditional-save.server";
+import { takePullRequestValue } from "./land.server";
 import { standing } from "./conditional-save";
 import { executePostPrCheck } from "./pr-check.inngest";
 import { postPrCheck } from "./pr-check.server";
 import { createService } from "#/modules/environment-design/service-operations.server";
 import { createImageServiceSource } from "#/modules/environment-design/services";
-import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
 import { saveBranch } from "#/modules/branches/branch-save.server";
 import { resumeGithubWaitingTriggers } from "#/modules/github/github-ingestion.branch.repository";
 
@@ -460,7 +460,7 @@ describe("PR Environment lifecycle", () => {
     expect(await destinationsNow()).toEqual([]);
   });
 
-  describe("approving for a Destination", () => {
+  describe("saving for a Destination", () => {
     const organizationSlug = "acme";
     const environmentOf = async (id: string) => (await harness.db.select().from(schema.environment).where(eq(schema.environment.id, id)))[0];
     const scope = async (environmentId: string) => {
@@ -481,7 +481,7 @@ describe("PR Environment lifecycle", () => {
     }
     const approve = async (prId: string, picks: (keys: string[], rows: Awaited<ReturnType<typeof review>>["rows"]) => Array<{ key: string; option?: "from" | "new"; value: string }>) => {
       const { rows, review: string } = await review(prId);
-      return runEffect(approveConditionalSave({ userId }, {
+      return runEffect(saveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: picks(rows.map((row) => row.key), rows),
       }));
     };
@@ -499,7 +499,7 @@ describe("PR Environment lifecycle", () => {
       await pullRequest("opened", "opened", 142);
     });
 
-    it("holds the ticked rows on the Destination, sealed, until the PR Environment's settings change", async () => {
+    it("keeps the rows on the Destination, sealed, until the PR Environment's settings change", async () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
@@ -509,31 +509,25 @@ describe("PR Environment lifecycle", () => {
       expect(rowLineage({ key: stripe })).toBe(apiLineage);
 
       // A stale review is refused.
-      const stale = await runEffect(approveConditionalSave({ userId }, {
+      const stale = await runEffect(saveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: "old", picks: [{ key: flag, value: "" }],
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
       expect(stale).toMatchObject({ _tag: "Conflict", message: "Changed since you reviewed. Review again." });
 
-      // The browser's review string is the server's; a secret asks for staging's value, which can come later.
-      await approve(prId, () => [{ key: flag, option: "from", value: "" }, { key: stripe, option: "new", value: "" }]);
+      // The browser's review string is the server's; a secret takes staging's own value, sealed, never in the browser.
+      await approve(prId, () => [{ key: flag, option: "from", value: "" }, { key: stripe, option: "new", value: "sk_live_staging" }]);
       const [save] = await saves();
       expect(save).toMatchObject({
-        prEnvironmentId: prId, prNumber: 142, repositoryId, destinationEnvironmentId: stagingId, targetBranch: "main", approvedByUserId: userId,
+        prEnvironmentId: prId, prNumber: 142, repositoryId, destinationEnvironmentId: stagingId, targetBranch: "main", savedByUserId: userId,
         workingRevision: (await environmentOf(prId))?.revision,
       });
-      expect(save?.rows.map((row) => [row.row.key, row.option, row.missing])).toEqual([[flag, "from", false], [stripe, "new", true]]);
+      expect(save?.rows.map((row) => [row.row.key, row.option])).toEqual([[flag, "from"], [stripe, "new"]]);
       expect(save?.landing.identities.services.map((row) => row.lineageId)).toEqual([apiLineage]);
       expect(await stands(prId)).toBe(true);
-
-      // A value given after approval is sealed and stored without withdrawing it; it never reaches the browser.
-      await runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live_staging" }));
-      const [given] = await saves();
-      expect(JSON.stringify(given?.picks)).not.toContain("sk_live_staging");
-      expect(given?.picks.find((pick) => pick.key === stripe)?.choice).toMatchObject({ option: "new", value: { valueFingerprint: expect.any(String) } });
-      expect(given?.rows.find((row) => row.row.key === stripe)?.missing).toBe(false);
-      expect(await stands(prId)).toBe(true);
+      expect(JSON.stringify(save?.picks)).not.toContain("sk_live_staging");
+      expect(save?.picks.find((pick) => pick.key === stripe)?.choice).toMatchObject({ option: "new", value: { valueFingerprint: expect.any(String) } });
       const read = await harness.runEffect(readCollection({ userId }, { table: "conditional_save", userId, organizationSlug }));
-      expect(read.rows).toEqual([expect.objectContaining({ id: given?.id, approvedBy: "Owner" })]);
+      expect(read.rows).toEqual([expect.objectContaining({ id: save?.id })]);
       expect(JSON.stringify(read.rows)).not.toMatch(/encryptedValue|ingerprint|landing|picks/u);
 
       // An edit in the Destination and a new commit leave it standing.
@@ -571,7 +565,7 @@ describe("PR Environment lifecycle", () => {
       expect((await prEnvironment(142))?.environmentId).not.toBe(prId);
     });
 
-    it("takes a new value later, but refuses picks core couldn't land", async () => {
+    it("refuses an empty new value, and picks core couldn't land", async () => {
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       const worker = await runEffect(createService({ userId }, {
@@ -583,27 +577,27 @@ describe("PR Environment lifecycle", () => {
       const { rows, review: string } = await review(prId);
       const flag = rows.find((row) => variableName(row) === "FLAG")?.key ?? "";
       const queue = rows.find((row) => variableName(row) === "QUEUE")?.key ?? "";
-      const approveOnly = (picks: Array<{ key: string; option?: "from" | "new"; value: string }>) => runEffect(approveConditionalSave({ userId }, {
+      const approveOnly = (picks: Array<{ key: string; option?: "from" | "new"; value: string }>) => runEffect(saveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks,
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
 
       // The new service's variable without the service: core refuses it.
       expect(await approveOnly([{ key: queue, option: "from", value: "" }])).toMatchObject({ _tag: "Validation" });
-      // A plain value left for later is allowed.
-      expect(await approveOnly([{ key: flag, option: "new", value: "" }])).toBeNull();
-      expect((await saves())[0]?.rows.map((row) => row.missing)).toEqual([true]);
+      // Every new value comes with the save.
+      expect(await approveOnly([{ key: flag, option: "new", value: "" }])).toMatchObject({ _tag: "Validation", message: "Enter a new value for FLAG." });
+      expect(await saves()).toEqual([]);
     });
 
-    it("takes no approval once its pull request closes, even with its environment kept", async () => {
+    it("takes no save once its pull request closes, even with its environment kept", async () => {
       await setPlan({ removeOnClose: false });
       const prId = (await prEnvironment(142))?.environmentId ?? "";
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
       await pullRequest("closed", "closed", 142);
       const { rows, review: string } = await review(prId);
-      const refused = await runEffect(approveConditionalSave({ userId }, {
+      const refused = await runEffect(saveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
-      expect(refused).toMatchObject({ _tag: "Conflict", message: "#142 is closed." });
+      expect(refused).toMatchObject({ _tag: "Conflict", message: "PR #142 is closed." });
       expect(await saves()).toEqual([]);
     });
 
@@ -628,45 +622,41 @@ describe("PR Environment lifecycle", () => {
       expect(await postChecks()).toEqual(["posted", "posted"]);
       expect(runOn(first)).toEqual({
         conclusion: "success", reason: "No changes for staging",
-        detailsUrl: expect.stringMatching(/\/cloud\/acme\/shop\/shop-pr-142\/review$/u),
+        detailsUrl: expect.stringMatching(/\/cloud\/acme\/shop\/shop-pr-142$/u),
         summary: expect.stringContaining("- https://api-pr-142.acme.ployz.test"),
       });
 
       // A setting edited on the PR Environment updates the same check run.
       await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test_pr" } }));
       await postChecks();
-      expect(runOn(first)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+      expect(runOn(first)).toMatchObject({ conclusion: "action_required", reason: "1 change to save in Ployz" });
 
       // A new head gets its own.
       await pullRequest("synchronize", "synchronize", 142, { head: { ref: "feature-142", sha: second, repo: { id: repositoryId } } });
       expect(await postChecks()).toEqual(["posted"]);
-      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "1 change to save in Ployz" });
 
-      // Approved without staging's value, then given it.
-      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "" })));
+      // Saved with staging's value.
+      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "sk_live" })));
       await postChecks();
-      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "STRIPE_KEY needs a value for staging" });
-      const stripe = (await saves())[0]?.rows[0]?.row.key ?? "";
-      await runEffect(giveConditionalSaveValue({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, key: stripe, value: "sk_live" }));
-      await postChecks();
-      expect(runOn(second)).toMatchObject({ conclusion: "success", reason: "1 change approved for staging by Owner" });
+      expect(runOn(second)).toMatchObject({ conclusion: "success", reason: "1 change goes live with this PR" });
 
       // Undo.
       await runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
       await postChecks();
-      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "Review and approve 1 change for staging" });
+      expect(runOn(second)).toMatchObject({ conclusion: "action_required", reason: "1 change to save in Ployz" });
 
       // Another pull request from the same head posts its own run after ours: ours is still found, not duplicated.
       const ours = checkRuns.find((run) => run.headSha === second);
       if (ours) checkRuns.push({ id: checkRuns.length + 1, headSha: second, body: { ...ours.body, external_id: `${repositoryId}:999` } });
       expect(await runEffect(postPrCheck({ repositoryId, number: 142 }))).toBe("posted");
-      expect(runOn(second)).toMatchObject({ reason: "Review and approve 1 change for staging" });
+      expect(runOn(second)).toMatchObject({ reason: "1 change to save in Ployz" });
 
       // Without Checks: write nothing is posted, and nothing fails.
       checksForbidden = true;
-      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "" })));
+      await approve(prId, (keys) => keys.map((key) => ({ key, option: "new" as const, value: "sk_live" })));
       expect(await postChecks()).toEqual(["forbidden"]);
-      expect(runOn(second)).toMatchObject({ reason: "Review and approve 1 change for staging" });
+      expect(runOn(second)).toMatchObject({ reason: "1 change to save in Ployz" });
       expect(checkRuns).toHaveLength(3);
 
       // A pull request without a PR Environment gets none.
@@ -727,14 +717,16 @@ describe("PR Environment lifecycle", () => {
         expect((await latestSaved())?.id).toBe(before);
       });
 
-      it("lands where nothing deploys on push: changed rows staged and marked, staged edits kept, a missing secret empty", async () => {
+      it("lands where nothing deploys on push: each setting as production left it, changed it live, or has an edit of its own", async () => {
         await setVariable(stagingId, "MODE", "a");
         await setVariable(stagingId, "LEVEL", "1");
+        await setVariable(stagingId, "TIER", "free");
         await saveStaging();
         await pullRequest("opened-150", "opened", 150);
         const prId = (await prEnvironment(150))?.environmentId ?? "";
         await setVariable(prId, "MODE", "b");
         await setVariable(prId, "LEVEL", "2");
+        await setVariable(prId, "TIER", "pro");
         await setVariable(prId, "FLAG", "on");
         await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "STRIPE_KEY", description: null, exported: false, value: { type: "sealed", value: "sk_test" } }));
         // A service the pull request adds.
@@ -743,15 +735,17 @@ describe("PR Environment lifecycle", () => {
           preDeployCommand: null, startCommand: null, healthcheck: { type: "none" }, restartPolicy: "unless-stopped",
         }));
         const workerLineage = worker.data.service.lineageId;
-        await approve(prId, (_, rows) => rows.map((row) => variableName(row) === "STRIPE_KEY" ? { key: row.key, option: "new" as const, value: "" }
+        await approve(prId, (_, rows) => rows.map((row) => variableName(row) === "STRIPE_KEY" ? { key: row.key, option: "new" as const, value: "sk_live" }
           : row.role === "move" && row.choice ? { key: row.key, option: "from" as const, value: "" } : { key: row.key, value: "" }));
-        const [approved] = await saves();
-        expect(approved?.rows.some(({ row }) => row.key === `${workerLineage}:node`)).toBe(true);
+        const [saved150] = await saves();
+        expect(saved150?.rows.some(({ row }) => row.key === `${workerLineage}:node`)).toBe(true);
 
-        // After approval staging saves its own MODE, and stages a LEVEL edit.
+        // Meanwhile staging changes MODE live; stages its own LEVEL; and changes TIER live, then stages another TIER.
         await setVariable(stagingId, "MODE", "c");
+        await setVariable(stagingId, "TIER", "team");
         await saveStaging();
         await setVariable(stagingId, "LEVEL", "5");
+        await setVariable(stagingId, "TIER", "enterprise");
         const before = (await latestSaved())?.id;
 
         expect(await pullRequest("merged-150", "closed", 150, merged)).toBe("pull_request_projected");
@@ -759,8 +753,10 @@ describe("PR Environment lifecycle", () => {
         expect(saved?.id).not.toBe(before);
         const savedIntent = saved?.intent as Intent | undefined;
         const working = (await environmentOf(stagingId))?.intent;
-        expect([variableIn(savedIntent, "MODE"), variableIn(savedIntent, "LEVEL"), variableIn(savedIntent, "FLAG")]).toEqual([plain("c"), plain("2"), plain("on")]);
-        expect([variableIn(working, "MODE"), variableIn(working, "LEVEL"), variableIn(working, "FLAG")]).toEqual([plain("b"), plain("5"), plain("on")]);
+        const values = (intent: Intent | undefined) => ["FLAG", "LEVEL", "MODE", "TIER"].map((key) => variableIn(intent, key));
+        // Untouched: saved. Its own edit: saved, the edit on top. Changed live: a change to deploy. Both: its edit stays.
+        expect(values(savedIntent)).toEqual([plain("on"), plain("2"), plain("c"), plain("team")]);
+        expect(values(working)).toEqual([plain("on"), plain("5"), plain("b"), plain("enterprise")]);
         expect(variableIn(working, "STRIPE_KEY")).toMatchObject({ kind: "secret" });
 
         // The added service has identities in staging, the same in both states.
@@ -770,20 +766,22 @@ describe("PR Environment lifecycle", () => {
         const [identity] = await harness.db.select().from(schema.service).where(eq(schema.service.id, arrived?.id ?? ""));
         expect(identity).toMatchObject({ environmentId: stagingId, lineageId: workerLineage, name: "Worker" });
 
-        // Only MODE is left, marking what was staged instead; the PR Environment's teardown keeps it.
+        // Left: MODE tagged "PR #150", TIER a hint. The PR Environment's teardown keeps it.
         const [marker, ...none] = await saves();
         expect(none).toEqual([]);
         expect(marker).toMatchObject({ prEnvironmentId: null, mergeCommitSha: "e".repeat(40), landedSavedStateId: saved?.id });
-        expect(marker?.rows.map(({ row }) => variableName(row))).toEqual(["MODE"]);
+        expect(marker?.rows.map(({ row, landed }) => [variableName(row), landed])).toEqual([["MODE", "staged"], ["TIER", "hint"]]);
         await finishTeardown(prId);
         expect(await saves()).toHaveLength(1);
 
-        // The empty secret shows as missing and doesn't block the deploy.
-        await harness.runTransaction(() => admitEnvironmentDeployment({
-          environmentId: stagingId, savedStateSnapshotId: saved?.id ?? "", triggerOrigin: { origin: "first_connect", machineId: "a".repeat(32) }, message: null,
-        }));
-        const [attempt] = await deploymentsOf(stagingId);
-        expect(attempt?.missingLiveValues).toEqual([{ serviceId: apiId, from: "API", key: "STRIPE_KEY" }]);
+        // Use: PR #150's TIER replaces staging's edit, as a change to deploy tagged like MODE.
+        const tier = marker?.rows.find(({ row }) => variableName(row) === "TIER")?.row.key ?? "";
+        const take = (key: string) => runEffect(takePullRequestValue({ userId }, { organizationSlug, conditionalSaveId: marker?.id ?? "", key })
+          .pipe(Effect.as(null), Effect.catch(Effect.succeed)));
+        expect(await take(tier)).toBeNull();
+        expect(variableIn((await environmentOf(stagingId))?.intent, "TIER")).toEqual(plain("pro"));
+        expect((await saves())[0]?.rows.map(({ landed }) => landed)).toEqual(["staged", "staged"]);
+        expect(await take(tier)).toMatchObject({ _tag: "Conflict" });
       });
 
       it("lands nothing when withdrawn or unmerged, waits where staging deploys on push, and Merge refuses a PR Environment", async () => {
@@ -796,7 +794,7 @@ describe("PR Environment lifecycle", () => {
         const refused = await harness.runEffect(saveBranch({ userId }, {
           organizationSlug, branchEnvironmentId: prId, destinationRevision: (await environmentOf(stagingId))?.revision ?? "", review: "", picks: [], thenDelete: false,
         }).pipe(Effect.flip, Effect.provideService(OrganizationRuntime, runtime), Effect.provideService(InngestClient, inngest)));
-        expect(refused).toMatchObject({ _tag: "Conflict", message: "Merge #142 on GitHub instead." });
+        expect(refused).toMatchObject({ _tag: "Conflict", message: "A PR environment's changes go live with PR #142." });
 
         // Withdrawn by an edit, then merged: nothing lands.
         await setPlan({ removeOnClose: false });
@@ -959,10 +957,10 @@ describe("PR Environment lifecycle", () => {
           // Merged, as the push showed: no approval after it.
           const prId = (await prEnvironment(142))?.environmentId ?? "";
           const { rows, review: string } = await review(prId);
-          const refused = await runEffect(approveConditionalSave({ userId }, {
+          const refused = await runEffect(saveConditionalSave({ userId }, {
             organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: string, picks: rows.map((row) => ({ key: row.key, option: "from" as const, value: "" })),
           }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
-          expect(refused).toMatchObject({ _tag: "Conflict", message: "#142 is closed." });
+          expect(refused).toMatchObject({ _tag: "Conflict", message: "PR #142 is closed." });
 
           const count = (await harness.db.select().from(schema.environmentSavedStateSnapshot)).length;
           await pullRequest("merged", "closed", 142, merged);
