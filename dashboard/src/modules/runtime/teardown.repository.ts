@@ -302,7 +302,9 @@ export const completeTeardownAttempt = Effect.fn(
             message: "Teardown completion was not persisted.",
           });
         }
-        if (updated.scope === "shutdown") yield* settleShutdown(updated.environmentId, input.status === "completed");
+        if (updated.scope === "shutdown" && updated.environmentId) {
+          yield* settleShutdown(updated.environmentId, input.status === "completed" ? "completed" : "failed");
+        }
         return parsedAttempt(updated);
       }),
     )
