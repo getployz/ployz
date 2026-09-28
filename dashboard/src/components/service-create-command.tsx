@@ -185,8 +185,8 @@ function useServiceCreateActions({
   const createService = useServerFn(createServiceServerFn);
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
 
-  // Holds the project a failed first step already created, so the retry reuses it.
-  const createdProjectRef = useRef<CreationTarget | null>(null);
+  // Holds the project a failed command already created, so any retry, from any panel, reuses it.
+  const createdProjectRef = useRef<Awaited<ReturnType<typeof createEmptyProject>> | null>(null);
   // The ref guards re-entry (two clicks in one tick); the state only renders it.
   const creatingRef = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -195,7 +195,6 @@ function useServiceCreateActions({
   function resetPanelState() {
     setQuery("");
     setFailure(null);
-    createdProjectRef.current = null;
   }
 
   function setActivePanel(nextPanel: InitialPanel) {
@@ -239,17 +238,11 @@ function useServiceCreateActions({
   }
 
   async function createProjectTarget(): Promise<CreationTarget> {
-    if (createdProjectRef.current) return createdProjectRef.current;
-    const receipt = await createEmptyProject({
+    const receipt = createdProjectRef.current ?? await createEmptyProject({
       data: { organizationSlug: props.organizationSlug },
     });
-    const target = {
-      projectSlug: receipt.data.project.slug,
-      environmentSlug: receipt.data.environment.namespace,
-      environmentId: receipt.data.environment.id,
-      canvasPosition: { x: 0, y: 0 },
-    };
-    createdProjectRef.current = target;
+    createdProjectRef.current = receipt;
+    // Rerun on a retry too: the writes are upserts, and the step that failed may have been one of them.
     await Promise.all([
       getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
       getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
@@ -258,7 +251,12 @@ function useServiceCreateActions({
     if (props.mode !== "service") {
       await props.onCreated?.(receipt.data);
     }
-    return target;
+    return {
+      projectSlug: receipt.data.project.slug,
+      environmentSlug: receipt.data.environment.namespace,
+      environmentId: receipt.data.environment.id,
+      canvasPosition: { x: 0, y: 0 },
+    };
   }
 
   async function getCreationTarget(): Promise<CreationTarget> {
