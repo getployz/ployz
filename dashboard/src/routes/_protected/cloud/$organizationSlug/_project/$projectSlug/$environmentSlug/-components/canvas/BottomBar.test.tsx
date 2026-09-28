@@ -86,11 +86,11 @@ function open(url: string, groups: CanvasEnvironmentChangeGroup[] = [], totalCha
 const canvasUrl = "/cloud/acme/shop/production";
 const bar = async () => within(await screen.findByRole("group", { name: "Bottom bar" }));
 
-it("shows changes to deploy first, as a small card: the count, then Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
+it("shows changes to deploy first, in one row like Railway's: the count, Details, Deploy (⇧+Enter) and Discard under ⋮", async () => {
   open(canvasUrl, [replicas], 1);
   const staged = await bar();
-  expect(staged.getByText("1 change to deploy")).toBeTruthy();
-  // What changed is Details' and the canvas's, so the card stays small.
+  expect(staged.getByText("Apply 1 change")).toBeTruthy();
+  // What changed is Details' and the canvas's, so the bar stays small.
   expect(staged.queryByText("api")).toBeNull();
   expect(staged.queryByText(/Replicas/)).toBeNull();
   const deployButton = staged.getByRole("button", { name: /^Deploy/ });
@@ -129,7 +129,7 @@ it("keeps staged changes over a running Git-triggered deployment, with Deploy ne
   attempts = [attempt(running, "deploying", "Push to main", "github")];
   open(canvasUrl, [replicas, cache], 2);
   const staged = await bar();
-  expect(staged.getByText("2 changes to deploy")).toBeTruthy();
+  expect(staged.getByText("Apply 2 changes")).toBeTruthy();
   expect(staged.getByRole("button", { name: /^Deploy next/ })).toBeTruthy();
   expect(staged.queryByRole("link", { name: "Logs" })).toBeNull();
 });

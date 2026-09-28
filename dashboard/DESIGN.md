@@ -168,7 +168,7 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 - **Structural Rule** (`#dedede`): borders and dividers that clarify grouping without becoming decoration.
 - Dark mode uses neutral black surfaces (`#0a0a0a`, `#161616`) and neutral light ink (`#ededed`); it must not reintroduce a violet cast.
 
-**The Neutral Action Rule.** Ordinary primary actions are ink on light surfaces and white on dark surfaces. Chromatic fills never become a generic importance shortcut.
+**The Neutral Action Rule.** Ordinary primary actions are ink on light surfaces and white on dark surfaces. Chromatic fills never become a generic importance shortcut. The one exception is the bottom bar's **Deploy**, solid Intent Pink: it is where a staged change's pink trail ends.
 
 **The Visible Intent Rule.** Pink follows an autosaved change from its field to its resource, diff, and apply surface. Saturated pink is rare; most staged state uses the soft surface, border, and deep text.
 
@@ -294,9 +294,9 @@ Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt
 - One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
 - A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
-One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, as one small card, the first that applies: its words on top, its actions under them. It sizes to its words up to 22rem; its lines truncate, and values live in Details.
+One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, in one row, the first that applies: its words, then its actions, at full control size, like Railway's. It sizes to its content up to 36rem; its lines truncate, and values live in Details.
 
-1. **Changes to deploy.** The card takes the staged-intent surface: "N changes to deploy", then **Details · Deploy · ⋮** (⋮ holds Discard). Deploy's tooltip says ⇧+Enter. What changed shows on the canvas and in Details, never in the card. Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
+1. **Changes to deploy.** The row takes the staged-intent surface: "Apply N changes", then **Details · Deploy · ⋮** (⋮ holds Discard). Deploy is solid pink, and its tooltip says ⇧+Enter. What changed shows on the canvas and in Details, never in the bar. Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes. An Environment that has never deployed shows all its nodes here.
 2. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
 3. **Changes that go live here with a pull request:** the quiet "3 changes go live with PR #142", the services they touch, and **Details**. They aren't changes to deploy.
 

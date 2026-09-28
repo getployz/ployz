@@ -49,10 +49,10 @@ type BottomBarProps = {
 };
 
 /**
- * The bottom bar holds this Environment's own changes and nothing else, as one small card: changes to deploy, else a
- * running or queued attempt whose page isn't open, else changes that go live here with a pull request. What moves
- * between Environments, Save and Update, is the Branch button's, at the canvas's top right; it lands in a bottom bar as
- * changes to deploy.
+ * The bottom bar holds this Environment's own changes and nothing else, in one row like Railway's: changes to deploy
+ * ("Apply 3 changes · Details · Deploy · ⋮"), else a running or queued attempt whose page isn't open, else changes that
+ * go live here with a pull request. What moves between Environments, Save and Update, is the Branch button's, at the
+ * canvas's top right; it lands in a bottom bar as changes to deploy.
  */
 export function BottomBar({
   environmentId,
@@ -133,17 +133,17 @@ export function BottomBar({
   });
 
   const row = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? `${plural(totalChanges, "change")} to deploy` : "Unpublished changes"} detail={null}>
-      <Button ref={triggerRef} size="sm" variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
+    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Unpublished changes"} detail={null}>
+      <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       <Tooltip>
-        <TooltipTrigger render={<Button size="sm" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
           {active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
       </Tooltip>
       <DropdownMenu>
-        <DropdownMenuTrigger render={<Button size="icon-sm" variant="ghost" aria-label="More change actions" title="More change actions" />}>
+        <DropdownMenuTrigger render={<Button size="icon" variant="ghost" aria-label="More change actions" title="More change actions" />}>
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
@@ -201,7 +201,7 @@ function WaitingState({ saves }: { saves: ConditionalSaveRow[] }) {
   const prEnvironments = documents.filter((document) => saves.some((save) => save.prEnvironmentId === document.id));
   return (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={title} detail={nodes.join(", ")}>
-      <Button size="sm" variant="outline" onClick={() => setDetails(true)}>Details</Button>
+      <Button variant="outline" onClick={() => setDetails(true)}>Details</Button>
       {details ? (
         <GoesLiveSheet title={title} saves={saves} nameOf={nameOf} onClose={() => setDetails(false)}
           actions={prEnvironments.map((document) => (
@@ -229,7 +229,7 @@ function AttemptState({ environmentId, deploymentId }: { environmentId: string; 
         to={DEPLOYMENT_PAGE_ROUTE_TO}
         params={{ ...params, deploymentId: deployment.id }}
         search={step?.nodeId ? { service: step.nodeId } : {}}
-        className={buttonVariants({ size: "sm", variant: "secondary" })}
+        className={buttonVariants({ variant: "outline" })}
       >
         Logs
       </Link>
@@ -237,20 +237,18 @@ function AttemptState({ environmentId, deploymentId }: { environmentId: string; 
   );
 }
 
-/** The card: what, in a few words, then its actions under it. Changes to deploy take the staged-intent surface. */
+/** One row: what, in a few words, then its actions. Changes to deploy take the staged-intent surface. */
 function Row({ staged = false, icon, title, detail, children }: {
   staged?: boolean; icon?: ReactNode; title: string; detail: string | null; children: ReactNode;
 }) {
   return (
     <div className="bottom-bar-row" data-staged={staged || undefined}>
-      <div className="flex w-full min-w-0 items-center gap-2">
-        {icon ? <span className="flex">{icon}</span> : null}
-        <div className="min-w-0 flex-1">
-          <p className={staged ? "truncate text-sm font-medium text-changed-deep tabular-nums" : "truncate text-sm font-medium"}>{title}</p>
-          {detail ? <p className="truncate text-xs text-muted-foreground">{detail}</p> : null}
-        </div>
+      {icon ? <span className="flex">{icon}</span> : null}
+      <div className="min-w-0 flex-1 pr-3">
+        <p className={staged ? "truncate text-sm font-medium text-changed-deep tabular-nums" : "truncate text-sm font-medium"}>{title}</p>
+        {detail ? <p className="truncate text-xs text-muted-foreground">{detail}</p> : null}
       </div>
-      <div className="flex items-center gap-1">{children}</div>
+      {children}
     </div>
   );
 }
