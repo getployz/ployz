@@ -1,12 +1,17 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { Effect, Option, Schema } from "effect";
 import { BoxIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
 import { CopyButton } from "#/components/copy-button";
 import { DashboardPage } from "#/components/dashboard-page";
 import { ServerStatusLabel } from "#/components/server-status-label";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
+import { Input } from "#/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sheet";
+import { Skeleton } from "#/components/ui/skeleton";
 import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
@@ -14,12 +19,17 @@ import { RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
 import { ServerSwitcher } from "./-components/server-switcher";
-import { ServersSkeleton } from "./-components/servers-skeleton";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/servers/$serverId",
 )({
+  // `services` opens the Services on this Server in a sheet, so a long list never pushes the settings down.
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
+    services: Schema.optional(Schema.Boolean.pipe(
+      Schema.catchDecoding(() => Effect.succeed(Option.some(false))),
+    )),
+  })),
   staticData: { crumb: ServerSwitcher },
   component: RouteComponent,
 });
@@ -30,7 +40,7 @@ function RouteComponent() {
   const server = servers.find((candidate) => candidate.machine.id === serverId);
 
   if (state === "loading") {
-    return <DashboardPage width="content"><ServersSkeleton /></DashboardPage>;
+    return <DashboardPage width="content"><ServerPageSkeleton /></DashboardPage>;
   }
   if (state === "unreachable" || (state === "stale" && !server)) {
     return <DashboardPage width="content"><ServersUnreachable /></DashboardPage>;
@@ -79,15 +89,38 @@ function RouteComponent() {
   );
 }
 
-/** The Services with a container on this Server. While it is offline, each says whether it still runs elsewhere. */
+/** The page's shape while the Runtime Watch connects: status, Running here, Builds, Remove. */
+function ServerPageSkeleton() {
+  return (
+    <div role="status" aria-label="Server loading" className="flex flex-col gap-6">
+      <Skeleton className="h-5 w-48" />
+      {[1, 2, 1].map((rows, section) => (
+        <div key={section} aria-hidden="true" className="flex flex-col gap-2">
+          <Skeleton className="h-4 w-24" />
+          {Array.from({ length: rows }, (_, row) => <Skeleton key={row} className="h-14 w-full rounded-lg" />)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * How many Services run on this Server; the list itself opens in a sheet. While the Server is offline, the row says
+ * how many run nowhere else, since that is what the outage takes down.
+ */
 function RunningHere({ organizationSlug, server, servers, stale }: {
   organizationSlug: string;
   server: Server;
   servers: readonly Server[];
   stale: boolean;
 }) {
-  const { projects, environments } = useWorkspace(organizationSlug);
+  const open = Route.useSearch().services === true;
+  const navigate = useNavigate({ from: Route.fullPath });
   const up = servers.filter((other) => other.machine.id !== server.machine.id && !needsAttention(other.status));
+  const count = server.services.length;
+  const onlyHere = server.status === "offline"
+    ? server.services.filter((service) => !up.some((other) => service.machineIds.has(other.machine.id))).length
+    : 0;
 
   return (
     <section aria-labelledby="running-here-heading">
@@ -97,18 +130,77 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
             <h2 id="running-here-heading">Running here</h2>
           </ItemTitle>
         </ItemContent>
-        {server.services.length === 0 ? (
+        {count === 0 ? (
           <Item variant="outline">
             <ItemContent>
               <ItemDescription>{runsHere(server)}</ItemDescription>
             </ItemContent>
           </Item>
-        ) : server.services.map((service) => {
+        ) : (
+          <Item variant="outline" render={<Link from={Route.fullPath} to="." search={{ services: true }} />}>
+            <ItemContent>
+              <ItemTitle>{count === 1 ? "1 service" : `${count} services`}</ItemTitle>
+              {onlyHere > 0 ? (
+                <ItemDescription>
+                  <ServerStatusLabel status="offline" stale={stale}>{onlyHere} run only here</ServerStatusLabel>
+                </ItemDescription>
+              ) : null}
+            </ItemContent>
+            <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
+          </Item>
+        )}
+      </ItemGroup>
+      <Sheet open={open && count > 0} onOpenChange={(next) => { if (!next) void navigate({ to: ".", search: {} }); }}>
+        <SheetContent className="gap-0">
+          <SheetHeader>
+            <SheetTitle>Running on {server.name}</SheetTitle>
+          </SheetHeader>
+          <ServiceList organizationSlug={organizationSlug} server={server} up={up} stale={stale} />
+        </SheetContent>
+      </Sheet>
+    </section>
+  );
+}
+
+/** The Services with a container on this Server. While it is offline, each says whether it still runs elsewhere. */
+function ServiceList({ organizationSlug, server, up, stale }: {
+  organizationSlug: string;
+  server: Server;
+  up: readonly Server[];
+  stale: boolean;
+}) {
+  const { projects, environments } = useWorkspace(organizationSlug);
+  const [filter, setFilter] = useState("");
+  const rows = server.services.map((service) => {
+    const { cloud } = service;
+    const project = cloud ? projects.find((candidate) => candidate.slug === cloud.projectSlug) : undefined;
+    const environment = cloud
+      ? findEnvironment(projects, environments, { projectSlug: cloud.projectSlug, environmentSlug: cloud.environmentSlug })
+      : undefined;
+    const where = cloud ? `${project?.name ?? cloud.projectSlug} · ${environment?.name ?? cloud.environmentSlug}` : null;
+    return { service, where };
+  });
+  const needle = filter.trim().toLowerCase();
+  const shown = needle
+    ? rows.filter(({ service, where }) => `${service.name} ${where ?? ""}`.toLowerCase().includes(needle))
+    : rows;
+
+  return (
+    <>
+      <div className="px-4 pb-3">
+        <Input
+          type="search"
+          aria-label="Filter services"
+          placeholder="Filter services"
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+        />
+      </div>
+      <ItemGroup className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+        {shown.length === 0 ? (
+          <ItemDescription>No services match “{filter.trim()}”</ItemDescription>
+        ) : shown.map(({ service, where }) => {
           const { cloud } = service;
-          const project = cloud ? projects.find((candidate) => candidate.slug === cloud.projectSlug) : undefined;
-          const environment = cloud
-            ? findEnvironment(projects, environments, { projectSlug: cloud.projectSlug, environmentSlug: cloud.environmentSlug })
-            : undefined;
           const elsewhere = up.find((other) => service.machineIds.has(other.machine.id));
           return (
             <Item
@@ -125,11 +217,7 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
               <ItemMedia variant="icon">{cloud ? getServiceIcon(cloud) : <BoxIcon />}</ItemMedia>
               <ItemContent className="min-w-0">
                 <ItemTitle>{service.name}</ItemTitle>
-                {cloud ? (
-                  <ItemDescription className="line-clamp-1">
-                    {project?.name ?? cloud.projectSlug} · {environment?.name ?? cloud.environmentSlug}
-                  </ItemDescription>
-                ) : null}
+                {where ? <ItemDescription className="line-clamp-1">{where}</ItemDescription> : null}
               </ItemContent>
               <ItemActions>
                 {server.status !== "offline" ? (
@@ -144,6 +232,6 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
           );
         })}
       </ItemGroup>
-    </section>
+    </>
   );
 }
