@@ -74,10 +74,10 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
         </FieldSet>
         {owner && (
           <FieldSet>
-            <FieldLegend>Own copy</FieldLegend>
+            <FieldLegend>Separate</FieldLegend>
             {unsettled || owner.ownsData ? <FieldDescription>{unsettled ?? "Starts with empty data."}</FieldDescription> : null}
             <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={unsettled !== null}>
-              Make it an Own Copy
+              {owner.ownsData ? "Give it a new, empty one" : "Make it separate"}
             </Button>
           </FieldSet>
         )}
