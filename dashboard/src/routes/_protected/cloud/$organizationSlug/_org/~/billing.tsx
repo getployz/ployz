@@ -19,6 +19,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { authClient } from "#/auth/auth-client";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import { createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
+import { openCheckoutWhileHere } from "#/modules/billing/checkout";
 import { prefetchRemote, requireBilling } from "#/collections/route-data";
 
 export const Route = createFileRoute(
@@ -69,6 +70,8 @@ function RouteComponent() {
   const [pending, setPending] = useState(false);
   const createEmbeddedCheckout = useServerFn(createEmbeddedCheckoutServerFn);
   const activeCheckoutRef = useRef<{ close(): void } | null>(null);
+  // Identifies this organization's visit; a checkout that resolves after it ends must not open.
+  const visitRef = useRef<object | null>(null);
 
   const closeActiveCheckout = useCallback(() => {
     const activeCheckout = activeCheckoutRef.current;
@@ -77,8 +80,12 @@ function RouteComponent() {
   }, []);
 
   useEffect(() => {
-    return closeActiveCheckout;
-  }, [closeActiveCheckout]);
+    visitRef.current = {};
+    return () => {
+      visitRef.current = null;
+      closeActiveCheckout();
+    };
+  }, [organizationSlug, closeActiveCheckout]);
 
   /** Cancellation and payment changes happen in the Polar portal. */
   async function openBillingPortal() {
@@ -100,18 +107,19 @@ function RouteComponent() {
   }
 
   async function openCheckout() {
+    const visit = visitRef.current;
     try {
       setPending(true);
-      const checkout = await createEmbeddedCheckout({
-        data: { organizationSlug },
+      const activeCheckout = await openCheckoutWhileHere({
+        createUrl: async () => (await createEmbeddedCheckout({ data: { organizationSlug } })).url,
+        open: async (url) => {
+          closeActiveCheckout();
+          const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
+          return PolarEmbedCheckout.create(url, { theme: "light" });
+        },
+        left: () => visitRef.current !== visit,
       });
-
-      closeActiveCheckout();
-
-      const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
-      const activeCheckout = await PolarEmbedCheckout.create(checkout.url, {
-        theme: "light",
-      });
+      if (!activeCheckout) return;
 
       activeCheckout.addEventListener("close", () => {
         if (activeCheckoutRef.current === activeCheckout) {
