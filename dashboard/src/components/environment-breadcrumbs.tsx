@@ -1,7 +1,7 @@
 import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useLiveQuery } from "@tanstack/react-db";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, PowerOffIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -58,12 +58,14 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
  */
 export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: number }) {
   const collapsed = items.slice(0, -2);
+  // The bar outlives the page, and the crumbs in "…" navigate: each page starts it closed.
+  const pathname = useLocation({ select: (location) => location.pathname });
   return (
     <Breadcrumb aria-label="Breadcrumb" className="min-w-0">
       <BreadcrumbList className="flex-nowrap">
         {collapsed.length ? <>
           <BreadcrumbItem className="min-wf-nav:hidden">
-            <Popover>
+            <Popover key={pathname}>
               <PopoverTrigger render={<Button variant="ghost" size="icon-sm" aria-label="More breadcrumbs" title="More breadcrumbs" />}>
                 <MoreHorizontalIcon />
               </PopoverTrigger>
