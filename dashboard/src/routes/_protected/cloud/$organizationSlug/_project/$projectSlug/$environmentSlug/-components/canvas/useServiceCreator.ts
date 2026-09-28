@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
+import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import { createEmptyServiceSource } from "#/modules/environment-design/services";
 import { SERVICE_NODE_SIZE } from "./constants";
@@ -87,7 +89,9 @@ export function useServiceCreator(
   }
 
   function createBlankServiceAtLastRightClick() {
-    void createBlankService(lastRightClickFlowPosition.current);
+    void createBlankService(lastRightClickFlowPosition.current).catch((error) =>
+      toast.error(toErrorMessage(error, "The service couldn’t be created. Try again.")),
+    );
   }
 
   return {

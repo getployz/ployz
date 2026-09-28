@@ -100,6 +100,7 @@ const COMMAND_FILES = {
   "modules/pr-environments/conditional-save-commands.ts": "save: the server seals new values and assigns the save's id; Save and Undo each change the pull request's check on GitHub, an external service; Use rewrites the Destination on the server",
   "modules/pr-environments/off-commands.ts": "Shut down and Deploy start runtime work",
   "modules/branches/branch-commands.ts": "createBranch: the server assigns a new Branch's ids, and creating it deploys; saveBranch is destructive",
+  "components/service-create-command.tsx": "the server assigns a new project's, service's, or volume's id and slug, and the page navigates to it",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section.tsx": "teardown is destructive",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
