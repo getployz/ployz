@@ -90,7 +90,7 @@ function RouteComponent() {
         <div className="flex flex-col gap-8">
           {branch && parent && (
             <BranchSettingsSection organizationSlug={organizationSlug} projectSlug={projectSlug} branch={branch} parent={parent}>
-              {closesHere && <CloseBranchRow key={environmentId} organizationSlug={organizationSlug} projectSlug={projectSlug}
+              {closesHere && <CloseBranchRow organizationSlug={organizationSlug} projectSlug={projectSlug}
                 environmentId={environmentId} name={name} parentNamespace={parent.namespace}
                 reopensWith={branch.pullRequest && !branch.pullRequest.closed ? branch.pullRequest.number : null}
                 own={own.map((item) => item.name)} />}

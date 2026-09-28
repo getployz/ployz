@@ -77,6 +77,8 @@ export function getRouter() {
     defaultPreloadStaleTime: 0,
     defaultPendingMs: 220,
     defaultPendingMinMs: 180,
+    // A page opened for another Environment, Service or Server starts fresh, so no draft, spinner or open dialog carries over.
+    defaultRemountDeps: ({ params }) => params,
   });
 
   // Collection Queries dehydrate too: DB hydration restores rows but not readiness, and a Query collection
