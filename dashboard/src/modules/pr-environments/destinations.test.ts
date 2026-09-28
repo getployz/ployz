@@ -5,13 +5,13 @@ import { destinations, trackedBranches, type DestinationCandidate } from "./dest
 const access = { type: "github-installation" as const, installationId: 7 };
 const tracking = (name: string, repositoryId = 42) =>
   ({ source: createGitServiceSource({ repository: "acme/app", repositoryId, access, branch: { type: "connected", name } }) });
-const env = (id: string, services: DestinationCandidate["savedServices"], prEnvironment = false): DestinationCandidate =>
-  ({ id, prEnvironment, savedServices: services });
+const env = (id: string, services: DestinationCandidate["savedServices"], parentId: string | null = null, prEnvironment = false): DestinationCandidate =>
+  ({ id, parentId, prEnvironment, savedServices: services });
 
 const project = [
   env("production", [tracking("main"), { source: createImageServiceSource({ image: "postgres:16" }) }]),
-  env("staging", [tracking("dev")]),
-  env("pr-142", [tracking("feature")], true),
+  env("staging", [tracking("dev")], "production"),
+  env("pr-142", [tracking("feature")], "production", true),
   env("other-repo", [tracking("main", 99)]),
 ];
 const into = (targetBranch: string, environments = project) => destinations({ environments, repositoryId: 42, targetBranch });
@@ -22,7 +22,14 @@ describe("destinations", () => {
     expect(into("dev")).toEqual(["staging"]);
   });
 
-  it("lands in every Environment on the branch", () => {
+  it("skips an Environment with one above it on the same branch", () => {
+    const nested = [...project, env("new-branch", [tracking("main")], "production"), env("qa", [tracking("dev")], "staging"),
+      env("hotfix", [tracking("main")], "staging")];
+    expect(into("main", nested)).toEqual(["production"]);
+    expect(into("dev", nested)).toEqual(["staging"]);
+  });
+
+  it("lands in every Environment with none above it on the branch", () => {
     expect(into("main", [...project, env("eu", [tracking("main")])])).toEqual(["production", "eu"]);
   });
 

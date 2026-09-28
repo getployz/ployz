@@ -215,7 +215,7 @@ The Environment a Branch was made from. An Environment without one, such as prod
 _Avoid_: Base, upstream, source environment
 
 **Destination**:
-Where a Branch's changes land: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch.
+Where a Branch's changes land: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
 _Avoid_: Target, merge target
 
 **Kept Branch**:

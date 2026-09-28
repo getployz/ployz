@@ -29,7 +29,7 @@ export function trackingHead(intent: SavedEnvironmentIntent, pullRequest: { repo
   };
 }
 
-type PrBranch = { environmentId: string; projectId: string; pullRequest: { repositoryId: number; number: number; closed: boolean; retired: boolean } | null };
+export type PrBranch = { environmentId: string; projectId: string; pullRequest: { repositoryId: number; number: number; closed: boolean; retired: boolean } | null };
 
 /** The PR Environments among `branches`, by Environment id. */
 export function prEnvironmentIds(branches: ReadonlyArray<PrBranch>) {
