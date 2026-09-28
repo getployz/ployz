@@ -99,7 +99,6 @@ function Plan({ repositoryId, project, environments: all, branches }: {
           <Field orientation="horizontal">
             <FieldContent>
               <span className="font-medium">Create an environment for every pull request</span>
-              <FieldDescription>Each pull request to {plan.repository} gets its own environment, running its code.</FieldDescription>
             </FieldContent>
             <Switch id="pr-plan-enabled" checked={plan.enabled} onCheckedChange={(enabled) => set({ enabled })} />
           </Field>
@@ -132,17 +131,15 @@ function Plan({ repositoryId, project, environments: all, branches }: {
               </SelectGroup>
             </SelectContent>
           </Select>
-          {startFrom
-            ? <FieldDescription>Services from {plan.repository} run the pull request's code. Everything else starts from {startFrom.name}.</FieldDescription>
-            : <FieldError>The environment it started from was torn down. Pick another: no PR environment starts until you do.</FieldError>}
+          {!startFrom && <FieldError>Its environment was torn down. Pick another.</FieldError>}
         </Field>
         {picking && <>
           <WhatComesAlongSection plan={picking.plan} presets={picking.presets} nameOf={nameOf} fixed={picking.fixed} fromPr={picking.fromPr}
             parentName={picking.parent.name} ownerName={picking.ownerName} onPreset={picking.setPreset} onToggle={picking.toggle}
-            footnote="PR environments run one replica of each service." />
+            footnote="One replica per service." />
           <DataSection plan={picking.plan} liveOwner={picking.liveOwner} parentName={picking.parent.name} rootName={null} nameOf={nameOf}
             setupCommands={setup.commands} onSetupCommands={setup.onChange} onSetupBlur={setup.onBlur}
-            setupHelp="Runs once per PR environment, with the pull request's code, before the services start." />
+            setupHelp="Runs once, before the services start." />
         </>}
         <FieldSet>
           <FieldLegend>When the pull request…</FieldLegend>
@@ -150,25 +147,20 @@ function Plan({ repositoryId, project, environments: all, branches }: {
             <Field orientation="horizontal">
               <FieldContent>
                 <span className="font-medium">Closes: remove its environment</span>
-                <FieldDescription>
-                  {plan.removeOnClose ? "Removed as soon as the pull request closes." : "It stays until 7 days pass without a deploy."}
-                </FieldDescription>
+                <FieldDescription>Otherwise removed after 7 days without a deploy.</FieldDescription>
               </FieldContent>
               <Switch id="pr-plan-remove-on-close" checked={plan.removeOnClose} onCheckedChange={(removeOnClose) => set({ removeOnClose })} />
             </Field>
           </FieldLabel>
           <FieldDescription>
-            Merges: settings move only after someone approves them in the PR environment. They go where the target Git branch deploys
-            {landings.length > 0 ? ` (${landings.join(", ")})` : ""}, in the same deploy as the code.
+            {landings.length > 0 ? `Merges: approved settings go to ${landings.join(", ")}.` : "Merges: no settings move."}
           </FieldDescription>
         </FieldSet>
         <FieldLabel htmlFor="pr-plan-bots">
           <Field orientation="horizontal">
             <FieldContent>
               <span className="font-medium">Bot pull requests</span>
-              <FieldDescription>
-                {plan.includeBots ? "Dependabot, Renovate and other bots get environments too." : "Pull requests from Dependabot, Renovate and other bots get none."}
-              </FieldDescription>
+              <FieldDescription>Dependabot, Renovate and other bots.</FieldDescription>
             </FieldContent>
             <Switch id="pr-plan-bots" checked={plan.includeBots} onCheckedChange={(includeBots) => set({ includeBots })} />
           </Field>
@@ -205,8 +197,8 @@ function MissingGrant({ repository, url }: { repository: PrEnvironmentPlanRow["r
       <ItemMedia><TriangleAlertIcon className="text-warning" /></ItemMedia>
       <ItemContent>
         <ItemDescription className="text-foreground">
-          The GitHub App's installation for {repository} hasn't accepted Pull requests: read and Checks: write. PR environments
-          won't start until it does. <a href={url} target="_blank" rel="noreferrer" className="underline underline-offset-4">Review the permissions on GitHub</a>
+          The GitHub App needs Pull requests: read and Checks: write on {repository}.{" "}
+          <a href={url} target="_blank" rel="noreferrer" className="underline underline-offset-4">Approve on GitHub</a>
         </ItemDescription>
       </ItemContent>
     </Item>

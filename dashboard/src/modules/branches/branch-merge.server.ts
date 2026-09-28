@@ -43,7 +43,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
     const branch = yield* lockBranchScope(project.id, input.branchEnvironmentId, "update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
     const [pullRequest] = yield* drizzle.select({ number: prEnvironment.number }).from(prEnvironment).where(eq(prEnvironment.environmentId, branch.environmentId));
-    if (pullRequest) return yield* new Conflict({ message: `A PR environment lands when #${pullRequest.number} merges.` });
+    if (pullRequest) return yield* new Conflict({ message: `Merge #${pullRequest.number} on GitHub instead.` });
     const destinationId = branch.parentEnvironmentId;
 
     // 1–3. Lock the Destination, check its revision, and refuse a Branch that runs something other than its Working State.
@@ -69,7 +69,7 @@ export const mergeBranch = Effect.fn("Branches.mergeBranch")(function* (actor: A
       },
     });
     const rows = branchChanges(compare);
-    if (rows.review !== input.review) return yield* new Conflict({ message: "Changes moved after this review. Review them again." });
+    if (rows.review !== input.review) return yield* new Conflict({ message: "Changed since you reviewed. Review again." });
 
     // 4. Apply the picks with core; new values are sealed here, never in the browser.
     // A new value, secret or not, lands; an empty one would leave the change behind in a Branch that may close.

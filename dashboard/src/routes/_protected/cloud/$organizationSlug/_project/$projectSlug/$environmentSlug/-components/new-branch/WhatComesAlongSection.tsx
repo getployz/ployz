@@ -67,7 +67,7 @@ export function WhatComesAlongSection({ parentName, ownerName, plan, presets, na
       <FieldDescription>
         {plan.preset === null ? "Picked by hand. " : ""}
         <span className="min-[861px]:hidden">Tick what gets its own copy.</span>
-        <span className="hidden min-[861px]:inline">Click cards on the canvas to pick what gets its own copy.</span>
+        <span className="hidden min-[861px]:inline">Click cards on the canvas to pick.</span>
       </FieldDescription>
       <ItemGroup className="gap-1 min-[861px]:hidden">
         {plan.nodes.map((node) => {

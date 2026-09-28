@@ -8,11 +8,11 @@ const approval = (over: Partial<NonNullable<PrCheckDestination["approval"]>> = {
 
 describe("prCheck", () => {
   it.each<[string, PrCheckDestination[], boolean, string]>([
-    ["no Destination", [], true, "Nothing here deploys its target Git branch"],
-    ["nothing to move", [production({ changes: 0 })], true, "Nothing here that production doesn’t have"],
+    ["no Destination", [], true, "Nothing deploys the target Git branch"],
+    ["nothing to move", [production({ changes: 0 })], true, "No changes for production"],
     ["not approved", [production()], false, "Review and approve 3 changes for production"],
     ["one change, not approved", [production({ changes: 1 })], false, "Review and approve 1 change for production"],
-    ["changed since approval", [production({ approval: approval({ standing: false }) })], false, "Changed since it was approved · review it again"],
+    ["changed since approval", [production({ approval: approval({ standing: false }) })], false, "Changed since approval · review again"],
     ["a missing value", [production({ approval: approval({ missing: ["STRIPE_KEY"] }) })], false, "STRIPE_KEY needs a value for production"],
     ["several missing values", [production({ approval: approval({ missing: ["STRIPE_KEY", "SENTRY_DSN"] }) })], false,
       "STRIPE_KEY, SENTRY_DSN need a value for production"],

@@ -21,7 +21,7 @@ export function UpdateSection({ review, environmentId }: { review: BranchReviewV
   const unsettled = useBranchUnsettled(params.organizationSlug, environmentId);
   return (
     <ReviewSection title={`New in ${parent}`} count={review.updates}
-      help={review.live.length ? "This branch still runs on the values it captured from what it uses live. Deploying it picks up the new ones." : undefined}>
+      help={review.live.length ? "Deploy to pick up the live ones." : undefined}>
       {review.updates ? (
         <ItemGroup className="gap-1">
           {review.update.map((row) => (
@@ -39,9 +39,7 @@ export function UpdateSection({ review, environmentId }: { review: BranchReviewV
       {review.update.length ? (
         <div className="flex flex-col items-start gap-2">
           <Button onClick={() => update(environmentId)} disabled={unsettled !== null}>Update from {parent}</Button>
-          <p className="text-sm text-muted-foreground">
-            {unsettled ?? `Stages ${parent}'s changes here, to deploy and test with this branch's own.`}
-          </p>
+          {unsettled ? <p className="text-sm text-muted-foreground">{unsettled}</p> : null}
         </div>
       ) : null}
     </ReviewSection>

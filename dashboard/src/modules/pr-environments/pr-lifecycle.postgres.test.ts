@@ -343,7 +343,7 @@ describe("PR Environment lifecycle", () => {
       organizationSlug: "acme", projectSlug: "shop", repositoryId, enabled: true, startFromEnvironmentId: environmentId,
       picks: { preset: "only" }, setupCommands: [], removeOnClose: true, includeBots: false,
     }).pipe(Effect.flip));
-    expect(asStart).toMatchObject({ _tag: "Validation", message: "A PR environment can't be where PR environments start from." });
+    expect(asStart).toMatchObject({ _tag: "Validation", message: "Pick an environment that isn't a PR environment." });
   });
 
   it("names it past a namespace another project of the organization took", async () => {
@@ -512,7 +512,7 @@ describe("PR Environment lifecycle", () => {
       const stale = await runEffect(approveConditionalSave({ userId }, {
         organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId, review: "old", picks: [{ key: flag, value: "" }],
       }).pipe(Effect.as(null), Effect.catch(Effect.succeed)));
-      expect(stale).toMatchObject({ _tag: "Conflict", message: "Changes moved after this review. Review them again." });
+      expect(stale).toMatchObject({ _tag: "Conflict", message: "Changed since you reviewed. Review again." });
 
       // The browser's review string is the server's; a secret asks for staging's value, which can come later.
       await approve(prId, () => [{ key: flag, option: "from", value: "" }, { key: stripe, option: "new", value: "" }]);
@@ -627,7 +627,7 @@ describe("PR Environment lifecycle", () => {
       // Opened: nothing here staging lacks yet. Its first Working and Saved writes each ask for the check.
       expect(await postChecks()).toEqual(["posted", "posted"]);
       expect(runOn(first)).toEqual({
-        conclusion: "success", reason: "Nothing here that staging doesn’t have",
+        conclusion: "success", reason: "No changes for staging",
         detailsUrl: expect.stringMatching(/\/cloud\/acme\/shop\/shop-pr-142\/review$/u),
         summary: expect.stringContaining("- https://api-pr-142.acme.ployz.test"),
       });
@@ -687,7 +687,7 @@ describe("PR Environment lifecycle", () => {
 
       await runEffect(createServiceVariable({ userId }, { ...(await scope(stagingId)), ...stripe }));
       expect(await postChecks()).toEqual(["posted"]);
-      expect(title()).toMatchObject({ conclusion: "success", output: { title: "Nothing here that staging doesn’t have" } });
+      expect(title()).toMatchObject({ conclusion: "success", output: { title: "No changes for staging" } });
     });
 
     describe("when the pull request closes", () => {
@@ -796,7 +796,7 @@ describe("PR Environment lifecycle", () => {
         const refused = await harness.runEffect(mergeBranch({ userId }, {
           organizationSlug, branchEnvironmentId: prId, destinationRevision: (await environmentOf(stagingId))?.revision ?? "", review: "", picks: [], thenClose: false,
         }).pipe(Effect.flip, Effect.provideService(OrganizationRuntime, runtime), Effect.provideService(InngestClient, inngest)));
-        expect(refused).toMatchObject({ _tag: "Conflict", message: "A PR environment lands when #142 merges." });
+        expect(refused).toMatchObject({ _tag: "Conflict", message: "Merge #142 on GitHub instead." });
 
         // Withdrawn by an edit, then merged: nothing lands.
         await setPlan({ removeOnClose: false });

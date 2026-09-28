@@ -49,7 +49,7 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
                 <FieldContent>
                   <span>Then close {branch.name}</span>
                   <FieldDescription>
-                    {isDefault ? `${branch.name} is the Default Environment, so it stays open.` : "Removes its services and their data once merged."}
+                    {isDefault ? "The Default Environment stays open." : "Deletes its services and data."}
                   </FieldDescription>
                 </FieldContent>
                 <Switch id="merge-then-close" checked={closes} disabled={isDefault} onCheckedChange={setThenClose} />
@@ -61,11 +61,11 @@ export function MergeSection({ review, branch }: { review: BranchReviewView; bra
               {merge.isPending ? <Spinner data-icon="inline-start" /> : null}Merge into {destination}
             </Button>
             {blocked ? <FieldDescription>{blocked}</FieldDescription>
-              : <FieldDescription>Stages the ticked changes in {destination}. Its own Review → Deploy ships them.</FieldDescription>}
+              : <FieldDescription>Stages the changes in {destination}.</FieldDescription>}
             {merge.isError ? <FieldError>{merge.error.message}</FieldError> : null}
           </div>
         </>
-      ) : <p className="text-sm text-muted-foreground">Nothing here that {destination} doesn't have.</p>}
+      ) : <p className="text-sm text-muted-foreground">No changes.</p>}
     </ReviewSection>
   );
 }

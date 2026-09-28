@@ -1,5 +1,5 @@
 import { Button } from "#/components/ui/button";
-import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldError, FieldLabel } from "#/components/ui/field";
 import { Spinner } from "#/components/ui/spinner";
 import { useDeployStartingPoint } from "#/modules/deployments/deployment-commands";
 
@@ -14,7 +14,6 @@ export function StartingPointSettingsSection(target: {
       <Field orientation="horizontal" className="flex-wrap">
         <FieldContent className="min-w-60">
           <FieldLabel>Not deployed</FieldLabel>
-          <FieldDescription>Nothing runs here. Branches of it start from everything it describes.</FieldDescription>
           {deploy.isError && <FieldError>{deploy.error.message}</FieldError>}
         </FieldContent>
         <Button disabled={deploy.isPending} onClick={() => deploy.mutate()}>

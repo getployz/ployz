@@ -58,7 +58,7 @@ export function useMergeBranch(input: { organizationSlug: string; projectSlug: s
     mutationFn: async (merge: Omit<MergeBranch, "organizationSlug" | "destinationRevision">) => {
       await queue.settled(input.destination.id);
       const destinationRevision = getEnvironmentsCollection(input.organizationSlug, scope).get(input.destination.id)?.revision;
-      if (!destinationRevision) throw new Error(`${input.destination.namespace} isn't loaded yet.`);
+      if (!destinationRevision) throw new Error("Still loading. Try again.");
       const { data } = await mergeBranchServerFn({ data: {
         organizationSlug: input.organizationSlug, branchEnvironmentId: merge.branchEnvironmentId, destinationRevision,
         review: merge.review, picks: merge.picks, thenClose: merge.thenClose,

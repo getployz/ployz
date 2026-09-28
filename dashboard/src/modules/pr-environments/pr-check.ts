@@ -37,9 +37,9 @@ const sum = (list: number[]) => list.reduce((total, n) => total + n, 0);
  * with every value it needs. Browser and server both call it, so the review, the bar and GitHub say the same thing.
  */
 export function prCheck(destinations: PrCheckDestination[]): PrCheck {
-  if (!destinations.length) return { passing: true, reason: "Nothing here deploys its target Git branch" };
+  if (!destinations.length) return { passing: true, reason: "Nothing deploys the target Git branch" };
   const held = destinations.filter((destination) => destination.changes > 0 || destination.approval?.standing);
-  if (!held.length) return { passing: true, reason: `Nothing here that ${listNames(destinations.map((d) => d.name))} doesn’t have` };
+  if (!held.length) return { passing: true, reason: `No changes for ${listNames(destinations.map((d) => d.name))}` };
   const unapproved = held.filter((destination) => !destination.approval);
   if (unapproved.length) {
     return {
@@ -48,7 +48,7 @@ export function prCheck(destinations: PrCheckDestination[]): PrCheck {
     };
   }
   const approvals = held.flatMap((destination) => destination.approval ? [{ ...destination.approval, name: destination.name }] : []);
-  if (approvals.some((approval) => !approval.standing)) return { passing: false, reason: "Changed since it was approved · review it again" };
+  if (approvals.some((approval) => !approval.standing)) return { passing: false, reason: "Changed since approval · review again" };
   const lacking = approvals.filter((approval) => approval.missing.length);
   if (lacking.length) {
     const keys = [...new Set(lacking.flatMap((approval) => approval.missing))];

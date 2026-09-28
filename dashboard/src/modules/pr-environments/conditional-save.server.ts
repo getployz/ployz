@@ -50,14 +50,14 @@ export const approveConditionalSave = Effect.fn("PrEnvironments.approveCondition
     if (pullRequest.closed) return yield* new Conflict({ message: `#${pullRequest.number} is closed.` });
     if (pullRequest.retired) return yield* new Conflict({ message: "This PR environment is being replaced." });
     if (!(yield* prDestinations(input.prEnvironmentId)).includes(input.destinationEnvironmentId)) {
-      return yield* new Conflict({ message: `Nothing there deploys ${pullRequest.targetBranch} any more. Review again.` });
+      return yield* new Conflict({ message: `Nothing deploys ${pullRequest.targetBranch} now. Review again.` });
     }
 
     const { from, into, compare } = yield* goesToComparison({
       projectSlug: project.slug, prEnvironment: prEnvironmentRow, branch, destinationEnvironmentId: input.destinationEnvironmentId,
     });
     const { rows, review } = yield* core("review", () => branchChanges(compare));
-    if (review !== input.review) return yield* new Conflict({ message: "Changes moved after this review. Review them again." });
+    if (review !== input.review) return yield* new Conflict({ message: "Changed since you reviewed. Review again." });
     const byKey = new Map(rows.flatMap((row) => row.role === "move" ? [[row.key, row] as const] : []));
     const unknown = input.picks.find((pick) => !byKey.has(pick.key));
     if (unknown) return yield* new Validation({ field: "picks", message: `${unknown.key} isn't one of the changes.` });

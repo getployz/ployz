@@ -49,15 +49,15 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
           <FieldLegend>Whose it is</FieldLegend>
           <FieldDescription>
             {owner
-              ? `${liveNode.name} is ${owner.environment.name}'s. This branch uses it live instead of its own copy, so changing it changes ${owner.environment.name}.`
-              : `No environment this branch comes from runs ${liveNode.name}, so what uses it here can't reach it.`}
+              ? `Changing it changes ${owner.environment.name}.`
+              : "Services here can't reach it."}
           </FieldDescription>
           {owner?.ownsData && (
             <Item variant="outline" state="warning" size="sm" role="note">
               <ItemMedia><TriangleAlertIcon className="text-warning" /></ItemMedia>
               <ItemContent>
                 <ItemDescription className="text-foreground">
-                  It keeps real data: this branch reads and writes {owner.environment.name}'s.
+                  This branch writes to {owner.environment.name}'s real data.
                 </ItemDescription>
               </ItemContent>
             </Item>
@@ -75,9 +75,7 @@ export function LiveNodePanel({ lineageId }: { lineageId: string }) {
         {owner && (
           <FieldSet>
             <FieldLegend>Own copy</FieldLegend>
-            <FieldDescription>
-              {unsettled ?? `This branch would run its own ${liveNode.name}, made from ${owner.environment.name}'s${owner.ownsData ? ", with an empty copy of its data" : ""}. It deploys with the branch's next deploy.`}
-            </FieldDescription>
+            {unsettled || owner.ownsData ? <FieldDescription>{unsettled ?? "Starts with empty data."}</FieldDescription> : null}
             <Button variant="outline" className="self-start" onClick={makeOwnCopy} disabled={unsettled !== null}>
               Make it an Own Copy
             </Button>

@@ -56,7 +56,7 @@ export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, set
           <Field>
             <FieldLabel htmlFor="branch-setup-command">Then run</FieldLabel>
             <SetupCommandsField id="branch-setup-command" commands={setupCommands} services={ownServices} onChange={onSetupCommands} onBlur={onSetupBlur} />
-            <FieldDescription>{setupHelp ?? "Runs in the service's new image before it first starts, until it deploys once. Use it to migrate or seed."}</FieldDescription>
+            <FieldDescription>{setupHelp ?? "Runs once, before the service first starts."}</FieldDescription>
           </Field>
         )}
       </>}
@@ -65,7 +65,7 @@ export function DataSection({ plan, liveOwner, parentName, rootName, nameOf, set
           <ItemMedia><TriangleAlertIcon className="text-warning" /></ItemMedia>
           <ItemContent>
             <ItemDescription className="text-foreground">
-              {listNames(names)} {names.length === 1 ? "is" : "are"} {owner}'s, live. This branch reads and writes {names.length === 1 ? "its" : "their"} real data.
+              This branch writes to {owner}'s {listNames(names)}.
             </ItemDescription>
           </ItemContent>
         </Item>
