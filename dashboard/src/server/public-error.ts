@@ -10,16 +10,22 @@ export class NotFound extends Data.TaggedError("NotFound")<{
   readonly publicErrorCategory = "not-found" as const;
 }
 
+/**
+ * `userFacing: true` sends `message` to the client verbatim instead of the generic copy. Only set it on a fixed sentence
+ * written for users (user-chosen names are fine): never ids, provider output, or causes.
+ */
+type UserFacing = { readonly userFacing?: true };
+
 export class Conflict extends Data.TaggedError("Conflict")<{
   readonly message: string;
-}> {
+} & UserFacing> {
   readonly publicErrorCategory = "conflict" as const;
 }
 
 export class Validation extends Data.TaggedError("Validation")<{
   readonly message: string;
   readonly field?: string;
-}> {
+} & UserFacing> {
   readonly publicErrorCategory = "validation" as const;
 }
 
@@ -57,6 +63,9 @@ const decodePublicFailure = Schema.decodeUnknownOption(
   Schema.Struct({
     publicErrorCategory: PublicErrorCategory,
   }),
+);
+const decodeUserFacingMessage = Schema.decodeUnknownOption(
+  Schema.Struct({ userFacing: Schema.Literal(true), message: Schema.String }),
 );
 const decodeTaggedFailure = Schema.decodeUnknownOption(
   Schema.Struct({ _tag: Schema.String }),
@@ -122,13 +131,18 @@ function reportUnexpectedCause(
   if (!isExpectedFailure(cause)) report("defect", cause);
 }
 
+function userFacingMessage(cause: unknown, fallback: string): string {
+  const failure = decodeUserFacingMessage(cause);
+  return Option.isSome(failure) ? failure.value.message : fallback;
+}
+
 export function encodePublicError(cause: unknown): PublicErrorData {
   switch (publicCategory(cause)) {
     case "validation":
       return encode({
         _tag: "PublicError",
         code: "VALIDATION_FAILED",
-        message: "The request is invalid.",
+        message: userFacingMessage(cause, "The request is invalid."),
       });
     case "unauthorized":
       return encode({
@@ -152,7 +166,7 @@ export function encodePublicError(cause: unknown): PublicErrorData {
       return encode({
         _tag: "PublicError",
         code: "CONFLICT",
-        message: "The request conflicts with the current state.",
+        message: userFacingMessage(cause, "The request conflicts with the current state."),
       });
     case "build-grant-unavailable":
       return encode({
