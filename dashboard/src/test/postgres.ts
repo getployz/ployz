@@ -13,6 +13,7 @@ import {
   makeReportingDatabase,
 } from "#/server/database.server";
 import { startPostgresServer } from "#/test/postgres.global-setup";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 
 async function withAdminClient<A>(use: (client: Client) => Promise<A>) {
   const client = new Client({ connectionString: inject("postgresAdminUrl") });
@@ -85,6 +86,7 @@ export async function startPostgresTestHarness({ ownServer = false } = {}) {
         }),
       ).pipe(
         Layer.merge(Layer.effect(ReportingDatabase, makeReportingDatabase(databaseUrl))),
+        Layer.merge(Layer.succeed(SecretEncryption, makeSecretEncryption("test-encryption-secret"))),
         Layer.provide(Reactivity.layer),
       ),
     );
@@ -100,14 +102,14 @@ export async function startPostgresTestHarness({ ownServer = false } = {}) {
       database,
       pool,
       runEffect<Success, Failure>(
-        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase>,
+        operation: Effect.Effect<Success, Failure, Database | ReportingDatabase | SecretEncryption>,
       ) {
         return databaseRuntime.runPromise(operation);
       },
       runTransaction<Success, Failure>(
         operation: (
           transaction: typeof database.drizzle,
-        ) => Effect.Effect<Success, Failure, Database>,
+        ) => Effect.Effect<Success, Failure, Database | SecretEncryption>,
       ) {
         return databaseRuntime.runPromise(
           database.transaction(

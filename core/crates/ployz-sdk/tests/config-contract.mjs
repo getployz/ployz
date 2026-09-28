@@ -57,6 +57,12 @@ const resolved = api.resolveVariables({
 assert.equal(resolved.status, 'resolved');
 assert.equal(resolved.secret, true);
 assert.equal(resolved.value, 'private-value');
+const live = api.liveValues({
+  owner: { namespace: 'shop', producers: [{ ownerScope: 'service', ownerId: 'api', ownerLineageId: 'lineage', key: 'PLOYZ_PRIVATE_DOMAIN', value: { kind: 'literal', value: 'api.internal' } }] },
+  lineages: [{ lineageId: 'lineage', keys: ['PLOYZ_PRIVATE_DOMAIN', 'UNSET'] }],
+});
+assert.equal(live.producers[0].value.value, 'api.shop.internal');
+assert.deepEqual(live.missing, [{ lineageId: 'lineage', key: 'UNSET' }]);
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const { env, mounts, ...settings } = baseline;
 const intent = api.parseEnvironmentIntent({
@@ -100,4 +106,37 @@ const savedCreation = api.projectEnvironmentChanges({
 assert.equal(savedCreation.groups[0].comparison, null);
 assert.deepEqual(savedCreation.groups[0].settings, []);
 assert.equal(savedCreation.totalCount, 1);
+const branch = api.planBranch({ parent: intent, deployed: [id(2)], focus: [id(2)], picks: { preset: 'only' } });
+assert.deepEqual(branch, { nodes: [{ lineageId: id(2), nodeType: 'service', role: 'own', because: 'picked' }], preset: 'only' });
+assert.equal(api.checkBranchName('shop-pr-12'), 'shop-pr-12');
+assert.throws(() => api.checkBranchName('ployz-system'));
+const branchEnv = (startCommand, seed) => ({
+  version: 1, environmentSlug: 'e', volumes: [], services: [{
+    id: `${String(seed).padStart(8, '0')}-0000-4000-8000-000000000001`, lineageId: 'a0000000-0000-4000-8000-000000000001',
+    slug: 'api', variables: [], volumeAttachments: [],
+    config: { version: 2, privateDns: 'api', preDeployCommand: null, startCommand,
+      healthcheck: { type: 'none' }, restartPolicy: 'unless-stopped',
+      source: { version: 1, type: 'image', image: 'api:1', credentials: { type: 'none' } } },
+  }],
+});
+// Same input and review string as core's branch_changes::contract_review_string.
+const branchReview = api.branchChanges({
+  base: branchEnv('a', 1), from: branchEnv('b', 2), into: branchEnv('a', 3), provided: [],
+  hostnames: { from: '', into: '' }, fromKept: false,
+});
+assert.equal(branchReview.review, '{"picks":[],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}');
+const branchPick = api.branchChanges({
+  base: branchEnv('a', 1), from: branchEnv('b', 2), into: branchEnv('a', 3), provided: [],
+  hostnames: { from: '', into: '' }, fromKept: false,
+  picks: [{ key: 'a0000000-0000-4000-8000-000000000001:startCommand' }],
+});
+assert.equal(branchPick.next.services[0].config.startCommand, 'b');
+assert.equal(branchPick.review, '{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:startCommand"}],"rows":[{"base":"a","conflict":false,"from":"b","into":"a","key":"a0000000-0000-4000-8000-000000000001:startCommand","role":"move"}]}');
+const branchCreate = api.branchChanges({
+  base: null, from: branchEnv(null, 1), into: { version: 1, environmentSlug: 'pr-7', services: [], volumes: [] },
+  provided: [], hostnames: { from: '', into: '-pr-7' }, fromKept: false,
+  picks: [{ key: 'a0000000-0000-4000-8000-000000000001:node' }],
+});
+assert.notEqual(branchCreate.next.services[0].id, branchEnv(null, 1).services[0].id);
+assert.equal(branchCreate.review, '{"picks":[{"choice":null,"key":"a0000000-0000-4000-8000-000000000001:node"}],"rows":[{"base":null,"conflict":false,"from":"api","into":null,"key":"a0000000-0000-4000-8000-000000000001:node","role":"move"}]}');
 console.log('SDK config runs on WASM; napi carries RPC only.');

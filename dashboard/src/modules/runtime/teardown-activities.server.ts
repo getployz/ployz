@@ -13,6 +13,7 @@ import { organizationClusterDomain as schemaOrganizationClusterDomain } from "#/
 import { organization as schemaOrganization } from "#/modules/organization/tables";
 import {
   environment as schemaEnvironment,
+  environmentBranch as schemaEnvironmentBranch,
   project as schemaProject,
 } from "#/modules/project/tables";
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
@@ -37,6 +38,7 @@ import {
   type TeardownAttempt,
 } from "#/modules/runtime/teardown.repository";
 import { Database } from "#/server/database.server";
+import { requestProjectPrChecks } from "#/modules/pr-environments/pr-check-request.server";
 
 export const loadTeardownAttemptActivity = Effect.fn("Teardown.loadAttempt")(
   loadTeardownAttempt,
@@ -155,9 +157,15 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
         yield* transaction.drizzle
           .delete(schemaService)
           .where(inArray(schemaService.environmentId, environmentIds));
+        // Branch rows first: a Parent's row check can run before its Branch's row cascades.
+        yield* transaction.drizzle
+          .delete(schemaEnvironmentBranch)
+          .where(inArray(schemaEnvironmentBranch.environmentId, environmentIds));
         yield* transaction.drizzle
           .delete(schemaEnvironment)
           .where(inArray(schemaEnvironment.id, environmentIds));
+        // A Destination gone changes the checks of its project's pull requests.
+        for (const projectId of projectIds) yield* requestProjectPrChecks(projectId);
       }
       if (
         (attempt.scope === "project" || attempt.scope === "organization") &&

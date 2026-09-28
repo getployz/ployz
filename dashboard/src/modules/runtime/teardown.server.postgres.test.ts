@@ -99,7 +99,7 @@ describe("teardown durable state", () => {
       organizationId, requestedByUserId: userId, projectId: null, environmentId: null, scope: "organization", confirmDataLoss: [],
       targets: { environments: [], destroyRuntimeProjects: true, revokePairing: true, runtimeMembership: "verified" },
     }));
-    await runPromiseDb(dropTeardownCloudRowsActivity(attempt));
+    await runPromiseDb(dropTeardownCloudRowsActivity(attempt).pipe(Effect.provideService(InngestClient, undefined as never)));
   }
 
   function runPromiseDb<A, E>(
@@ -234,7 +234,7 @@ describe("teardown durable state", () => {
 
     if (claimed.kind !== "ready") return;
     await insertClusterDomain();
-    await runPromiseDb(dropTeardownCloudRowsActivity(claimed.attempt));
+    await runPromiseDb(dropTeardownCloudRowsActivity(claimed.attempt).pipe(Effect.provideService(InngestClient, undefined as never)));
     // Only Organization teardown touches the Cluster Domain.
     expect(hostedDns.requests).toEqual([]);
     expect((await harness.pool.query("select name from organization_cluster_domain")).rowCount).toBe(1);

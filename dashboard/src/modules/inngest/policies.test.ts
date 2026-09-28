@@ -11,6 +11,7 @@ import {
 } from "#/modules/deployments/environment-deployment.inngest";
 import {
   createProcessGithubCheckSuiteReceived,
+  createProcessGithubPullRequestReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
 import { createSweepGithubIngestionOutboxes } from "#/modules/github/inngest-ingestion/sweep";
@@ -33,11 +34,13 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
+import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
 } from "#/modules/runtime/volume-removal.inngest";
+import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
 
 describe("Inngest function policies", () => {
   it("pins the SDK-default retry count and domain-owned concurrency", () => {
@@ -51,6 +54,7 @@ describe("Inngest function policies", () => {
       createProcessGithubInstallationRepositoriesReceived(inngest),
       createProcessGithubPushReceived(inngest),
       createProcessGithubCheckSuiteReceived(inngest),
+      createProcessGithubPullRequestReceived(inngest),
       createSweepGithubIngestionOutboxes(inngest),
       createProcessEnvironmentDeployment(inngest),
       createMarkCancelledRowBackedWorkflow(inngest),
@@ -62,8 +66,10 @@ describe("Inngest function policies", () => {
       createProcessVolumeRemove(inngest),
       createCancelVolumeRemove(inngest),
       createPruneOrganizationChangeLog(inngest),
+      createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    createPostPrCheck(inngest),
     ];
 
     expect(
@@ -81,6 +87,7 @@ describe("Inngest function policies", () => {
       { id: "process-github-installation-repositories-received", retries: 3, concurrency: [{ key: "event.data.installation.id", limit: 1 }] },
       { id: "process-github-push-received", retries: 5, concurrency: [{ key: "event.data.branchKey", limit: 1 }] },
       { id: "process-github-check-suite-received", retries: 5, concurrency: [{ key: "event.data.checkSuiteKey", limit: 1 }] },
+      { id: "process-github-pull-request-received", retries: 5, concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }] },
       { id: "sweep-github-ingestion-outboxes", retries: 5, concurrency: [{ limit: 1 }] },
       { id: "process-environment-deployment", retries: 0, concurrency: [{ key: "event.data.environmentDeploymentId", limit: 32 }] },
       { id: "mark-cancelled-row-backed-workflow", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
@@ -92,8 +99,10 @@ describe("Inngest function policies", () => {
       { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-volume-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "prune-organization-change-log", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "sweep-idle-branches", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "sync-cluster-domain", retries: 3, concurrency: [{ key: "event.data.organizationId", limit: 1 }] },
       { id: "schedule-cluster-domain-sync", retries: 3, concurrency: [{ limit: 1 }] },
+      { id: "post-pr-check", retries: 3, concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }] },
     ]);
   });
 

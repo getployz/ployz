@@ -9,7 +9,9 @@ import { emptyEnvironmentIntent, restoreDashboardEnvironmentNode } from "./saved
 import { loadEnvironmentNodeIntroductionIntent } from "./environment-node-introduction.repository.server";
 import type { DiscardEnvironmentChangesInput } from "./working-document-restore";
 
+import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
+import { requestPrCheck } from "#/modules/pr-environments/pr-check-request.server";
 import {
   environmentSavedStateSnapshot as schemaEnvironmentSavedStateSnapshot,
 } from "#/modules/deployments/tables";
@@ -152,6 +154,8 @@ const publishEnvironmentSavedState = Effect.fn(
       message: input.message,
       ...encodePersistedSavedEnvironmentIntent({ intent: canonical.intent }),
       volumeDeletionAuthorizations,
+      // Its own time, not the transaction's: revisions saved in one transaction (held changes landing) stay in order.
+      createdAt: sql`clock_timestamp()`,
     })
     .returning({ id: schemaEnvironmentSavedStateSnapshot.id });
   const inserted = rows[0];
@@ -160,6 +164,8 @@ const publishEnvironmentSavedState = Effect.fn(
       new Error("Saved State insert returned no revision."),
     );
   }
+  // Saved source tracking feeds the checks of pull requests this may be a Destination of.
+  yield* requestPrCheck(input.environmentId);
   return {
     ...canonical,
     savedStateSnapshotId: inserted.id,
@@ -238,10 +244,18 @@ export const saveReviewedEnvironmentState = Effect.fn(
   }));
 });
 
+/**
+ * Publishes `intent`, reviewed elsewhere, on top of the latest Saved revision `basis`; the caller holds the queue lock.
+ * Held changes landing in a Destination go through here.
+ */
+export const publishLandedSavedState = (input: {
+  environmentId: string; actorId: string; message: string; basis: EnvironmentSavedStateBasis; intent: SavedEnvironmentIntent;
+}) => publishEnvironmentSavedState({ ...input, destructiveVolumeReviews: [], revisionPolicy: "reuse_latest_if_equivalent" });
+
 /** Reconstruct authored Applied State from each node's confirmed Saved revision. */
-const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
+export const loadAppliedIntent = Effect.fn("EnvironmentDesign.loadAppliedIntent")(
   function* (environmentId: string, namespace: string, projection: EnvironmentSnapshotProjection) {
-    const nodes = [...projection.appliedSavedNodeByKey.values()];
+    const nodes = [...projection.appliedSavedNodeByKey.values()].filter(node => node.environmentId === environmentId);
     const intents = new Map<string, SavedEnvironmentIntent>();
     for (const savedStateSnapshotId of new Set(nodes.map(node => node.sourceSavedStateSnapshotId))) {
       const saved = yield* loadEnvironmentSavedIntentById({ environmentId, savedStateSnapshotId });

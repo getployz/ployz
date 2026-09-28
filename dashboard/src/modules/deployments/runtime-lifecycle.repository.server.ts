@@ -178,6 +178,26 @@ function markEnvironmentDeploymentStatus(input: DeploymentTransition) {
   });
 }
 
+/**
+ * Drops the frozen Setup Commands of services an earlier attempt has since first deployed. Admission froze them for every
+ * never-deployed service, so an attempt queued behind ("Deploy next") the one that first deploys it would run them again;
+ * they repeat only until they succeed once. Called once the attempt holds the Environment's planning slot, so its
+ * predecessor has finished; Setup Commands are runtime-only, so the Image Builds already started still match.
+ */
+const dropDeployedSetupCommands = Effect.fn("Deployments.dropDeployedSetupCommands")(function* (environmentDeploymentId: string) {
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ setupCommands: schemaEnvironmentDeployment.setupCommands })
+    .from(schemaEnvironmentDeployment).where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
+  const serviceIds = Object.keys(row?.setupCommands ?? {});
+  if (!row || serviceIds.length === 0) return;
+  const deployed = new Set((yield* drizzle.select({ id: schemaService.id }).from(schemaService)
+    .where(and(inArray(schemaService.id, serviceIds), isNotNull(schemaService.firstDeployedAt)))).map((service) => service.id));
+  if (deployed.size === 0) return;
+  yield* drizzle.update(schemaEnvironmentDeployment)
+    .set({ setupCommands: Object.fromEntries(Object.entries(row.setupCommands).filter(([serviceId]) => !deployed.has(serviceId))) })
+    .where(eq(schemaEnvironmentDeployment.id, environmentDeploymentId));
+});
+
 export const recordInngestRun = Effect.fn("Deployments.recordInngestRun")(
   function* (input: { environmentDeploymentId: string; runId: string }) {
     const { drizzle } = yield* Database;
@@ -393,6 +413,7 @@ export const beginEnvironmentDeploymentPlanning = Effect.fn(
     if (environmentId) {
       const projection = yield* loadEnvironmentSnapshotProjection({ kind: "environment", environmentId });
       yield* writeTargetNodeList(input.environmentDeploymentId, projection.appliedSavedNodeByKey);
+      yield* dropDeployedSetupCommands(input.environmentDeploymentId);
     }
     return true;
   })).pipe(

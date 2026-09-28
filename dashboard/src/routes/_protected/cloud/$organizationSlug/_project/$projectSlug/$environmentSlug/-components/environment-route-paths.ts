@@ -13,8 +13,14 @@ export const ENVIRONMENT_SERVICE_ROUTE_TO =
 export const ENVIRONMENT_RESOURCE_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug/resources/$resourceId";
 
-/** The canvas search key that puts it into Deployment Mode for one attempt. */
-export const DEPLOYMENT_SEARCH_KEY = "deployment";
+export const ENVIRONMENT_LIVE_NODE_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/live/$lineageId";
 
-/** The attempt a location's search string shows in Deployment Mode; null in Editor Mode. */
-export const shownDeployment = (searchStr: string) => new URLSearchParams(searchStr).get(DEPLOYMENT_SEARCH_KEY);
+export const ENVIRONMENT_NEW_BRANCH_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/new-branch";
+
+export const ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/review";
+
+export const ENVIRONMENT_PR_PLAN_ROUTE_TO =
+  "/cloud/$organizationSlug/$projectSlug/$environmentSlug/pr-environments/$repositoryId";

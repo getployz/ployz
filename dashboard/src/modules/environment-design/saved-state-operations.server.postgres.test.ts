@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { Database } from "#/server/database.server";
+import { InngestClient } from "#/modules/inngest/client";
 import { loadCurrentEnvironmentState } from "./working-state-repository.server";
 import { fingerprintReviewedEnvironmentWorkingStateSync } from "./working-state-fingerprint.server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -85,7 +86,8 @@ function publishEnvironmentSavedState(input: Omit<ReturnType<typeof publication>
       review: { savedStateBasis: input.basis, workingStateFingerprint: fingerprintReviewedEnvironmentWorkingStateSync(state.projection),
         destructiveServiceIds: [], destructiveVolumeReviews: [...input.destructiveVolumeReviews] },
     });
-  });
+  // No PR Environments here: no check is requested.
+  }).pipe(Effect.provideService(InngestClient, undefined as never));
 }
 
 describe("Environment Saved State aggregate", () => {

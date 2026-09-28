@@ -110,6 +110,10 @@ export const githubExactShaSchema = githubExactShaEncodedSchema.pipe(
   }),
 );
 
+export const githubBranchNameSchema = Schema.String.check(
+  Schema.makeFilter((name) => isSafeGithubBranchRef(`refs/heads/${name}`)),
+);
+
 export const githubRepositoryPathSchema = Schema.String.check(
   Schema.makeFilter(isCanonicalRepositoryPath),
 );
@@ -202,6 +206,29 @@ export const githubCheckSuiteWebhookSchema = Schema.Struct({
   sourceUpdatedAt: githubTimestampSchema,
 });
 
+// The pull request actions Cloud records; GitHub's others are answered and dropped.
+export const GITHUB_PULL_REQUEST_ACTIONS = [
+  "opened",
+  "reopened",
+  "synchronize",
+  "closed",
+  "edited",
+] as const;
+export const githubPullRequestActionSchema = Schema.Literals(
+  GITHUB_PULL_REQUEST_ACTIONS,
+);
+
+export const githubPullRequestWebhookSchema = Schema.Struct({
+  kind: Schema.Literal("pull_request"),
+  action: githubPullRequestActionSchema,
+  installationId: githubIdSchema,
+  repositoryId: githubIdSchema,
+  number: githubIdSchema,
+  // Null when the pull request's fork was deleted.
+  headRepositoryId: Schema.NullOr(githubIdSchema),
+  headSha: githubExactShaSchema,
+});
+
 export const githubPushReceivedEventInputSchema = Schema.Struct({
   ...githubPushWebhookSchema.fields,
   deliveryId: nonEmptyStringSchema,
@@ -235,6 +262,24 @@ export const githubCheckSuiteReceivedEventDataSchema = Schema.Struct({
       `${value.installationId}:${value.repositoryId}:${value.checkSuiteId}`,
     {
       message: "GitHub check-suite authority key does not match its identity.",
+    },
+  ),
+);
+
+export const githubPullRequestReceivedEventInputSchema = Schema.Struct({
+  ...githubPullRequestWebhookSchema.fields,
+  deliveryId: nonEmptyStringSchema,
+});
+export const githubPullRequestReceivedEventDataSchema = Schema.Struct({
+  ...githubPullRequestReceivedEventInputSchema.fields,
+  pullRequestKey: nonEmptyStringSchema,
+}).check(
+  Schema.makeFilter(
+    (value) =>
+      value.pullRequestKey ===
+      `${value.installationId}:${value.repositoryId}:${value.number}`,
+    {
+      message: "GitHub pull request authority key does not match its identity.",
     },
   ),
 );
@@ -381,6 +426,12 @@ export type GithubCompareStatus = typeof githubCompareStatusSchema.Type;
 export type GithubServiceCandidate = typeof githubServiceCandidateSchema.Type;
 export type GithubPushWebhook = typeof githubPushWebhookSchema.Type;
 export type GithubCheckSuiteWebhook = typeof githubCheckSuiteWebhookSchema.Type;
+export type GithubPullRequestAction = typeof githubPullRequestActionSchema.Type;
+export type GithubPullRequestWebhook = typeof githubPullRequestWebhookSchema.Type;
+export type GithubPullRequestReceivedEventInput =
+  typeof githubPullRequestReceivedEventInputSchema.Type;
+export type GithubPullRequestReceivedEventData =
+  typeof githubPullRequestReceivedEventDataSchema.Type;
 export type GithubPushReceivedEventInput =
   typeof githubPushReceivedEventInputSchema.Type;
 export type GithubPushReceivedEventData =

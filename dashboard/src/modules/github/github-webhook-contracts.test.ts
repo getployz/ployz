@@ -3,6 +3,7 @@ import { Result } from "effect";
 import {
   canonicalizeGithubChangedPaths,
   decodeGithubCheckSuitePayload,
+  decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
   matchGithubWatchPaths,
 } from "#/modules/github/github-webhook-contracts";
@@ -280,4 +281,93 @@ describe("GitHub webhook contracts", () => {
     }
   });
 
+});
+
+function pullRequestPayload(overrides: {
+  action?: string;
+  changes?: object;
+  headRepo?: object | null;
+} = {}) {
+  return {
+    action: overrides.action ?? "opened",
+    changes: overrides.changes,
+    installation: { id: 17 },
+    repository: { id: 42, full_name: "acme/app" },
+    sender: { id: 99, login: "maya" },
+    pull_request: {
+      number: 142,
+      title: "Add billing",
+      body: "private description",
+      user: { login: "maya", type: "User" },
+      head: {
+        ref: "feature/billing",
+        sha: "C".repeat(40),
+        repo: overrides.headRepo === undefined ? { id: 42 } : overrides.headRepo,
+      },
+      base: { ref: "main", sha: "d".repeat(40), repo: { id: 42 } },
+      draft: false,
+      merged: false,
+      merge_commit_sha: "e".repeat(40),
+      commits: 3,
+    },
+  };
+}
+
+function decodePullRequest<Payload>(payload: Payload) {
+  const decoded = decodeGithubPullRequestPayload(payload);
+  if (Result.isFailure(decoded)) throw decoded.failure;
+  return decoded.success;
+}
+
+describe("GitHub pull request contracts", () => {
+  it("decodes a same-repository pull request into its identity and head", () => {
+    expect(decodePullRequest(pullRequestPayload())).toEqual({
+      kind: "pull_request",
+      action: "opened",
+      installationId: 17,
+      repositoryId: 42,
+      number: 142,
+      headRepositoryId: 42,
+      headSha: "c".repeat(40),
+    });
+  });
+
+  it("decodes forks and deleted forks", () => {
+    expect(decodePullRequest(pullRequestPayload({ headRepo: { id: 7 } }))).toMatchObject({
+      repositoryId: 42,
+      headRepositoryId: 7,
+    });
+    expect(decodePullRequest(pullRequestPayload({ headRepo: null }))).toMatchObject({
+      headRepositoryId: null,
+    });
+  });
+
+  it("records edits only when the title or target Git branch changed", () => {
+    expect(
+      decodePullRequest(
+        pullRequestPayload({ action: "edited", changes: { base: { ref: { from: "dev" } } } }),
+      ),
+    ).toMatchObject({ action: "edited" });
+    expect(
+      decodePullRequest(
+        pullRequestPayload({ action: "edited", changes: { title: { from: "Old" } } }),
+      ),
+    ).toMatchObject({ action: "edited" });
+    expect(
+      decodePullRequest(
+        pullRequestPayload({ action: "edited", changes: { body: { from: "Old" } } }),
+      ),
+    ).toBeNull();
+  });
+
+  it("drops other actions and rejects malformed handled deliveries", () => {
+    expect(decodePullRequest(pullRequestPayload({ action: "labeled" }))).toBeNull();
+    expect(decodePullRequest({ action: "review_requested" })).toBeNull();
+    expect(Result.isFailure(decodeGithubPullRequestPayload({}))).toBe(true);
+    expect(
+      Result.isFailure(
+        decodeGithubPullRequestPayload({ ...pullRequestPayload(), pull_request: {} }),
+      ),
+    ).toBe(true);
+  });
 });

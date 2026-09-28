@@ -106,7 +106,7 @@ components:
     typography: "{typography.body}"
     rounded: "{rounded.xl}"
     padding: "16px"
-  sidebar-item-active:
+  nav-item-active:
     backgroundColor: "{colors.surface-muted}"
     textColor: "{colors.ink}"
     typography: "{typography.body}"
@@ -232,7 +232,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 - Label the organization destination and page **Projects**. Keep search visible and use an ink **New project** action.
 - Use three columns on desktop, two on tablet, and one on mobile.
-- Each project card shows the remembered Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, or Volumes.
+- Each project card shows the Default Environment's Working State Services as centered icons on a subtle dotted surface. Reuse existing source icons; do not use canvas positions, connections, or Volumes.
 - The whole card opens that Environment. Keep card controls out of the preview.
 - Footer: `● production · 2/3 services online`; an empty Environment shows `production · No services`. Count a Service once when it has a running container whose health is healthy or not configured. Exclude hooks. When runtime evidence is disconnected or incomplete, show only the service count.
 
@@ -245,25 +245,53 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 
 ### Navigation
 
-- The application uses a 64px top navigation and a 256px expanded sidebar, collapsing structurally on smaller viewports.
-- Items are 32px high with 10px corners. Active location uses a muted neutral surface and medium weight, not the staged-intent color.
-- Navigation labels remain visible whenever width permits; icon-only states always provide accessible names and either tooltips or labelled hover menus.
+- An Environment has four places: **Canvas**, **Deployments**, **Logs** and **Settings**. On desktop they sit in a slim rail, each an icon over its label; on phones the same four fill a bottom tab bar. The current place uses a muted neutral surface and medium weight, never the staged-intent color.
+- The logo tops the rail and opens Projects. The avatar sits at the bottom and holds the organization's pages (Projects, Servers, Server Settings, and Billing where billing exists), organization switching and Theme. Organization pages show only the logo and the avatar in the rail.
+- One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't the Canvas. On a Branch the path reads `project / parent ⑂ branch`: ⑂ marks what the Branch was made from, and the Parent's crumb opens the Parent. Each switcher crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
+- Wherever Environments are listed, they form one tree: root Environments first, each Branch indented under its Parent and marked ⑂.
+- The Environment switcher shows that tree, notes "default" and "not deployed", and on a Branch "N changes" (what would merge into its Parent) and "N updates" (what's new there). On a Branch it offers **Review X**, which opens the Branch's review page. It ends with **New branch of X**, which opens the New branch panel over the current Environment's canvas, and **Manage environments**, which opens Settings → Project.
+- Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environment tree (each with its services-online summary and a Default chip, opening that Environment) with **New branch** (of the current Environment) and **New environment** (an empty root Environment) above it, and project teardown. Environment holds this Environment's teardown.
+- The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
+- Icon-only controls always have an accessible name and a tooltip.
+
+**The Soon rule.** An option that isn't built yet appears only inside a flow that works, greyed out with a Soon tag. It is never a page, tab or button that does nothing.
+
+### Branches
+
+- A Live Node is drawn dashed and translucent, labelled with the Environment it comes from ("production's, live"), and links into it are dashed; every other link is solid. Opening it says whose it is, which services here use it, and opens it in its own Environment.
+- A Live Node that owns data carries an amber "real data" line.
+- While a Branch is being picked, the canvas is the picker: clicking a card toggles its Own Copy. Own Copies are lit, Live Nodes dashed and left-out nodes faded, and the panel shows the legend. Phones pick with a tick list.
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Details (the review) and Deploy in the deploy bar's apply zone. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
-### Deployment Mode
+### Deployments
 
-Deployments are a view of the canvas, not a page. One floating **deploy bar** sits at the bottom of the canvas on every screen size and stays usable while a service panel is open:
+Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
 
-- A segmented control, **Editor | Deployments ⌄**. The Editor is the environment as it is now and the only place edits happen; an Intent Pink dot on it marks staged changes. (Not "Live": that read as the running production state.) The second segment is a dropdown that always opens the deployment list, except while a deployment runs, when it reads **Deploying 2/4 ›** and opens that deployment directly.
-- When changes are pending, the whole bar takes the staged-intent surface and adds **Apply N changes · Details · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Git-triggered deployments never clear these changes.
-- Bar text stays minimal: one short label per segment, fewer words on mobile. Explanations belong in the panel, never in the bar.
+- While the page is open, the canvas lights up what the attempt changed: those nodes show their Node Outcome and the rest dim. Nodes it removed, or that were deleted since, appear only in the page's list.
+- The page's header places the attempt: its message, what triggered it and who, the Git branch and commit, the status, the duration and the age. Its actions follow the status.
+- One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
+- A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
-Choosing a deployment puts the canvas into that deployment: the header and canvas tint, nodes show Build → Deploy with a short log tail, and the service panel becomes **Details · Build logs · Deploy logs**. Editor Mode nodes never change. A manual Deploy opens its deployment (remembered if the user leaves it while running); Git-triggered deployments never take over the canvas, and nothing returns the user to the Editor automatically. Deploying while another deployment runs queues.
+One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It shows one thing at a time, the first that applies:
 
-The switch between the Editor and a deployment is the product's one moment of flair, and it stays minimal: the tint and frame sweep in and reverse on Back to editor. Motion is short, moves the same elements rather than swapping them, and falls back to a crossfade under reduced motion.
+1. **A starting point:** "X isn't deployed" and **New branch**. Its staged nodes are what Branches of it copy, not pending work, so the bar doesn't count them; its review page still lists them under **Not deployed here yet**.
+2. **Staged changes.** The whole bar takes the staged-intent surface: the count, the one change or the changed services' names, **Review · Deploy ⇧+Enter · ⋮** (⋮ holds Discard). Deploy reads **Deploy next** while another attempt runs or waits, because deploying then queues. Git-triggered deployments never clear these changes.
+3. **A running or queued attempt** whose Deployment Page isn't open: its status and message, the service and step it is on, and **Logs**, which opens its page.
+4. **On a Branch, changes for its Parent:** "N changes for X", the first change, and **Review and merge**. On a PR Environment: "N changes for X · Not approved yet" and **Review and approve**, or "Approved · lands when #142 merges" and **Review**.
+5. **On a Branch, updates from its Parent:** "N updates from X" and **Review**.
+6. **Changes held for a pull request:** "Waiting for #142 · N changes · approved by maya" and **Review**.
+7. Otherwise, no bar.
+
+On a Branch, Review opens the Branch's review page instead of a dialog: a panel over its canvas with the whole relationship to its Parent, in order: **Not deployed here yet** (the staged-changes review), **Merge into X**, **New in X** (including Live Nodes their owner redeployed since this Branch last deployed), and **Meant to differ**, each with a plain reason. A conflict, a setting the Parent also changed since branching, reads old → new with a marker.
+
+Merge never deploys. Each change under **Merge into X** has a tick, and each variable a value choice: this Branch's, the Parent's, a new one, or leave it out; a new secret asks for X's value. Merge stays disabled, with the reason, while anything is staged on the Branch (a starting point's nodes too) or an attempt of it is active, so only what runs there merges. It stages the ticked changes in X and lands on X's canvas, whose bottom bar shows them; X's own Review → Deploy ships them. **Then close** says Merge closes the Branch; a Kept Branch doesn't show it, and the Default Environment can't turn it on.
+
+Changes approved for a pull request are held on its Destination, not staged there. The Destination's review lists them read-only and neutral, never in the staged-intent color, each with its approver and a link to the PR Environment's review, where they're changed. Once they land they are ordinary saved or staged changes.
+
+Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
 The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
 

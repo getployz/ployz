@@ -1,16 +1,17 @@
 import { cn } from "#/lib/utils";
 import { createContext, useContext, type ReactNode } from "react";
-import { Link } from "@tanstack/react-router";
+import { Link, linkOptions } from "@tanstack/react-router";
 import { ArrowLeftIcon, Maximize2Icon, Minimize2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
-import { DashboardNavigationPicker } from "#/components/dashboard-navigation";
-import { ENVIRONMENT_INDEX_ROUTE_TO } from "./environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 // Shared by the frame and header; route selection remains owned by the router.
 export const InspectorPresentation = createContext<{
   takeover: boolean;
   toggleFullscreen: () => void;
+  /** The service whose panel opened this one (its Deployments tab); leaving goes back there instead of the canvas. */
+  returnTo: string | null;
 } | null>(null);
 
 type CanvasInspectorHeaderParams = {
@@ -25,18 +26,12 @@ export function CanvasInspectorHeader({ params, children }: {
 }) {
   const presentation = useContext(InspectorPresentation);
   if (!presentation) throw new Error("Canvas inspector header must be inside its workspace");
-  const { takeover, toggleFullscreen } = presentation;
+  const { takeover, toggleFullscreen, returnTo } = presentation;
+  const back = returnTo ? "Back to service" : "Back to Canvas";
   const returnLink = (
-    <Link
-      to={ENVIRONMENT_INDEX_ROUTE_TO}
-      params={params}
-      search={(previous) => ({ ...previous, tab: undefined })}
-      viewTransition={{ types: ["canvas-inspector-close"] }}
+    <Link {...inspectorExit(params, returnTo)}
       className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-back")}
-      data-canvas-inspector-exit
-      aria-label="Back to Architecture"
-      title="Back to Architecture"
-    >
+      data-canvas-inspector-exit aria-label={back} title={back}>
       <ArrowLeftIcon />
     </Link>
   );
@@ -45,10 +40,6 @@ export function CanvasInspectorHeader({ params, children }: {
     <div className="canvas-inspector-header flex shrink-0 items-center gap-3 border-b px-4">
       {returnLink}
       <div className="min-w-0">{children}</div>
-      <div className="flex shrink-0 items-center gap-3">
-        <span aria-hidden className="text-muted-foreground">/</span>
-        <DashboardNavigationPicker scope={{ kind: "environment", ...params }} />
-      </div>
       <div className="ml-auto flex shrink-0 items-center gap-3">
         <Button
           variant="ghost"
@@ -61,21 +52,21 @@ export function CanvasInspectorHeader({ params, children }: {
           {takeover ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
         {!takeover ? (
-          <Link
-            to={ENVIRONMENT_INDEX_ROUTE_TO}
-            params={params}
-            search={(previous) => ({ ...previous, tab: undefined })}
-            viewTransition={{ types: ["canvas-inspector-close"] }}
+          <Link {...inspectorExit(params, returnTo)}
             className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "canvas-inspector-close")}
-            data-canvas-inspector-exit
-            data-canvas-inspector-desktop-control
-            aria-label="Close inspector"
-            title="Close inspector"
-          >
+            data-canvas-inspector-exit data-canvas-inspector-desktop-control aria-label="Close inspector" title="Close inspector">
             <XIcon />
           </Link>
         ) : null}
       </div>
     </div>
   );
+}
+
+/** Where leaving a panel goes: back to the service panel that opened it (its Deployments tab), else to the canvas. */
+export function inspectorExit(params: CanvasInspectorHeaderParams, returnTo: string | null) {
+  const viewTransition = { types: ["canvas-inspector-close"] };
+  return returnTo
+    ? linkOptions({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: returnTo }, search: { tab: "deployments" }, viewTransition })
+    : linkOptions({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, search: {}, viewTransition });
 }

@@ -27,7 +27,7 @@ pub struct ServiceSettingChange {
     pub can_restore: bool,
 }
 
-const FIELDS: &[&str] = &[
+pub(super) const FIELDS: &[&str] = &[
     "source.repository",
     "source.branch",
     "source.rootDir",

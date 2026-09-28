@@ -166,13 +166,17 @@ export function ApplyChangeGroupCard({
                     {group.rows.map((row) => (
                       <ApplyChangeRow
                         key={row.changeKey}
-                        group={group}
                         row={row}
-                        totalChanges={totalChanges}
+                        tone="staged"
                         showCurrentValue={showCurrentValue}
                         showNewValue={showNewValue}
-                        onCloseDialog={onCloseDialog}
-                        onDiscardRow={onDiscardRow}
+                        onDiscard={row.canDiscard ? () => {
+                          if (totalChanges === 1) {
+                            onCloseDialog();
+                          }
+
+                          onDiscardRow(group, row.path);
+                        } : undefined}
                       />
                     ))}
                   </TableBody>

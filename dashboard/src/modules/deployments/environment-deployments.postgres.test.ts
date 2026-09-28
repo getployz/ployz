@@ -59,6 +59,7 @@ it("reads one attempt with the service configs it deployed, without sealed ciphe
 
   const found = await read(attempt);
   expect(found?.row).toMatchObject({ id: attempt, environmentId, projectSlug: "shop" });
+  expect(found?.actorName).toBe("Owner");
   expect(found?.serviceConfigs.map((config) => config.nodeId)).toEqual([api]);
   expect(JSON.stringify(found?.serviceConfigs)).not.toContain("ciphertext");
   expect(await read(id(9999))).toBeNull();

@@ -13,21 +13,28 @@ import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import { ApplyZone } from "./ApplyZone";
-import { SNAP_GRID } from "./constants";
+import { BottomBar } from "./BottomBar";
+import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { CanvasServicesProvider } from "./CanvasServicesContext";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
 import { blurClickedNodeLink, useCanvasNavigation } from "./useCanvasNavigation";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
+import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
+import { LIVE_EDGE_STYLE } from "./nodes";
+import { useBranchPicking } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { CanvasContextMenu } from "./CanvasContextMenu";
+import { CanvasFinder } from "./CanvasFinder";
+import { IdleCloseWarning } from "./IdleCloseWarning";
+import { useEnvironmentNavigationNodes } from "../environment-node-navigation";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useCanvasChangeActions } from "./useCanvasChangeActions";
 import { useCanvasFlowState } from "./useCanvasFlowState";
+import { useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -36,10 +43,10 @@ import type { CanvasResourceNode } from "./types";
 import { DestructiveConfirmationDialog } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
 
-// Shared styling for every canvas edge: dashed, primary colour, matching arrow.
+// Shared styling for every canvas edge: solid, primary colour, matching arrow. Links into Live Nodes are dashed.
 const DEFAULT_EDGE_OPTIONS = {
   type: "smoothstep",
-  style: { stroke: "var(--primary)", strokeDasharray: "6 4" },
+  style: { stroke: "var(--primary)" },
   markerEnd: { type: MarkerType.ArrowClosed, color: "var(--primary)" },
 } as const;
 
@@ -77,6 +84,7 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
+  const findableNodes = useEnvironmentNavigationNodes(params).nodes;
   const {
     canvasChangeState,
     diffGroups,
@@ -96,13 +104,27 @@ export function CanvasFlow({
     nodeIntroductions,
     canvasNodes,
     selectedNodeId,
+    // The latest attempt's: admission records them afresh, so a deploy that resolves them clears the amber.
+    missingLiveValues: useEnvironmentDeployments(params.organizationSlug, environmentId)[0]?.deployment.missingLiveValues ?? [],
   });
+  // While picking a Branch, links into what it would use live are dashed.
+  const picking = useBranchPicking();
+  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.lineageId] : []));
+  const pickedLiveIds = new Set([
+    ...[...servicesById].flatMap(([id, state]) => liveRoles.has(state.serviceView.service.lineageId) ? [id] : []),
+    ...[...volumeResourcesById].flatMap(([id, state]) => liveRoles.has(state.resource.resource.lineageId) ? [id] : []),
+  ]);
+  const edges = pickedLiveIds.size === 0 ? canvasEdges : canvasEdges.map((edge) =>
+    pickedLiveIds.has(edge.source) || pickedLiveIds.has(edge.target) ? { ...edge, style: LIVE_EDGE_STYLE } : edge);
   const { getViewportCenter } = useCanvasNavigation(
     selectedNodeId,
     selectedNodePositionKey,
     flowReady,
+    // Picking a Branch brings the whole canvas into view beside the panel.
+    useDeploymentFocus() ?? (picking ? { key: "new-branch", nodeIds: canvasNodes.map((node) => node.id) } : null),
   );
   const creator = useServiceCreator(params, environmentId, getViewportCenter);
+  const idleCloseWarning = { organizationSlug: params.organizationSlug, environmentId };
   const volumeCreator = useVolumeCreator(
     params,
     environmentId,
@@ -157,7 +179,7 @@ export function CanvasFlow({
             <ReactFlow
               key={`${params.projectSlug}/${params.environmentSlug}`}
               nodes={canvasNodes}
-              edges={canvasEdges}
+              edges={edges}
               defaultEdgeOptions={DEFAULT_EDGE_OPTIONS}
               nodeTypes={canvasNodeTypes}
               elementsSelectable={false}
@@ -166,7 +188,7 @@ export function CanvasFlow({
               proOptions={{ hideAttribution: true }}
               snapToGrid
               snapGrid={SNAP_GRID}
-              minZoom={0.4}
+              minZoom={CANVAS_MIN_ZOOM}
               maxZoom={1.35}
               onInit={() => setFlowReady(true)}
               onNodeClick={blurClickedNodeLink}
@@ -183,12 +205,17 @@ export function CanvasFlow({
         </CanvasContextMenu>
       </div>
       <CanvasNodeList
+        header={<IdleCloseWarning {...idleCloseWarning} />}
         services={activeServicesWithBoundEnv}
+        liveNodes={canvasNodes.flatMap((node) => node.type === "live" ? [node.data.liveNode] : [])}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
         volumeResourcesById={volumeResourcesById}
       />
+      {/* Phones show it atop the node list instead. */}
+      <IdleCloseWarning {...idleCloseWarning} className="absolute top-4 left-4 max-[860px]:hidden" />
       <div className="pointer-events-none absolute top-4 right-4 flex items-center gap-2">
+        <CanvasFinder nodes={findableNodes} />
         <Button
           className="pointer-events-auto"
           onClick={() => creator.openCreatorAtCenter()}
@@ -199,8 +226,9 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <ApplyZone
+      <BottomBar
           key={locationKey}
+          environmentId={environmentId}
           groups={diffGroups}
           totalChanges={totalChanges}
           canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}

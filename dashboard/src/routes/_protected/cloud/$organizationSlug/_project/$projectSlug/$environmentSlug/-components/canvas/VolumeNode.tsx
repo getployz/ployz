@@ -1,5 +1,4 @@
 import { Handle, Position } from "@xyflow/react";
-import { canvasNodeTransition } from "./constants";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -13,6 +12,11 @@ import {
 } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { cn } from "#/lib/utils";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { useNodeLighting } from "../deployment-page";
+import { useNodePick } from "../new-branch/branch-picking";
+import { LiveLabel, PickableNode, pickCard } from "./PickableNode";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useCanvasVolumeResource } from "./CanvasServicesContext";
 import {
   ENVIRONMENT_RESOURCE_ROUTE_TO,
@@ -49,6 +53,8 @@ export function VolumeNode({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const resourceState = useCanvasVolumeResource(data.resourceId);
+  const light = useNodeLighting(data.resourceId);
+  const pick = useNodePick(resourceState?.resource.resource.lineageId);
 
   if (!resourceState) {
     return <VolumeLoadingNode />;
@@ -60,6 +66,50 @@ export function VolumeNode({
   const mountSummary =
     mountPaths.length === 0 ? "No mounts" : mountPaths.slice(0, 2).join(", ");
   const overflowCount = Math.max(mountPaths.length - 2, 0);
+  const card = (
+    <Card
+      size="node"
+      data-selected={selected}
+      state={pick ? pickCard(pick).state : light ? outcomeCardState(light.outcome) : undefined}
+      className={cn(
+        "h-full justify-between",
+        isRemoved && "opacity-60",
+        light === null && "opacity-40",
+        pick && pickCard(pick).className,
+      )}
+    >
+      <CardHeader>
+        <div className="flex items-start gap-3">
+          <Avatar>
+            <AvatarFallback>
+              <HardDriveIcon />
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <CardTitle>{resource.resource.name}</CardTitle>
+            <CardDescription>
+              Named volume
+            </CardDescription>
+          </div>
+          <Badge variant="secondary">{resource.consumerCount}</Badge>
+          {light ? <NodeOutcomeBadge light={light} /> : isRemoved ? (
+            <Badge variant="destructive">Removing</Badge>
+          ) : resourceState.diffRowCount > 0 ? (
+            <Badge variant="changed">{resourceState.diffRowCount}</Badge>
+          ) : null}
+        </div>
+      </CardHeader>
+      <CardContent>
+        {pick ? <LiveLabel label={pick.label} ownsData={pick.ownsData} /> : <p className="truncate text-muted-foreground">
+          {overflowCount > 0 ? `${mountSummary}, +${overflowCount}` : mountSummary}
+        </p>}
+      </CardContent>
+    </Card>
+  );
+
+  if (pick) {
+    return <PickableNode pick={pick} name={resource.resource.name} nodeId={data.resourceId}>{card}</PickableNode>;
+  }
 
   return (
     <Link
@@ -72,7 +122,6 @@ export function VolumeNode({
       }}
       search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
       data-canvas-node={data.resourceId}
-      {...canvasNodeTransition(data.resourceId)}
       preload="intent"
       draggable={false}
       className="block h-36 w-72"
@@ -89,41 +138,7 @@ export function VolumeNode({
         isConnectable={false}
         className="opacity-0"
       />
-      <Card
-        size="node"
-        data-selected={selected}
-        className={cn(
-          "h-full justify-between",
-          isRemoved && "opacity-60",
-        )}
-      >
-        <CardHeader>
-          <div className="flex items-start gap-3">
-            <Avatar>
-              <AvatarFallback>
-                <HardDriveIcon />
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <CardTitle>{resource.resource.name}</CardTitle>
-              <CardDescription>
-                Named volume
-              </CardDescription>
-            </div>
-            <Badge variant="secondary">{resource.consumerCount}</Badge>
-            {isRemoved ? (
-              <Badge variant="destructive">Removing</Badge>
-            ) : resourceState.diffRowCount > 0 ? (
-              <Badge variant="changed">{resourceState.diffRowCount}</Badge>
-            ) : null}
-          </div>
-        </CardHeader>
-        <CardContent>
-          <p className="truncate text-muted-foreground">
-            {overflowCount > 0 ? `${mountSummary}, +${overflowCount}` : mountSummary}
-          </p>
-        </CardContent>
-      </Card>
+      {card}
     </Link>
   );
 }

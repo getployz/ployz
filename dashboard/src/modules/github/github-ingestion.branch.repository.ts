@@ -40,6 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
+import { handOverCarried, landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
@@ -340,6 +341,7 @@ const admitActiveGithubDeployments = Effect.fn(
             branchEvaluationRevision: branch.evaluationRevision,
             triggerRevision: branch.evaluationRevision,
             changedPaths: input.plan.changedPaths,
+            conditionalSaveIds: input.carried.filter((save) => save.destinationEnvironmentId === trigger.environmentId).map((save) => save.id),
           })
           .onConflictDoNothing()
           .returning();
@@ -347,6 +349,7 @@ const admitActiveGithubDeployments = Effect.fn(
         return yield* admitGithubTrigger(inserted);
       }),
   );
+  yield* landCarriedInIdle(input.carried, new Set(selected.map((trigger) => trigger.environmentId)));
   return admitted.filter((row) => row !== null);
 });
 
@@ -354,7 +357,7 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
   function* (trigger: typeof schemaGithubEnvironmentTrigger.$inferSelect) {
     const { drizzle } = yield* Database;
     yield* lockEnvironmentDeploymentQueue(trigger.environmentId);
-    yield* loadEnvironmentDocument(trigger.environmentId, true);
+    const document = yield* loadEnvironmentDocument(trigger.environmentId, true);
     const [branch] = yield* drizzle.select().from(schemaGithubBranchProjection).where(and(
       eq(schemaGithubBranchProjection.installationId, trigger.installationId),
       eq(schemaGithubBranchProjection.repositoryId, trigger.repositoryId),
@@ -362,7 +365,12 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     ));
     const supersede = () => drizzle.update(schemaGithubEnvironmentTrigger).set({ admissionState: "superseded" })
       .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
-    if (branch?.evaluatedHeadSha !== trigger.headSha) { yield* supersede(); return null; }
+    if (branch?.evaluatedHeadSha !== trigger.headSha) {
+      // A newer push took over: what this one carries moves on, or is saved now.
+      yield* handOverCarried(trigger, document);
+      yield* supersede();
+      return null;
+    }
     const target = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
     const candidates = yield* savedStateCandidates({ ...target, environmentId: trigger.environmentId }, trigger);
     const triggerSelection = yield* Schema.decodeUnknownEffect(githubEnvironmentTriggerSelectionSchema)({ mode: trigger.selectionMode, reason: trigger.reason })
@@ -371,7 +379,12 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
       selection: triggerSelection, changedPaths: trigger.changedPaths });
     if (EffectResult.isFailure(selection)) return yield* repositoryError("invalid_stored_service", false);
     const selected = selection.success.find(row => row.environmentId === trigger.environmentId);
-    if (!selected) { yield* supersede(); return null; }
+    if (!selected) {
+      // It deploys nothing here after all, so what it carries is saved now.
+      yield* landCarried(trigger.conditionalSaveIds, document);
+      yield* supersede();
+      return null;
+    }
     yield* drizzle.update(schemaGithubEnvironmentTrigger).set({ serviceIds: [...selected.serviceIds] })
       .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
     const identities = yield* drizzle.select({ id: serviceIdentity.id, policy: serviceIdentity.policy })
@@ -385,9 +398,25 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
       if (!suites.length || suites.some(suite => suite.status !== "completed" ||
         !["success", "neutral", "skipped"].includes(suite.conclusion ?? ""))) return null;
     }
+    // Held changes land only once it's admitted, so its Saved revision has them; a service they add builds this commit too.
+    let serviceIds = selected.serviceIds;
+    let savedStateSnapshotId = target.savedStateSnapshotId;
+    if ((yield* landCarried(trigger.conditionalSaveIds, document)).landed) {
+      const landed = yield* loadLatestSavedDeploymentTarget(trigger.environmentId);
+      // Recomputed from the landed snapshot: a service the changes delete or point elsewhere drops out.
+      const landedIds = (yield* savedStateCandidates({ ...landed, environmentId: trigger.environmentId }, trigger)).map(row => row.serviceId);
+      serviceIds = landedIds.filter(id => serviceIds.includes(id) || !candidates.some(candidate => candidate.serviceId === id)).sort();
+      savedStateSnapshotId = landed.savedStateSnapshotId;
+      if (!serviceIds.length) {
+        yield* supersede();
+        return null;
+      }
+      yield* drizzle.update(schemaGithubEnvironmentTrigger).set({ serviceIds: [...serviceIds] })
+        .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
+    }
     const deployment = yield* admitEnvironmentDeployment({
-      environmentId: trigger.environmentId, savedStateSnapshotId: target.savedStateSnapshotId,
-      sourcePins: Object.fromEntries(selected.serviceIds.map(serviceId => [serviceId, { commitSha: trigger.headSha }])),
+      environmentId: trigger.environmentId, savedStateSnapshotId,
+      sourcePins: Object.fromEntries(serviceIds.map(serviceId => [serviceId, { commitSha: trigger.headSha }])),
       triggerOrigin: { origin: "github", deliveryId: trigger.sourceDeliveryId,
         branchEvaluationRevision: trigger.branchEvaluationRevision,
         installationId: trigger.installationId, repositoryId: trigger.repositoryId }, message: null,

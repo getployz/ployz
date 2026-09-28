@@ -10,6 +10,7 @@ import {
   GITHUB_CHECK_SUITE_ACTIONS,
   GITHUB_CHECK_SUITE_CONCLUSIONS,
   GITHUB_CHECK_SUITE_STATUSES,
+  GITHUB_PULL_REQUEST_ACTIONS,
   isValidGithubBranchRef,
   isValidGithubExactSha,
   isValidGithubId,
@@ -26,7 +27,10 @@ import {
   repositoryError,
 } from "#/modules/github/github-ingestion.repository.types";
 import { Database } from "#/server/database.server";
-import { githubWebhookDelivery as schemaGithubWebhookDelivery } from "#/modules/github/tables";
+import {
+  GITHUB_WEBHOOK_EVENT_KINDS,
+  githubWebhookDelivery as schemaGithubWebhookDelivery,
+} from "#/modules/github/tables";
 
 type DeliveryRow = typeof schemaGithubWebhookDelivery.$inferSelect;
 
@@ -42,6 +46,8 @@ type NormalizedDelivery = {
   checkSuiteAction: DeliveryRow["checkSuiteAction"];
   checkSuiteStatus: DeliveryRow["checkSuiteStatus"];
   checkSuiteConclusion: DeliveryRow["checkSuiteConclusion"];
+  pullRequestNumber: number | null;
+  pullRequestAction: DeliveryRow["pullRequestAction"];
 };
 
 function isCanonicalDeliveryId<T>(value: T): value is T & string {
@@ -72,6 +78,25 @@ function normalizeDelivery(input: GithubDeliveryInput): NormalizedDelivery {
       checkSuiteAction: null,
       checkSuiteStatus: null,
       checkSuiteConclusion: null,
+      pullRequestNumber: null,
+      pullRequestAction: null,
+    };
+  }
+  if (input.eventKind === "pull_request") {
+    return {
+      deliveryId: input.deliveryId,
+      eventKind: input.eventKind,
+      installationId: input.installationId,
+      repositoryId: input.repositoryId,
+      ref: null,
+      branchState: null,
+      headSha: input.headSha,
+      checkSuiteId: null,
+      checkSuiteAction: null,
+      checkSuiteStatus: null,
+      checkSuiteConclusion: null,
+      pullRequestNumber: input.pullRequestNumber,
+      pullRequestAction: input.pullRequestAction,
     };
   }
   return {
@@ -86,6 +111,8 @@ function normalizeDelivery(input: GithubDeliveryInput): NormalizedDelivery {
     checkSuiteAction: input.checkSuiteAction,
     checkSuiteStatus: input.checkSuiteStatus,
     checkSuiteConclusion: input.checkSuiteConclusion,
+    pullRequestNumber: null,
+    pullRequestAction: null,
   };
 }
 
@@ -102,6 +129,13 @@ function isDeliveryInput(input: GithubDeliveryInput): boolean {
     return input.branch.state === "deleted"
       ? !("headSha" in input.branch)
       : isValidGithubExactSha(input.branch.headSha);
+  }
+  if (input.eventKind === "pull_request") {
+    return (
+      isValidGithubId(input.pullRequestNumber) &&
+      isValidGithubExactSha(input.headSha) &&
+      GITHUB_PULL_REQUEST_ACTIONS.includes(input.pullRequestAction)
+    );
   }
   return (
     input.eventKind === "check_suite" &&
@@ -126,7 +160,9 @@ function deliveryMatches(row: DeliveryRow, input: NormalizedDelivery): boolean {
     row.checkSuiteId === input.checkSuiteId &&
     row.checkSuiteAction === input.checkSuiteAction &&
     row.checkSuiteStatus === input.checkSuiteStatus &&
-    row.checkSuiteConclusion === input.checkSuiteConclusion
+    row.checkSuiteConclusion === input.checkSuiteConclusion &&
+    row.pullRequestNumber === input.pullRequestNumber &&
+    row.pullRequestAction === input.pullRequestAction
   );
 }
 
@@ -142,6 +178,10 @@ function processedEvidence(
     case "ignored_stale":
     case "ignored_unconfigured_repository":
     case "ignored_no_matching_service":
+    case "ignored_fork":
+    case "ignored_pull_request":
+    case "ignored_nothing_from_repository":
+    case "pull_request_projected":
       return { state: "processed", outcome };
     case "malformed":
     case "identity_unresolved":
@@ -340,6 +380,8 @@ export const recordGithubDelivery = Effect.fn("Github.recordDelivery")(
           checkSuiteAction: normalized.checkSuiteAction,
           checkSuiteStatus: normalized.checkSuiteStatus,
           checkSuiteConclusion: normalized.checkSuiteConclusion,
+          pullRequestNumber: normalized.pullRequestNumber,
+          pullRequestAction: normalized.pullRequestAction,
         })
         .returning();
       const receipt = inserted ? receiptFor(inserted, true) : null;
@@ -435,6 +477,8 @@ export const recordAndClaimGithubDelivery = Effect.fn(
           checkSuiteAction: normalized.checkSuiteAction,
           checkSuiteStatus: normalized.checkSuiteStatus,
           checkSuiteConclusion: normalized.checkSuiteConclusion,
+          pullRequestNumber: normalized.pullRequestNumber,
+          pullRequestAction: normalized.pullRequestAction,
           processingState: "processing",
           processingRunId: input.processingRunId,
           processingStartedAt: new Date(),
@@ -618,7 +662,7 @@ export const rejectMalformedGithubDelivery = Effect.fn(
 )(function* (input: GithubMalformedDeliveryInput) {
   if (
     !isCanonicalDeliveryId(input.deliveryId) ||
-    !["push", "check_suite"].includes(input.eventKind) ||
+    !GITHUB_WEBHOOK_EVENT_KINDS.includes(input.eventKind) ||
     !["malformed", "unsupported_action"].includes(input.rejection)
   ) {
     return yield* repositoryError("invalid_input", false);
@@ -669,25 +713,40 @@ export const rejectMalformedGithubDelivery = Effect.fn(
   },
 );
 
+type GithubDeliveryIdentity =
+  | { eventKind: "push"; ref: string }
+  | { eventKind: "check_suite"; checkSuiteId: number }
+  | { eventKind: "pull_request"; pullRequestNumber: number };
+
+/** The delivery column each event kind's identity lives in, and its value. */
+function identityKey(identity: GithubDeliveryIdentity) {
+  switch (identity.eventKind) {
+    case "push":
+      return { column: "ref", value: identity.ref } as const;
+    case "check_suite":
+      return { column: "checkSuiteId", value: identity.checkSuiteId } as const;
+    case "pull_request":
+      return { column: "pullRequestNumber", value: identity.pullRequestNumber } as const;
+  }
+}
+
+function identityColumn(identity: GithubDeliveryIdentity) {
+  const { column, value } = identityKey(identity);
+  return eq(schemaGithubWebhookDelivery[column], value);
+}
+
+function identityMatches(row: DeliveryRow, identity: GithubDeliveryIdentity) {
+  const { column, value } = identityKey(identity);
+  return row[column] === value;
+}
+
 export const completeGithubDelivery = Effect.fn("Github.completeDelivery")(
   function* (
     input: {
       deliveryId: string;
       receiptSequence: number;
       processingRunId: string;
-      identity:
-        | {
-            eventKind: "push";
-            installationId: number;
-            repositoryId: number;
-            ref: string;
-          }
-        | {
-            eventKind: "check_suite";
-            installationId: number;
-            repositoryId: number;
-            checkSuiteId: number;
-          };
+      identity: GithubDeliveryIdentity & { installationId: number; repositoryId: number };
     },
     outcome: GithubWebhookOutcome,
   ) {
@@ -721,12 +780,7 @@ export const completeGithubDelivery = Effect.fn("Github.completeDelivery")(
             schemaGithubWebhookDelivery.repositoryId,
             input.identity.repositoryId,
           ),
-          input.identity.eventKind === "push"
-            ? eq(schemaGithubWebhookDelivery.ref, input.identity.ref)
-            : eq(
-                schemaGithubWebhookDelivery.checkSuiteId,
-                input.identity.checkSuiteId,
-              ),
+          identityColumn(input.identity),
         ),
       )
       .returning({ deliveryId: schemaGithubWebhookDelivery.deliveryId });
@@ -741,9 +795,7 @@ export const completeGithubDelivery = Effect.fn("Github.completeDelivery")(
       existing?.eventKind === input.identity.eventKind &&
       existing.installationId === input.identity.installationId &&
       existing.repositoryId === input.identity.repositoryId &&
-      (input.identity.eventKind === "push"
-        ? existing.ref === input.identity.ref
-        : existing.checkSuiteId === input.identity.checkSuiteId);
+      identityMatches(existing, input.identity);
     if (
       !(
         existing?.receiptSequence === input.receiptSequence &&

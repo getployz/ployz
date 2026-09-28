@@ -27,7 +27,9 @@ import {
   volumeRemoveAttempt as schemaVolumeRemoveAttempt,
 } from "#/modules/runtime/tables";
 import type { EncryptedSecretValue } from "#/db/tables";
-import type { EnvironmentDeploymentServiceActionPolicy } from "#/modules/deployments/tables";
+import type { EnvironmentDeploymentServiceActionPolicy, MissingLiveValue } from "#/modules/deployments/tables";
+import { branchAdmission } from "#/modules/branches/branch-admission.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import {
   organizationIdForDeployment,
   organizationIdForEnvironment,
@@ -79,6 +81,9 @@ export type SavedDeploymentTarget = CompiledSavedEnvironmentIntent & {
   readonly savedStateSnapshotId: string;
   readonly requestedByUserId: string;
   readonly volumeDeletionAuthorizations: readonly DestructiveVolumeReview[];
+  /** What admission adds for a Branch (branchAdmission); empty until then, and for a root. */
+  readonly setupCommands: Record<string, string[]>;
+  readonly missingLiveValues: MissingLiveValue[];
 };
 
 export type DeploymentAdmissionInput = {
@@ -111,6 +116,8 @@ function loadExactSavedDeploymentTarget(input: {
         intent: saved.intent,
       }),
       volumeDeletionAuthorizations: saved.volumeDeletionAuthorizations,
+      setupCommands: {},
+      missingLiveValues: [],
     } satisfies SavedDeploymentTarget;
   });
 }
@@ -130,6 +137,8 @@ export const loadLatestSavedDeploymentTarget = Effect.fn(
     requestedByUserId: saved.actorId,
     ...compileSavedEnvironmentIntent({ environmentId, intent: saved.intent }),
     volumeDeletionAuthorizations: saved.volumeDeletionAuthorizations,
+    setupCommands: {},
+    missingLiveValues: [],
   } satisfies SavedDeploymentTarget;
 });
 
@@ -378,6 +387,8 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            setupCommands: target.setupCommands,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
             updatedAt: now,
@@ -399,6 +410,8 @@ function writeQueuedSavedTarget(
             retryOfDeploymentId: input.retryOfDeploymentId ?? null,
             sourcePins,
             variableProducers: target.variableProducers,
+            setupCommands: target.setupCommands,
+            missingLiveValues: target.missingLiveValues,
             savedStateSnapshotId: target.savedStateSnapshotId,
             serviceActionPolicy: input.serviceActionPolicy ?? null,
           })
@@ -497,7 +510,11 @@ export const admitEnvironmentDeployment = Effect.fn(
   const database = yield* Database;
   return yield* database.transaction(Effect.gen(function* () {
     yield* lockEnvironmentDeploymentQueue(input.environmentId);
-    const target = yield* loadExactSavedDeploymentTarget(input);
+    // Teardown admission takes this queue lock too, so a teardown admitted first is seen here.
+    if ((yield* activeTeardownFor([input.environmentId])).size > 0) {
+      return yield* new Conflict({ message: "This environment is being torn down." });
+    }
+    const target = yield* branchAdmission(input.environmentId, yield* loadExactSavedDeploymentTarget(input));
     return yield* writeQueuedSavedTarget({ ...input, triggerOrigin }, target);
   }));
 });

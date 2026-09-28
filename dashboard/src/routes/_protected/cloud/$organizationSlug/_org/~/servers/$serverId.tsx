@@ -52,8 +52,9 @@ function RouteComponent() {
   const { machine } = server;
   return (
     <DashboardPage width="content">
+      {/* The top bar's crumb names the server. */}
       <div className="flex min-w-0 flex-col gap-1">
-        <h1 className="truncate text-xl font-semibold">{server.name}</h1>
+        <h1 className="sr-only">{server.name}</h1>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           <ServerStatusLabel status={server.status} stale={stale} />
           {machine.publicIp ? (

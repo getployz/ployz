@@ -1,5 +1,5 @@
+import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { Node } from "@xyflow/react";
-import type { TargetNode, DeploymentNodeView } from "#/modules/deployments/deployment-view";
 
 export type CanvasResourceType = "service" | "volume";
 
@@ -26,19 +26,13 @@ export type CanvasVolumeNodeData = {
 
 export type CanvasVolumeNode = Node<CanvasVolumeNodeData, "volume">;
 
-/** A node as a Cloud Deployment Attempt saw it; drawn only in Deployment Mode. */
-export type CanvasDeploymentNodeData = {
-  /** The node as the attempt's target node list has it. */
-  node: TargetNode;
-  name: string;
-  view: DeploymentNodeView;
-};
-
-export type CanvasDeploymentNode = Node<CanvasDeploymentNodeData, "deployment">;
+/** A Branch's Live Node: another Environment's service its Own Copies use live. */
+export type CanvasLiveNode = Node<{ liveNode: LiveNode }, "live">;
 
 export type CanvasResourceNode =
   | CanvasServiceNode
-  | CanvasVolumeNode;
+  | CanvasVolumeNode
+  | CanvasLiveNode;
 
 export type FlowPosition = { x: number; y: number };
 export type CreatorPanel = "root" | "git" | "image";

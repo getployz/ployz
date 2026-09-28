@@ -13,7 +13,7 @@ The display name of a Service, stored on its stable identity and saved immediate
 _Avoid_: Deployable name, DNS alias
 
 **Deployment Policy**:
-Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
+Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting for CI counts check suites from other GitHub Apps, never Ployz's own. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
 _Avoid_: Staged source settings, runtime configuration
 
 **Registry Credential**:
@@ -229,6 +229,10 @@ _Avoid_: Clone (a copy of data), fork
 **Live Node**:
 An Environment Node a Branch uses from another Environment while it keeps running there, drawn dashed. The Branch deploys nothing for it, captures its values each time the Branch deploys, and reads and writes its real data.
 _Avoid_: Portal, shared node, borrowed node; Live as a Node Outcome
+
+**Starting point**:
+A Branch that was never deployed, kept as the recipe other Branches copy from. Its nodes stay staged until it deploys once.
+_Avoid_: Template, draft branch
 
 **Setup Command**:
 A command a Branch runs in one Own Copy's new image before that service first starts, after the nodes it uses are running. It runs again on later deploys until it succeeds once. It prepares the Own Copy's data, for example by seeding it.

@@ -53,7 +53,6 @@ export const session = pgTable(
     token: text("token").notNull(),
     activeOrganizationId: uuid("active_organization_id"),
     activeOrganizationSlug: text("active_organization_slug"),
-    sidebarOpen: boolean("sidebar_open").default(true).notNull(),
     ipAddress: text("ip_address"),
     userAgent: text("user_agent"),
   },

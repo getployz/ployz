@@ -33,7 +33,13 @@ const ACTIVE_DEPLOYMENT_STATUSES = [
 
 type SnapshotScope =
   | { kind: "environment"; environmentId: string }
+  | { kind: "environments"; environmentIds: readonly string[] }
   | { kind: "organization"; organizationId: string };
+
+/** A many-Environment scope's filter: its Environments, or every one of the organization's. */
+const manyScope = (scope: Exclude<SnapshotScope, { kind: "environment" }>) => scope.kind === "organization"
+  ? eq(schemaProject.organizationId, scope.organizationId)
+  : inArray(schemaEnvironment.id, [...scope.environmentIds]);
 
 export type EnvironmentExplicitStateProjectionNode = {
   nodeType: "service" | "volume";
@@ -54,6 +60,8 @@ export type EnvironmentExplicitStateProjection = {
   applied: {
     token: string;
     nodes: EnvironmentExplicitStateProjectionNode[];
+    /** When the attempt each Applied node came from was created, by node lineage. */
+    deployedAt: Record<string, Date>;
   };
   deploymentEvidence: {
     id: string;
@@ -65,21 +73,24 @@ export type EnvironmentExplicitStateProjection = {
   } | null;
 };
 
+/** An Applied node's config as the attempt that applied it left it. */
+export type AppliedSavedNode = {
+  environmentId: string;
+  /** The attempt that applied this node. */
+  environmentDeploymentId: string;
+  nodeType: "service" | "volume";
+  nodeId: string;
+  nodeLineageId: string;
+  configVersion: number;
+  config: JsonObject;
+  credentialRevision: string | null;
+  encryptedRegistryUsername: EncryptedSecretValue | null;
+  encryptedRegistrySecret: EncryptedSecretValue | null;
+  sourceSavedStateSnapshotId: string;
+};
+
 export type EnvironmentSnapshotProjection = {
-  appliedSavedNodeByKey: Map<
-    string,
-    {
-      nodeType: "service" | "volume";
-      nodeId: string;
-      nodeLineageId: string;
-      configVersion: number;
-      config: JsonObject;
-      credentialRevision: string | null;
-      encryptedRegistryUsername: EncryptedSecretValue | null;
-      encryptedRegistrySecret: EncryptedSecretValue | null;
-      sourceSavedStateSnapshotId: string;
-    }
-  >;
+  appliedSavedNodeByKey: Map<string, AppliedSavedNode>;
   explicitStates: EnvironmentExplicitStateProjection[];
 };
 
@@ -171,7 +182,7 @@ function loadDeploymentHeads(
         )
         .where(
           and(
-            eq(schemaProject.organizationId, scope.organizationId),
+            manyScope(scope),
             statusFilter,
           ),
         )
@@ -194,7 +205,7 @@ function loadDeploymentHeads(
       )
       .where(
         and(
-          eq(schemaProject.organizationId, scope.organizationId),
+          manyScope(scope),
           statusFilter,
         ),
       )
@@ -286,7 +297,7 @@ function loadSavedHeads(scope: SnapshotScope) {
         schemaProject,
         eq(schemaEnvironment.projectId, schemaProject.id),
       )
-      .where(eq(schemaProject.organizationId, scope.organizationId))
+      .where(manyScope(scope))
       .orderBy(
         asc(schemaEnvironmentSavedStateSnapshot.environmentId),
         desc(schemaEnvironmentSavedStateSnapshot.createdAt),
@@ -400,6 +411,7 @@ function projectSnapshotHeads(scope: SnapshotScope) {
     return privateDns;
   };
 
+  const createdAtByDeploymentId = new Map([...appliedHeads, ...partialHeads].map((head) => [head.id, head.createdAt]));
   const liveNodesByKey = new Map<string, LoadedNode>();
   const appliedCreatedAtByEnvironment = new Map<string, Date>();
   for (const head of appliedHeads) {
@@ -535,6 +547,10 @@ function projectSnapshotHeads(scope: SnapshotScope) {
             config: node.config,
             revisionId: null,
           })),
+          deployedAt: Object.fromEntries(appliedEntries.map(([, node]) => [
+            node.nodeLineageId,
+            requiredMapValue(createdAtByDeploymentId, node.environmentDeploymentId, "Applied deployment is missing."),
+          ])),
         },
         deploymentEvidence: activeDeployment
           ? {
@@ -555,6 +571,8 @@ function projectSnapshotHeads(scope: SnapshotScope) {
       [...liveNodesByKey].map(([key, node]) => [
         key,
         {
+          environmentId: node.environmentId,
+          environmentDeploymentId: node.environmentDeploymentId,
           nodeType: node.nodeType,
           nodeId: node.nodeId,
           nodeLineageId: node.nodeLineageId,

@@ -1,7 +1,6 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
 import { Suspense, useState } from "react";
-import { DashboardPageHeader } from "#/components/dashboard-header";
 import {
   Background,
   BackgroundVariant,
@@ -9,7 +8,8 @@ import {
   ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { eq, inArray, useLiveQuery, useLiveSuspenseQuery } from "@tanstack/react-db";
+import { useLiveNodes } from "#/modules/branches/use-live-nodes";
 import { Outlet, useLoaderData, useParams } from "@tanstack/react-router";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
 import {
@@ -17,7 +17,6 @@ import {
   normalizeEnvironmentServicesViewRecord,
 } from "#/modules/services/services.collection";
 import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
-import { shortDeploymentId } from "#/modules/deployments/deployment-view";
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import {
@@ -32,14 +31,12 @@ import {
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
+import { BottomBarSlot, StagedReviewSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
-import { DeploymentCanvas } from "./canvas/DeploymentCanvas";
-import { ApplyZoneSlot, DeployBar } from "./DeployBar";
-import { BackToLive, DeploymentModeProvider, useDeploymentMode, usePendingDeploymentId } from "./deployment-mode";
-import { CanvasInspectorPending } from "./CanvasInspectorRouteStates";
-import { DeploymentServicePanel } from "./DeploymentServicePanel";
-import { buildEdges, buildNodes } from "./canvas/nodes";
+import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
+import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { BranchPickingProvider } from "./new-branch/branch-picking";
 
 export function PendingCanvas() {
   return (
@@ -153,6 +150,20 @@ function CanvasWithData() {
           updatedAt: introduction.updatedAt,
         })),
   });
+  // A Branch draws the services its Own Copies use live where they sit on their owner's canvas.
+  const liveNodes = useLiveNodes(params.organizationSlug, environmentId);
+  const liveOwnerNodeIds = liveNodes.flatMap((node) => node.owner ? [node.owner.node.nodeId] : []);
+  const { data: liveNodePositionRows } = useLiveQuery({
+    queryKey: ['canvas-live-positions', canvasPositionsCollection.id, liveOwnerNodeIds.join()],
+    query: (q) => q.from({ canvasPosition: canvasPositionsCollection })
+      .where(({ canvasPosition }) => inArray(canvasPosition["resourceId"], liveOwnerNodeIds))
+      .select(({ canvasPosition }) => ({
+        id: canvasPosition["id"], environmentId: canvasPosition["environmentId"], resourceType: canvasPosition["resourceType"],
+        resourceId: canvasPosition["resourceId"], x: canvasPosition["x"], y: canvasPosition["y"],
+        createdAt: canvasPosition["createdAt"], updatedAt: canvasPosition["updatedAt"],
+      })),
+  });
+  const liveNodePositions = liveNodePositionRows.map((position) => parseLiveQueryRow(environmentResourceCanvasPositionSchema, position));
   const nodeIntroductions = nodeIntroductionRows.map((introduction) =>
     parseLiveQueryRow(environmentNodeIntroductionSchema, introduction),
   );
@@ -168,17 +179,17 @@ function CanvasWithData() {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
-  const initialNodes = buildNodes(
+  const initialNodes = [...buildNodes(
     activeServicesWithBoundEnv,
     canvasPositions,
     selectedNodeId,
     volumeResources,
-  );
-  const initialEdges = buildEdges(
+  ), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
+  const initialEdges = [...buildEdges(
     volumeResources,
     serviceVolumeAttachments,
     activeServicesWithBoundEnv,
-  );
+  ), ...buildLiveEdges(liveNodes)];
 
   return (
     <ReactFlowProvider
@@ -205,54 +216,42 @@ function CanvasWithData() {
 }
 
 export function EnvironmentCanvasScene() {
-  return (
-    <DeploymentModeProvider>
-      <CanvasScene />
-    </DeploymentModeProvider>
-  );
-}
-
-function CanvasScene() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({
     from: ENVIRONMENT_ROUTE_FROM,
   });
-  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const canvasKey = `${organizationSlug}/${projectSlug}/${environmentSlug}`;
-  const { selectedNodeId, selectedServiceId } = useCanvasInspectorSelection();
-  const attempt = useDeploymentMode();
-  const pendingId = usePendingDeploymentId();
-  const viewedId = attempt?.deployment.id ?? pendingId;
-  const [applyZoneSlot, setApplyZoneSlot] = useState<HTMLElement | null>(null);
-  // Deployment Mode opens only its read-only panel, and only for a service in the target node list; the live panel edits.
-  // While the attempt loads, a selected service's panel waits for it.
-  const inspectedNodeId = pendingId ? selectedServiceId : !attempt ? selectedNodeId
-    : attempt.nodes.some((node) => node.nodeType === "service" && node.nodeId === selectedServiceId) ? selectedServiceId : null;
+  const { selectedNodeId, selectedServiceId, deploymentId, deploymentReturnTo, deploymentList, newBranch, branchReview, prPlan } = useCanvasInspectorSelection();
+  const lighting = useOpenDeployment();
+  const [bottomBarSlot, setBottomBarSlot] = useState<HTMLElement | null>(null);
+  const [stagedReviewSlot, setStagedReviewSlot] = useState<HTMLElement | null>(null);
 
   return (
-    <ApplyZoneSlot.Provider value={applyZoneSlot}>
+    <BottomBarSlot.Provider value={bottomBarSlot}>
+    <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
+    <StagedReviewSlot.Provider value={{ slot: stagedReviewSlot, setSlot: setStagedReviewSlot }}>
     <CanvasInspectorOverlay
-      selection={inspectedNodeId ? {
-        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${inspectedNodeId}`,
-        nodeId: inspectedNodeId,
-      } : null}
-      header={<DashboardPageHeader scope={{ kind: "environment", organizationSlug, projectSlug, environmentSlug }}>
-        {viewedId ? <>
-          <span className="ml-auto font-mono text-muted-foreground">{shortDeploymentId(viewedId)}</span>
-          <BackToLive />
-        </> : null}
-      </DashboardPageHeader>}
+      selection={selectedNodeId ? {
+        key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
+        nodeId: selectedNodeId,
+      } : deploymentId ? { key: `${canvasKey}/deployment/${deploymentId}`, nodeId: deploymentId, lit: true, returnTo: deploymentReturnTo }
+        : deploymentList ? { key: `${canvasKey}/deployments`, nodeId: "deployments" }
+        : newBranch ? { key: `${canvasKey}/new-branch`, nodeId: "new-branch", picking: true }
+        : branchReview ? { key: `${canvasKey}/review`, nodeId: "review" }
+        : prPlan ? { key: `${canvasKey}/pr-plan`, nodeId: "pr-plan", picking: true } : null}
       canvas={<>
-        <Suspense fallback={<PendingCanvas />}>
-          {pendingId ? <PendingCanvas />
-            : attempt ? <DeploymentCanvas key={`${canvasKey}/${attempt.deployment.id}`} attempt={attempt} environmentId={environmentId} />
-            : <CanvasWithData key={canvasKey} />}
-        </Suspense>
-        <Suspense fallback={null}><DeployBar><div ref={setApplyZoneSlot} className="contents" /></DeployBar></Suspense>
+        {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
+        <DeploymentLightingProvider value={lighting}>
+          <Suspense fallback={<PendingCanvas />}>
+            <CanvasWithData key={canvasKey} />
+          </Suspense>
+        </DeploymentLightingProvider>
+        <div ref={setBottomBarSlot} className="contents" />
       </>}
     >
-      {!inspectedNodeId ? null : pendingId ? <CanvasInspectorPending />
-        : attempt ? <DeploymentServicePanel attempt={attempt} serviceId={inspectedNodeId} /> : <Outlet />}
+      <Outlet />
     </CanvasInspectorOverlay>
-    </ApplyZoneSlot.Provider>
+    </StagedReviewSlot.Provider>
+    </BranchPickingProvider>
+    </BottomBarSlot.Provider>
   );
 }

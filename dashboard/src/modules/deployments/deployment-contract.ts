@@ -6,6 +6,7 @@ import { ENVIRONMENT_DEPLOYMENT_STATUSES } from "#/modules/deployments/tables";
 import type { EnvironmentDeploymentStatus } from "#/modules/deployments/tables";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { VolumeConfig } from "#/modules/environment-design/volume-config";
+import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import type { DestructiveVolumeReview } from "#/modules/environment-design/destructive-volume-review";
 import { reviewedEnvironmentPublicationSchema } from "#/modules/environment-design/working-state-review";
 import {
@@ -89,11 +90,6 @@ export const deploymentAttemptQuerySchema = Schema.Struct({
   deploymentId: Uuid,
 });
 
-export const deploymentServiceVariablesQuerySchema = Schema.Struct({
-  organizationSlug: OrganizationSlug,
-  deploymentId: Uuid,
-  serviceId: Uuid,
-});
 
 /**
  * The attempt's target node list as plain facts, diffed against Applied State: provisional while the attempt is queued, frozen
@@ -113,6 +109,17 @@ export const targetNodeListSchema = Schema.Struct({
     source: Schema.NullOr(Schema.Struct({ kind: Schema.Literals(["git", "image"]), label: Schema.String })),
     /** The volume node ids a service mounts. */
     mounts: Schema.Array(Schema.String),
+    /**
+     * An updated node's setting changes, presented as the staged-changes review shows them (sealed values read "Secret
+     * value"). Absent when there is nothing to compare: a new or removed node, or an attempt recorded before settings were.
+     */
+    settings: Schema.optional(Schema.Array(Schema.Struct({
+      path: Schema.String,
+      kind: Schema.Literals(["add", "update", "remove"]),
+      label: Schema.String,
+      currentValue: Schema.String,
+      newValue: Schema.String,
+    }))),
   })),
 });
 export type TargetNodeList = typeof targetNodeListSchema.Type;
@@ -130,6 +137,7 @@ export const environmentDeploymentSummarySchema = Schema.Struct({
   runtimeProgress: Schema.NullOr(deploymentProgressSchema),
   sourcePins: deploymentSourcePinsSchema,
   targetNodes: targetNodeListSchema,
+  missingLiveValues: Schema.Array(Schema.Struct({ serviceId: Uuid, from: Schema.String, key: Schema.String })),
   canRetry: Schema.Boolean,
   failureCode: Schema.NullOr(Schema.String),
   dispatchRequestedAt: Schema.NullOr(Schema.Date),
@@ -163,6 +171,10 @@ export type EnvironmentChangeStateProjection = {
   applied: {
     token: string;
     nodes: EnvironmentChangeStateNodeProjection[];
+    /** When each Applied node last deployed, by node lineage. */
+    deployedAt: Record<string, Date>;
+    /** Applied State in authored form, redacted, for a Parent of Branches; null for any other Environment, or before its first deploy. */
+    intent: SavedEnvironmentIntent | null;
   };
   deploymentEvidence: {
     id: string;
@@ -205,7 +217,6 @@ export type DeploymentOperationEvidencePageQueryInput =
 export type DeploymentBuildTailQueryInput = typeof deploymentBuildTailQuerySchema.Type;
 export type EnvironmentDeploymentsQueryInput = typeof environmentDeploymentsQuerySchema.Type;
 export type DeploymentAttemptQueryInput = typeof deploymentAttemptQuerySchema.Type;
-export type DeploymentServiceVariablesQueryInput = typeof deploymentServiceVariablesQuerySchema.Type;
 export type NodeDeploymentsQueryInput = typeof nodeDeploymentsQuerySchema.Type;
 export type EnvironmentDeploymentSummary = Omit<
   typeof environmentDeploymentSummarySchema.Type,

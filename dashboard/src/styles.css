@@ -45,6 +45,8 @@
   --changed-foreground: hsl(0 0% 100%);
   --changed-soft: #fff0f7;
   --changed-border: #efb3ce;
+  --live-soft: color-mix(in srgb, var(--card) 60%, transparent);
+  --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #dedede;
   --input: #dedede;
   --ring: var(--changed);
@@ -53,14 +55,6 @@
   --chart-3: hsl(152 38% 42%);
   --chart-4: hsl(44 74% 52%);
   --chart-5: hsl(1 62% 44%);
-  --sidebar: hsl(0 0% 100%);
-  --sidebar-foreground: #111111;
-  --sidebar-primary: #111111;
-  --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: var(--muted);
-  --sidebar-accent-foreground: #111111;
-  --sidebar-border: #dedede;
-  --sidebar-ring: var(--changed);
   --z-safe-area: 60;
   --radius: 0.75rem;
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
@@ -109,6 +103,8 @@
   --changed-foreground: hsl(0 0% 100%);
   --changed-soft: hsl(330 28% 18%);
   --changed-border: hsl(330 32% 28%);
+  --live-soft: color-mix(in srgb, var(--card) 60%, transparent);
+  --live-border: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
   --border: #333333;
   --input: #333333;
   --ring: var(--changed);
@@ -117,14 +113,6 @@
   --chart-3: hsl(152 38% 42%);
   --chart-4: hsl(44 74% 52%);
   --chart-5: hsl(1 62% 44%);
-  --sidebar: #161616;
-  --sidebar-foreground: #ededed;
-  --sidebar-primary: #ededed;
-  --sidebar-primary-foreground: #0a0a0a;
-  --sidebar-accent: var(--muted);
-  --sidebar-accent-foreground: #ededed;
-  --sidebar-border: #333333;
-  --sidebar-ring: var(--changed);
   --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
   --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
@@ -175,6 +163,8 @@
   --color-changed-foreground: var(--changed-foreground);
   --color-changed-soft: var(--changed-soft);
   --color-changed-border: var(--changed-border);
+  --color-live-soft: var(--live-soft);
+  --color-live-border: var(--live-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -183,14 +173,6 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
-  --color-sidebar: var(--sidebar);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-ring: var(--sidebar-ring);
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -235,10 +217,9 @@
 
 .environment-canvas-scene {
   container-type: inline-size;
-  --canvas-header-height: 4rem;
   position: relative;
   display: grid;
-  grid-template: var(--canvas-header-height) minmax(0, 1fr) auto / minmax(0, 1fr);
+  grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
   isolation: isolate;
   height: 100%;
   min-width: 0;
@@ -246,52 +227,30 @@
   outline: none;
 }
 
-.canvas-workspace-header { grid-area: 1 / 1; min-width: 0; overflow: hidden; border-bottom: 1px solid var(--border); background: var(--background); }
 .environment-canvas-scene:focus-visible, .canvas-inspector-pane:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
-.canvas-workspace-header > header { min-width: 0; border-bottom: 0; }
-/*
- * Deployment Mode: the header, mobile navigation and canvas take the info tint; the canvas gets an inset frame.
- * The tint wash (::before) and frame (::after) live on the scene, which persists across the switch, so they sweep up
- * from the deploy bar on entry and reverse on Back to editor while the header and bar keep their elements.
- */
-.canvas-workspace-header, [data-mobile-navigation] { transition: background-color 300ms ease, border-color 300ms ease; }
-.environment-canvas-scene:has([data-deployment-canvas]) .canvas-workspace-header,
-body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--info-soft); border-color: var(--info-border); }
-.environment-canvas-scene:has([data-deployment-canvas]) .canvas-workspace-header > header { background: transparent; }
-.environment-canvas-scene::before, .environment-canvas-scene::after {
-  content: ""; position: absolute; inset: 0; grid-area: 2 / 1 / 4 / 2; pointer-events: none;
-  opacity: 0; clip-path: inset(100% 0 0 0); transition: clip-path 300ms cubic-bezier(0.23, 1, 0.32, 1), opacity 300ms ease;
-}
-.environment-canvas-scene::before { z-index: -1; background: color-mix(in oklab, var(--info-soft) 40%, var(--background)); }
-.environment-canvas-scene::after { z-index: 5; box-shadow: inset 0 0 0 3px var(--info-border); }
-.environment-canvas-scene:has([data-deployment-canvas])::before,
-.environment-canvas-scene:has([data-deployment-canvas])::after { opacity: 1; clip-path: inset(0); }
-.canvas-graph { position: relative; grid-area: 2 / 1 / 4 / 2; min-width: 0; min-height: 0; overflow: hidden; }
-/* The deploy bar floats over the canvas on every screen size, above the inspector shade and pane. */
-.deploy-bar {
+.canvas-graph { position: relative; grid-area: 1 / 1 / 3 / 2; min-width: 0; min-height: 0; overflow: hidden; }
+/* The bottom bar floats over the canvas on every screen size, above the inspector shade and pane. */
+.bottom-bar {
   position: absolute; bottom: 1rem; left: 50%; translate: -50% 0; z-index: 30;
-  display: flex; align-items: center; gap: 0.375rem; max-width: calc(100% - 2rem); padding: 0.25rem;
+  display: flex; align-items: center; gap: 0.25rem; width: max-content; min-width: 20rem; max-width: min(36rem, calc(100% - 2rem)); padding: 0.25rem;
   border: 1px solid var(--border); border-radius: var(--radius-xl); background: var(--background); box-shadow: var(--shadow-md);
-  white-space: nowrap; transition: background-color 350ms ease, border-color 350ms ease;
+  white-space: nowrap;
 }
-.deploy-bar[data-deployment] { background: var(--info-soft); border-color: var(--info-border); }
-/* Pending changes: the whole bar takes the staged-intent surface and the apply zone follows the segments. */
-.deploy-bar:has(.apply-zone) { background: var(--changed-soft); border-color: var(--changed-border); }
-.apply-zone { display: flex; align-items: center; gap: 0.25rem; margin-left: auto; padding-left: 0.375rem; border-left: 1px solid var(--changed-border); }
-.deploy-bar-pending { display: none; }
-.deploy-bar:has(.apply-zone) .deploy-bar-pending { display: block; }
+/* Staged changes: the whole bar takes the staged-intent surface. */
+.bottom-bar[data-staged] { background: var(--changed-soft); border-color: var(--changed-border); }
 .canvas-node-list { padding-bottom: 5rem; }
 .canvas-inspector-shade {
-  grid-area: 2 / 1 / 4 / 2;
+  grid-area: 1 / 1 / 3 / 2;
   z-index: 10;
   margin: 0;
   padding: 0;
   border: 0;
   background: color-mix(in oklab, var(--foreground) 16%, transparent);
 }
+.canvas-inspector-shade[data-clear] { background: transparent; }
 .canvas-inspector-pane {
   position: relative;
-  grid-area: 2 / 1;
+  grid-area: 1 / 1;
   z-index: 20;
   justify-self: end;
   width: min(48rem, 75%);
@@ -307,20 +266,26 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
   view-transition-name: canvas-inspector;
   transition: width 220ms cubic-bezier(0.32, 0.72, 0, 1), margin 220ms cubic-bezier(0.32, 0.72, 0, 1), border-radius 220ms ease;
 }
+/* Picking a Branch on the canvas: the panel narrows so the canvas stays readable. */
+@media (min-width: 861px) {
+  @container (min-width: 741px) {
+    .canvas-inspector-pane[data-picking]:not([data-takeover="true"]) { width: min(28rem, 40%); }
+  }
+}
 .canvas-inspector-pane[data-takeover="true"] {
-  grid-row: 2 / 3;
+  grid-row: 1 / 2;
   width: 100%;
   margin: 0;
   border: 0;
   border-radius: 0;
   box-shadow: none;
 }
-.canvas-inspector-header { height: var(--canvas-header-height); min-height: 4rem; }
+.canvas-inspector-header { min-height: 4rem; }
 .canvas-inspector-back { display: none; }
 .canvas-inspector-pane[data-takeover="true"] .canvas-inspector-back { display: inline-flex; }
 @container (max-width: 740px) {
   .canvas-inspector-pane {
-    grid-row: 2 / 3;
+    grid-row: 1 / 2;
     width: 100%;
     margin: 0;
     border: 0;
@@ -331,14 +296,12 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
   .canvas-inspector-close, [data-canvas-inspector-resize] { display: none; }
 }
 @media (max-width: 860px) {
-  .environment-canvas-scene { --canvas-header-height: 0px; }
-  .canvas-workspace-header { display: none; }
   .canvas-inspector-header { min-height: 3.5rem; }
   [data-canvas-inspector-desktop-control] { display: none; }
   .canvas-inspector-back { display: inline-flex; }
   .canvas-inspector-close, [data-canvas-inspector-resize] { display: none; }
   .canvas-inspector-pane {
-    grid-row: 1 / 3;
+    grid-row: 1 / 2;
     width: 100%;
     margin: 0;
     border: 0;
@@ -346,25 +309,20 @@ body:has([data-deployment-canvas]) [data-mobile-navigation] { background: var(--
     box-shadow: none;
   }
 }
-/* Desktop panels stop above the deploy bar; the mobile full-screen panel leaves room under it. */
+/* Desktop panels stop above the bottom bar; the mobile full-screen panel leaves room under it. */
 .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 4rem; }
 @media (max-width: 860px) {
-  .deploy-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; max-width: none; }
+  .bottom-bar { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; translate: none; width: auto; min-width: 0; max-width: none; }
   .canvas-inspector-pane, .canvas-inspector-pane[data-takeover="true"] { margin-bottom: 0; padding-bottom: 4rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   .canvas-inspector-pane { transition: none; }
-  /* The Deployment Mode switch falls back to a crossfade; these outrank the global reduced-motion kill. */
-  .environment-canvas-scene::before, .environment-canvas-scene::after { clip-path: none; transition: opacity 200ms ease !important; }
-  .canvas-workspace-header, [data-mobile-navigation], .deploy-bar { transition-duration: 200ms !important; }
 }
 
 ::view-transition-old(root),
 ::view-transition-new(root) {
   animation: none;
 }
-/* Editor ↔ Deployment Mode: each node's element takes its name only during the switch, so the same card moves in place. */
-:root:active-view-transition-type(deployment-mode) [data-canvas-transition] { view-transition-name: var(--canvas-node); }
 
 
 

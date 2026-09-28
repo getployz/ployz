@@ -43,7 +43,7 @@ function RouteComponent() {
 
   return (
     <DashboardPage width="content">
-      <h1 className="text-xl font-semibold">Settings</h1>
+      {/* The top bar names the page. */}
       <Tabs
         className="gap-4"
         value={section}

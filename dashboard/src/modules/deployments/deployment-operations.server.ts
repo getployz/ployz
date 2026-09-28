@@ -4,12 +4,10 @@ import { and, desc, eq, sql, type SQL } from "drizzle-orm";
 import type { EffectPgDatabase } from "drizzle-orm/effect-postgres";
 import { Effect, Schema } from "effect";
 
-import { loadClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import type {
   DeploymentAttemptQueryInput,
   DeploymentBuildTailQueryInput,
   DeploymentOperationEvidencePageQueryInput,
-  DeploymentServiceVariablesQueryInput,
   EnvironmentChangeStateNodeProjection,
   EnvironmentChangeStateProjection,
   NodeDeploymentsQueryInput,
@@ -19,11 +17,13 @@ import type {
 import { loadEnvironmentSnapshotProjection, type EnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { decodeEnvironmentResourceNodeConfig } from "#/modules/environment-design/environment-resource-node";
 import { strictParseOptions } from "#/modules/environment-design/schema";
-import { withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { redactSavedEnvironmentIntent, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { serviceDeploymentConfigSchema } from "#/modules/environment-design/services";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import type { Actor } from "#/modules/identity/actor";
-import { environment, project } from "#/modules/project/tables";
+import { user } from "#/modules/identity/tables";
+import { environment, environmentBranch, project } from "#/modules/project/tables";
 import { environmentNodeConfigSnapshot } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
@@ -32,7 +32,6 @@ import { loadDeploymentBuildLog, loadDeploymentEvents } from "./deployment-event
 import { viewTargetNodes, deploymentView } from "./deployment-view";
 import { deploymentRowColumns } from "./deployment-row.server";
 import { environmentDeployment } from "./tables";
-import { loadDeploymentContext, loadDisplayedDeployEnv, needsClusterDomain } from "./runtime-hydration.repository.server";
 
 const requireOrganization = Effect.fn("Deployments.requireOrganization")(
   function* (actor: Actor, organizationSlug: string) {
@@ -103,9 +102,20 @@ function parseEvidenceChangeStateNode(input: {
     : parseEnvironmentChangeStateNode(input);
 }
 
+/**
+ * A Parent's Applied State in authored form, redacted, for its Branches' reviews in the browser; null for an Environment
+ * with no Branches (`namespace` undefined) or before its first deploy.
+ */
+const appliedIntentOfParent = Effect.fn("Deployments.appliedIntentOfParent")(function* (
+  projection: EnvironmentSnapshotProjection, state: EnvironmentSnapshotProjection["explicitStates"][number], namespace: string | undefined,
+) {
+  if (namespace === undefined || state.applied.nodes.length === 0) return null;
+  return redactSavedEnvironmentIntent(yield* loadAppliedIntent(state.environmentId, namespace, projection));
+});
+
 const projectEnvironmentChangeStateRecords = Effect.fn(
   "Deployments.projectEnvironmentChangeStateRecords",
-)(function* (projection: EnvironmentSnapshotProjection) {
+)(function* (projection: EnvironmentSnapshotProjection, parents: ReadonlyMap<string, string>) {
   return yield* Effect.forEach(projection.explicitStates, (state) =>
     Effect.gen(function* () {
       const savedNodes = yield* Effect.forEach(
@@ -123,7 +133,10 @@ const projectEnvironmentChangeStateRecords = Effect.fn(
       return {
         environmentId: state.environmentId,
         saved: state.saved ? { ...state.saved, nodes: savedNodes } : null,
-        applied: { ...state.applied, nodes: appliedNodes },
+        applied: {
+          ...state.applied, nodes: appliedNodes,
+          intent: yield* appliedIntentOfParent(projection, state, parents.get(state.environmentId)),
+        },
         deploymentEvidence: state.deploymentEvidence
           ? { ...state.deploymentEvidence, nodes: evidenceNodes }
           : null,
@@ -143,7 +156,11 @@ export const listLatestOrganizationEnvironmentChangeStates = Effect.fn(
       kind: "organization",
       organizationId: organization.id,
     });
-  return yield* projectEnvironmentChangeStateRecords(projection);
+  const { drizzle } = yield* Database;
+  const parents = yield* drizzle.selectDistinct({ id: environment.id, namespace: environment.namespace }).from(environment)
+    .innerJoin(environmentBranch, eq(environmentBranch.parentEnvironmentId, environment.id))
+    .where(eq(environmentBranch.organizationId, organization.id));
+  return yield* projectEnvironmentChangeStateRecords(projection, new Map(parents.map((row) => [row.id, row.namespace])));
 });
 
 const logCursor = Effect.fn("Deployments.logCursor")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
@@ -164,26 +181,6 @@ export const listDeploymentBuildTail = Effect.fn("Deployments.buildTail")(functi
 
 export const listDeploymentProgressLogs = Effect.fn("Deployments.progressLogs")(function* (actor: Actor, input: DeploymentOperationEvidencePageQueryInput) {
   return yield* loadDeploymentEvents(yield* logCursor(actor, input));
-});
-
-/**
- * One service's variables as the attempt deployed them, recomputed through deploy's own loader
- * from the attempt's frozen snapshots and producers. Sealed values, and values resolving from them,
- * are null: never decrypted.
- */
-export const getDeploymentServiceVariables = Effect.fn("Deployments.serviceVariables")(function* (
-  actor: Actor,
-  input: DeploymentServiceVariablesQueryInput,
-) {
-  const organization = yield* requireOrganization(actor, input.organizationSlug);
-  const context = yield* loadDeploymentContext(input.deploymentId);
-  if (context?.organization.id !== organization.id) {
-    return yield* new NotFound({ message: "The deployment was not found." });
-  }
-  // Deploy reserves the Cluster Domain; a read only looks. Once reserved it never changes.
-  const clusterDomain = needsClusterDomain(context) ? (yield* loadClusterDomain(organization.id))?.name ?? null : null;
-  const env = yield* loadDisplayedDeployEnv(context, clusterDomain);
-  return env.get(input.serviceId) ?? {};
 });
 
 /** Every paged deployment read's page size. */
@@ -271,8 +268,8 @@ export const listEnvironmentDeployments = Effect.fn("Deployments.listEnvironment
 });
 
 /**
- * One attempt: its row (with its Target Node List) and the service configs it deployed, for the service panel's Details.
- * Null when the organization has no such attempt.
+ * One attempt for its Deployment Page: its row (with its Target Node List), the name of the user who started a manual one,
+ * and the service configs it deployed. Null when the organization has no such attempt.
  */
 export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt")(function* (
   actor: Actor,
@@ -291,6 +288,8 @@ export const getDeploymentAttempt = Effect.fn("Deployments.getDeploymentAttempt"
       )),
   ]);
   if (!row) return null;
+  const actorId = row.triggerOrigin.origin === "manual" ? row.triggerOrigin.actorId : null;
+  const [starter] = actorId === null ? [] : yield* drizzle.select({ name: user.name }).from(user).where(eq(user.id, actorId));
   // Sealed variable ciphertext stays on the server.
-  return { row, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
+  return { row, actorName: starter?.name ?? null, serviceConfigs: snapshots.map((snapshot) => ({ nodeId: snapshot.nodeId, config: withoutSealedCiphertext(snapshot.config) })) };
 });

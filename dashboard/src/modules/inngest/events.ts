@@ -12,11 +12,14 @@ import {
   githubCheckSuiteReceivedEventDataSchema,
   githubCheckSuiteTransitionEventDataSchema,
   githubEnvironmentTriggerPersistedEventDataSchema,
+  githubPullRequestReceivedEventDataSchema,
   githubPushReceivedEventDataSchema,
   type GithubCheckSuiteReceivedEventData,
   type GithubCheckSuiteReceivedEventInput,
   type GithubCheckSuiteTransitionEventData,
   type GithubEnvironmentTriggerPersistedEventData,
+  type GithubPullRequestReceivedEventData,
+  type GithubPullRequestReceivedEventInput,
   type GithubPushReceivedEventData,
   type GithubPushReceivedEventInput,
 } from "#/modules/github/github-ingestion.contracts";
@@ -80,11 +83,13 @@ export const githubCheckSuiteTransitionedEvent =
   "github/check-suite.transitioned";
 export const githubPushReceivedEvent = "github/push.received";
 export const githubCheckSuiteReceivedEvent = "github/check-suite.received";
+export const githubPullRequestReceivedEvent = "github/pull-request.received";
 export const volumeRemoveRequestedEvent = "cloud/volume-remove.requested";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
 export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
+export const prCheckRequestedEvent = "pr-environments/check.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -131,6 +136,13 @@ export type ClusterDomainSyncRequestedEventData = {
   organizationId: string;
 };
 
+export type PrCheckRequestedEventData = {
+  repositoryId: number;
+  number: number;
+  /** `repositoryId:number`: one pull request's posts run one at a time. */
+  pullRequestKey: string;
+};
+
 export type InngestFunctionCancelledEventData = {
   function_id: string;
   run_id: string;
@@ -142,6 +154,8 @@ export type {
   GithubCheckSuiteReceivedEventInput,
   GithubCheckSuiteTransitionEventData,
   GithubEnvironmentTriggerPersistedEventData,
+  GithubPullRequestReceivedEventData,
+  GithubPullRequestReceivedEventInput,
   GithubPushReceivedEventData,
   GithubPushReceivedEventInput,
 };
@@ -174,6 +188,10 @@ export const githubCheckSuiteReceivedEventType = eventType(
   githubCheckSuiteReceivedEvent,
   { schema: staticSchema<GithubCheckSuiteReceivedEventData>() },
 );
+export const githubPullRequestReceivedEventType = eventType(
+  githubPullRequestReceivedEvent,
+  { schema: staticSchema<GithubPullRequestReceivedEventData>() },
+);
 export const volumeRemoveRequestedEventType = eventType(
   volumeRemoveRequestedEvent,
   { schema: staticSchema<VolumeRemoveRequestedEventData>() },
@@ -193,6 +211,10 @@ export const teardownRequestedEventType = eventType(
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
+);
+export const prCheckRequestedEventType = eventType(
+  prCheckRequestedEvent,
+  { schema: staticSchema<PrCheckRequestedEventData>() },
 );
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",
@@ -285,6 +307,10 @@ export function createClusterDomainSyncRequestedEvent(
   return { name: clusterDomainSyncRequestedEvent, data } as const;
 }
 
+export function createPrCheckRequestedEvent(input: { repositoryId: number; number: number }) {
+  return { name: prCheckRequestedEvent, data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies PrCheckRequestedEventData } as const;
+}
+
 export function createOrganizationBillingSyncRequestedEvent(
   data: OrganizationBillingSyncRequestedEventData,
 ) {
@@ -375,6 +401,25 @@ export function createGithubCheckSuiteReceivedEvent(
   } as const;
 }
 
+export function createGithubPullRequestReceivedEvent(
+  input: GithubPullRequestReceivedEventInput,
+) {
+  const data = Schema.decodeUnknownSync(
+    githubPullRequestReceivedEventDataSchema,
+  )(
+    {
+      ...input,
+      pullRequestKey: `${input.installationId}:${input.repositoryId}:${input.number}`,
+    },
+    { onExcessProperty: "error" },
+  );
+  return {
+    id: data.deliveryId,
+    name: githubPullRequestReceivedEvent,
+    data,
+  } as const;
+}
+
 type PolarSubscriptionWebhookPayload =
   | WebhookSubscriptionCreatedPayload
   | WebhookSubscriptionUpdatedPayload
@@ -442,6 +487,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createPrCheckRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
@@ -449,6 +495,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
+  | ReturnType<typeof createGithubPullRequestReceivedEvent>
   | ReturnType<typeof createGithubBuildRunCompletedEvent>;
 
 /**

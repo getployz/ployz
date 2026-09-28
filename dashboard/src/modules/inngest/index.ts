@@ -1,6 +1,7 @@
 import type { PloyzInngest } from "#/modules/inngest/client";
 import {
   createProcessGithubCheckSuiteReceived,
+  createProcessGithubPullRequestReceived,
   createProcessGithubPushReceived,
 } from "#/modules/github/inngest-ingestion/process";
 import { createSweepGithubIngestionOutboxes } from "#/modules/github/inngest-ingestion/sweep";
@@ -28,6 +29,8 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
+import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
+import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -40,6 +43,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessGithubInstallationRepositoriesReceived(inngest),
     createProcessGithubPushReceived(inngest),
     createProcessGithubCheckSuiteReceived(inngest),
+    createProcessGithubPullRequestReceived(inngest),
     createSweepGithubIngestionOutboxes(inngest),
     createSyncGithubRepositories(inngest),
     createMarkCancelledRowBackedWorkflow(inngest),
@@ -54,7 +58,9 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessTeardown(inngest),
     createCancelTeardown(inngest),
     createPruneOrganizationChangeLog(inngest),
+    createSweepIdleBranches(inngest),
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
+    createPostPrCheck(inngest),
   ];
 }

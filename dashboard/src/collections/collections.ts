@@ -16,12 +16,15 @@ import {
   project as schemaProject,
   environment as schemaEnvironment,
 } from "#/modules/project/tables";
+import { prEnvironmentPlan as schemaPrEnvironmentPlan, type BranchRow, type ConditionalSaveRow } from "#/modules/pr-environments/tables";
+export type { BranchRow };
 import {
   environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
 } from "#/modules/runtime/tables";
 
 type ProjectRow = typeof schemaProject.$inferSelect;
 type EnvironmentRow = typeof schemaEnvironment.$inferSelect;
+export type PrEnvironmentPlanRow = typeof schemaPrEnvironmentPlan.$inferSelect;
 type ServiceRow = typeof schemaService.$inferSelect;
 type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
 type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
@@ -45,6 +48,10 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
 
 export const getProjectsCollection = changeCollection<ProjectRow>("project", (row) => row.id);
 export const getEnvironmentsCollection = changeCollection<EnvironmentRow>("environment", (row) => row.id);
+export const getBranchesCollection = changeCollection<BranchRow>("environment_branch", (row) => row.environmentId);
+export const prEnvironmentPlanKey = (row: { projectId: string; repositoryId: number }) => `${row.projectId}:${row.repositoryId}`;
+export const getPrEnvironmentPlansCollection = changeCollection<PrEnvironmentPlanRow>("pr_environment_plan", prEnvironmentPlanKey);
+export const getConditionalSavesCollection = changeCollection<ConditionalSaveRow>("conditional_save", (row) => row.id);
 export const getRawServicesCollection = changeCollection<ServiceRow>("service", (row) => row.id);
 export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
   "environment_canvas_node_position", (row) => `${row.resourceType}:${row.resourceId}`);
@@ -62,10 +69,8 @@ export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary 
   const { id, projectId, organizationId, name, namespace, createdAt } = row;
   return { id, projectId, organizationId, name, namespace, createdAt };
 }
-export type ProjectPreference = { id: string; environmentId: string };
 
 export const getEnvironmentSummariesCollection = changeCollection<EnvironmentSummary>("environment_summary", (row) => row.id);
-export const getProjectPreferencesCollection = changeCollection<ProjectPreference>("project_preference", (row) => row.id);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
@@ -75,7 +80,9 @@ export const orgStoreTables = {
   project: getProjectsCollection,
   environment: getEnvironmentsCollection,
   environment_summary: getEnvironmentSummariesCollection,
-  project_preference: getProjectPreferencesCollection,
+  environment_branch: getBranchesCollection,
+  pr_environment_plan: getPrEnvironmentPlansCollection,
+  conditional_save: getConditionalSavesCollection,
   service: getRawServicesCollection,
   resource_lineage: getResourceLineagesCollection,
   environment_resource: getRawEnvironmentResourcesCollection,

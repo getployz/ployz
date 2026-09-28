@@ -30,6 +30,7 @@ import {
 import { serviceDeploymentKeys } from "#/modules/deployments/deployment-queries";
 import type { PreparedDestructiveReview } from "#/components/destructive-volume/volume-destruction-confirmation-dialog";
 import { prepareVolumeDestructionReview } from "#/components/destructive-volume/destructive-volume-review";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import {
   fingerprintReviewedEnvironmentWorkingState,
   projectReviewedEnvironmentWorkingState,
@@ -116,7 +117,7 @@ export function useCanvasChangeActions({
 
       // A manual Deploy opens its attempt unless the user opted out by leaving one they started while it ran.
       if (result.state === "deployment_queued" && openStartedDeployments()) {
-        void navigate({ to: ".", search: (previous) => ({ ...previous, deployment: result.deploymentId }) });
+        void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: result.deploymentId } });
       }
       if (result.state === "attempt_dispatch_failed") {
         toast.error("Changes saved, but deployment could not start. Review the failed deployment before retrying.");

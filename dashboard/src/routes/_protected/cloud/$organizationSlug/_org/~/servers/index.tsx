@@ -24,12 +24,10 @@ function RouteComponent() {
 
   return (
     <DashboardPage width="content">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h1 className="text-xl font-semibold">Servers</h1>
-          {state === "live" && servers.length > 0 ? <ServersHealth servers={servers} /> : null}
-        </div>
-        <AddServerDialog organizationSlug={organizationSlug} />
+      {/* The top bar names the page. */}
+      <div className="flex items-center gap-3">
+        {state === "live" && servers.length > 0 ? <ServersHealth servers={servers} /> : null}
+        <div className="ml-auto"><AddServerDialog organizationSlug={organizationSlug} /></div>
       </div>
       {state === "loading" ? (
         <ServersSkeleton />

@@ -1,3 +1,4 @@
+import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import type { GithubIngestionEffectRunner } from "#/modules/github/inngest-ingestion/process";
@@ -20,6 +21,8 @@ describe("row-backed Inngest cancellation handling", () => {
         Effect.provideService(InngestClient, undefined as never),
         // SAFETY: This runner is asserted unused by the malformed-event test.
         Effect.provideService(GithubApi, undefined as never),
+        // SAFETY: This runner is asserted unused by the malformed-event test.
+        Effect.provideService(SecretEncryption, undefined as never),
       ));
     };
 

@@ -1,5 +1,5 @@
+import type { ReactNode } from "react";
 import { Link, useParams } from "@tanstack/react-router";
-import { canvasNodeTransition } from "./constants";
 import { HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -30,6 +30,8 @@ import {
   ENVIRONMENT_RESOURCE_ROUTE_TO,
 } from "../environment-route-paths";
 import { cn } from "#/lib/utils";
+import type { LiveNode } from "#/modules/branches/use-live-nodes";
+import { LiveNodeCard } from "./LiveServiceNode";
 
 function ServiceListItem({
   serviceView,
@@ -50,6 +52,7 @@ function ServiceListItem({
     currentDiffRowCount: serviceState.diffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
+    missingLiveValues: serviceState.missingLiveValues,
   });
   const observedContainers = runtime
     ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`
@@ -68,7 +71,6 @@ function ServiceListItem({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        {...canvasNodeTransition(service.id)}
         aria-current={selected ? "page" : undefined}
         className="block"
       >
@@ -100,7 +102,7 @@ function ServiceListItem({
               >
                 <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
               </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-muted-foreground" title={semantics.statusText}>
                 {semantics.statusText}
                 {observedContainers ? ` · ${observedContainers}` : null}
               </span>
@@ -113,12 +115,18 @@ function ServiceListItem({
 }
 
 export function CanvasNodeList({
+  header,
   services,
+  liveNodes,
   selectedNodeId,
   servicesById,
   volumeResourcesById,
 }: {
+  /** What tops the list on phones, above the nodes. */
+  header?: ReactNode;
   services: EnvironmentServiceViewRecord[];
+  /** A Branch's Live Nodes, after its own services. */
+  liveNodes: LiveNode[];
   selectedNodeId: string | null;
   servicesById: Map<string, CanvasServiceState>;
   volumeResourcesById: Map<string, CanvasVolumeResourceState>;
@@ -129,6 +137,7 @@ export function CanvasNodeList({
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
     >
       <div className="flex flex-col gap-3">
+        {header}
         {services.map((serviceView) => {
           const serviceState = servicesById.get(serviceView.service.id);
           return serviceState ? (
@@ -140,6 +149,7 @@ export function CanvasNodeList({
             />
           ) : null;
         })}
+        {liveNodes.map((liveNode) => <LiveNodeCard key={liveNode.lineageId} liveNode={liveNode} className="block" />)}
         {[...volumeResourcesById.values()].map(({ resource, diffRowCount }) => {
           const removed = !resource.isAuthored;
           const summary = resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts";
@@ -151,7 +161,6 @@ export function CanvasNodeList({
             search={(previous) => ({ ...previous, tab: selected ? previous.tab : undefined })}
             className="block"
             data-canvas-node={resource.resource.id}
-            {...canvasNodeTransition(resource.resource.id)}
             aria-current={selected ? "page" : undefined}
           >
             <Card state={removed ? "destructive" : diffRowCount > 0 ? "changed" : undefined} data-selected={selected}>

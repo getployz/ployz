@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
-import { ChevronsUpDownIcon } from "lucide-react";
+import { CrumbTrigger } from "#/components/environment-breadcrumbs";
 import { ServerStatusLabel } from "#/components/server-status-label";
-import { Button } from "#/components/ui/button";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "#/components/ui/command";
-import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "#/components/ui/popover";
+import { Popover, PopoverContent, PopoverTitle } from "#/components/ui/popover";
 import { useServerList } from "#/modules/machines/use-servers";
 
 /** The server page's crumb: its name, opening a switcher over every Server. Renders in the header, above the Org Store gate. */
@@ -17,10 +16,7 @@ export function ServerSwitcher() {
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={<Button variant="ghost" size="sm" className="min-w-0" aria-label={`Server: ${current?.name ?? serverId}`} />}>
-        <span className="truncate font-semibold text-foreground">{current?.name ?? serverId}</span>
-        <ChevronsUpDownIcon data-icon="inline-end" />
-      </PopoverTrigger>
+      <CrumbTrigger label="Server" name={current?.name ?? serverId} current />
       <PopoverContent padding="none" align="start" className="w-72">
         <PopoverTitle className="sr-only">Switch server</PopoverTitle>
         <Command label="Servers" value={serverId}>

@@ -26,6 +26,7 @@ export type DeploymentContext = {
     coreDeployId?: string | null;
     deployPreview?: EnvironmentDeploymentPreview | null;
     variableProducers?: EnvironmentSnapshotVariableProducer[] | null;
+    setupCommands?: Record<string, string[]>;
     triggerOrigin?: DeploymentTriggerOrigin;
     serviceActionPolicy?: EnvironmentDeploymentServiceActionPolicy | null;
     runtimeProgress?: DeploymentProgress | null;

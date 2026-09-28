@@ -18,6 +18,7 @@ import {
 import {
   applyGithubBranchEvaluation,
   applyGithubCheckSuiteTestimony,
+  completeGithubDelivery,
   failGithubDelivery,
   GithubIngestionRepositoryError,
   listGithubServiceCandidates,
@@ -28,12 +29,15 @@ import {
 } from "#/modules/github/github-ingestion.repository";
 import {
   githubCheckSuiteReceivedEventDataSchema,
+  githubPullRequestReceivedEventDataSchema,
   githubPushReceivedEventDataSchema,
   type GithubPushReceivedEventData,
 } from "#/modules/github/github-ingestion.contracts";
 import {
   githubCheckSuiteReceivedEvent,
   githubCheckSuiteReceivedEventType,
+  githubPullRequestReceivedEvent,
+  githubPullRequestReceivedEventType,
   githubPushReceivedEvent,
   githubPushReceivedEventType,
   inngestEventEnvelopeFields,
@@ -43,6 +47,7 @@ import type { PloyzInngest, InngestClient } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
   PROCESS_GITHUB_CHECK_SUITE_RECEIVED_FUNCTION_ID,
+  PROCESS_GITHUB_PULL_REQUEST_RECEIVED_FUNCTION_ID,
   PROCESS_GITHUB_PUSH_RECEIVED_FUNCTION_ID,
 } from "#/modules/inngest/row-backed-workflow-ids";
 import {
@@ -50,14 +55,18 @@ import {
   planGithubBranchEvaluation,
 } from "#/modules/github/github-branch-evaluation";
 import { runInngestEffect } from "#/server/run.server";
+import { freezeMergedBy, heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
+import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
+import { requestPullRequestChecks } from "#/modules/pr-environments/pr-check-request.server";
+import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 export type GithubIngestionEffectRunner = <A, E extends Error>(
   effect: Effect.Effect<
     A,
     E,
-    AppConfig | Database | InngestClient | GithubApi
+    AppConfig | Database | InngestClient | GithubApi | SecretEncryption
   >,
 ) => Promise<A>;
 
@@ -71,10 +80,16 @@ const GithubCheckSuiteReceivedEnvelope = Schema.Struct({
   name: Schema.Literal(githubCheckSuiteReceivedEvent),
   data: githubCheckSuiteReceivedEventDataSchema,
 });
+const GithubPullRequestReceivedEnvelope = Schema.Struct({
+  ...inngestEventEnvelopeFields,
+  name: Schema.Literal(githubPullRequestReceivedEvent),
+  data: githubPullRequestReceivedEventDataSchema,
+});
 const GithubIngestionFailureEnvelope = inngestFunctionFailedEnvelopeSchema(
   Schema.Union([
     GithubPushReceivedEnvelope,
     GithubCheckSuiteReceivedEnvelope,
+    GithubPullRequestReceivedEnvelope,
   ]),
 );
 
@@ -114,6 +129,9 @@ export const GITHUB_PUSH_RECEIVED_CONCURRENCY = [
 ] as const;
 export const GITHUB_CHECK_SUITE_RECEIVED_CONCURRENCY = [
   { key: "event.data.checkSuiteKey", limit: 1 },
+] as const;
+export const GITHUB_PULL_REQUEST_RECEIVED_CONCURRENCY = [
+  { key: "event.data.pullRequestKey", limit: 1 },
 ] as const;
 
 async function processPushAttempt(input: {
@@ -198,6 +216,17 @@ async function processPushAttempt(input: {
         ),
       )
     : [];
+  const push = liveBranch.state === "present" && needsCandidates ? {
+    installationId: payload.installationId,
+    repository,
+    repositoryId: payload.repositoryId,
+    ref: payload.ref,
+    headSha: liveBranch.headSha,
+  } : null;
+  if (push) await step.run(`freeze-merged-held-changes-${attempt}`, () => runEffect(freezeMergedBy(push)));
+  const carried = push
+    ? await step.run(`list-carried-held-changes-${attempt}`, () => runEffect(heldChangesCarriedBy(push)))
+    : [];
   const plan = await step.run(`plan-branch-evaluation-${attempt}`, () => {
     const planned = planGithubBranchEvaluation({
       cursor,
@@ -225,6 +254,7 @@ async function processPushAttempt(input: {
         processingRunId,
         expectedCursor: cursor,
         plan,
+        carried,
       }).pipe(
         Effect.map(
           (value): BranchApplyOutcome => ({ kind: "applied", value }),
@@ -430,6 +460,65 @@ export async function executeProcessGithubCheckSuiteReceived(
   throw new Error("GitHub check-suite testimony stayed unpublished.");
 }
 
+export async function executeProcessGithubPullRequestReceived(
+  input: {
+    event: UntrustedInngestEnvelope;
+    step: Pick<GithubIngestionStepTools, "run">;
+    runId: string;
+  },
+  runEffect: PullRequestEffectRunner,
+) {
+  const payload = await input.step.run("decode-pull-request-event", () =>
+    decodeInngestEnvelope(GithubPullRequestReceivedEnvelope)(input.event).data,
+  );
+  const receipt = await input.step.run("record-and-claim-delivery", () =>
+    runEffect(
+      recordAndClaimGithubDelivery({
+        deliveryId: payload.deliveryId,
+        eventKind: "pull_request",
+        installationId: payload.installationId,
+        repositoryId: payload.repositoryId,
+        pullRequestNumber: payload.number,
+        pullRequestAction: payload.action,
+        headSha: payload.headSha,
+        processingRunId: input.runId,
+      }),
+    ),
+  );
+  if (receipt.disposition === "terminal" || receipt.disposition === "owned_elsewhere") {
+    return receipt;
+  }
+  // Forks never go further. Otherwise act on the pull request as GitHub has it now, not as this delivery saw it.
+  const outcome = payload.headRepositoryId !== payload.repositoryId
+    ? "ignored_fork" as const
+    : await input.step.run("apply-pull-request", () => runEffect(applyPullRequest({
+      installationId: payload.installationId, repositoryId: payload.repositoryId, number: payload.number,
+    })));
+  // Its own step, after the lifecycle: every PR Environment of the pull request posts its check again.
+  if (outcome === "pull_request_projected") {
+    await input.step.run("request-pr-checks", () => runEffect(requestPullRequestChecks(payload.repositoryId, payload.number)));
+  }
+  await input.step.run("complete-delivery", () =>
+    runEffect(
+      completeGithubDelivery(
+        {
+          deliveryId: payload.deliveryId,
+          receiptSequence: receipt.receiptSequence,
+          processingRunId: input.runId,
+          identity: {
+            eventKind: "pull_request",
+            installationId: payload.installationId,
+            repositoryId: payload.repositoryId,
+            pullRequestNumber: payload.number,
+          },
+        },
+        outcome,
+      ),
+    ),
+  );
+  return { outcome };
+}
+
 export const createProcessGithubPushReceived = (inngest: PloyzInngest) =>
   inngest.createFunction(
   {
@@ -459,6 +548,23 @@ export const createProcessGithubCheckSuiteReceived = (inngest: PloyzInngest) =>
   },
   async ({ event, step, runId }) =>
     executeProcessGithubCheckSuiteReceived(
+      { event, step, runId },
+      runInngestEffect,
+    ),
+  );
+
+export const createProcessGithubPullRequestReceived = (inngest: PloyzInngest) =>
+  inngest.createFunction(
+  {
+    id: PROCESS_GITHUB_PULL_REQUEST_RECEIVED_FUNCTION_ID,
+    retries: 5,
+    triggers: [{ event: githubPullRequestReceivedEventType }],
+    concurrency: [...GITHUB_PULL_REQUEST_RECEIVED_CONCURRENCY],
+    onFailure: async ({ event }) =>
+      failGithubIngestionDeliveryOnRetryExhausted(event, runInngestEffect),
+  },
+  async ({ event, step, runId }) =>
+    executeProcessGithubPullRequestReceived(
       { event, step, runId },
       runInngestEffect,
     ),

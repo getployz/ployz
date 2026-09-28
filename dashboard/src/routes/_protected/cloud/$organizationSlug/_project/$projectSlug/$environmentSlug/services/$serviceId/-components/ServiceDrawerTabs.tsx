@@ -26,7 +26,7 @@ export function ServiceDrawerTabs({
       }}
       className="flex min-h-0 flex-1 flex-col overflow-hidden"
     >
-      <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto max-[860px]:hidden">
+      <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
         {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
       </TabsList>
 

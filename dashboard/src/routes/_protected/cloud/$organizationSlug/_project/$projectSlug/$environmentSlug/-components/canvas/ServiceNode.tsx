@@ -1,5 +1,4 @@
 import { Handle, Position } from "@xyflow/react";
-import { canvasNodeTransition } from "./constants";
 import { ServiceContextMenu } from "./ServiceContextMenu";
 import { Link, useParams } from "@tanstack/react-router";
 import {
@@ -19,6 +18,11 @@ import { getServiceDeploymentSemantics } from "#/modules/services/service-deploy
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { runtimeServiceIdentity } from "#/modules/runtime/runtime.collection";
 import { cn } from "#/lib/utils";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { useNodeLighting } from "../deployment-page";
+import { useNodePick } from "../new-branch/branch-picking";
+import { LiveLabel, PickableNode, pickCard } from "./PickableNode";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useCanvasService } from "./CanvasServicesContext";
 import {
   ENVIRONMENT_ROUTE_FROM,
@@ -64,6 +68,8 @@ export function ServiceNode({
   const serviceState = useCanvasService(data.serviceId);
   const runtimeIdentity = serviceState ? runtimeServiceIdentity(serviceState.serviceView.service) : "";
   const { runtime } = useRuntimeService(runtimeIdentity);
+  const light = useNodeLighting(data.serviceId);
+  const pick = useNodePick(serviceState?.serviceView.service.lineageId);
 
   if (!serviceState) {
     return <LoadingNode />;
@@ -79,6 +85,7 @@ export function ServiceNode({
     currentDiffRowCount: serviceState.diffRowCount,
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
+    missingLiveValues: serviceState.missingLiveValues,
   });
   const state = semantics.state;
   const observedContainers = runtime
@@ -88,6 +95,58 @@ export function ServiceNode({
     ? `${semantics.statusText} · ${observedContainers}`
     : semantics.statusText;
   const statusClasses = getServiceStatusClasses(state);
+  const card = (
+    <Card
+      size="node"
+      state={pick ? pickCard(pick).state : light ? outcomeCardState(light.outcome) : state}
+      className={cn("h-full justify-between", light === null && "opacity-40", pick && pickCard(pick).className)}
+      data-selected={selected}
+    >
+      <CardHeader>
+        <div className="flex items-start gap-3">
+          <Avatar>
+            <AvatarFallback>
+              {getServiceIcon(service)}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            <CardTitle>
+              {service.name}
+            </CardTitle>
+            {subtitle ? (
+              <CardDescription>
+                {subtitle}
+              </CardDescription>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {light ? <NodeOutcomeBadge light={light} /> : semantics.showNewBadge ? (
+              <Badge variant="success">New</Badge>
+            ) : null}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {pick ? <LiveLabel label={pick.label} ownsData={pick.ownsData} /> : <div className="flex items-center gap-3">
+          <span
+            className={cn(
+              "flex size-3 items-center justify-center rounded-full",
+              statusClasses.dot,
+            )}
+          >
+            <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
+          </span>
+          <span className="min-w-0 flex-1 line-clamp-2 break-words text-muted-foreground" title={statusCopy}>
+            {statusCopy}
+          </span>
+        </div>}
+      </CardContent>
+    </Card>
+  );
+
+  if (pick) {
+    return <PickableNode pick={pick} name={service.name} nodeId={service.id}>{card}</PickableNode>;
+  }
 
   return (
     <ServiceContextMenu serviceId={service.id}>
@@ -101,7 +160,6 @@ export function ServiceNode({
         }}
         search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
         data-canvas-node={service.id}
-        {...canvasNodeTransition(service.id)}
         preload="intent"
         draggable={false}
         className="block h-36 w-72"
@@ -118,52 +176,7 @@ export function ServiceNode({
           isConnectable={false}
           className="opacity-0"
         />
-        <Card
-          size="node"
-          state={state}
-          className="h-full justify-between"
-          data-selected={selected}
-        >
-          <CardHeader>
-            <div className="flex items-start gap-3">
-              <Avatar>
-                <AvatarFallback>
-                  {getServiceIcon(service)}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0 flex-1 overflow-hidden">
-                <CardTitle>
-                  {service.name}
-                </CardTitle>
-                {subtitle ? (
-                  <CardDescription>
-                    {subtitle}
-                  </CardDescription>
-                ) : null}
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {semantics.showNewBadge ? (
-                  <Badge variant="success">New</Badge>
-                ) : null}
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="flex items-center gap-3">
-              <span
-                className={cn(
-                  "flex size-3 items-center justify-center rounded-full",
-                  statusClasses.dot,
-                )}
-              >
-                <span className={cn("size-1.5 rounded-full", statusClasses.innerDot)} />
-              </span>
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                {statusCopy}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
+        {card}
       </Link>
     </ServiceContextMenu>
   );

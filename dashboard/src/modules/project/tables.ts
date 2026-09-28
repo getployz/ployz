@@ -1,11 +1,11 @@
 import { createdAt, updatedAt } from "#/db/tables";
 
-import { user } from "#/modules/identity/tables";
-
 import { organization } from "#/modules/organization/tables";
+import { user } from "#/modules/identity/tables";
 import type { SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
-import { foreignKey, index, jsonb, pgTable, text, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, check, foreignKey, index, jsonb, pgTable, text, unique, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 
 
 
@@ -18,6 +18,9 @@ export const project = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     slug: text("slug").notNull(),
+    // Null once its Environment is torn down: the project then opens its oldest Environment.
+    defaultEnvironmentId: uuid("default_environment_id")
+      .references((): AnyPgColumn => environment.id, { onDelete: "set null" }),
     createdAt,
   },
   (table) => [
@@ -40,6 +43,8 @@ export const environment = pgTable(
     namespace: text("namespace").notNull(),
     intent: jsonb("intent").notNull().$type<SavedEnvironmentIntent>(),
     revision: uuid("revision").defaultRandom().notNull(),
+    // Prefills every new Branch of this Environment; saved at once, never staged.
+    branchSetupCommands: jsonb("branch_setup_commands").default([]).notNull().$type<SetupCommand[]>(),
     updatedAt,
     createdAt,
   },
@@ -54,29 +59,42 @@ export const environment = pgTable(
   ],
 );
 
-export const userProjectPreference = pgTable(
-  "user_project_preference",
+/** A command a Branch runs in one Own Copy's image before that service first starts. */
+export type SetupCommand = { lineageId: string; command: string };
+
+/** One row per Branch; a root Environment has none. It goes with its Environment, and holds its Parent in place. */
+export const environmentBranch = pgTable(
+  "environment_branch",
   {
-    id: uuid("id").defaultRandom().primaryKey(),
+    environmentId: uuid("environment_id").primaryKey(),
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
+    projectId: uuid("project_id").notNull(),
+    // No action, not restrict: a project teardown deletes a Parent and its Branches in one statement.
+    parentEnvironmentId: uuid("parent_environment_id").notNull(),
+    kept: boolean("kept").default(false).notNull(),
+    // Core's redacted, lineage-keyed configuration: sealed values are fingerprints only.
+    base: jsonb("base").notNull().$type<SavedEnvironmentIntent>(),
+    setupCommands: jsonb("setup_commands").default([]).notNull().$type<SetupCommand[]>(),
+    createdByUserId: uuid("created_by_user_id")
       .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    projectId: uuid("project_id")
-      .notNull()
-      .references(() => project.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id")
-      .notNull()
-      .references(() => environment.id, { onDelete: "cascade" }),
+      .references(() => user.id, { onDelete: "restrict" }),
     createdAt,
-    updatedAt,
   },
   (table) => [
-    unique().on(table.userId, table.projectId),
-    index("user_project_preference_user_idx").on(table.userId),
-    index("user_project_preference_organization_idx").on(table.organizationId),
-    index("user_project_preference_project_idx").on(table.projectId),
+    foreignKey({
+      name: "environment_branch_environment_fkey",
+      columns: [table.projectId, table.environmentId],
+      foreignColumns: [environment.projectId, environment.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "environment_branch_parent_fkey",
+      columns: [table.projectId, table.parentEnvironmentId],
+      foreignColumns: [environment.projectId, environment.id],
+    }),
+    check("environment_branch_not_own_parent", sql`${table.environmentId} <> ${table.parentEnvironmentId}`),
+    index("environment_branch_organization_idx").on(table.organizationId),
+    index("environment_branch_parent_idx").on(table.parentEnvironmentId),
   ],
 );

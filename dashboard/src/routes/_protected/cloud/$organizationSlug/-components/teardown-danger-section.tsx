@@ -46,9 +46,10 @@ export function TeardownDangerSection({
   confirmPhrase,
   title,
   description,
+  closes = [],
+  disabledReason,
   actionLabel,
   headingId,
-  showHeading = true,
   onCompleted,
 }: {
   organizationSlug: string;
@@ -58,9 +59,12 @@ export function TeardownDangerSection({
   confirmPhrase: string;
   title: string;
   description: string;
+  /** Branches the teardown closes first. */
+  closes?: readonly string[];
+  /** Why the teardown can't start, which disables it. */
+  disabledReason?: string;
   actionLabel: string;
   headingId: string;
-  showHeading?: boolean;
   onCompleted?: () => void;
 }) {
   const loadDataLoss = useServerFn(loadTeardownDataLossServerFn);
@@ -120,16 +124,10 @@ export function TeardownDangerSection({
   return (
     <>
       <section aria-labelledby={headingId}>
-        {showHeading ? (
-          <h2 id={headingId} className="text-lg font-semibold text-destructive">
-            Danger
-          </h2>
-        ) : (
-          <h2 id={headingId} className="sr-only">
-            {title}
-          </h2>
-        )}
-        <div className={showHeading ? "mt-4 flex flex-col gap-4" : "flex flex-col gap-4"}>
+        <h2 id={headingId} className="text-lg font-semibold text-destructive">
+          Danger
+        </h2>
+        <div className="mt-4 flex flex-col gap-4">
           {attempt ? (
             <TeardownStatusAlert
               attempt={attempt}
@@ -146,14 +144,23 @@ export function TeardownDangerSection({
               <Button
                 variant="destructive"
                 className="shrink-0"
-                disabled={busy}
+                disabled={busy || disabledReason !== undefined}
                 onClick={() => setOpen(true)}
               >
                 <Trash2Icon data-icon="inline-start" />
                 {resolvedActionLabel}
               </Button>
             }
-          />
+          >
+            {closes.length > 0 && (
+              <p className="mt-1 text-sm text-foreground">
+                It closes {closes.length === 1 ? "its branch" : "its branches"} first: {closes.join(", ")}.
+              </p>
+            )}
+            {disabledReason && (
+              <p className="mt-1 text-sm text-muted-foreground">{disabledReason}</p>
+            )}
+          </DangerRow>
         </div>
       </section>
       <TeardownDataLossDialog

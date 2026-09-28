@@ -219,9 +219,9 @@ describe("every Org Store collection reads its changes from the Organization cha
   let harness: PostgresTestHarness;
   const organizationId = randomUUID();
   const userId = randomUUID();
-  const otherUserId = randomUUID();
   const projectId = randomUUID();
   const environmentId = randomUUID();
+  const branchId = randomUUID();
   const deploymentId = randomUUID();
   const slug = `every-${randomUUID().slice(0, 8)}`;
 
@@ -237,25 +237,34 @@ describe("every Org Store collection reads its changes from the Organization cha
     const lineageId = randomUUID();
     const snapshotId = randomUUID();
     await sql("insert into organization (id, name, slug) values ($1, $2, $2)", [organizationId, slug]);
-    for (const id of [userId, otherUserId]) {
-      await sql("insert into \"user\" (id, email, name) values ($1, $2, $2)", [id, `${id}@example.test`]);
-      await sql("insert into member (user_id, organization_id, role) values ($1, $2, 'owner')", [id, organizationId]);
-    }
+    await sql("insert into \"user\" (id, email, name) values ($1, $2, $2)", [userId, `${userId}@example.test`]);
+    await sql("insert into member (user_id, organization_id, role) values ($1, $2, 'owner')", [userId, organizationId]);
     await sql("insert into project (id, organization_id, name, slug) values ($1, $2, 'api', 'api')", [projectId, organizationId]);
     await sql(
       "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'production', 'production', '{}')",
       [environmentId, organizationId, projectId],
     );
-    for (const id of [userId, otherUserId]) {
-      await sql("insert into user_project_preference (organization_id, user_id, project_id, environment_id) values ($1, $2, $3, $4)",
-        [organizationId, id, projectId, environmentId]);
-    }
     await sql(`
       with lineage as (
         insert into service_lineage (organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, 'web', 'web') returning id
       )
       insert into service (organization_id, project_id, environment_id, lineage_id, name) select $1, $2, $3, id, 'web' from lineage
     `, [organizationId, projectId, environmentId]);
+    await sql(
+      "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'fix-web', 'fix-web', '{}')",
+      [branchId, organizationId, projectId],
+    );
+    const sealedBase = { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret", encryptedValue: { ciphertext: "sealed-ciphertext" } } }] }] };
+    await sql(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, setup_commands, created_by_user_id)
+      values ($1, $2, $3, $4, $5, '[{"lineageId": "web", "command": "pnpm seed"}]', $6)`,
+    [branchId, organizationId, projectId, environmentId, JSON.stringify(sealedBase), userId]);
+    await sql(`insert into pr_environment_plan (organization_id, project_id, repository_id, installation_id, repository, start_from_environment_id)
+      values ($1, $2, 42, 7, 'acme/app', $3)`, [organizationId, projectId, environmentId]);
+    await sql(`insert into conditional_save (organization_id, project_id, pr_environment_id, repository_id, pr_number, destination_environment_id,
+      rows, picks, landing, working_revision, target_branch, approved_by_user_id)
+      values ($1, $2, $3, 42, 142, $4, '[]', '[]', '{}', gen_random_uuid(), 'main', $5)`, [organizationId, projectId, branchId, environmentId, userId]);
+    await sql(`insert into pr_environment (environment_id, organization_id, project_id, repository_id, number, title, author, head_branch, target_branch, commits)
+      values ($1, $2, $3, 42, 142, 'Discounts', 'maya', 'discounts', 'main', 1)`, [branchId, organizationId, projectId]);
     await sql("insert into resource_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, $3, 'data', 'data')",
       [lineageId, organizationId, projectId]);
     await sql("insert into environment_resource (organization_id, project_id, environment_id, lineage_id, implementation_type) values ($1, $2, $3, $4, 'volume')",
@@ -301,6 +310,16 @@ describe("every Org Store collection reads its changes from the Organization cha
     }
   });
 
+  it("reads a Branch's row with its Parent and Setup Commands, and no sealed ciphertext in its base", async () => {
+    const { rows } = await read("environment_branch");
+    expect(rows).toMatchObject([{
+      environmentId: branchId, parentEnvironmentId: environmentId, kept: false, createdByUserId: userId,
+      setupCommands: [{ lineageId: "web", command: "pnpm seed" }],
+      base: { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret" } }] }] },
+    }]);
+    expect(JSON.stringify(rows)).not.toMatch(/encryptedValue|sealed-ciphertext/u);
+  });
+
   it("moves a deployment's progress when an event is logged", async () => {
     const since = (await read("environment_deployment")).cursor;
     await sql("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
@@ -318,15 +337,6 @@ describe("every Org Store collection reads its changes from the Organization cha
     await sql("insert into volume_remove_attempt (organization_id, requested_by_user_id, environment_id, environment_deployment_id, volumes) values ($1, $2, $3, $4, '[{}]')",
       [organizationId, userId, environmentId, deploymentId]);
     expect(await canRetry()).toMatchObject({ canRetry: false });
-  });
-
-  it("keeps this member's project preference when another member's for the same project is deleted", async () => {
-    const since = (await read("project_preference")).cursor;
-    await sql("delete from user_project_preference where user_id = $1", [otherUserId]);
-    // The client drops the deleted key, then upserts the rows, so this member's preference survives.
-    expect(await read("project_preference", since)).toMatchObject({
-      full: false, deleted: [projectId], rows: [{ id: projectId, environmentId }],
-    });
   });
 
   it("names the organization when it is renamed", async () => {
