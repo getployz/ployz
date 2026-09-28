@@ -15,7 +15,6 @@ import { listNames, plural } from "#/modules/branches/branch-plan";
 import { presentRow, type ChangeRow, type PresentedRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView, PullRequest } from "#/modules/branches/use-branch-review";
 import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
-import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
 import { githubAppRepository } from "#/modules/pr-environments/repositories";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -85,7 +84,6 @@ export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }:
   const name = document?.name ?? params.environmentSlug;
   const destination = landing.destination.name;
   const { save } = useConditionalSave({ organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: landing.destination.id });
-  const { shutDown } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId: branchId, name });
   const [shutDownAfter, setShutDownAfter] = useState(false);
   const rows = useRowPicks(landing.rows, review.nameOf);
   const repository = document?.intent.services.map(({ config }) => githubAppRepository(config))
@@ -95,11 +93,11 @@ export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }:
       entries={rows.picks} picks={rows} destination={destination}
       info={saveInfo(rows, destination) ?? redeployLine(rows.ticked.map(({ presented }) => presented), [pullRequest.number])}
       actions={<SaveButton picks={rows} destination={destination} pending={save.isPending}
-        onClick={() => save.mutate({ review: landing.review, picks: rows.sent }, { onSuccess: () => {
-          toast.success(`Goes live when PR #${pullRequest.number} merges`);
-          if (shutDownAfter) shutDown.mutate();
+        // Awaited, not a per-call callback: saving turns the row to saved, which closes this sheet.
+        onClick={() => void save.mutateAsync({ review: landing.review, picks: rows.sent, shutDown: shutDownAfter }).then(() => {
+          toast.success(`Goes live when PR #${pullRequest.number} merges`, shutDownAfter ? { description: `Shutting down ${name}` } : undefined);
           onClose();
-        } })} />}
+        }, () => {})} />}
       error={save.isError ? save.error.message : null} onClose={onClose}>
       <SwitchField id="save-then-shut-down" label={`Shut down ${name} now`} description="Starts again on the next push"
         checked={shutDownAfter} onChange={setShutDownAfter} />
@@ -226,7 +224,7 @@ function ServiceChanges({ group, picks, destination }: { group: Entry[]; picks: 
   );
 }
 
-/** A setting the Destination also changed since branching carries a marker. */
+/** In the Save sheet, a setting the Destination also changed since branching carries a marker. */
 function SettingRow({ entry, picks, destination }: { entry: Entry; picks: Picks | undefined; destination: string }) {
   const { presented, pick, row } = entry;
   const off = pick !== undefined && !pick.ticked;
@@ -234,7 +232,7 @@ function SettingRow({ entry, picks, destination }: { entry: Entry; picks: Picks 
     <>
       <span className={cn("col-span-full flex flex-wrap items-center gap-1.5 pt-2 font-medium sm:col-span-1 sm:pt-0", off && "text-muted-foreground line-through")}>
         {presented.label}
-        {row.role === "move" && row.conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {destination || "it"} too</Badge> : null}
+        {picks && row.role === "move" && row.conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {destination} too</Badge> : null}
       </span>
       <Value className={cn(off && "opacity-50")}>{presented.before || "—"}</Value>
       {picks ? <><NewValue entry={entry} picks={picks} destination={destination} /><LeaveOut entry={entry} picks={picks} /></>

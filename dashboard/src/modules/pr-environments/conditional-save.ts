@@ -18,11 +18,15 @@ const SaveScope = {
   destinationEnvironmentId: Uuid,
 };
 
-/** Save the kept rows of a PR Environment's changes for one Destination; `review` is the review string the sheet showed. */
+/**
+ * Save the kept rows of a PR Environment's changes for one Destination; `review` is the review string the sheet showed.
+ * With `shutDown`, the PR Environment shuts down once saved.
+ */
 export const SaveConditionalSave = Schema.Struct({
   ...SaveScope,
   review: Schema.String,
   picks: Schema.mutable(Schema.Array(SavePickSchema)),
+  shutDown: Schema.Boolean,
 });
 export type SaveConditionalSave = typeof SaveConditionalSave.Type;
 
