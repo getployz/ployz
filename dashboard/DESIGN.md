@@ -253,7 +253,7 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - One top bar per page. On an Environment it says where you are with breadcrumbs, `project / environment`, plus the place's name when it isn't Architecture. On a Branch the path reads `project / parent ⑂ branch`: ⑂ marks what the Branch was made from, and the Parent's crumb opens the Parent. Each switcher crumb opens its switcher, and switching keeps the current place. On phones the bar also carries the logo and the avatar, the path keeps its last two crumbs and moves the rest into a "…" menu, and the bar never wraps. Never stack a second title row that repeats the place.
 - Wherever Environments are listed, they form one tree: root Environments first, each Branch indented under its Parent and marked ⑂.
 - The Environment switcher shows that tree, notes "default" and "not deployed", and on a Branch "N to save" (what Save would put in its Parent) and "N updates" (what's new there). On a Branch it offers **Review X**, which opens the Branch's review page. It ends with **New branch of X**, which opens the New branch panel over the current Environment's canvas, and **Manage environments**, which opens Settings → Project.
-- Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environment tree (each with its services-online summary and a Default chip, opening that Environment) with **New branch** (of the current Environment) and **New environment** (an empty root Environment) above it, and project teardown. Environment holds this Environment's teardown.
+- Settings has two tabs, **Environment** and **Project**, each linkable. Project holds the Default Environment picker, the project's Environment tree (each with its services-online summary and a Default chip, opening that Environment) with **New branch** (of the current Environment) and **New environment** (an empty root Environment) above it, and **Delete project**. Environment holds **Delete environment**; a Branch closes from its own section instead, or from Danger when it's kept or has Branches of its own.
 - The canvas's **Find** button and the `/` key open the resource finder; `/` never fires while typing in a field.
 - Icon-only controls always have an accessible name and a tooltip.
 
@@ -264,6 +264,18 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - A Live Node is drawn dashed and translucent, labelled with the Environment it comes from ("production's, live"), and links into it are dashed; every other link is solid. Opening it says whose it is, which services here use it, and opens it in its own Environment.
 - A Live Node that owns data carries an amber "real data" line.
 - While a Branch is being picked, the canvas is the picker: clicking a card toggles its Own Copy. Own Copies are lit, Live Nodes dashed and left-out nodes faded, and the panel shows the legend. Phones pick with a tick list.
+
+### Destructive actions
+
+Guard what can't come back, never the verb.
+
+- **It comes back on its own**, like a PR Environment whose pull request is open: no dialog. Its next push brings it back.
+- **It's staged**, like deleting a service, volume, variable, domain or mount: no dialog. The Review lists it and Discard undoes it.
+- **A Branch that isn't kept**: one plain confirm that names its Own Copies, which started empty.
+- **The root of real data**: an Environment, a Kept Branch, a project, an organization, a server, or a save or deploy that deletes outside a Branch that isn't kept. One dialog lists what goes by name with its canvas icon, and the user types where it is: `project/environment`, the project, the organization or the server. Up to four things are all named. Past that, anything new and the two biggest volumes are named, and the rest count per kind, a click from their names. Where Cloud knows what goes, the list opens at once with it, and anything the servers add is marked new; a list only the servers know, like a server's volumes, has nothing to be new against. The servers add sizes where they report them, and the button waits for them.
+- **Locks are structural.** The Default Environment can't be deleted; nothing has a protection switch.
+- **Words:** Branches and PR Environments close, servers are removed, and everything else is deleted. Confirmations name things in the user's words and never Ployz's machinery.
+- A failure only Ployz can fix says what failed and offers Retry; it never leaves a dialog that can't go forward.
 
 ### Apply Changes
 

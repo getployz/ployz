@@ -3,8 +3,8 @@ import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } fro
 import { createBranch, setBranchSetupDefaults } from "./branch-operations.server";
 import { saveBranch } from "./branch-save.server";
 import { makeOwnCopy, updateBranch } from "./branch-update.server";
-import { setBranchKept } from "./branch-close.server";
-import { CreateBranch, MakeOwnCopy, SaveBranch, SetBranchKept, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
+import { closeBranchByHand, setBranchKept } from "./branch-close.server";
+import { CloseBranch, CreateBranch, MakeOwnCopy, SaveBranch, SetBranchKept, SetBranchSetupDefaults, UpdateBranch } from "./branch-schemas";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -37,3 +37,8 @@ export const saveBranchServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(SaveBranch))
   .handler(({ context, data }) => runActor(context, saveBranch(context.actor, data)));
+
+export const closeBranchServerFn = createServerFn({ method: "POST" })
+  .middleware(middleware)
+  .validator(strictValidator(CloseBranch))
+  .handler(({ context, data }) => runActor(context, closeBranchByHand(context.actor, data)));

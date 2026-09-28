@@ -210,12 +210,12 @@ export function teardownCompletedDescription(
   switch (membership) {
     case "unknown":
       return outcome.pairingRevocationUnconfirmed
-        ? "Cloud access is disabled. Endpoint revocation is unconfirmed; removal credentials and the founding claim are retained."
-        : "Cloud management was dropped. Runtime membership remains unknown.";
+        ? "Ployz can't manage your servers anymore, but not all of them confirmed it."
+        : "Ployz let go of your servers without resetting them.";
     case "verified_zero":
-      return "The cluster was removed. Cloud recorded verified zero.";
+      return "Your servers were reset.";
     case "untouched":
-      return "Confirmed rust work ran, then Cloud rows were dropped.";
+      return "Everything in it is gone.";
     default: {
       const exhaustive: never = membership;
       return exhaustive;

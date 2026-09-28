@@ -64,6 +64,12 @@ export const SetBranchKept = Schema.Struct({
 });
 export type SetBranchKept = typeof SetBranchKept.Type;
 
+export const CloseBranch = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  environmentId: Uuid,
+});
+export type CloseBranch = typeof CloseBranch.Type;
+
 /**
  * One ticked save row. A variable row names its option; `value` is a new value in plain text ("" for none), sealed on
  * the server when the row is a secret.

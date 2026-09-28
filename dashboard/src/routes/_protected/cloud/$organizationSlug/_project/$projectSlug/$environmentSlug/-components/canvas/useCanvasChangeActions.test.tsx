@@ -49,14 +49,14 @@ beforeEach(() => {
   openStarted.mockReturnValue(true);
 });
 
-function renderActions(destructiveServiceIds = ["removed-service"]) {
+function renderActions(destructiveServiceIds = ["removed-service"], confirmsRemovals = true) {
   const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory({ initialEntries: ["/"] }) });
   const hook = renderHook(({ savedId, destructiveServiceIds }) => useCanvasChangeActions({
     environmentId: "env", params: { organizationSlug: "org", projectSlug: "project", environmentSlug: "production" },
     changeState: { headToken: "applied:none", groups: [], totalCount: 0, canSave: true },
     savedSnapshotSource: { kind: "saved", environmentSavedStateSnapshotId: savedId },
-    destructiveServiceIds, deletedDeployedVolumeIds: [], commitMessage: "Reviewed",
+    destructiveServiceIds, deletedDeployedVolumeIds: [], confirmsRemovals, commitMessage: "Reviewed",
     setCommitMessage: mocks.clearMessage, setDestructiveConfirmationOpen: mocks.open,
   }), { initialProps: { savedId: "reviewed-saved", destructiveServiceIds }, wrapper: ({ children }) => <QueryClientProvider client={queryClient}><RouterContextProvider router={router}>{children}</RouterContextProvider></QueryClientProvider> });
   return { ...hook, queryClient, router };
@@ -86,6 +86,21 @@ it.each([false, true])("submits the captured review after live Saved changes and
     });
     expect(mocks.submit).toHaveBeenCalledTimes(2);
     expect(mocks.reconcile).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    queryClient.clear();
+  }
+});
+
+it("publishes a Branch's removals as reviewed, with no typed confirmation", async () => {
+  const { result, unmount, queryClient } = renderActions(["removed-service"], false);
+  try {
+    await act(() => result.current.requestDeploy());
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.submit).toHaveBeenCalledWith({ data: expect.objectContaining({
+      intent: "manual_deploy",
+      review: expect.objectContaining({ destructiveServiceIds: ["removed-service"], destructiveVolumeReviews: [] }),
+    }) });
   } finally {
     unmount();
     queryClient.clear();
