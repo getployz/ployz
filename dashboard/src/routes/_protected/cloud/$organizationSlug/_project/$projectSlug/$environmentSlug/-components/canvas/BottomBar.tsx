@@ -111,6 +111,22 @@ export function BottomBar({
     onDeploy();
   }
 
+  // A second Discard all queued behind the first would find nothing to discard and fail, so clicks while one saves are
+  // ignored. The ref guards re-entry; the state only renders both Discard buttons disabled.
+  const discardingRef = useRef(false);
+  const [discarding, setDiscarding] = useState(false);
+  async function discardAll() {
+    if (discardingRef.current) return;
+    discardingRef.current = true;
+    setDiscarding(true);
+    try {
+      if (await onDiscardAll()) setOpen(false);
+    } finally {
+      discardingRef.current = false;
+      setDiscarding(false);
+    }
+  }
+
   function openReview() {
     workspaceRef.current = slot?.closest<HTMLElement>(".environment-canvas-scene") ?? null;
     setOpen(true);
@@ -154,7 +170,7 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={() => void onDiscardAll()}>
+          <DropdownMenuItem variant="destructive" disabled={discarding || !groups.some((group) => group.canDiscard)} onClick={() => void discardAll()}>
             Discard all changes
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -188,7 +204,7 @@ export function BottomBar({
     groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
     onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
     onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
-    onDiscardAll: async () => { if (await onDiscardAll()) setOpen(false); },
+    onDiscardAll: () => void discardAll(), discarding,
     onDiscardNode, onDiscardRow,
     noteFor: (group: CanvasEnvironmentChangeGroup, path: string) => {
       const note = landed.notes.find((candidate) => candidate.nodeId === group.nodeId && candidate.path === path);

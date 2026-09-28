@@ -24,7 +24,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
   const { data: loaded = [] } = useLiveQuery({ queryKey: ["container-logs", collection.id], query: q => q.from({ log: collection }), gcTime: 100 });
-  const { opened, offline, errors, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
+  const { opened, offline, refused, errors, historyPending, historyError } = useSyncExternalStore(stream.subscribe, stream.getSnapshot, stream.getSnapshot);
   const timestamp = logTimestamp(useTimeZone());
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
@@ -50,6 +50,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className="underline underline-offset-4">Check your servers</Link>;
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
+    : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
     : all.length ? <LogEmpty title="No logs match your filters" />
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
@@ -60,6 +61,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
       <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} />
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
+    {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
     <div className="flex min-h-0 flex-1 flex-col">
       <LogHeader time={LOG_TIME_COLUMN.container}>Message</LogHeader>

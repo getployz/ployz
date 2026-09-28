@@ -264,9 +264,9 @@ export function CanvasFlow({
         position={creator.creatorPosition}
         params={params}
         onCreateVolume={openVolumeCreatorFromServiceDialog}
-        onCreated={async (result) => {
+        onCreated={async (result, stillHere) => {
           creator.setCreatorOpen(false);
-          await navigate({
+          if (stillHere) await navigate({
             to: ENVIRONMENT_SERVICE_ROUTE_TO,
             params: {
               organizationSlug: params.organizationSlug,

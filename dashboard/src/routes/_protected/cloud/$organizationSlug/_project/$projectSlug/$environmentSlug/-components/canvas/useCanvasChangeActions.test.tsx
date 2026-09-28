@@ -15,6 +15,7 @@ import * as documents from "#/modules/environment-design/environment-document.co
 import * as runtime from "#/modules/runtime/use-runtime-lens";
 import * as preflight from "#/modules/runtime/deploy-target-preflight";
 import * as restore from "#/modules/environment-design/working-document-restore.functions";
+import * as edits from "#/modules/environment-design/environment-document-edit";
 import { asTestDouble } from "#/lib/test-double";
 import * as preference from "#/auth/open-started-deployments";
 
@@ -154,6 +155,32 @@ it.each([true, false])("opens the queued attempt's Deployment Page after a manua
     await act(() => result.current.requestSave());
     expect(router.state.location.pathname).toEqual(page);
   } finally {
+    unmount();
+    queryClient.clear();
+  }
+});
+
+it("ignores a second Deploy while queued edits settle, and stays put when the user navigated away", async () => {
+  let release!: () => void;
+  const settled = new Promise<void>((done) => { release = done; });
+  const queue = vi.spyOn(edits, "useEnvironmentDocumentQueue").mockReturnValue(
+    asTestDouble<ReturnType<typeof edits.useEnvironmentDocumentQueue>>()({ settled: () => settled }));
+  const { result, unmount, queryClient, router } = renderActions([]);
+  try {
+    let first!: Promise<void>;
+    let second!: Promise<void>;
+    act(() => { first = result.current.requestDeploy(); });
+    act(() => { second = result.current.requestDeploy(); });
+    await act(() => second);
+    expect(result.current.isSubmittingDeploymentSnapshot).toBe(true);
+    expect(mocks.submit).not.toHaveBeenCalled();
+    await act(() => router.navigate({ to: "/", search: { away: 1 } }));
+    await act(async () => { release(); await first; });
+    expect(mocks.submit).toHaveBeenCalledTimes(1);
+    expect(router.state.location.pathname).toEqual("/");
+    expect(router.state.location.search).toEqual({ away: 1 });
+  } finally {
+    queue.mockRestore();
     unmount();
     queryClient.clear();
   }

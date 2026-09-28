@@ -144,6 +144,20 @@ it("shows changes to deploy first: the count, the one change, Details, Deploy (â
   expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
+it("holds Discard all while a discard is saving, so a second click can't fail", async () => {
+  let finish!: (discarded: boolean) => void;
+  onDiscardAll.mockClear().mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+  open(canvasUrl, [replicas], 1);
+  fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
+  const discard = screen.getByRole("button", { name: "Discard all changes" });
+  await act(async () => { fireEvent.click(discard); });
+  expect(discard.hasAttribute("disabled")).toBe(true);
+  fireEvent.click(discard);
+  expect(onDiscardAll).toHaveBeenCalledOnce();
+  await act(async () => { finish(true); });
+  expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
+});
+
 it("names the changed services, and keeps staged changes over a running Git-triggered deployment with Deploy next", async () => {
   attempts = [attempt(running, "deploying", "Push to main", "github")];
   open(canvasUrl, [replicas, cache], 2);

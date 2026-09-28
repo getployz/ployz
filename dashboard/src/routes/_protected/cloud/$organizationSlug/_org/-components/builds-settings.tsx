@@ -3,6 +3,7 @@ import { CheckIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Skeleton } from "#/components/ui/skeleton";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { BUILD_ORDERS, BUILD_ORDER_LABELS, defaultBuildOrder } from "#/modules/deployments/build-order";
 import { useBuildOrder } from "#/modules/deployments/build-order.collection";
@@ -26,8 +27,9 @@ export function BuildsSettings({ organizationSlug }: { organizationSlug: string 
 function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const { buildOrder: chosen, setBuildOrder } = useBuildOrder(organizationSlug);
   // Never chosen: the default follows whether GitHub is set up, as Cloud decides it at each build.
-  const { data: repositories } = useGithubBuildRepositories(organizationSlug);
-  const buildOrder = chosen ?? defaultBuildOrder(repositories?.some(({ readiness }) => readiness === "ready") ?? false);
+  // Unknown until GitHub answers; a failed read shows no order rather than a guess.
+  const { data: repositories, isError } = useGithubBuildRepositories(organizationSlug);
+  const buildOrder = chosen ?? (repositories && defaultBuildOrder(repositories.some(({ readiness }) => readiness === "ready")));
   return (
     <section aria-labelledby="build-order-heading">
       <ItemGroup>
@@ -38,12 +40,13 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
           {/* A section's intro reads in full; the two-line clamp is for rows. */}
           <ItemDescription className="line-clamp-none">Builds try these in order and move on when one can’t start in time. A service can prefer one in its own settings.</ItemDescription>
         </ItemContent>
-        <Select value={buildOrder} onValueChange={(next) => {
+        {!buildOrder && !isError ? <Skeleton className="h-8 w-full sm:w-72" /> : <Select value={buildOrder ?? null} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
           if (order) setBuildOrder(order);
         }}>
           <SelectTrigger aria-label="Where builds run" className="w-full sm:w-72">
-            <SelectValue>{BUILD_ORDER_LABELS[buildOrder]}</SelectValue>
+            {/* Nothing chosen and nothing to default from only when GitHub failed; the skeleton covers the wait. */}
+            <SelectValue placeholder="Could not check GitHub; choose one">{buildOrder && BUILD_ORDER_LABELS[buildOrder]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
@@ -52,7 +55,7 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
               ))}
             </SelectGroup>
           </SelectContent>
-        </Select>
+        </Select>}
       </ItemGroup>
     </section>
   );

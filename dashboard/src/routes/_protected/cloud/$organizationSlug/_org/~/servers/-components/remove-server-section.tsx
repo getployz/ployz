@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
+import { useStillHere } from "#/hooks/use-still-here";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
@@ -14,18 +15,18 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 
-/** Polls the removal until it settles. Closing the dialog aborts; polling stops within a second. */
+/** Polls the removal until it settles. Closing the dialog or leaving the page aborts; polling stops within a second. */
 async function waitForMachineRemoveAttempt(
   organizationSlug: string,
   attemptId: string,
-  signal: AbortSignal,
+  stopped: () => boolean,
 ): Promise<"removed" | "aborted" | { missing: DataLossIdentity[] }> {
   for (;;) {
-    if (signal.aborted) return "aborted";
+    if (stopped()) return "aborted";
     const attempt = await getMachineRemoveAttemptServerFn({
       data: { organizationSlug, attemptId },
     });
-    if (signal.aborted) return "aborted";
+    if (stopped()) return "aborted";
     switch (attempt.state) {
       case "pending":
       case "running":
@@ -56,6 +57,7 @@ const volumes = (rust: DataLossList["rust"]) =>
 export function RemoveServerSection({ machine, organizationSlug }: { machine: RuntimeMachineRecord; organizationSlug: string }) {
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const markHere = useStillHere();
   const abortRef = useRef<AbortController | null>(null);
 
   function onOpenChange(next: boolean) {
@@ -94,10 +96,14 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
             abortRef.current?.abort();
             const abort = new AbortController();
             abortRef.current = abort;
+            // Leaving the page stops the wait too, checked once the enqueue returns and after every poll. It's the location,
+            // not the mount: this section unmounts once the Server leaves the runtime, and that user should still land on Servers.
+            const stillHere = markHere();
             const queued = await enqueueMachineRemoveServerFn({
               data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
             });
-            const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id, abort.signal);
+            const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id,
+              () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
             if (result === "removed") {
               toast(`${machine.name} removed`);
