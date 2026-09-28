@@ -35,7 +35,8 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
           <ItemTitle>
             <h2 id="build-order-heading">Where builds run</h2>
           </ItemTitle>
-          <ItemDescription>Builds try these in order and move on when one can’t start in time. A service can prefer one in its own settings.</ItemDescription>
+          {/* A section's intro reads in full; the two-line clamp is for rows. */}
+          <ItemDescription className="line-clamp-none">Builds try these in order and move on when one can’t start in time. A service can prefer one in its own settings.</ItemDescription>
         </ItemContent>
         <Select value={buildOrder} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
@@ -75,7 +76,7 @@ function GithubActions({ organizationSlug }: { organizationSlug: string }) {
           <ItemTitle>
             <h2 id="github-actions-heading">GitHub Actions</h2>
           </ItemTitle>
-          <ItemDescription>
+          <ItemDescription className="line-clamp-none">
             {repositories
               ? `${ready} of ${repositories.length} repositories set up. Each needs one small workflow file. It only runs when Ployz starts a build, and build secrets are sent to the runner.`
               : "Could not check the repositories on GitHub."}
@@ -137,7 +138,7 @@ function BuildServers({ organizationSlug }: { organizationSlug: string }) {
           <ItemTitle>
             <h2 id="build-servers-heading">Your servers</h2>
           </ItemTitle>
-          <ItemDescription>{building} of {servers.length} run builds. Turn builds on or off on each server’s page.</ItemDescription>
+          <ItemDescription className="line-clamp-none">{building} of {servers.length} run builds. Turn builds on or off on each server’s page.</ItemDescription>
         </ItemContent>
         {servers.map((server) => (
           <ServerLinkItem key={server.machine.id} organizationSlug={organizationSlug} server={server} description={buildSummary(server)} />
