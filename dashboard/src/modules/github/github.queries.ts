@@ -83,7 +83,7 @@ export function githubBuildRepositoriesQueryOptions(organizationSlug: string) {
 
 /** Repositories the organization builds from, polled every 10s while one in `opened` still needs its workflow. */
 export function useGithubBuildRepositories(organizationSlug: string, opened: ReadonlySet<string> = new Set()) {
-  // Not suspense: a GitHub failure must not take the Servers page down with it.
+  // Not suspense: a GitHub failure must not take Organization Settings › Builds down with it.
   return useQuery({
     ...githubBuildRepositoriesQueryOptions(organizationSlug),
     refetchInterval: (query) =>

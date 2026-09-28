@@ -40,8 +40,8 @@ export const runtimeContainerRecordSchema = Schema.Struct({
 export type RuntimeContainerRecord = typeof runtimeContainerRecordSchema.Type;
 
 /** A Machine as the watched entry Machine reported it. `membership` is an open
- * Runtime value; Cloud displays it as evidence and does not turn it into a
- * response or health verdict. */
+ * Runtime value; Cloud shows it as evidence, and `serverStatus` is the one place
+ * it becomes a status word. */
 export const runtimeMachineRecordSchema = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -85,6 +85,10 @@ export const runtimeServiceRecordSchema = Schema.Struct({
 });
 
 export type RuntimeServiceRecord = typeof runtimeServiceRecordSchema.Type;
+
+/** How the Engine names a Cloud Service: its environment's namespace, then its private DNS name. */
+export const runtimeServiceIdentity = (service: { environmentSlug: string; privateDns: string }) =>
+  `${service.environmentSlug}/${service.privateDns}`;
 
 export function projectRuntimeServiceRecord(
   row: VirtualRowProps | RuntimeServiceRecord,
@@ -130,6 +134,10 @@ export const runtimeIncompleteIdsSchema = Schema.Struct({
 });
 
 export type RuntimeIncompleteIds = typeof runtimeIncompleteIdsSchema.Type;
+
+/** Machines or containers went unread, so what the observation shows may be missing things. */
+export const isIncompleteObservation = (ids: RuntimeIncompleteIds) =>
+  ids.machines.length > 0 || ids.containers.length > 0;
 
 export const EMPTY_RUNTIME_INCOMPLETE_IDS: RuntimeIncompleteIds = {
   machines: [],

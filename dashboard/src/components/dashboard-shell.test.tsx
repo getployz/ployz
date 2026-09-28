@@ -161,7 +161,7 @@ it("holds the organization destinations in the avatar menu, and applies a theme 
   const { rail } = await show();
   const menu = await openAccountMenu(rail);
   expect(within(menu).getAllByRole("menuitem").map((item) => item.textContent)).toEqual(
-    ["Projects", "Servers", "Server Settings", "Switch organization", "Log out"],
+    ["Projects", "Servers", "Organization Settings", "Switch organization", "Log out"],
   );
   expect(within(menu).getByRole("menuitem", { name: "Servers" }).getAttribute("href")).toBe("/cloud/acme/~/servers");
   expect(within(menu).getAllByRole("menuitemradio").map((item) => item.textContent)).toEqual(["System", "Light", "Dark"]);

@@ -74,7 +74,7 @@ export const releaseClusterDomain = Effect.fn("ClusterDomain.release")(function*
   );
 });
 
-/** Server Settings' Check again: requests a sync of the Organization's reserved name; the sync skips one with none. */
+/** Organization Settings' Check again: requests a sync of the Organization's reserved name; the sync skips one with none. */
 export const checkClusterDomainNow = Effect.fn("ClusterDomain.checkNow")(function* (
   actor: Actor,
   input: { readonly organizationSlug: string },

@@ -170,7 +170,7 @@ describe("DataLossConfirmDialog", () => {
     fireEvent.change(screen.getByLabelText(/Type node-1 to confirm/), {
       target: { value: "node-1" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Remove machine" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove server" }));
 
     expect(await screen.findByText(`new on ${machineA}`)).toBeTruthy();
     expect(screen.getByText(`old on ${machineA}`)).toBeTruthy();

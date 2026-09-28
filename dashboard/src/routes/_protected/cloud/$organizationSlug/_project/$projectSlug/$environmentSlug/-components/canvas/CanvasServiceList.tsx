@@ -18,6 +18,7 @@ import type {
   CanvasVolumeResourceState,
 } from "./CanvasServicesContext";
 import { useRuntimeService } from "#/providers/runtime-provider";
+import { runtimeServiceIdentity } from "#/modules/runtime/runtime.collection";
 import {
   getServiceIcon,
   getServiceStatusClasses,
@@ -43,9 +44,7 @@ function ServiceListItem({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const service = serviceView.service;
-  const { runtime } = useRuntimeService(
-    `${service.environmentSlug}/${service.privateDns}`,
-  );
+  const { runtime } = useRuntimeService(runtimeServiceIdentity(service));
   const subtitle = getServiceSubtitle(service);
   const semantics = getServiceDeploymentSemantics({
     isEmpty: service.source.type === "empty",
