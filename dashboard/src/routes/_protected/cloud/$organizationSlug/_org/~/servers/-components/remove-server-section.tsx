@@ -57,7 +57,6 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  const identities = useRef<DataLossList["rust"]>([]);
 
   function onOpenChange(next: boolean) {
     if (!next) abortRef.current?.abort();
@@ -86,18 +85,17 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
         sentence={<>Its volumes stay on its disk, but your services <span className="text-destructive">lose</span> them.</>}
         callbacks={{
           load: async () => {
-            const dataLoss = await loadMachineDataLossServerFn({
+            const { rust } = await loadMachineDataLossServerFn({
               data: { organizationSlug, machineId: machine.id },
             });
-            identities.current = dataLoss.rust;
-            return volumes(dataLoss.rust);
+            return { items: volumes(rust), evidence: rust };
           },
-          confirm: async () => {
+          confirm: async (identities) => {
             abortRef.current?.abort();
             const abort = new AbortController();
             abortRef.current = abort;
             const queued = await enqueueMachineRemoveServerFn({
-              data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities.current },
+              data: { organizationSlug, machineId: machine.id, confirmDataLoss: identities },
             });
             const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id, abort.signal);
             if (result === "aborted") return;
@@ -106,8 +104,8 @@ export function RemoveServerSection({ machine, organizationSlug }: { machine: Ru
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
             }
-            identities.current = withMissingDataLossIdentities({ rust: identities.current, cloud: [] }, result.missing).rust;
-            return volumes(identities.current);
+            const { rust } = withMissingDataLossIdentities({ rust: identities, cloud: [] }, result.missing);
+            return { items: volumes(rust), evidence: rust };
           },
         }}
       />

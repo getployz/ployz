@@ -11,6 +11,7 @@ import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.qu
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { useDeletionNodes } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
@@ -41,6 +42,7 @@ function RouteComponent() {
   const { section = "general" } = Route.useSearch();
   const navigate = useNavigate();
   const { projects } = useWorkspace(organizationSlug);
+  const nodes = useDeletionNodes(organizationSlug);
 
   return (
     <DashboardPage width="content">
@@ -57,7 +59,7 @@ function RouteComponent() {
             title="Delete this organization"
             description="Its projects and data go with it, and its servers are reset."
             actionLabel="Delete organization"
-            items={projects.map((project) => ({ kind: "project" as const, name: project.name }))}
+            items={[...projects.map((project) => ({ kind: "project" as const, name: project.name })), ...nodes]}
             headingId="organization-teardown-heading"
             onCompleted={() => {
               void navigate({ to: "/cloud", replace: true });

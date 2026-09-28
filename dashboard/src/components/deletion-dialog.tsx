@@ -31,14 +31,17 @@ export type DeletionItem = {
   detail?: string;
 };
 
-export type DeletionCallbacks = {
+/** What the servers reported, and the evidence confirming exactly that takes. */
+export type DeletionCheck<Evidence> = { items: readonly DeletionItem[]; evidence: Evidence };
+
+export type DeletionCallbacks<Evidence> = {
   /** Runs when the dialog opens: everything that goes, as the servers see it now. */
-  load: () => Promise<readonly DeletionItem[]>;
-  /** Starts the deletion. Resolves with the list again when the servers changed, and the dialog asks once more. */
-  confirm: () => Promise<void | readonly DeletionItem[]>;
+  load: () => Promise<DeletionCheck<Evidence>>;
+  /** Starts the deletion from the evidence shown. Resolves with a fresh check when the servers changed; the dialog asks again. */
+  confirm: (evidence: Evidence) => Promise<void | DeletionCheck<Evidence>>;
 };
 
-export type DeletionDialogProps = {
+export type DeletionDialogProps<Evidence> = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The question in the button's words, such as "Delete staging?". */
@@ -50,52 +53,46 @@ export type DeletionDialogProps = {
   items?: readonly DeletionItem[];
   /** Replaces "You're deleting from {place}:". */
   sentence?: ReactNode;
-  callbacks: DeletionCallbacks;
+  callbacks: DeletionCallbacks<Evidence>;
 };
 
 /** Every thing that goes, by name, and the user types where it is. */
-export function DeletionDialog(props: DeletionDialogProps) {
+export function DeletionDialog<Evidence>(props: DeletionDialogProps<Evidence>) {
   if (!props.open) return null;
   return <OpenDeletionDialog {...props} />;
 }
 
-type Check = { status: "checking" } | { status: "ready" } | { status: "failed"; message: string };
+type Check<Evidence> = { status: "checking" } | { status: "ready"; evidence: Evidence } | { status: "failed"; message: string };
 
 const FAILED = "Something went wrong. Try again.";
 
-function OpenDeletionDialog({ onOpenChange, title, place, confirmLabel, items: known = [], sentence, callbacks }:
-  Omit<DeletionDialogProps, "open">) {
+function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel, items: known = [], sentence, callbacks }:
+  Omit<DeletionDialogProps<Evidence>, "open">) {
   const inputId = useId();
   const [typed, setTyped] = useState("");
   const [items, setItems] = useState(known);
   const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [changed, setChanged] = useState(false);
-  const [check, setCheck] = useState<Check>({ status: "checking" });
+  const [check, setCheck] = useState<Check<Evidence>>({ status: "checking" });
   const [pending, setPending] = useState(false);
-  const loadOnOpen = useEffectEvent(callbacks.load);
+  const loadOnOpen = useEffectEvent(() => reload(known));
 
   useEffect(() => {
-    let active = true;
-    void loadOnOpen().then(
-      (loaded) => {
-        if (!active) return;
-        setItems(loaded);
-        setCheck({ status: "ready" });
-      },
-      (error) => {
-        if (active) setCheck({ status: "failed", message: toErrorMessage(error, FAILED) });
-      },
-    );
-    return () => {
-      active = false;
-    };
+    void loadOnOpen();
   }, []);
 
-  async function retry() {
+  /** Shows a check. Whatever it adds to a list already on screen appeared while the user looked, so it is new. */
+  function show(next: DeletionCheck<Evidence>, before: readonly DeletionItem[]) {
+    const listed = new Set(before.map(deletionItemKey));
+    setFresh(new Set(before.length === 0 ? [] : next.items.map(deletionItemKey).filter((key) => !listed.has(key))));
+    setItems(next.items);
+    setCheck({ status: "ready", evidence: next.evidence });
+  }
+
+  async function reload(before: readonly DeletionItem[]) {
     setCheck({ status: "checking" });
     try {
-      setItems(await callbacks.load());
-      setCheck({ status: "ready" });
+      show(await callbacks.load(), before);
     } catch (error) {
       setCheck({ status: "failed", message: toErrorMessage(error, FAILED) });
     }
@@ -105,14 +102,14 @@ function OpenDeletionDialog({ onOpenChange, title, place, confirmLabel, items: k
     if (check.status !== "ready" || typed !== place || pending) return;
     setPending(true);
     try {
-      const again = await callbacks.confirm();
+      const again = await callbacks.confirm(check.evidence);
       if (!again) {
         onOpenChange(false);
         return;
       }
-      const before = new Set(items.map(deletionItemKey));
-      setFresh(new Set(again.map(deletionItemKey).filter((key) => !before.has(key))));
-      setItems(again);
+      // The servers changed: what they show now needs reading, and typing, again.
+      show(again, items);
+      setTyped("");
       setChanged(true);
     } catch (error) {
       setCheck({ status: "failed", message: toErrorMessage(error, FAILED) });
@@ -138,7 +135,7 @@ function OpenDeletionDialog({ onOpenChange, title, place, confirmLabel, items: k
           {check.status === "failed" ? (
             <p className="text-sm text-destructive">
               {check.message}{" "}
-              <Button type="button" variant="link" className="h-auto p-0 text-destructive underline" onClick={() => void retry()}>
+              <Button type="button" variant="link" className="h-auto p-0 text-destructive underline" onClick={() => void reload(items)}>
                 Retry
               </Button>
             </p>

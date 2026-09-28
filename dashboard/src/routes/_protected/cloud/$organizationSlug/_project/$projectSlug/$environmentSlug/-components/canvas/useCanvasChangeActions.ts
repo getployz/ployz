@@ -195,12 +195,9 @@ export function useCanvasChangeActions({
         return;
       }
       try {
-        // The servers' evidence can move once between reading and publishing; publish again with the fresh one.
         const outcome = await confirmDestructiveAction(await prepareDestructiveReview(), action);
-        if (outcome.state === "review_updated_evidence"
-          && (await confirmDestructiveAction(outcome.preparation, action)).state === "review_updated_evidence") {
-          toast.error("Your servers changed. Try again.");
-        }
+        // Evidence that moved since the Review needs a person to look again.
+        if (outcome.state === "review_updated_evidence") toast.error(`Your servers changed. Review and ${action} again.`);
       } catch (error) {
         toast.error(error instanceof Error ? error.message : `Could not ${action} the changes.`);
       }

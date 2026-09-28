@@ -42,6 +42,7 @@ import {
 import type { CanvasResourceNode } from "./types";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { DestructiveChangesDialog } from "./DestructiveChangesDialog";
+import { getServiceIcon } from "./service-node-helpers";
 import type { EnvironmentNodeIntroduction } from "#/modules/environment-design/environment-node-introductions";
 
 // Shared styling for every canvas edge: solid, primary colour, matching arrow. Links into Live Nodes are dashed.
@@ -289,7 +290,10 @@ export function CanvasFlow({
         organizationSlug={params.organizationSlug}
         environmentId={environmentId}
         action={reviewAction}
-        services={destructiveServiceNames.map((name) => ({ kind: "service" as const, name }))}
+        services={destructiveServiceIds.map((id, index) => {
+          const service = servicesWithBoundEnv.find((row) => row.service.id === id)?.service;
+          return { kind: "service" as const, name: destructiveServiceNames[index] ?? id, icon: service && getServiceIcon(service) };
+        })}
         volumes={deletedDeployedVolumeIds.map((id) => volumeResourcesById.get(id)?.resource.resource.name ?? id)}
         prepare={prepareDestructiveReview}
         confirm={confirmDestructiveAction}

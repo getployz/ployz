@@ -2,7 +2,9 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DeletionDialog, deletionItemKey, deletionRows, formatBytes, type DeletionItem } from "./deletion-dialog";
+import {
+  DeletionDialog, deletionItemKey, deletionRows, formatBytes, type DeletionCallbacks, type DeletionItem,
+} from "./deletion-dialog";
 
 afterEach(() => {
   cleanup();
@@ -55,8 +57,11 @@ describe("formatBytes", () => {
   });
 });
 
+/** A servers' check whose evidence names how many things it saw. */
+const check = (items: DeletionItem[]) => ({ items, evidence: `evidence:${items.length}` });
+
 describe("DeletionDialog", () => {
-  function renderDialog(callbacks: Parameters<typeof DeletionDialog>[0]["callbacks"], onOpenChange = vi.fn()) {
+  function renderDialog(callbacks: DeletionCallbacks<string>, onOpenChange = vi.fn()) {
     render(
       <DeletionDialog open onOpenChange={onOpenChange} title="Delete staging?" place="shop/staging" confirmLabel="Delete"
         items={[service("web")]} callbacks={callbacks} />,
@@ -66,7 +71,7 @@ describe("DeletionDialog", () => {
 
   it("confirms once the servers answered and the place is typed", async () => {
     const confirm = vi.fn().mockResolvedValue(undefined);
-    const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue([service("web"), volume("uploads", 1.2)]), confirm });
+    const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue(check([service("web"), volume("uploads", 1.2)])), confirm });
     expect(screen.getByText("web")).toBeTruthy();
     await screen.findByText("uploads");
 
@@ -76,13 +81,19 @@ describe("DeletionDialog", () => {
     fireEvent.click(button);
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    expect(confirm).toHaveBeenCalledOnce();
+    expect(confirm).toHaveBeenCalledWith("evidence:2");
+  });
+
+  it("marks what the servers add to Cloud's list as new, first", async () => {
+    renderDialog({ load: vi.fn().mockResolvedValue(check([service("web"), volume("leftover", 3)])), confirm: vi.fn() });
+    await screen.findByText("New");
+    expect(screen.getAllByRole("listitem")[0]?.textContent).toContain("leftover");
   });
 
   it("says what failed and retries the servers", async () => {
     const load = vi.fn()
       .mockRejectedValueOnce(new Error("Can't reach your servers. Check they're online, then try again."))
-      .mockResolvedValue([service("web")]);
+      .mockResolvedValue(check([service("web")]));
     renderDialog({ load, confirm: vi.fn() });
 
     await screen.findByText(/Can't reach your servers/);
@@ -94,10 +105,10 @@ describe("DeletionDialog", () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
-  it("marks what appeared since it opened and asks again", async () => {
+  it("marks what appeared since it opened and asks again, typed afresh, with the new evidence", async () => {
     const appeared = volume("uploads-old", 0.4);
-    const confirm = vi.fn().mockResolvedValueOnce([service("web"), appeared]).mockResolvedValue(undefined);
-    const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue([service("web")]), confirm });
+    const confirm = vi.fn().mockResolvedValueOnce(check([service("web"), appeared])).mockResolvedValue(undefined);
+    const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue(check([service("web")])), confirm });
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy());
     fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
@@ -106,8 +117,11 @@ describe("DeletionDialog", () => {
     await screen.findByText("New");
     expect(screen.getByText("uploads-old")).toBeTruthy();
     expect(onOpenChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(true);
 
+    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(confirm).toHaveBeenLastCalledWith("evidence:2");
   });
 });

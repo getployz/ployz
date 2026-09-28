@@ -1,7 +1,6 @@
-import { useRef } from "react";
 import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
 import type { PreparedDestructiveReview } from "#/components/destructive-volume/destructive-volume-review";
-import { useEnvironmentPlace } from "../deletion-items";
+import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 
 type Outcome = { state: "submitted" } | { state: "review_updated_evidence"; preparation: PreparedDestructiveReview };
 
@@ -22,7 +21,6 @@ export function DestructiveChangesDialog({ open, onOpenChange, organizationSlug,
   confirm: (preparation: PreparedDestructiveReview) => Promise<Outcome>;
 }) {
   const place = useEnvironmentPlace(organizationSlug, environmentId);
-  const preparation = useRef<PreparedDestructiveReview | null>(null);
   const itemsOf = (prepared: PreparedDestructiveReview): DeletionItem[] => [
     ...services,
     ...prepared.volumes.map(({ evidence }): DeletionItem => ({
@@ -42,15 +40,13 @@ export function DestructiveChangesDialog({ open, onOpenChange, organizationSlug,
       items={[...services, ...volumes.map((name): DeletionItem => ({ kind: "volume", name }))]}
       callbacks={{
         load: async () => {
-          preparation.current = await prepare();
-          return itemsOf(preparation.current);
+          const prepared = await prepare();
+          return { items: itemsOf(prepared), evidence: prepared };
         },
-        confirm: async () => {
-          if (!preparation.current) throw new Error("The removals weren't checked yet. Try again.");
-          const outcome = await confirm(preparation.current);
+        confirm: async (prepared) => {
+          const outcome = await confirm(prepared);
           if (outcome.state === "submitted") return;
-          preparation.current = outcome.preparation;
-          return itemsOf(outcome.preparation);
+          return { items: itemsOf(outcome.preparation), evidence: outcome.preparation };
         },
       }}
     />

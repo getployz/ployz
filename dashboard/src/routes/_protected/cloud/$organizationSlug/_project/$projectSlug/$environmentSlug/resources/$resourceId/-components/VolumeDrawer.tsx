@@ -1,5 +1,5 @@
 import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,7 +12,6 @@ import { Separator } from "#/components/ui/separator";
 import { Spinner } from "#/components/ui/spinner";
 import { toErrorMessage } from "#/lib/error-message";
 import { createEnvironmentNodeNameSchema } from "#/modules/environment-design/environment-node-names";
-import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { environmentDesignFields } from "#/modules/environment-design/fields";
 import {
@@ -41,7 +40,7 @@ import type {
   VolumeResourceRouteParams,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/useVolumeDrawerState";
 import { ENVIRONMENT_INDEX_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/deletion-items";
+import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 
 const resourceNameSchema = environmentDesignFields.resource.name;
 
@@ -178,7 +177,6 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const identities = useRef<DataLossList["rust"]>([]);
   const place = useEnvironmentPlace(state.organizationSlug, state.environmentId);
   const { machines } = useRuntimeLens(state.organizationSlug);
   const name = state.resource.resource.name;
@@ -266,17 +264,19 @@ function VolumeRemoveDanger({ state }: { state: VolumeDrawerState }) {
         confirmLabel="Delete"
         callbacks={{
           load: async () => {
-            const dataLoss = await loadDataLoss({ data: input });
-            identities.current = dataLoss.rust;
-            return dataLoss.rust.map((identity): DeletionItem => ({
-              kind: "volume",
-              name: identity.id.name,
-              detail: machines.find((machine) => machine.id === identity.id.machine_id)?.name,
-            }));
+            const { rust } = await loadDataLoss({ data: input });
+            return {
+              items: rust.map((identity): DeletionItem => ({
+                kind: "volume",
+                name: identity.id.name,
+                detail: machines.find((machine) => machine.id === identity.id.machine_id)?.name,
+              })),
+              evidence: rust,
+            };
           },
-          confirm: async () => {
+          confirm: async (identities) => {
             await rememberLatestVolumeRemoveAttempt(queryClient, latestQuery.queryKey,
-              () => confirmRemove({ data: { ...input, identities: identities.current } }));
+              () => confirmRemove({ data: { ...input, identities } }));
             toast(`Deleting what's left of ${name}`);
           },
         }}

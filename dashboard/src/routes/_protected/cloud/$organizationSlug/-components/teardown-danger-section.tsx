@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -80,7 +80,6 @@ export function TeardownDangerSection({
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const identities = useRef<DataLossList["rust"]>([]);
   const input = { organizationSlug, scope, environmentId, projectSlug };
   const latestQuery = latestTeardownAttemptQueryOptions(input);
   const latest = useQuery(latestQuery);
@@ -140,14 +139,11 @@ export function TeardownDangerSection({
         items={items}
         callbacks={{
           load: async () => {
-            const dataLoss = await loadDataLoss({ data: input });
-            identities.current = dataLoss.rust;
-            return withServerVolumes(items, dataLoss.rust);
+            const { rust } = await loadDataLoss({ data: input });
+            return { items: withServerVolumes(items, rust), evidence: rust };
           },
-          confirm: async () => {
-            queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({
-              data: { ...input, identities: identities.current, abandon },
-            }));
+          confirm: async (identities) => {
+            queryClient.setQueryData(latestQuery.queryKey, await confirmTeardown({ data: { ...input, identities, abandon } }));
             toast(doing);
           },
         }}

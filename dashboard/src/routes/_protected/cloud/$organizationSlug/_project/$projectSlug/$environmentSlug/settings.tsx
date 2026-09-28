@@ -23,7 +23,7 @@ import { descendants, environmentTree } from "#/modules/project/environment-tree
 import { servicesOnline, useRuntimeServices } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
 import { CloseBranchRow } from "./-components/close-branch-row";
-import { useEnvironmentDeletionItems, useEnvironmentPlace } from "./-components/deletion-items";
+import { useDeletionNodes, useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { BranchSettingsSection } from "./-components/branch-settings-section";
 import { StartingPointSettingsSection } from "./-components/starting-point-settings-section";
@@ -66,7 +66,8 @@ function RouteComponent() {
   // A teardown takes the Environment's Branches with it, deepest first.
   const closing = descendants(environmentId, branches).flatMap((id) => environments.filter((row) => row.id === id));
   const defaultEnvironment = [...closing, environment].find((row) => row !== undefined && row.id === project?.defaultEnvironmentId);
-  const own = useEnvironmentDeletionItems({ organizationSlug, projectSlug, environmentSlug });
+  const own = useDeletionNodes(organizationSlug, { projectSlug, environmentSlug });
+  const projectNodes = useDeletionNodes(organizationSlug, { projectSlug });
   const place = useEnvironmentPlace(organizationSlug, environmentId);
   const name = environment?.name ?? environmentSlug;
   const projectName = project?.name ?? projectSlug;
@@ -125,10 +126,13 @@ function RouteComponent() {
             title="Delete this project"
             description="Its environments, services and data go with it."
             actionLabel="Delete project"
-            items={environments.filter((row) => row.projectId === project?.id).map((row) => ({
-              kind: branches.some((candidate) => candidate.environmentId === row.id) ? "branch" as const : "environment" as const,
-              name: row.name,
-            }))}
+            items={[
+              ...environments.filter((row) => row.projectId === project?.id).map((row) => ({
+                kind: branches.some((candidate) => candidate.environmentId === row.id) ? "branch" as const : "environment" as const,
+                name: row.name,
+              })),
+              ...projectNodes,
+            ]}
             headingId="project-teardown-heading"
             onCompleted={leaveDeletedTree}
           />
