@@ -203,10 +203,10 @@ it("holds only organization switching, Theme and Log out in the avatar menu, and
 it("gives organization pages their three places in the rail and the phone tab bar", async () => {
   const { rail } = await show({ scope: "all" });
   expect(within(rail).getAllByRole("link").map((link) => link.getAttribute("aria-label") ?? link.textContent))
-    .toEqual(["Projects", "Projects", "Servers", "Settings"]);
+    .toEqual(["Projects", "Projects", "Servers", "Organization"]);
   expect(within(rail).queryByRole("separator")).toBeNull();
   const tabs = screen.getByRole("navigation", { name: "Places" });
-  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Projects", "Servers", "Settings"]);
+  expect(within(tabs).getAllByRole("link").map((link) => link.textContent)).toEqual(["Projects", "Servers", "Organization"]);
 });
 
 it("resets its persistent scroll surface when navigating to a different environment page", async () => {

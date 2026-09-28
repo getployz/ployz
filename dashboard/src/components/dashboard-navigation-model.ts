@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import { linkOptions, type RegisteredRouter } from "@tanstack/react-router";
 import {
+  Building2Icon,
   CreditCardIcon,
   HistoryIcon,
   LayoutGridIcon,
@@ -53,8 +54,9 @@ type OrganizationDestination = (typeof organizationPlaceOrder)[number] | "billin
 const organizationDestinations = {
   projects: { label: "Projects", icon: LayoutGridIcon, path: "/cloud/$organizationSlug/~" },
   servers: { label: "Servers", icon: ServerIcon, path: "/cloud/$organizationSlug/~/servers" },
-  "organization-settings": { label: "Settings", icon: SlidersHorizontalIcon, path: "/cloud/$organizationSlug/~/settings" },
-  // A section of Settings, with its own page. Only Ployz-hosted Cloud has billing.
+  // Not "Settings": that always means an Environment's.
+  "organization-settings": { label: "Organization", icon: Building2Icon, path: "/cloud/$organizationSlug/~/settings" },
+  // A section of Organization, with its own page. Only Ployz-hosted Cloud has billing.
   billing: { label: "Billing", icon: CreditCardIcon, path: "/cloud/$organizationSlug/~/billing" },
 } satisfies Record<OrganizationDestination, Destination>;
 
@@ -129,7 +131,7 @@ export function getDashboardSectionLabel(section: DashboardSection) {
     : organizationDestinations[section].label;
 }
 
-/** The open section of a page with sections: Settings' `scope`, Organization Settings' `section`, or Billing. */
+/** The open section of a page with sections: Settings' `scope`, Organization's `section`, or Billing. */
 function openSection(section: DashboardSection, search: DashboardSectionSearch) {
   switch (section) {
     case "settings":
@@ -174,8 +176,7 @@ function placeSections(
 
 /**
  * The only enumeration of destinations. `places` are the scope's places: the rail's first group and the phone tab
- * bar. On an Environment, `organization` is the way back that the rail adds below them; the organization's Settings
- * stays on organization pages, so the rail never shows two Settings.
+ * bar. On an Environment, `organization` is the way back that the rail adds below them: Projects and Servers.
  */
 export function createDashboardNavigation(
   scope: DashboardScope,
@@ -186,7 +187,7 @@ export function createDashboardNavigation(
   },
 ) {
   const open = openSection(section, search);
-  // Billing is a section of the organization's Settings, so Settings is the current place there.
+  // Billing is a section of Organization, so Organization is the current place there.
   const currentPlace = section === "billing" ? "organization-settings" : section;
   const item = (target: DashboardScope, key: DashboardSection, { label, icon }: Destination): DashboardNavItem => ({
     section: key,

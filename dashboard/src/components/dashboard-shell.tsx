@@ -25,7 +25,7 @@ export function DashboardShell({
   const Crumb = useRouteCrumb();
   const { places, organization } = useDashboardNavigation(scope);
   const canvas = useCanvasShowing();
-  // The top bar names the place, so Billing, a section of Settings, reads Settings like its siblings.
+  // The top bar names the place, so Billing, a section of Organization, reads Organization like its siblings.
   const placeLabel = places.find((place) => place.current)?.label ?? getDashboardSectionLabel(section);
   return (
     <div className="flex h-dvh min-h-0 overflow-hidden">

@@ -34,7 +34,7 @@ describe("dashboard navigation model", () => {
 
   it("gives the organization three places, and an Environment only Projects and Servers of them", () => {
     const { places, organization: none } = createDashboardNavigation(organization, { section: "servers" });
-    expect(places.map((place) => place.label)).toEqual(["Projects", "Servers", "Settings"]);
+    expect(places.map((place) => place.label)).toEqual(["Projects", "Servers", "Organization"]);
     expect(places.map((place) => place.to)).toEqual([
       "/cloud/$organizationSlug/~",
       "/cloud/$organizationSlug/~/servers",
@@ -62,9 +62,9 @@ describe("dashboard navigation model", () => {
       .filter((place) => place.sections.length).map((place) => place.label)).toEqual(["Settings"]);
   });
 
-  it("makes Billing a section of the organization's Settings, only when billing is configured", () => {
+  it("makes Billing a section of Organization, only when billing is configured", () => {
     const settings = (section: "organization-settings" | "billing", search: { section?: "general" | "builds" }, billingEnabled: boolean) =>
-      createDashboardNavigation(organization, { section, search, billingEnabled }).places.find((place) => place.label === "Settings");
+      createDashboardNavigation(organization, { section, search, billingEnabled }).places.find((place) => place.label === "Organization");
 
     const billing = settings("billing", {}, true);
     expect(billing?.current).toBe(true);
