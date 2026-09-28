@@ -1,5 +1,8 @@
-/** What the Environment itself has, first that applies: a starting point, changes to deploy, a running attempt, then changes that go live with a pull request. */
-export type OwnRow = "starting_point" | "staged" | "attempt" | "waiting";
+/**
+ * What the Environment itself has, first that applies: a starting point, changes to deploy, a running attempt, Off, then
+ * changes that go live with a pull request.
+ */
+export type OwnRow = "starting_point" | "staged" | "attempt" | "off" | "waiting";
 /** What a Branch has for a Destination: changes to save, changes saved to go live with its pull request, else updates from its Parent. */
 export type ParentRow = "save" | "saved" | "update";
 
@@ -10,6 +13,7 @@ export type BottomBarState = {
   staged: boolean;
   /** A running or queued attempt whose Deployment Page isn't open. */
   attempt: boolean;
+  off: boolean;
   waiting: boolean;
   /**
    * Null on a root. A PR Environment has one entry in `destinations` per Destination, each with its own row; any other
@@ -24,7 +28,8 @@ export type BottomBarState = {
  * index). A root has one row. Either is absent when it has nothing.
  */
 export function bottomBarRows(state: BottomBarState) {
-  const own: OwnRow | null = state.startingPoint ? "starting_point" : state.staged ? "staged" : state.attempt ? "attempt" : state.waiting ? "waiting" : null;
+  const own: OwnRow | null = state.startingPoint ? "starting_point" : state.staged ? "staged" : state.attempt ? "attempt"
+    : state.off ? "off" : state.waiting ? "waiting" : null;
   const branch = state.branch;
   if (!branch) return { own, parent: [] };
   const destinations: ParentRowFor[] = branch.destinations

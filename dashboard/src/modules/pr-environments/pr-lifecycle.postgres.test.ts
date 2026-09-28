@@ -14,7 +14,7 @@ import { executeProcessGithubPullRequestReceived, executeProcessGithubPushReceiv
 import { InngestClient, type PloyzStepTools } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
-import { dropTeardownCloudRowsActivity } from "#/modules/runtime/teardown-activities.server";
+import { dropTeardownCloudRowsActivity, finishShutdownActivity } from "#/modules/runtime/teardown-activities.server";
 import { handleGithubWebhookRequest } from "#/routes/api/github/-webhook.handler";
 import { AppConfig } from "#/server/config.server";
 import { testConfigEnvironment } from "#/test/config-environment";
@@ -29,6 +29,7 @@ import { branchHostnameSuffix } from "#/modules/branches/branch-plan";
 import { goesTo, rowLineage, variableName } from "#/modules/branches/branch-review";
 import { closePrEnvironment } from "#/modules/branches/branch-close.server";
 import { saveConditionalSave, withdrawConditionalSave } from "./conditional-save.server";
+import { shutDownPrEnvironment, startPrEnvironment } from "./off.server";
 import { takePullRequestValue } from "./land.server";
 import { standing } from "./conditional-save";
 import { executePostPrCheck } from "./pr-check.inngest";
@@ -563,6 +564,67 @@ describe("PR Environment lifecycle", () => {
       await pullRequest("synchronize", "synchronize", 142);
       expect(await saves()).toEqual([]);
       expect((await prEnvironment(142))?.environmentId).not.toBe(prId);
+    });
+
+    it("shuts down keeping its rows and its save, stays Off through Undo, and starts again the same on the next push or Deploy", async () => {
+      const prId = (await prEnvironment(142))?.environmentId ?? "";
+      await runEffect(createServiceVariable({ userId }, { ...(await scope(prId)), key: "FLAG", description: null, exported: false, value: { type: "plain", value: "on" } }));
+      const tickAll = (keys: string[]) => keys.map((key) => ({ key, option: "from" as const, value: "" }));
+      await approve(prId, tickAll);
+      await harness.db.update(schema.service).set({ firstDeployedAt: new Date() }).where(eq(schema.service.environmentId, prId));
+      const before = await environmentOf(prId);
+      const off = async () => (await prEnvironment(142))?.off;
+      /** Its runtime half is done, as the teardown workflow finishes a shutdown. */
+      const finish = async (attempt: typeof schema.teardownAttempt.$inferSelect) => {
+        await runEffect(finishShutdownActivity(attempt));
+        await harness.db.update(schema.teardownAttempt).set({
+          status: "completed", inngestRunId: `run-${attempt.id}`, startedAt: new Date(), terminalAt: new Date(),
+          outcome: { pairingRevocationUnconfirmed: false, runtimeMembership: "untouched" },
+        }).where(eq(schema.teardownAttempt.id, attempt.id));
+      };
+      const shutDown = async () => {
+        await runEffect(shutDownPrEnvironment({ userId }, { organizationSlug, environmentId: prId }));
+        const attempt = (await teardownsOf(prId)).find((row) => row.status === "pending");
+        if (!attempt) throw new Error("No shutdown was admitted.");
+        return attempt;
+      };
+
+      // Its runtime half only: its namespace's data confirmed, its attempt cancelled, every row kept.
+      const attempt = await shutDown();
+      expect(attempt).toMatchObject({ scope: "shutdown", environmentId: prId, confirmDataLoss: [expect.objectContaining({ id: expect.objectContaining({ name: "shop-pr-142-data" }) })] });
+      expect(await off()).toBe(true);
+      expect((await deploymentsOf(prId)).map((row) => row.status)).not.toContain("queued");
+      // Deploying waits for it to finish; once it has, its services' Setup Commands run again.
+      expect(await runEffect(startPrEnvironment({ userId }, { organizationSlug, environmentId: prId }).pipe(Effect.as(null), Effect.catch(Effect.succeed))))
+        .toMatchObject({ _tag: "Conflict", message: "This environment is shutting down. Deploy it once it's off." });
+      await finish(attempt);
+      expect(await environmentOf(prId)).toMatchObject({ revision: before?.revision, intent: before?.intent });
+      expect((await harness.db.select().from(schema.service).where(eq(schema.service.environmentId, prId))).map((row) => row.firstDeployedAt)).toEqual([null]);
+      expect(await stands(prId)).toBe(true);
+
+      // Undo keeps it Off.
+      await runEffect(withdrawConditionalSave({ userId }, { organizationSlug, prEnvironmentId: prId, destinationEnvironmentId: stagingId }));
+      expect(await off()).toBe(true);
+      await approve(prId, tickAll);
+
+      // The next push deploys the same Environment again, and the save still stands.
+      heads.set("feature-142", "d".repeat(40));
+      await deliver("push", "push-off", { ref: "refs/heads/feature-142", before: "c".repeat(40), after: "d".repeat(40), created: false, deleted: false, forced: false });
+      expect(await off()).toBe(false);
+      expect((await prEnvironment(142))?.environmentId).toBe(prId);
+      expect((await deploymentsOf(prId)).map((row) => row.triggerOrigin.origin)).toContain("github");
+      expect(await stands(prId)).toBe(true);
+
+      // Or Deploy does.
+      await finish(await shutDown());
+      const { deploymentId } = await runEffect(startPrEnvironment({ userId }, { organizationSlug, environmentId: prId }));
+      expect(await off()).toBe(false);
+      expect((await deploymentsOf(prId)).find((row) => row.id === deploymentId)?.triggerOrigin.origin).toBe("manual");
+
+      // Closing removes an Off PR Environment as it does a running one.
+      await shutDown();
+      await pullRequest("closed", "closed", 142);
+      expect((await teardownsOf(prId)).map((row) => [row.scope, row.status])).toContainEqual(["environment", "pending"]);
     });
 
     it("refuses an empty new value, and picks core couldn't land", async () => {

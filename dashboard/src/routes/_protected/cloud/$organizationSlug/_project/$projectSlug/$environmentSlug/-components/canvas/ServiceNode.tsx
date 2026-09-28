@@ -15,6 +15,7 @@ import {
 } from "#/components/ui/card";
 import { Skeleton } from "#/components/ui/skeleton";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
+import { useOff } from "#/modules/branches/branch.collection";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { runtimeServiceIdentity } from "#/modules/runtime/runtime.collection";
 import { cn } from "#/lib/utils";
@@ -70,6 +71,7 @@ export function ServiceNode({
   const { runtime } = useRuntimeService(runtimeIdentity);
   const light = useNodeLighting(data.serviceId);
   const pick = useNodePick(serviceState?.serviceView.service.lineageId);
+  const off = useOff(params.organizationSlug, serviceState?.serviceView.service.environmentId ?? "");
 
   if (!serviceState) {
     return <LoadingNode />;
@@ -86,6 +88,7 @@ export function ServiceNode({
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
     missingLiveValues: serviceState.missingLiveValues,
+    off,
   });
   const state = semantics.state;
   const observedContainers = runtime

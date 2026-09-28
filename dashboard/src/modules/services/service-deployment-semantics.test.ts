@@ -92,4 +92,11 @@ describe("getServiceDeploymentSemantics", () => {
       showNewBadge: false,
     });
   });
+
+  it("shows Off while its Environment is shut down, whatever came before", () => {
+    for (const latestDeploymentStatus of ["failed", "cancelled", "applied"] as const) {
+      expect(getServiceDeploymentSemantics({ ...deployed, latestDeploymentStatus, off: true }))
+        .toEqual({ state: undefined, statusText: "Off", showNewBadge: false });
+    }
+  });
 });

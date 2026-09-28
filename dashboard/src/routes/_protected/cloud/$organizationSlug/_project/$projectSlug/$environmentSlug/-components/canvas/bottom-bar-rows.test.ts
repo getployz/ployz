@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { bottomBarRows, type BottomBarState } from "./bottom-bar-rows";
 
-const idle: BottomBarState = { startingPoint: false, staged: false, attempt: false, waiting: false, branch: null };
+const idle: BottomBarState = { startingPoint: false, staged: false, attempt: false, off: false, waiting: false, branch: null };
 const branch = (changes: number, updates: number) => ({ changes, updates, destinations: null });
 const pr = (updates: number, ...destinations: Array<[changes: number, saved: boolean]>) => ({
   changes: 0, updates, destinations: destinations.map(([changes, saved]) => ({ changes, saved })),
@@ -42,5 +42,11 @@ describe("bottomBarRows", () => {
       .toEqual([{ row: "saved", destination: 0 }, { row: "save", destination: 2 }]);
     expect(bottomBarRows({ ...idle, branch: pr(1, [0, false]) }).parent).toEqual([{ row: "update", destination: null }]);
     expect(bottomBarRows({ ...idle, branch: pr(0, [0, false]) })).toEqual({ own: null, parent: [] });
+  });
+
+  it("shows Off after a running attempt and before changes going live, with the PR Environment's rows beside it", () => {
+    expect(bottomBarRows({ ...idle, off: true, waiting: true, branch: pr(0, [2, true]) })).toEqual({ own: "off", parent: [{ row: "saved", destination: 0 }] });
+    expect(bottomBarRows({ ...idle, off: true, attempt: true, branch: pr(0) }).own).toBe("attempt");
+    expect(bottomBarRows({ ...idle, off: true, staged: true, branch: pr(0) }).own).toBe("staged");
   });
 });

@@ -36,6 +36,9 @@ const onDeploy = vi.fn();
 const onDiscardAll = vi.fn(async () => true);
 const update = vi.fn();
 const withdraw = vi.fn();
+const start = vi.fn();
+const shutDown = vi.fn();
+let off = false;
 let unsettled: string | null = null;
 let attempts: ReturnType<typeof attempt>[] = [];
 let startingPoint: { name: string } | undefined;
@@ -52,6 +55,11 @@ beforeEach(() => {
   startingPoint = undefined;
   branch = null;
   held = [];
+  off = false;
+  vi.spyOn(branchCollections, "useOff").mockImplementation(() => off);
+  vi.spyOn(saveCommands, "usePrEnvironmentOff").mockImplementation(() => asTestDouble<ReturnType<typeof saveCommands.usePrEnvironmentOff>>()({
+    start: { mutate: start, isPending: false }, shutDown: { mutate: shutDown, isPending: false },
+  }));
   vi.spyOn(conditionalSaves, "useWaitingSaves").mockImplementation(() => held);
   vi.spyOn(conditionalSaves, "useLandedSaves").mockImplementation(() => []);
   vi.spyOn(saveCommands, "useConditionalSave").mockImplementation(() =>
@@ -248,11 +256,26 @@ it("on a PR Environment, a row per Destination to save or saved; on a Destinatio
   const sheet = within(screen.getByRole("dialog", { name: "2 changes for production" }));
   expect(sheet.getByText("PR #142 · Discounts")).toBeTruthy();
   expect(sheet.getByText("web redeploys when PR #142 merges")).toBeTruthy();
-  expect(sheet.queryByRole("switch")).toBeNull();
+  // No delete: shutting down is opt-in.
+  expect(sheet.getAllByRole("switch").map((control) => control.getAttribute("aria-checked"))).toEqual(["false"]);
+  expect(sheet.getByText("Shut down fix-web now")).toBeTruthy();
+  expect(sheet.getByText("Starts again on the next push")).toBeTruthy();
   expect(sheet.getByRole("button", { name: "Save to production" })).toBeTruthy();
   cleanup();
 
+  // Off, beside what it saved: Deploy starts it again.
   branch = pullRequest(saved);
+  off = true;
+  open(canvasUrl);
+  const offBar = await bar();
+  expect(offBar.getByText("Off")).toBeTruthy();
+  expect(offBar.getByText("Starts again on the next push")).toBeTruthy();
+  expect(offBar.getByText("2 changes go live")).toBeTruthy();
+  fireEvent.click(offBar.getByRole("button", { name: "Deploy" }));
+  expect(start).toHaveBeenCalledOnce();
+  cleanup();
+  off = false;
+
   open(canvasUrl);
   const waiting = await bar();
   expect(waiting.getByText("2 changes go live")).toBeTruthy();
