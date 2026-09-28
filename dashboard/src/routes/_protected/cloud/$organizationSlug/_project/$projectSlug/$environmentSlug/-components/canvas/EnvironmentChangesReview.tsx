@@ -22,12 +22,12 @@ export type EnvironmentChangesReviewProps = {
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
   /** A merged pull request's note beside a change: its tag, or its value with Use. */
   noteFor?: (group: CanvasEnvironmentChangeGroup, path: string) => ReactNode;
-  /** Merged pull requests' settings no change here shows, after the changes. */
-  landed?: ReactNode;
+  /** Read-only lists after the changes: merged pull requests' settings no change shows, and changes waiting for pull requests. */
+  after?: ReactNode;
 };
 
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { canSave, totalChanges, onClose, landed } = props;
+  const { canSave, totalChanges, onClose, after } = props;
   const staged = canSave || totalChanges > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
@@ -40,7 +40,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
           </DialogDescription>
         </div>
       </div>
-      {staged ? <StagedChanges {...props} /> : <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-6">{landed}</div>}
+      {staged ? <StagedChanges {...props} /> : <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 py-6">{after}</div>}
       </DialogContent>
     </Dialog>
   );
@@ -61,7 +61,7 @@ function StagedChanges({
   onDiscardNode,
   onDiscardRow,
   noteFor,
-  landed,
+  after,
 }: EnvironmentChangesReviewProps) {
   return (
     <>
@@ -89,7 +89,7 @@ function StagedChanges({
                 noteFor={noteFor && ((path) => noteFor(group, path))}
               />
             ))}
-            {landed}
+            {after}
           </div>
         </div>
 
