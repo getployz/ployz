@@ -8,10 +8,11 @@ export type ContainerLogSelection = { organizationSlug: string; environmentSlug?
 /**
  * `opened`: the server has answered once, so an empty log means no output rather than not loaded yet.
  * `offline`: the organization's servers are unreachable, the one state the viewer can act on.
+ * `refused`: the last connect got an error response; it keeps retrying until one opens.
  */
-type LogStreamState = { opened: boolean; offline: boolean; errors: Record<string, string>; historyPending: boolean; historyError: boolean };
+type LogStreamState = { opened: boolean; offline: boolean; refused: boolean; errors: Record<string, string>; historyPending: boolean; historyError: boolean };
 
-const INITIAL: LogStreamState = { opened: false, offline: false, errors: {}, historyPending: false, historyError: false };
+const INITIAL: LogStreamState = { opened: false, offline: false, refused: false, errors: {}, historyPending: false, historyError: false };
 const MAX_RETRY_MS = 30_000;
 
 function createLogStream(id: string, selection: ContainerLogSelection, scope: CollectionScope) {
@@ -38,11 +39,12 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
         const connect = () => {
           controller = new AbortController();
           events = new EventSource(`/api/runtime/logs?${query}`);
-          events.addEventListener("live", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: false }); });
-          events.addEventListener("offline", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: true }); });
+          events.addEventListener("live", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: false, refused: false }); });
+          events.addEventListener("offline", () => { retryMs = 1_000; publish({ ...snapshot, opened: true, offline: true, refused: false }); });
           events.onerror = () => {
             if (events?.readyState !== EventSource.CLOSED) return;
             close();
+            if (!snapshot.refused) publish({ ...snapshot, refused: true });
             retry = setTimeout(connect, retryMs);
             retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
           };

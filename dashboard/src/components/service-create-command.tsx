@@ -1,5 +1,6 @@
 import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useStillHere } from "#/hooks/use-still-here";
 import { preloadGithubRepos } from "#/modules/github/github.collection";
 import { useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
@@ -93,10 +94,14 @@ type ServiceCommandProps = {
     y: number;
   };
   initialPanel?: InitialPanel;
+  /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
   onCreated?: (
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
+    stillHere: boolean,
   ) => void | Promise<void>;
   onCreateVolume?: () => void;
+  /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
+  onPendingChange?: (pending: boolean) => void;
 };
 
 type ServiceCreateCommandProps = ProjectCommandProps | ServiceCommandProps;
@@ -123,6 +128,7 @@ type GitPanelProps = GitPanelReposProps;
 
 function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
   const { queryClient, sessionId, userId } = useCollectionScope();
+  const [chosen, setChosen] = useState<CreateMenuItemId | null>(null);
   // "GitHub repository" is one tap away: its picker opens with repositories already read.
   useEffect(() => {
     preloadGithubRepos({ queryClient, sessionId, userId });
@@ -139,7 +145,10 @@ function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
             value={label}
             keywords={["create", mode]}
             disabled={isPending}
-            onSelect={() => onSelectItem(id)}
+            onSelect={() => {
+              setChosen(id);
+              onSelectItem(id);
+            }}
           >
             <Icon />
             <span>{label}</span>
@@ -147,7 +156,7 @@ function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
               <CommandShortcut>
                 <ChevronRightIcon />
               </CommandShortcut>
-            ) : isPending ? (
+            ) : isPending && id === chosen ? (
               <CommandShortcut>
                 <Spinner />
               </CommandShortcut>
@@ -181,6 +190,7 @@ function useServiceCreateActions({
 }) {
   const collectionScope = useCollectionScope();
   const navigate = useNavigate();
+  const markHere = useStillHere();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
   const createService = useServerFn(createServiceServerFn);
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
@@ -207,6 +217,7 @@ function useServiceCreateActions({
     if (creatingRef.current) return;
     creatingRef.current = true;
     setCreating(true);
+    if (props.mode === "service") props.onPendingChange?.(true);
     setFailure(null);
     try {
       await action();
@@ -216,6 +227,7 @@ function useServiceCreateActions({
     } finally {
       creatingRef.current = false;
       setCreating(false);
+      if (props.mode === "service") props.onPendingChange?.(false);
     }
   }
 
@@ -282,6 +294,7 @@ function useServiceCreateActions({
 
   const createServiceFromSource = (source: ServiceSource) =>
     whileCreating(async () => {
+      const stillHere = markHere();
       const target = await getCreationTarget();
       const result = await createService({
         data: {
@@ -294,7 +307,8 @@ function useServiceCreateActions({
       });
       await applyCreatedService(props.organizationSlug, collectionScope, result.data);
       if (props.mode === "service") {
-        await props.onCreated?.(result.data);
+        // Someone who navigated away while it saved stays there; the service still lands on the canvas.
+        await props.onCreated?.(result.data, stillHere());
         return;
       }
       await navigate({

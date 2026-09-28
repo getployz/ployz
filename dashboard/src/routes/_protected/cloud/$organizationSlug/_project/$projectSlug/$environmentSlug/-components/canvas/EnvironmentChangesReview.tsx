@@ -15,6 +15,7 @@ export type EnvironmentChangesReviewProps = {
   canSave: boolean;
   onSave: () => void;
   onDiscardAll: () => void;
+  discarding: boolean;
   onClose: () => void;
   onCommitMessageChange: (value: string) => void;
   onDeploy: () => void;
@@ -55,6 +56,7 @@ function StagedChanges({
   canSave,
   onSave,
   onDiscardAll,
+  discarding,
   onClose,
   onCommitMessageChange,
   onDeploy,
@@ -94,7 +96,7 @@ function StagedChanges({
         </div>
 
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
-        {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" onClick={onDiscardAll}>Discard all changes</Button> : null}
+        {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" disabled={discarding} onClick={onDiscardAll}>Discard all changes</Button> : null}
         <Button variant="outline" disabled={!canSave} onClick={onSave}>Save without deploying</Button>
         {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}
       </div>

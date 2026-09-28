@@ -75,3 +75,43 @@ it("retains logs and exhausted history across navigation, and reconnects only on
     await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals();
   }
 });
+
+it("says a refused log stream failed instead of loading forever, and keeps retrying", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const sources: FakeEventSource[] = [];
+  class FakeEventSource extends EventTarget {
+    static CLOSED = 2;
+    readyState = 0;
+    onerror: (() => void) | null = null;
+    constructor() { super(); sources.push(this); }
+    close() { this.readyState = 2; }
+  }
+  vi.stubGlobal("EventSource", FakeEventSource);
+  const client = new QueryClient();
+  const root = createRootRoute({ loader: () => ({ timeZone: "UTC" }) });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", beforeLoad: () => ({ session: { session: { id: "session" }, user: { id: "user" } } }) });
+  const index = createRoute({ getParentRoute: () => protectedRoute, path: "/" });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([index])]), history: createMemoryHistory({ initialEntries: ["/"] }) });
+  await router.load();
+  const selection = { organizationSlug: "acme", environmentSlug: "refused" };
+  const stream = getContainerLogStream(selection, { queryClient: client, sessionId: "session", userId: "user" });
+  try {
+    render(<QueryClientProvider client={client}><DbProvider client={getDbClient(client)}><RouterContextProvider router={router}>
+      <ContainerLogs selection={selection} />
+    </RouterContextProvider></DbProvider></QueryClientProvider>);
+    const source = sources.at(-1);
+    if (!source) throw new Error("Viewer did not open its log stream");
+    expect(screen.getByLabelText("Loading logs")).toBeTruthy();
+    await act(async () => { source.readyState = 2; source.onerror?.(); });
+    expect(screen.getByText("Couldn’t load logs")).toBeTruthy();
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    const retried = sources.at(-1);
+    expect(retried).not.toBe(source);
+    await act(async () => retried?.dispatchEvent(new Event("live")));
+    expect(screen.getByText("No logs yet")).toBeTruthy();
+  } finally {
+    cleanup();
+    await stream.collection.cleanup();
+    await getDbClient(client).cleanup(); client.clear(); vi.unstubAllGlobals(); vi.useRealTimers();
+  }
+});

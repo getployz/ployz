@@ -60,6 +60,7 @@ import { getGithubReposCollection, getRawGithubReposCollection, preloadGithubRep
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
+import { toast } from "sonner";
 import { getGitRepoSelectorState } from "#/components/service-source-selector-state";
 
 const imageExamples = [
@@ -223,12 +224,15 @@ function GitRepoSelectorActions() {
   const [{ data: installUrlData }, { data: accessState }] = useSuspenseQueries({
     queries: [githubInstallUrlQueryOptions(), githubRepoAccessQueryOptions()],
   });
-  const { mutateAsync: requestRepoSync, isPending: isRefreshing } = useMutation(
+  const { mutate: requestRepoSync, isPending: isRefreshing } = useMutation(
     {
       mutationKey: [...githubKeys.repos(), "refresh"],
       mutationFn: () => requestGithubRepoSyncServerFn(),
       onSuccess: async () => {
         await queryClient.invalidateQueries({ queryKey: githubKeys.access() });
+      },
+      onError: (error) => {
+        toast.error(toErrorMessage(error, "Could not refresh GitHub repositories."));
       },
     }
   );
@@ -273,10 +277,11 @@ function GitRepoSelectorActions() {
           <Button
             variant="outline"
             size="sm"
-            onClick={async (event) => {
+            disabled={isRefreshing}
+            onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              await requestRepoSync();
+              requestRepoSync();
             }}
           >
             {isRefreshing ? (

@@ -3,6 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
+import { useStillHere } from "#/hooks/use-still-here";
 import { openStartedDeployments } from "#/auth/open-started-deployments";
 import { getEnvironmentDocumentsCollection } from "#/modules/environment-design/environment-document.collection";
 import { useEnvironmentDocumentQueue } from "#/modules/environment-design/environment-document-edit";
@@ -19,14 +20,17 @@ function useDeploymentCommand<T>(deployment: EnvironmentDeploymentSummary, messa
   const [isRunning, setIsRunning] = useState(false);
   const { organizationSlug } = useParams({ strict: false });
   const collectionScope = useCollectionScope();
+  const markHere = useStillHere();
   async function start() {
     if (!organizationSlug) return;
+    const stillHere = markHere();
     setIsRunning(true);
     try {
       const result = await run({ organizationSlug, projectSlug: deployment.projectSlug, environmentSlug: deployment.environmentSlug });
       await reconcileDeploymentCollections(organizationSlug, collectionScope);
       toast.success(messages.success(result));
-      onDone?.(result);
+      // Someone who opened another attempt while it ran stays there.
+      if (stillHere()) onDone?.(result);
     } catch {
       toast.error(messages.failure);
     } finally {
@@ -68,7 +72,9 @@ export function useDeployStartingPoint({ organizationSlug, projectSlug, environm
   const scope = useCollectionScope();
   const queue = useEnvironmentDocumentQueue(organizationSlug);
   const navigate = useNavigate();
-  return useMutation({
+  const markHere = useStillHere();
+  const mutation = useMutation({
+    onMutate: () => markHere(),
     mutationFn: async () => {
       await queue.settled(environmentId);
       const document = getEnvironmentDocumentsCollection(organizationSlug, scope).get(environmentId);
@@ -82,10 +88,14 @@ export function useDeployStartingPoint({ organizationSlug, projectSlug, environm
       await reconcileDeploymentCollections(organizationSlug, scope);
       return result;
     },
-    onSuccess: (result) => {
-      if (result.state === "deployment_queued") {
-        if (openStartedDeployments()) void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId", params: { ...environment, deploymentId: result.deploymentId } });
-      } else toast.error("Saved, but the deployment could not start. Review the failed deployment before retrying.");
+    onSuccess: (result, _input, stillHere) => {
+      if (result.state !== "deployment_queued") {
+        toast.error("Saved, but the deployment could not start. Review the failed deployment before retrying.");
+      } else if (openStartedDeployments() && stillHere()) {
+        // Someone who moved on while it saved stays where they went.
+        void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/deployments/$deploymentId", params: { ...environment, deploymentId: result.deploymentId } });
+      }
     },
   });
+  return { deploy: () => mutation.mutate(), isPending: mutation.isPending, error: mutation.error };
 }

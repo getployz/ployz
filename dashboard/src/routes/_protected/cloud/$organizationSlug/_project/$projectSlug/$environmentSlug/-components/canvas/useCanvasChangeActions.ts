@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { useStillHere } from "#/hooks/use-still-here";
 import { openStartedDeployments } from "#/auth/open-started-deployments";
 import { reconcileDeploymentCollections } from "#/modules/deployments/deployment.collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -72,6 +73,11 @@ export function useCanvasChangeActions({
   setDestructiveConfirmationOpen,
 }: UseCanvasChangeActionsInput) {
   const [reviewAction, setReviewAction] = useState<"save" | "deploy">("save");
+  // Set from the click through settling queued edits, fingerprinting and submitting: a second click in that window is
+  // ignored, so it can't queue a second deployment. The ref guards re-entry; the state only renders Deploy disabled.
+  const submittingRef = useRef(false);
+  const [submitting, setSubmitting] = useState(false);
+  const markHere = useStillHere();
   const collectionScope = useCollectionScope();
   const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
   // Read at call time: after queued edits settle, the render-time document is stale.
@@ -106,9 +112,13 @@ export function useCanvasChangeActions({
     prepareEnvironmentDestructiveVolumesServerFn,
   );
   const publicationMutation = useMutation({
-    mutationFn: async (input: { intent: ReviewedPublicationInput["intent"]; review: ReviewedEnvironmentPublication }) => {
+    mutationFn: async ({ intent, review, stillHere }: {
+      intent: ReviewedPublicationInput["intent"]; review: ReviewedEnvironmentPublication;
+      /** Whether the user is still where they clicked. */
+      stillHere: () => boolean;
+    }) => {
       const result: EnvironmentPublicationSubmissionOutcome =
-        await submitPublication({ data: { ...params, message: commitMessage, ...input } });
+        await submitPublication({ data: { ...params, message: commitMessage, intent, review } });
 
       await reconcileDeploymentCollections(params.organizationSlug, collectionScope);
       await queryClient.invalidateQueries({
@@ -117,8 +127,8 @@ export function useCanvasChangeActions({
         ),
       });
 
-      // A manual Deploy opens its attempt unless the user opted out by leaving one they started while it ran.
-      if (result.state === "deployment_queued" && openStartedDeployments()) {
+      // A manual Deploy opens its attempt unless the user opted out by leaving one they started while it ran, or has moved on.
+      if (result.state === "deployment_queued" && openStartedDeployments() && stillHere()) {
         void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: result.deploymentId } });
       }
       if (result.state === "attempt_dispatch_failed") {
@@ -187,23 +197,24 @@ export function useCanvasChangeActions({
   }
 
   async function requestPublication(action: "save" | "deploy") {
+    if (submittingRef.current) return;
     if (action === "deploy" && !deployTargetIsAvailable()) return;
     setReviewAction(action);
-    if (destructiveServiceIds.length > 0 || deletedDeployedVolumeIds.length > 0) {
-      if (confirmsRemovals) {
-        setDestructiveConfirmationOpen(true);
-        return;
-      }
-      try {
-        const outcome = await confirmDestructiveAction(await prepareDestructiveReview(), action);
-        // Evidence that moved since the Review needs a person to look again.
-        if (outcome.state === "review_updated_evidence") toast.error(`Your servers changed. Review and ${action} again.`);
-      } catch (error) {
-        toast.error(error instanceof Error ? error.message : `Could not ${action} the changes.`);
-      }
+    const destructive = destructiveServiceIds.length > 0 || deletedDeployedVolumeIds.length > 0;
+    if (destructive && confirmsRemovals) {
+      setDestructiveConfirmationOpen(true);
       return;
     }
+    const stillHere = markHere();
+    submittingRef.current = true;
+    setSubmitting(true);
     try {
+      if (destructive) {
+        const outcome = await confirmDestructiveAction(await prepareDestructiveReview(), action, stillHere);
+        // Evidence that moved since the Review needs a person to look again.
+        if (outcome.state === "review_updated_evidence") toast.error(`Your servers changed. Review and ${action} again.`);
+        return;
+      }
       await queue.settled(environmentId);
       await publicationMutation.mutateAsync({
         intent: action === "deploy" ? "manual_deploy" : "save",
@@ -213,9 +224,13 @@ export function useCanvasChangeActions({
           destructiveServiceIds: [],
           destructiveVolumeReviews: [],
         },
+        stillHere,
       });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : `Could not ${action} the changes.`);
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
     }
   }
 
@@ -258,6 +273,7 @@ export function useCanvasChangeActions({
   async function confirmDestructiveAction(
     preparation: PreparedDestructiveReview,
     action = reviewAction,
+    stillHere = markHere(),
   ) {
     if (!preparation.reviewedMutation) {
       throw new Error("The destructive action is missing its reviewed mutation.");
@@ -271,6 +287,7 @@ export function useCanvasChangeActions({
         destructiveServiceIds: reviewedMutation.serviceIds,
         destructiveVolumeReviews: preparation.reviews,
       },
+      stillHere,
     });
     if (outcome.state === "review_updated_evidence") {
       return {
@@ -294,7 +311,7 @@ export function useCanvasChangeActions({
     discardNodeChanges,
     discardRowChange,
     requestSave,
-    isSubmittingDeploymentSnapshot: publicationMutation.isPending,
+    isSubmittingDeploymentSnapshot: submitting || publicationMutation.isPending,
     requestDeploy,
     prepareDestructiveReview,
     confirmDestructiveAction,

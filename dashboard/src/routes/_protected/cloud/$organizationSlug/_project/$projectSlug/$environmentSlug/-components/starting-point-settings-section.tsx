@@ -14,9 +14,9 @@ export function StartingPointSettingsSection(target: {
       <Field orientation="horizontal" className="flex-wrap">
         <FieldContent className="min-w-60">
           <FieldLabel>Not deployed</FieldLabel>
-          {deploy.isError && <FieldError>{deploy.error.message}</FieldError>}
+          {deploy.error && <FieldError>{deploy.error.message}</FieldError>}
         </FieldContent>
-        <Button disabled={deploy.isPending} onClick={() => deploy.mutate()}>
+        <Button disabled={deploy.isPending} onClick={deploy.deploy}>
           {deploy.isPending && <Spinner data-icon="inline-start" />}
           Deploy this environment
         </Button>
