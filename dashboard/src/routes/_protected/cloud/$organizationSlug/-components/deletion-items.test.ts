@@ -20,8 +20,8 @@ const running = (environmentId: string, nodeId: string, lineage: string) =>
       })],
     },
   });
-const names: Record<string, string> = { "l-api": "api", "l-web": "web" };
-const nameOf = (lineage: string) => names[lineage] ?? "a node";
+const names = new Map([["l-api", "api"], ["l-web", "web"]]);
+const nameOf = (lineage: string) => names.get(lineage) ?? "a node";
 
 describe("deletionNodes", () => {
   it("keeps a service whose delete is staged: it runs until the next deploy", () => {
