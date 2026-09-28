@@ -5,7 +5,7 @@ import { createEnvironmentDeployCancelRequestedEvent } from "#/modules/inngest/e
 import type { CancelEnvironmentDeploymentInput } from "./deployment-contract";
 import "@tanstack/react-start/server-only";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
 import { afterDatabaseCommit, Database } from "#/server/database.server";
@@ -194,10 +194,24 @@ export const cancelEnvironmentDeployment = Effect.fn("Deployments.cancelEnvironm
     )).limit(1);
     if (!deployment) return yield* new NotFound({ message: "Deployment not found." });
     if (!ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES.has(deployment.status)) return;
-    const cancelled = yield* requestDeploymentCancellation(deployment.id);
-    if (cancelled) yield* afterDatabaseCommit(sendInngestEvent(createEnvironmentDeployCancelRequestedEvent(deployment.id)));
+    yield* cancelDeployment(deployment.id);
   },
 );
+
+/** Cancels every active attempt of these Environments, as Cancel does each. */
+export const cancelActiveDeployments = Effect.fn("Deployments.cancelActiveDeployments")(function* (environmentIds: readonly string[]) {
+  const { drizzle } = yield* Database;
+  const active = yield* drizzle.select({ id: schemaEnvironmentDeployment.id }).from(schemaEnvironmentDeployment).where(and(
+    inArray(schemaEnvironmentDeployment.environmentId, [...environmentIds]),
+    inArray(schemaEnvironmentDeployment.status, [...ACTIVE_ENVIRONMENT_DEPLOYMENT_STATUSES]),
+  ));
+  yield* Effect.forEach(active, ({ id }) => cancelDeployment(id), { discard: true });
+});
+
+const cancelDeployment = Effect.fn("Deployments.cancelDeployment")(function* (deploymentId: string) {
+  const cancelled = yield* requestDeploymentCancellation(deploymentId);
+  if (cancelled) yield* afterDatabaseCommit(sendInngestEvent(createEnvironmentDeployCancelRequestedEvent(deploymentId)));
+});
 
 export const createManualEnvironmentDeployment = Effect.fn(
   "Deployments.createManualEnvironmentDeployment",

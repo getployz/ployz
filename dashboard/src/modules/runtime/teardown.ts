@@ -18,6 +18,13 @@ export const TEARDOWN_SCOPES = [
 
 export type TeardownScope = (typeof TEARDOWN_SCOPES)[number];
 
+/**
+ * What an attempt covers: a teardown's scope, or `shutdown`, one Environment's runtime half only. A shutdown removes its
+ * services and their data from the servers and keeps every row, so the Environment is Off until it deploys again.
+ */
+export const TEARDOWN_ATTEMPT_SCOPES = [...TEARDOWN_SCOPES, "shutdown"] as const;
+export type TeardownAttemptScope = (typeof TEARDOWN_ATTEMPT_SCOPES)[number];
+
 /** Why an Environment that is its Project's Default Environment can't be torn down. */
 export const defaultEnvironmentRefusal = (name: string) => `${name} is the Default Environment. Choose another Default Environment first.`;
 

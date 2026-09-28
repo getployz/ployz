@@ -59,20 +59,20 @@ function only<T>(rows: T[]) {
 }
 
 describe("branch review", () => {
-  it("shows nothing to merge or update right after branching, and postgres as used live", () => {
+  it("shows nothing to save or update right after branching, and postgres as used live", () => {
     const review = branchReview(input(() => {}));
-    expect(review.merge).toEqual([]);
+    expect(review.save).toEqual([]);
     expect(review.update).toEqual([]);
     expect(review.differ.map((row) => [row.key, row.role === "differ" && row.why])).toEqual([[`${DB}:node`, "live"]]);
   });
 
-  it("merges the Branch's changes, marking one production also changed", () => {
+  it("saves the Branch's changes, marking one production also changed", () => {
     const review = branchReview(input(({ branch, parent }) => {
       image(branch, "web:2");
       web(branch).config.replicas = 3;
       image(parent, "web:1.1");
     }));
-    const row = only(review.merge);
+    const row = only(review.save);
     expect(row.key).toBe(`${WEB}:source.image`);
     expect(row.role === "move" && row.conflict).toBe(true);
     expect(presentRow(row, nameOf)).toMatchObject({ node: "web", label: "Container image", before: "web:1.1", after: "web:2" });

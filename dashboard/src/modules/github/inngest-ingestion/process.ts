@@ -55,7 +55,7 @@ import {
   planGithubBranchEvaluation,
 } from "#/modules/github/github-branch-evaluation";
 import { runInngestEffect } from "#/server/run.server";
-import { freezeMergedBy, heldChangesCarriedBy } from "#/modules/pr-environments/land.server";
+import { freezeMergedBy, savedChangesCarriedBy } from "#/modules/pr-environments/land.server";
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import { applyPullRequest, type PullRequestEffectRunner } from "#/modules/pr-environments/pr-lifecycle.server";
@@ -225,7 +225,7 @@ async function processPushAttempt(input: {
   } : null;
   if (push) await step.run(`freeze-merged-held-changes-${attempt}`, () => runEffect(freezeMergedBy(push)));
   const carried = push
-    ? await step.run(`list-carried-held-changes-${attempt}`, () => runEffect(heldChangesCarriedBy(push)))
+    ? await step.run(`list-carried-held-changes-${attempt}`, () => runEffect(savedChangesCarriedBy(push)))
     : [];
   const plan = await step.run(`plan-branch-evaluation-${attempt}`, () => {
     const planned = planGithubBranchEvaluation({

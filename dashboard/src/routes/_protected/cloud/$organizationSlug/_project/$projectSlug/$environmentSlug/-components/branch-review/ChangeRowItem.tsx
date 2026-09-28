@@ -1,18 +1,16 @@
 import type { ReactNode } from "react";
 import { TriangleAlertIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
-import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
+import { Item, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import type { PresentedRow } from "#/modules/branches/branch-review";
 
 /** One setting of one node: `before` is the receiver's value, `after` the one that would land. */
-export function ChangeRowItem({ row, conflict, description, children }: {
+export function ChangeRowItem({ row, conflict, description }: {
   row: PresentedRow;
   /** Also changed on the receiving side since branching; names that side. */
   conflict?: string;
   /** Replaces the values line, e.g. a reason. */
   description?: ReactNode;
-  /** #1159/#1160: a tick or value choice. */
-  children?: ReactNode;
 }) {
   return (
     <Item variant="outline" size="sm">
@@ -28,7 +26,6 @@ export function ChangeRowItem({ row, conflict, description, children }: {
           </ItemDescription>
         ) : null)}
       </ItemContent>
-      {children ? <ItemActions>{children}</ItemActions> : null}
     </Item>
   );
 }

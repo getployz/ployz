@@ -17,12 +17,12 @@ import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.serv
 import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
-import { mergeBranch } from "./branch-merge.server";
-import { tryCloseBranch } from "./branch-close.server";
+import { saveBranch } from "./branch-save.server";
+import { updateBranch } from "./branch-update.server";
 import { createBranch } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
-import { mergeInput } from "./branch-review";
-import type { MergePick } from "./branch-schemas";
+import { saveInput } from "./branch-review";
+import type { SavePick } from "./branch-schemas";
 
 const organizationId = "00000000-0000-4000-8000-000000000a01";
 const userId = "00000000-0000-4000-8000-000000000a02";
@@ -68,9 +68,9 @@ const runtime = {
   }),
 };
 
-describe("mergeBranch", () => {
+describe("saveBranch", () => {
   let harness: PostgresTestHarness;
-  const inngest = new Inngest({ id: "merge-branch-test" });
+  const inngest = new Inngest({ id: "save-branch-test" });
   vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
 
   beforeAll(async () => {
@@ -119,7 +119,7 @@ describe("mergeBranch", () => {
     .where(and(eq(schema.environmentDeployment.environmentId, environmentId), eq(schema.environmentDeployment.status, "queued")));
 
   /** The Deploy button: publish and admit the Working State, then let it apply. */
-  async function deploy(environmentId: string) {
+  async function deploy(environmentId: string, outcome: "applied" | "failed" = "applied") {
     const [latest] = await harness.db.select().from(schema.environmentSavedStateSnapshot)
       .where(eq(schema.environmentSavedStateSnapshot.environmentId, environmentId))
       .orderBy(schema.environmentSavedStateSnapshot.createdAt).then((rows) => rows.slice(-1));
@@ -132,7 +132,9 @@ describe("mergeBranch", () => {
         destructiveServiceIds: [], destructiveVolumeReviews: [],
       },
     }));
-    await settle(environmentId);
+    await (outcome === "applied" ? settle(environmentId) : harness.db.update(schema.environmentDeployment)
+      .set({ status: "failed", finishedAt: new Date() })
+      .where(and(eq(schema.environmentDeployment.environmentId, environmentId), eq(schema.environmentDeployment.status, "queued"))));
   }
 
   const edit = (environmentId: string, change: (intent: SavedEnvironmentIntent) => void) => provide(Effect.gen(function* () {
@@ -145,10 +147,10 @@ describe("mergeBranch", () => {
     if (web?.config.source.type === "image") web.config.source.image = image;
   };
 
-  async function create(name: string, keep = false) {
+  async function create(name: string, { keep = false, deployNow = true } = {}) {
     const { data } = await provide(createBranch({ userId }, {
       organizationSlug: "acme", parentEnvironmentId: parentId, name,
-      focus: [webLineage], picks: { preset: "only" }, keep, deployNow: true, setupCommands: [],
+      focus: [webLineage], picks: { preset: "only" }, keep, deployNow, setupCommands: [],
     }));
     return data.environment;
   }
@@ -163,7 +165,7 @@ describe("mergeBranch", () => {
     const own = environments.find((row) => row.id === branchId);
     const parent = environments.find((row) => row.id === parentId);
     if (!branch || !own || !parent) throw new Error("The Branch or its Parent is missing.");
-    const changes = branchChanges(mergeInput({
+    const changes = branchChanges(saveInput({
       base: branch.base, kept: branch.kept, branch: own.intent, parent: parent.intent,
       parentApplied: states.find((state) => state.environmentId === parentId)?.applied.intent ?? null,
       hostnames: { branch: branchHostnameSuffix("shop", own.namespace, true), parent: "" },
@@ -172,14 +174,14 @@ describe("mergeBranch", () => {
     return { rows, review: changes.review, revision: parent.revision };
   }
 
-  const merge = (branchId: string, seen: Awaited<ReturnType<typeof review>>, picks: MergePick[], thenClose = true) =>
-    provide(mergeBranch({ userId }, {
-      organizationSlug: "acme", branchEnvironmentId: branchId, destinationRevision: seen.revision, review: seen.review, picks, thenClose,
+  const save = (branchId: string, seen: Awaited<ReturnType<typeof review>>, picks: SavePick[], thenDelete = true) =>
+    provide(saveBranch({ userId }, {
+      organizationSlug: "acme", branchEnvironmentId: branchId, destinationRevision: seen.revision, review: seen.review, picks, thenDelete,
     }));
-  const defaults = (rows: Awaited<ReturnType<typeof review>>["rows"]): MergePick[] =>
+  const defaults = (rows: Awaited<ReturnType<typeof review>>["rows"]): SavePick[] =>
     rows.map((row) => row.choice ? { key: row.key, option: row.choice.default, value: "" } : { key: row.key, value: "" });
 
-  it("stages the picked changes in the Destination, seals a new secret, deletes nothing, deploys nothing, and closes the Branch", async () => {
+  it("stages the picked changes in the Destination, seals a new secret, removes nothing, deploys nothing, and deletes the Branch", async () => {
     await deploy(parentId);
     const branch = await create("fix-web");
     await settle(branch.id);
@@ -206,12 +208,12 @@ describe("mergeBranch", () => {
     // A new secret asks for production's value by default.
     const apiKey = seen.rows.find((row) => row.key === `${webLineage}:variables.API_KEY`);
     expect(apiKey?.choice).toMatchObject({ default: "new", secret: true });
-    // Left empty, it would never land while Then close tears the Branch down: refused, and nothing changes.
-    const empty = await merge(branch.id, seen, defaults(seen.rows)).then(() => null, (error: Error) => error);
+    // Left empty, it would never arrive while deleting after saving tears the Branch down: refused, and nothing changes.
+    const empty = await save(branch.id, seen, defaults(seen.rows)).then(() => null, (error: Error) => error);
     expect(empty).toMatchObject({ _tag: "Validation", message: "Enter a new value for API_KEY." });
     expect(await teardowns()).toEqual([]);
     const picks = defaults(seen.rows).map((pick) => pick.key === apiKey?.key ? { ...pick, value: "production-key" } : pick);
-    const { data } = await merge(branch.id, seen, picks);
+    const { data } = await save(branch.id, seen, picks);
     expect(data.closed).toBe(true);
 
     // production's Working State has the Branch's changes, its own db, and the worker under a fresh id.
@@ -230,87 +232,112 @@ describe("mergeBranch", () => {
     const introductions = await harness.db.select().from(schema.environmentNodeIntroduction).where(eq(schema.environmentNodeIntroduction.environmentId, parentId));
     expect(introductions.map((row) => row.nodeId)).toContain(worker?.id);
 
-    // Nothing is published or deployed in production; the Branch closes after commit.
+    // Nothing is published or deployed in production; the Branch is deleted after commit.
     expect(await attemptsOf(parentId)).toHaveLength(1);
     expect(await harness.db.select().from(schema.environmentSavedStateSnapshot)
       .where(eq(schema.environmentSavedStateSnapshot.environmentId, parentId))).toHaveLength(1);
     expect(await teardowns()).toEqual([expect.objectContaining({ scope: "environment", environmentId: branch.id })]);
   });
 
-  it("refuses an active attempt, undeployed changes, a stale review or revision, and then closes nothing", async () => {
+  it("saves without waiting: with changes to deploy, during an active attempt, after a failed attempt, from a starting point", async () => {
+    const saveAs = async (branchId: string, image: string) => {
+      await edit(branchId, setImage(image));
+      const seen = await review(branchId);
+      expect((await save(branchId, seen, defaults(seen.rows), false)).data.closed).toBe(false);
+      expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image });
+    };
+    // Never deployed.
+    await saveAs((await create("recipe", { deployNow: false })).id, "web:2");
+    // Its first attempt still queued.
+    await saveAs((await create("busy")).id, "web:3");
+    // Deployed, then edited and not deployed again.
+    const staged = await create("staged");
+    await settle(staged.id);
+    await saveAs(staged.id, "web:4");
+    // Its latest attempt failed.
+    const failed = await create("failed");
+    await settle(failed.id);
+    await edit(failed.id, setImage("web:5"));
+    await deploy(failed.id, "failed");
+    await saveAs(failed.id, "web:6");
+    expect(await teardowns()).toEqual([]);
+  });
+
+  it("refuses a stale review or revision, and then deletes nothing", async () => {
     const branch = await create("fix-web");
+    await settle(branch.id);
     const refusal = async (seen: Awaited<ReturnType<typeof review>>) =>
-      (await provide(Effect.flip(mergeBranch({ userId }, {
+      (await provide(Effect.flip(saveBranch({ userId }, {
         organizationSlug: "acme", branchEnvironmentId: branch.id, destinationRevision: seen.revision, review: seen.review,
-        picks: defaults(seen.rows), thenClose: true,
+        picks: defaults(seen.rows), thenDelete: true,
       })))).message;
 
     await edit(branch.id, setImage("web:2"));
-    expect(await refusal(await review(branch.id))).toMatch(/still running/);
-    await settle(branch.id);
-    expect(await refusal(await review(branch.id))).toMatch(/aren't deployed/);
-    await deploy(branch.id);
     const seen = await review(branch.id);
     expect(await refusal({ ...seen, review: "stale" })).toBe("Changed since you reviewed. Review again.");
     expect(await refusal({ ...seen, revision: randomUUID() })).toMatch(/Working State changed/);
     // The Branch moved after the review.
     await edit(branch.id, setImage("web:4"));
-    await deploy(branch.id);
     expect(await refusal(seen)).toBe("Changed since you reviewed. Review again.");
 
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
     expect(await teardowns()).toEqual([]);
   });
 
-  it("doesn't close a merged Branch that has changes staged since the Merge", async () => {
-    const branch = await create("late-edit");
-    await settle(branch.id);
+  it("deletes a Branch after saving while it deploys: its attempt is cancelled, then it tears down", async () => {
+    const branch = await create("busy");
     await edit(branch.id, setImage("web:6"));
-    await deploy(branch.id);
     const seen = await review(branch.id);
-    // Merged without closing, then edited before the close runs: the close re-checks under the Branch's locks.
-    expect((await merge(branch.id, seen, defaults(seen.rows), false)).data.closed).toBe(false);
-    await edit(branch.id, setImage("web:7"));
-    expect(await provide(tryCloseBranch(branch.id))).toBe(false);
-    expect(await teardowns()).toEqual([]);
-    // Once it runs its Working State again, it closes.
-    await deploy(branch.id);
-    expect(await provide(tryCloseBranch(branch.id))).toBe(true);
+    expect((await save(branch.id, seen, defaults(seen.rows))).data.closed).toBe(true);
+    expect((await attemptsOf(branch.id)).map((attempt) => attempt.status)).toEqual(["cancelled"]);
+    expect(await teardowns()).toEqual([expect.objectContaining({ scope: "environment", environmentId: branch.id })]);
   });
 
-  it("merges while an author adds a service to the Destination, without a deadlock", async () => {
+  it("shows no rows to save right after an Update, before the Branch deploys it", async () => {
+    await deploy(parentId);
+    const branch = await create("behind");
+    await settle(branch.id);
+    await edit(parentId, setImage("web:2"));
+    await deploy(parentId);
+    const [document] = await harness.db.select().from(schema.environment).where(eq(schema.environment.id, branch.id));
+    await provide(updateBranch({ userId }, { organizationSlug: "acme", environmentId: branch.id, revision: document?.revision ?? "" }));
+    expect((await intentOf(branch.id)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:2" });
+    expect((await review(branch.id)).rows).toEqual([]);
+  });
+
+  it("saves while an author adds a service to the Destination, without a deadlock", async () => {
     await deploy(parentId);
     const branch = await create("authoring");
     await settle(branch.id);
     await edit(branch.id, setImage("web:8"));
     await deploy(branch.id);
     const seen = await review(branch.id);
-    // An author holds production's document, as authoring does, while the Merge takes the Project and then waits for it.
+    // An author holds production's document, as authoring does, while the Save takes the Project and then waits for it.
     const author = await harness.pool.connect();
-    let merged: ReturnType<typeof merge> | undefined;
+    let saved: ReturnType<typeof save> | undefined;
     try {
       await author.query("begin");
       await author.query("select id from environment where id = $1 for update", [parentId]);
-      merged = merge(branch.id, seen, defaults(seen.rows), false);
+      saved = save(branch.id, seen, defaults(seen.rows), false);
       await new Promise((resolve) => setTimeout(resolve, 200));
-      // Adding a service takes a KEY SHARE on the Project through its foreign key: the Merge's Project lock mustn't block it.
+      // Adding a service takes a KEY SHARE on the Project through its foreign key: the Save's Project lock mustn't block it.
       await author.query(`insert into service (id, project_id, environment_id, organization_id, lineage_id, name)
         values ($1, $2, $3, $4, $5, 'Cron')`, [randomUUID(), projectId, parentId, organizationId, workerLineage]);
       await author.query("commit");
     } finally {
       author.release();
     }
-    expect((await merged)?.data.closed).toBe(false);
+    expect((await saved)?.data.closed).toBe(false);
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:8" });
   });
 
-  it("keeps a Kept Branch, advancing its base; a close that can't start leaves the Merge standing", async () => {
-    const kept = await create("staging", true);
+  it("keeps a Kept Branch, advancing its base; a delete that can't start leaves the Save standing", async () => {
+    const kept = await create("staging", { keep: true });
     await settle(kept.id);
     await edit(kept.id, setImage("web:2"));
     await deploy(kept.id);
     const seen = await review(kept.id);
-    expect((await merge(kept.id, seen, defaults(seen.rows))).data.closed).toBe(false);
+    expect((await save(kept.id, seen, defaults(seen.rows))).data.closed).toBe(false);
     expect((await review(kept.id)).rows).toEqual([]);
 
     const unreachable = await create("unreachable");
@@ -318,7 +345,7 @@ describe("mergeBranch", () => {
     await edit(unreachable.id, setImage("web:5"));
     await deploy(unreachable.id);
     const next = await review(unreachable.id);
-    expect((await merge(unreachable.id, next, defaults(next.rows))).data.closed).toBe(false);
+    expect((await save(unreachable.id, next, defaults(next.rows))).data.closed).toBe(false);
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:5" });
     expect(await teardowns()).toEqual([]);
   });
@@ -345,7 +372,7 @@ describe("mergeBranch", () => {
     const seen = await review(branch.id);
     const picks = defaults(seen.rows).filter((pick) => pick.key !== `${workerLineage}:variables.TEST_ONLY`);
     expect(picks.map((pick) => pick.key)).toEqual(expect.arrayContaining([`${webLineage}:source.credentials`, `${workerLineage}:variables.KEEP`]));
-    await merge(branch.id, seen, picks, false);
+    await save(branch.id, seen, picks, false);
 
     const production = await intentOf(parentId);
     expect(production.services.find((node) => node.lineageId === workerLineage)?.variables.map((variable) => variable.key)).toEqual(["KEEP"]);

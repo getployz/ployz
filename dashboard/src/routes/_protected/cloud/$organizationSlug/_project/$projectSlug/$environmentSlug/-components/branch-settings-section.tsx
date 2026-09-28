@@ -10,10 +10,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useKeepBranch } from "#/modules/branches/branch.collection";
 import { defaultPrEnvironmentPlan } from "#/modules/pr-environments/repositories";
 
-/**
- * A Branch's own settings: where it came from and lands, whether it's kept, and how it closes. A PR Environment has no
- * Keep.
- */
+/** A Branch's own settings: where it came from, whether it's kept, and how it closes. A PR Environment has no Keep. */
 export function BranchSettingsSection({ organizationSlug, projectSlug, branch, parent, children }: {
   organizationSlug: string;
   projectSlug: string;
@@ -46,7 +43,7 @@ export function BranchSettingsSection({ organizationSlug, projectSlug, branch, p
       {!pullRequest && <Field orientation="horizontal">
         <FieldContent>
           <FieldLabel htmlFor="keep-branch">Keep this branch</FieldLabel>
-          <FieldDescription>Otherwise it closes after merging, or after 7 days without a deploy.</FieldDescription>
+          <FieldDescription>Otherwise it can be deleted after saving, and closes after 7 days without a deploy.</FieldDescription>
         </FieldContent>
         <Switch id="keep-branch" checked={branch.kept}
           onCheckedChange={(kept) => keepBranch(branch.environmentId, kept)} />

@@ -86,6 +86,7 @@ export function ServiceNode({
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
     missingLiveValues: serviceState.missingLiveValues,
+    off: serviceState.off,
   });
   const state = semantics.state;
   const observedContainers = runtime

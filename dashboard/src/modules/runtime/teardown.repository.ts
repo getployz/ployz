@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { Effect } from "effect";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import {
   parseTeardownTargets,
   type TeardownOutcome,
+  type TeardownAttemptScope,
   type TeardownScope,
   type TeardownTargets,
 } from "#/modules/runtime/teardown";
+import { settleShutdown } from "#/modules/pr-environments/pr-environment.repository.server";
 import { teardownAttempt as schemaTeardownAttempt } from "#/modules/runtime/tables";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { Conflict, Validation } from "#/server/public-error";
@@ -18,12 +20,16 @@ export type TeardownAttempt = typeof schemaTeardownAttempt.$inferSelect;
 /** A teardown that hasn't finished: it will remove what it targets. */
 const ACTIVE_TEARDOWN_STATUSES = ["pending", "running"] as const;
 
-/** Which of `environmentIds` an active teardown targets, whatever its scope (an Environment's, its Parent's, a project's). */
+/**
+ * Which of `environmentIds` an active teardown targets, whatever its scope (an Environment's, its Parent's, a project's).
+ * A shutdown removes no Environment, so it doesn't count.
+ */
 export const activeTeardownFor = Effect.fn("TeardownRepository.activeFor")(function* (environmentIds: readonly string[]) {
   if (environmentIds.length === 0) return new Set<string>();
   const { drizzle } = yield* Database;
   const active = yield* drizzle.select().from(schemaTeardownAttempt).where(and(
     inArray(schemaTeardownAttempt.status, [...ACTIVE_TEARDOWN_STATUSES]),
+    ne(schemaTeardownAttempt.scope, "shutdown"),
     or(...environmentIds.map((environmentId) =>
       sql`${schemaTeardownAttempt.targets} -> 'environments' @> ${JSON.stringify([{ environmentId }])}::jsonb`)),
   ));
@@ -109,7 +115,7 @@ export const insertTeardownAttempt = Effect.fn("TeardownRepository.insert")(
     requestedByUserId: string;
     projectId?: string | null;
     environmentId?: string | null;
-    scope: TeardownScope;
+    scope: TeardownAttemptScope;
     confirmDataLoss: readonly DataLossIdentity[];
     targets: TeardownTargets;
     now?: Date;
@@ -295,6 +301,10 @@ export const completeTeardownAttempt = Effect.fn(
           return yield* new Conflict({
             message: "Teardown completion was not persisted.",
           });
+        }
+        if (updated.scope === "shutdown" && updated.environmentId) {
+          // Any other terminal status leaves the runtime in doubt, so the shutdown counts as failed.
+          yield* settleShutdown(updated.environmentId, input.status === "completed" ? "completed" : "failed");
         }
         return parsedAttempt(updated);
       }),

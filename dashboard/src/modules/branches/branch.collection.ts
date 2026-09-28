@@ -69,16 +69,21 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   return environments.find((environment) => environment.id === environmentId);
 }
 
+/** A PR Environment's last shutdown until it deploys again (`off`: Off, its rows kept), or null. */
+export function useShutdown(organizationSlug: string, environmentId: string) {
+  return useWorkspace(organizationSlug).branches.find((branch) => branch.environmentId === environmentId)?.pullRequest?.shutdown ?? null;
+}
+
 /** Whether anything is staged here: Working State differs from Applied State, as the server's gate reads it. */
-export function useHasStagedChanges(organizationSlug: string, environmentId: string) {
+function useHasStagedChanges(organizationSlug: string, environmentId: string) {
   const document = useEnvironmentDocument(organizationSlug, environmentId);
   const state = useEnvironmentChangeStateProjection({ organizationSlug, environmentId });
   return hasUndeployedChanges(document?.compiled.nodeSnapshots ?? [], state?.applied.nodes ?? []);
 }
 
 /**
- * Why Merge, Update and Own Copy must wait, or null: a Branch moves only what it runs. Something staged (a starting point's
- * nodes too) or an active attempt holds them; the server's gate, assertBranchSettled, is the same rule.
+ * Why Update and Own Copy must wait, or null: they rewrite what a Branch runs. Something staged (a starting point's nodes
+ * too) or an active attempt holds them; the server's gate, assertBranchSettled, is the same rule. Save never waits.
  */
 export function useBranchUnsettled(organizationSlug: string, environmentId: string): string | null {
   const startingPoint = useStartingPoint(organizationSlug, environmentId);

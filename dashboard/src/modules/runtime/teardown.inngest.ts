@@ -24,6 +24,7 @@ import {
   destroyEnvironmentActivity,
   dropTeardownCloudRowsActivity,
   failOwnedTeardownAttemptActivity,
+  finishShutdownActivity,
   prepareTeardownAttemptActivity,
   recordTeardownRuntimeEvidenceActivity,
   revokeTeardownPairingActivity,
@@ -252,9 +253,14 @@ export async function executeProcessTeardown({
     ));
     return { attemptId: partial.id, status: partial.status };
   }
-  await step.run("drop-cloud-rows", () =>
-    runInngestEffect(dropTeardownCloudRowsActivity(attempt)),
-  );
+  // A shutdown keeps every row.
+  if (attempt.scope === "shutdown") {
+    await step.run("finish-shutdown", () => runInngestEffect(finishShutdownActivity(attempt)));
+  } else {
+    await step.run("drop-cloud-rows", () =>
+      runInngestEffect(dropTeardownCloudRowsActivity(attempt)),
+    );
+  }
   const completed = await step.run("persist-teardown-outcome", () =>
     runInngestEffect(
       completeTeardownAttemptActivity({

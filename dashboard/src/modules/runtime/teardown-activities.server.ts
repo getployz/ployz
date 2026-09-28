@@ -201,6 +201,13 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
   if (clusterDomain) yield* releaseClusterDomain(clusterDomain);
 });
 
+/** Once a shutdown's runtime half is done, its services count as never deployed, so their Setup Commands run again. */
+export const finishShutdownActivity = Effect.fn("Teardown.finishShutdown")(function* (attempt: TeardownAttempt) {
+  const { drizzle } = yield* Database;
+  yield* drizzle.update(schemaService).set({ firstDeployedAt: null })
+    .where(inArray(schemaService.environmentId, attempt.targets.environments.map((target) => target.environmentId)));
+});
+
 export const failOwnedTeardownAttemptActivity = Effect.fn(
   "fail-teardown-retry-exhausted",
 )(function* (input: {
