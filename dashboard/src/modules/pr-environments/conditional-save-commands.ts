@@ -15,18 +15,16 @@ import {
  * review, and seals new values. Pending edits to the PR Environment save first, so the review matches them. The Org
  * Store row is read back before it counts as done.
  */
-export function useConditionalSave(input: { organizationSlug: string; prEnvironmentId: string; destinationEnvironmentId: string; prNumber: number }) {
-  const saves = getConditionalSavesCollection(input.organizationSlug, useCollectionScope());
-  const queue = useEnvironmentDocumentQueue(input.organizationSlug);
-  const { prNumber, ...scope } = input;
+export function useConditionalSave(scope: { organizationSlug: string; prEnvironmentId: string; destinationEnvironmentId: string }) {
+  const saves = getConditionalSavesCollection(scope.organizationSlug, useCollectionScope());
+  const queue = useEnvironmentDocumentQueue(scope.organizationSlug);
   return {
     save: useMutation({
       mutationFn: async (save: { review: string; picks: SavePick[] }) => {
-        await queue.settled(input.prEnvironmentId);
+        await queue.settled(scope.prEnvironmentId);
         await saveConditionalSaveServerFn({ data: { ...scope, ...save } });
         await reconcileCollection(saves);
       },
-      onSuccess: () => toast.success(`Goes live when PR #${prNumber} merges`),
     }),
     withdraw: useMutation({
       mutationFn: async () => {

@@ -1,15 +1,18 @@
 import { useState, type ReactNode } from "react";
 import { useParams } from "@tanstack/react-router";
-import { ExternalLinkIcon, GitBranchIcon, GitPullRequestIcon, InfoIcon, Undo2Icon, XIcon } from "lucide-react";
+import { toast } from "sonner";
+import type { BranchChoice, BranchOption } from "@ployz/sdk/config";
+import { ExternalLinkIcon, GitBranchIcon, GitPullRequestIcon, InfoIcon, TriangleAlertIcon, Undo2Icon, XIcon } from "lucide-react";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "#/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { useSaveBranch } from "#/modules/branches/branch-commands";
 import { listNames, plural } from "#/modules/branches/branch-plan";
-import { presentRow, type PresentedRow } from "#/modules/branches/branch-review";
+import { presentRow, type ChangeRow, type PresentedRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView, PullRequest } from "#/modules/branches/use-branch-review";
 import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
 import { usePrEnvironmentOff } from "#/modules/pr-environments/off-commands";
@@ -19,145 +22,234 @@ import { useEnvironmentDocument } from "#/modules/environment-design/environment
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { cn } from "#/lib/utils";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { useRowPicks } from "./RowPicks";
 
+type RowPick = { ticked: boolean; option?: BranchOption; value: string };
+/** One row of a sheet. Without `pick` it's read-only. */
+type Entry = { row: ChangeRow; presented: PresentedRow; choice?: BranchChoice; pick?: RowPick };
 type Picks = ReturnType<typeof useRowPicks>;
-type Picked = Picks["picks"][number];
 
 /**
- * Save: what a Branch puts in its Parent, service by service, as Change · Current · New. × leaves a change out, and
- * tapping New gives the Parent its own value; a new secret asks for one. Nothing deploys: the Parent gets them as its
- * changes to deploy. Unless the Branch is kept or is the Default Environment, it's deleted after saving by default.
- * On a PR Environment, `landing` is one of its Destinations: the changes go live with the pull request instead, and it
- * can shut down after saving (off by default).
+ * A tick per row and a value choice per variable, starting from core's defaults. `sent` is what the server takes: the
+ * ticked rows' keys, options and new values ("" for none). Unticking a new node leaves out its settings too.
  */
-export function SaveSheet({ review, branchId, landing, onClose }: {
-  review: BranchReviewView; branchId: string; landing?: BranchReviewView["goesTo"][number]; onClose: () => void;
+function useRowPicks(rows: ChangeRow[], nameOf: (lineage: string) => string) {
+  const [edits, setEdits] = useState<Record<string, Partial<RowPick>>>({});
+  const picks = rows.map((row) => {
+    const choice = row.role === "move" ? row.choice : undefined;
+    const pick: RowPick = { ticked: true, option: choice?.default, value: "", ...edits[row.key] };
+    return { row, choice, pick, presented: presentRow(row, nameOf) };
+  });
+  const edit = (key: string, change: Partial<RowPick>) => setEdits((current) => ({ ...current, [key]: { ...current[key], ...change } }));
+  const leftOut = new Set(picks.flatMap(({ row, pick, presented }) => row.key.endsWith(":node") && !pick.ticked ? [presented.lineageId] : []));
+  const ticked = picks.filter(({ pick, presented }) => pick.ticked && !leftOut.has(presented.lineageId));
+  return {
+    picks, edit, ticked,
+    missing: ticked.find(({ pick }) => pick.option === "new" && !pick.value),
+    sent: ticked.map(({ row, pick }) => ({ key: row.key, option: pick.option, value: pick.option === "new" ? pick.value : "" })),
+  };
+}
+
+/**
+ * Save: what a Branch puts in its Parent. Nothing deploys: the Parent gets them as its changes to deploy. Unless the
+ * Branch is kept or is the Default Environment, it's deleted after saving by default.
+ */
+export function SaveSheet({ review, branchId, onClose }: { review: BranchReviewView; branchId: string; onClose: () => void }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const name = useEnvironmentDocument(params.organizationSlug, branchId)?.name ?? params.environmentSlug;
+  const destination = review.parent;
+  const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branchId);
+  const save = useSaveBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: name, destination });
+  const rows = useRowPicks(review.save, review.nameOf);
+  const [deleteAfter, setDeleteAfter] = useState(true);
+  const deletable = !review.kept && !isDefault;
+  return (
+    <Sheet title={`${plural(rows.picks.length, "change")} for ${destination.name}`} entries={rows.picks} picks={rows} destination={destination.name}
+      info={saveInfo(rows, destination.name) ?? `Nothing deploys yet. ${destination.name} gets ${plural(rows.ticked.length, "change")} to deploy.`}
+      actions={<SaveButton picks={rows} destination={destination.name} pending={save.isPending}
+        onClick={() => save.mutate({ branchEnvironmentId: branchId, review: review.saveReview, thenDelete: deletable && deleteAfter, picks: rows.sent })} />}
+      error={save.isError ? save.error.message : null} onClose={onClose}>
+      {deletable ? <SwitchField id="save-then-delete" label={`Delete ${name} after saving`} checked={deleteAfter} onChange={setDeleteAfter} /> : null}
+    </Sheet>
+  );
+}
+
+/**
+ * Save on a PR Environment, into one of its Destinations: the changes go live with the pull request, and it can shut down
+ * after saving (off by default).
+ */
+export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }: {
+  review: BranchReviewView; branchId: string; landing: BranchReviewView["goesTo"][number]; pullRequest: PullRequest; onClose: () => void;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const document = useEnvironmentDocument(params.organizationSlug, branchId);
   const name = document?.name ?? params.environmentSlug;
-  const pr = landing ? review.pullRequest : null;
-  const target = landing?.destination ?? review.parent;
-  const destination = target.name;
-  const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branchId);
-  const saveBranch = useSaveBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: name, destination: target });
-  const saveForPr = useConditionalSave({
-    organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: target.id, prNumber: pr?.number ?? 0,
-  }).save;
-  const save = pr ? saveForPr : saveBranch;
+  const destination = landing.destination.name;
+  const { save } = useConditionalSave({ organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: landing.destination.id });
   const { shutDown } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId: branchId, name });
   const [shutDownAfter, setShutDownAfter] = useState(false);
-  const rows = useRowPicks(landing?.rows ?? review.save, review.nameOf);
-  const [deleteAfter, setDeleteAfter] = useState(true);
-  const deletable = !pr && !review.kept && !isDefault;
-  const groups = new Map<string, Picked[]>();
-  for (const picked of rows.picks) groups.set(picked.presented.lineageId, [...(groups.get(picked.presented.lineageId) ?? []), picked]);
-  const count = rows.ticked.length;
-  const repository = pr && document?.intent.services.map(({ config }) => githubAppRepository(config))
-    .find((candidate) => candidate?.repositoryId === pr.repositoryId)?.repository;
+  const rows = useRowPicks(landing.rows, review.nameOf);
+  const repository = document?.intent.services.map(({ config }) => githubAppRepository(config))
+    .find((candidate) => candidate?.repositoryId === pullRequest.repositoryId)?.repository;
+  return (
+    <Sheet title={`${plural(rows.picks.length, "change")} for ${destination}`} subtitle={<PullRequestLink pr={pullRequest} repository={repository} />}
+      entries={rows.picks} picks={rows} destination={destination}
+      info={saveInfo(rows, destination) ?? redeployLine(rows.ticked.map(({ presented }) => presented), [pullRequest.number])}
+      actions={<SaveButton picks={rows} destination={destination} pending={save.isPending}
+        onClick={() => save.mutate({ review: landing.review, picks: rows.sent }, { onSuccess: () => {
+          toast.success(`Goes live when PR #${pullRequest.number} merges`);
+          if (shutDownAfter) shutDown.mutate();
+          onClose();
+        } })} />}
+      error={save.isError ? save.error.message : null} onClose={onClose}>
+      <SwitchField id="save-then-shut-down" label={`Shut down ${name} now`} description="Starts again on the next push"
+        checked={shutDownAfter} onChange={setShutDownAfter} />
+    </Sheet>
+  );
+}
 
+/** What goes live with pull requests, read-only, as the Save sheet showed it. `actions` sit beside the consequence line. */
+export function GoesLiveSheet({ title, saves, nameOf, actions, onClose }: {
+  title: string;
+  saves: Saves;
+  /** A lineage's name, as the save's PR Environment calls it. */
+  nameOf: (lineage: string, prEnvironmentId: string | null) => string;
+  actions?: ReactNode;
+  onClose: () => void;
+}) {
+  const entries = savedEntries(saves, nameOf);
+  return (
+    <Sheet title={title} entries={entries} info={redeployLine(entries.map(({ presented }) => presented), [...new Set(saves.map((save) => save.prNumber))])}
+      actions={actions} onClose={onClose} />
+  );
+}
+
+type Saves = ReadonlyArray<Pick<ConditionalSaveRow, "prNumber" | "prEnvironmentId" | "rows">>;
+
+function savedEntries(saves: Saves, nameOf: (lineage: string, prEnvironmentId: string | null) => string) {
+  return saves.flatMap((save) => save.rows.map(({ row }): Entry => ({ row, presented: presentRow(row, (lineage) => nameOf(lineage, save.prEnvironmentId)) })));
+}
+
+/** What goes live with pull requests, read-only and neutral, as a section of another sheet. */
+export function GoesLiveChanges({ title, saves, nameOf }: { title: string; saves: Saves; nameOf: (lineage: string, prEnvironmentId: string | null) => string }) {
+  return (
+    <section aria-label={title} className="flex flex-col gap-3">
+      <h3 className="font-medium">{title}</h3>
+      <ServiceSections entries={savedEntries(saves, nameOf)} />
+    </section>
+  );
+}
+
+/** The sheet: a service per section, a consequence line and its actions. Without `picks` it's read-only. */
+function Sheet({ title, subtitle, entries, picks, destination = "", info, actions, error = null, onClose, children }: {
+  title: string; subtitle?: ReactNode; entries: Entry[]; picks?: Picks; destination?: string; info: string; actions: ReactNode;
+  error?: string | null; onClose: () => void; children?: ReactNode;
+}) {
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
-        <div className="shrink-0 border-b px-6 py-4 pr-12">
-          <DialogTitle>{plural(rows.picks.length, "change")} for {destination}</DialogTitle>
-          {pr ? <PullRequestLink pr={pr} repository={repository ?? undefined} /> : null}
-        </div>
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
-          {[...groups.values()].map((group) => <ServiceChanges key={group[0]?.presented.lineageId} group={group} picks={rows} destination={destination} />)}
-          {deletable ? (
-            <FieldLabel htmlFor="save-then-delete">
-              <Field orientation="horizontal">
-                <FieldContent>Delete {name} after saving</FieldContent>
-                <Switch id="save-then-delete" checked={deleteAfter} onCheckedChange={setDeleteAfter} />
-              </Field>
-            </FieldLabel>
-          ) : null}
-          {pr ? (
-            <FieldLabel htmlFor="save-then-shut-down">
-              <Field orientation="horizontal">
-                <FieldContent>
-                  Shut down {name} now
-                  <FieldDescription>Starts again on the next push</FieldDescription>
-                </FieldContent>
-                <Switch id="save-then-shut-down" checked={shutDownAfter} onCheckedChange={setShutDownAfter} />
-              </Field>
-            </FieldLabel>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 flex-col gap-3 border-t px-6 py-4 sm:flex-row sm:items-center">
-          <p className="flex flex-1 items-start gap-2 text-sm text-muted-foreground">
-            <InfoIcon className="mt-0.5 size-4 shrink-0" />
-            {rows.missing ? `Enter ${destination}'s value for ${rows.missing.presented.label}.`
-              : count === 0 ? "Nothing to save."
-              : pr ? goesLive(rows.ticked.map(({ presented }) => presented), [pr.number])
-              : `Nothing deploys yet. ${destination} gets ${plural(count, "change")} to deploy.`}
-          </p>
-          <Button disabled={count === 0 || rows.missing !== undefined || save.isPending}
-            onClick={() => landing
-              ? saveForPr.mutate({ review: landing.review, picks: rows.sent }, { onSuccess: () => {
-                if (shutDownAfter) shutDown.mutate();
-                onClose();
-              } })
-              : saveBranch.mutate({ branchEnvironmentId: branchId, review: review.saveReview, thenDelete: deletable && deleteAfter, picks: rows.sent })}>
-            {save.isPending ? <Spinner data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}Save to {destination}
-          </Button>
-        </div>
-        {save.isError ? <FieldError className="px-6 pb-4">{save.error.message}</FieldError> : null}
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          {subtitle}
+        </DialogHeader>
+        <ServiceSections entries={entries} picks={picks} destination={destination} />
+        {children}
+        {error ? <FieldError>{error}</FieldError> : null}
+        <DialogFooter className="sm:items-center">
+          <p className="flex flex-1 items-start gap-2 text-muted-foreground"><InfoIcon className="mt-0.5 size-4 shrink-0" />{info}</p>
+          {actions}
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
-/** One service: what happens to it, then its settings. A new service's own row is its header's ×. */
-function ServiceChanges({ group, picks, destination }: { group: Picked[]; picks: Picks; destination: string }) {
+/** A section per service, in the rows' order. */
+function ServiceSections({ entries, picks, destination = "" }: { entries: Entry[]; picks?: Picks; destination?: string }) {
+  const groups = new Map<string, Entry[]>();
+  for (const entry of entries) groups.set(entry.presented.lineageId, [...(groups.get(entry.presented.lineageId) ?? []), entry]);
+  return [...groups].map(([lineage, group]) => <ServiceChanges key={lineage} group={group} picks={picks} destination={destination} />);
+}
+
+/** Why Save can't run yet, or null. */
+function saveInfo(rows: Picks, destination: string) {
+  return rows.missing ? `Enter ${destination}'s value for ${rows.missing.presented.label}.` : rows.ticked.length === 0 ? "Nothing to save." : null;
+}
+
+function SaveButton({ picks, destination, pending, onClick }: { picks: Picks; destination: string; pending: boolean; onClick: () => void }) {
+  return (
+    <Button disabled={picks.ticked.length === 0 || picks.missing !== undefined || pending} onClick={onClick}>
+      {pending ? <Spinner data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}Save to {destination}
+    </Button>
+  );
+}
+
+function SwitchField({ id, label, description, checked, onChange }: {
+  id: string; label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void;
+}) {
+  return (
+    <FieldLabel htmlFor={id}>
+      <Field orientation="horizontal">
+        <FieldContent>{label}{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
+        <Switch id={id} checked={checked} onCheckedChange={onChange} />
+      </Field>
+    </FieldLabel>
+  );
+}
+
+/** One service: what happens to it, then its settings as Change · Current · New. A new service's own row is its header's ×. */
+function ServiceChanges({ group, picks, destination }: { group: Entry[]; picks: Picks | undefined; destination: string }) {
   const node = group.find(({ row }) => row.key.endsWith(":node"));
-  const settings = group.filter((picked) => picked !== node);
+  const settings = group.filter((entry) => entry !== node);
   const first = group[0];
   if (!first) return null;
-  const leftOut = node !== undefined && !node.pick.ticked;
+  const leftOut = node?.pick !== undefined && !node.pick.ticked;
   return (
-    <section className="overflow-hidden rounded-lg border" aria-label={first.presented.node}>
-      <header className="flex items-center gap-2 px-3 py-2 text-sm">
+    <section className="flex flex-col gap-2 rounded-lg border p-3" aria-label={first.presented.node}>
+      <header className="flex items-center gap-2">
         <span className={cn("flex-1", leftOut && "text-muted-foreground line-through")}>
           <span className="font-medium">{first.presented.node}</span> will be {node ? "added" : "updated"}
         </span>
-        {settings.length ? <span className="text-xs text-muted-foreground">{plural(settings.length, "setting")}</span> : null}
-        {node ? <LeaveOut picked={node} picks={picks} /> : null}
+        {settings.length ? <span className="text-muted-foreground">{plural(settings.length, "setting")}</span> : null}
+        {node && picks ? <LeaveOut entry={node} picks={picks} /> : null}
       </header>
       {settings.length && !leftOut ? (
-        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 border-t bg-muted/40 px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <div className={cn("grid items-center gap-x-2 gap-y-1", picks
+          ? "grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+          : "grid-cols-2 sm:grid-cols-3")}>
           <span className="hidden text-muted-foreground sm:block">Change</span>
           <span className="text-muted-foreground">Current</span>
-          <span className="col-span-2 text-muted-foreground">New</span>
-          {settings.map((picked) => <SettingRow key={picked.row.key} picked={picked} picks={picks} destination={destination} />)}
+          <span className={cn("text-muted-foreground", picks && "col-span-2")}>New</span>
+          {settings.map((entry) => <SettingRow key={entry.row.key} entry={entry} picks={picks} destination={destination} />)}
         </div>
       ) : null}
     </section>
   );
 }
 
-function SettingRow({ picked, picks, destination }: { picked: Picked; picks: Picks; destination: string }) {
-  const { presented, pick } = picked;
-  const off = !pick.ticked;
+/** A setting the Destination also changed since branching carries a marker. */
+function SettingRow({ entry, picks, destination }: { entry: Entry; picks: Picks | undefined; destination: string }) {
+  const { presented, pick, row } = entry;
+  const off = pick !== undefined && !pick.ticked;
   return (
     <>
-      <span className={cn("col-span-3 pt-2 font-medium sm:col-span-1 sm:pt-0", off && "text-muted-foreground line-through")}>{presented.label}</span>
-      <Value className={cn("bg-background", off && "opacity-50")}>{presented.before || "—"}</Value>
-      <NewValue picked={picked} picks={picks} destination={destination} />
-      <LeaveOut picked={picked} picks={picks} />
+      <span className={cn("col-span-full flex flex-wrap items-center gap-1.5 pt-2 font-medium sm:col-span-1 sm:pt-0", off && "text-muted-foreground line-through")}>
+        {presented.label}
+        {row.role === "move" && row.conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {destination || "it"} too</Badge> : null}
+      </span>
+      <Value className={cn(off && "opacity-50")}>{presented.before || "—"}</Value>
+      {picks ? <><NewValue entry={entry} picks={picks} destination={destination} /><LeaveOut entry={entry} picks={picks} /></>
+        : <Value>{presented.after || "—"}</Value>}
     </>
   );
 }
 
 /** The value that goes to the Destination. A variable's opens to give the Destination its own value. */
-function NewValue({ picked: { row, choice, pick, presented }, picks, destination }: { picked: Picked; picks: Picks; destination: string }) {
+function NewValue({ entry: { row, choice, pick, presented }, picks, destination }: { entry: Entry; picks: Picks; destination: string }) {
   const [editing, setEditing] = useState(false);
-  if (!pick.ticked) return <Value className="opacity-50">{presented.after || "—"}</Value>;
+  if (!pick?.ticked) return <Value className="opacity-50">{presented.after || "—"}</Value>;
   if (choice && pick.option === "new") {
     return (
-      <Input className="h-8 font-mono text-xs" type={choice.secret ? "password" : "text"} autoComplete="off" autoFocus={editing}
+      <Input className="font-mono" type={choice.secret ? "password" : "text"} autoComplete="off" autoFocus={editing}
         value={pick.value} placeholder="new value" aria-label={`${presented.label} in ${destination}`}
         onChange={(event) => picks.edit(row.key, { value: event.target.value })} />
     );
@@ -175,12 +267,13 @@ function Value({ className, children }: { className?: string; children: string }
   return <span className={cn("block truncate rounded-md border px-2 py-1.5 font-mono", className)} title={children}>{children}</span>;
 }
 
-function LeaveOut({ picked: { row, pick, presented }, picks }: { picked: Picked; picks: Picks }) {
+function LeaveOut({ entry: { row, pick, presented }, picks }: { entry: Entry; picks: Picks }) {
   const what = `${presented.node}${presented.label && !row.key.endsWith(":node") ? ` · ${presented.label}` : ""}`;
+  const ticked = pick?.ticked ?? true;
   return (
-    <Button size="icon-sm" variant="ghost" aria-label={pick.ticked ? `Leave out ${what}` : `Save ${what}`}
-      title={pick.ticked ? "Leave out" : "Put back"} onClick={() => picks.edit(row.key, { ticked: !pick.ticked })}>
-      {pick.ticked ? <XIcon /> : <Undo2Icon />}
+    <Button size="icon-sm" variant="ghost" aria-label={ticked ? `Leave out ${what}` : `Save ${what}`}
+      title={ticked ? "Leave out" : "Put back"} onClick={() => picks.edit(row.key, { ticked: !ticked })}>
+      {ticked ? <XIcon /> : <Undo2Icon />}
     </Button>
   );
 }
@@ -188,81 +281,17 @@ function LeaveOut({ picked: { row, pick, presented }, picks }: { picked: Picked;
 /** "PR #142 · Add discount codes ↗", to GitHub, where it merges. */
 function PullRequestLink({ pr, repository }: { pr: PullRequest; repository: string | undefined }) {
   const label = <><GitPullRequestIcon className="size-3.5" />PR #{pr.number} · {pr.title}</>;
-  return repository ? (
-    <a href={`https://github.com/${repository}/pull/${pr.number}`} target="_blank" rel="noreferrer"
-      className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
-      {label}<ExternalLinkIcon className="size-3.5" />
-    </a>
-  ) : <p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground">{label}</p>;
+  return (
+    <DialogDescription className="flex items-center gap-1.5">
+      {repository ? <a href={`https://github.com/${repository}/pull/${pr.number}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:text-foreground">
+        {label}<ExternalLinkIcon className="size-3.5" />
+      </a> : label}
+    </DialogDescription>
+  );
 }
 
 /** "web and worker redeploy when PR #142 merges". */
-function goesLive(rows: PresentedRow[], prNumbers: number[]) {
+function redeployLine(rows: PresentedRow[], prNumbers: number[]) {
   const nodes = [...new Set(rows.map((row) => row.node))];
   return `${listNames(nodes)} redeploy${nodes.length === 1 ? "s" : ""} when ${listNames(prNumbers.map((n) => `PR #${n}`))} merge${prNumbers.length === 1 ? "s" : ""}`;
-}
-
-/**
- * What goes live with pull requests, read-only, as the Save sheet showed it: service by service, Current · New.
- * `actions` sit beside the consequence line.
- */
-export function GoesLiveSheet({ title, saves, nameOf, actions, onClose }: {
-  title: string;
-  saves: ReadonlyArray<Pick<ConditionalSaveRow, "prNumber" | "prEnvironmentId" | "rows">>;
-  /** A lineage's name, as the save's PR Environment calls it. */
-  nameOf: (lineage: string, prEnvironmentId: string | null) => string;
-  actions?: ReactNode;
-  onClose: () => void;
-}) {
-  const rows = saves.flatMap((save) => save.rows.map(({ row }) => presentRow(row, (lineage) => nameOf(lineage, save.prEnvironmentId))));
-  const groups = new Map<string, PresentedRow[]>();
-  for (const row of rows) groups.set(row.lineageId, [...(groups.get(row.lineageId) ?? []), row]);
-  return (
-    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
-        <div className="shrink-0 border-b px-6 py-4 pr-12"><DialogTitle>{title}</DialogTitle></div>
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
-          {[...groups.values()].map((group) => {
-            const node = group.find((row) => row.key.endsWith(":node"));
-            const settings = group.filter((row) => row !== node);
-            const first = group[0];
-            return first ? (
-              <section key={first.lineageId} className="overflow-hidden rounded-lg border" aria-label={first.node}>
-                <header className="flex items-center gap-2 px-3 py-2 text-sm">
-                  <span className="flex-1"><span className="font-medium">{first.node}</span> will be {node ? "added" : "updated"}</span>
-                  {settings.length ? <span className="text-xs text-muted-foreground">{plural(settings.length, "setting")}</span> : null}
-                </header>
-                {settings.length ? (
-                  <div className="grid grid-cols-2 items-center gap-x-2 gap-y-1 border-t bg-muted/40 px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)]">
-                    <span className="hidden text-muted-foreground sm:block">Change</span>
-                    <span className="text-muted-foreground">Current</span>
-                    <span className="text-muted-foreground">New</span>
-                    {settings.map((row) => (
-                      <GoesLiveRow key={row.key} row={row} />
-                    ))}
-                  </div>
-                ) : null}
-              </section>
-            ) : null;
-          })}
-        </div>
-        <div className="flex shrink-0 flex-col gap-3 border-t px-6 py-4 sm:flex-row sm:items-center">
-          <p className="flex flex-1 items-start gap-2 text-sm text-muted-foreground">
-            <InfoIcon className="mt-0.5 size-4 shrink-0" />{goesLive(rows, [...new Set(saves.map((save) => save.prNumber))])}
-          </p>
-          {actions}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function GoesLiveRow({ row }: { row: PresentedRow }) {
-  return (
-    <>
-      <span className="col-span-2 pt-2 font-medium sm:col-span-1 sm:pt-0">{row.label}</span>
-      <Value className="bg-background">{row.before || "—"}</Value>
-      <Value className="bg-background">{row.after || "—"}</Value>
-    </>
-  );
 }

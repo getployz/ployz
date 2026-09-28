@@ -12,6 +12,9 @@ export type PrCheckDestination = {
 
 export type PrCheck = { passing: boolean; reason: string };
 
+/** "3 changes go live", "1 change goes live". */
+export const goLive = (n: number) => `${plural(n, "change")} go${n === 1 ? "es" : ""} live`;
+
 const sum = (list: number[]) => list.reduce((total, n) => total + n, 0);
 
 /**
@@ -28,5 +31,5 @@ export function prCheck(destinations: PrCheckDestination[], targetBranch: string
   const unsaved = waiting.filter((destination) => !destination.save);
   if (unsaved.length) return { passing: false, reason: `${plural(sum(unsaved.map((d) => d.changes)), "change")} to save in Ployz` };
   const saved = sum(waiting.map((d) => d.save?.changes ?? 0));
-  return { passing: true, reason: `${plural(saved, "change")} go${saved === 1 ? "es" : ""} live with this PR` };
+  return { passing: true, reason: `${goLive(saved)} with this PR` };
 }
