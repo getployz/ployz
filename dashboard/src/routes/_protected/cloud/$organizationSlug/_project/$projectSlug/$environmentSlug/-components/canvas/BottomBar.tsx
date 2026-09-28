@@ -160,16 +160,18 @@ export function BottomBar({
     </Row>
   ) : rows.own === "attempt" && shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
     : rows.own === "waiting" ? <WaitingState saves={waiting} /> : null;
+  // Saying where only when more than one Destination has something.
+  const several = rows.parent.filter(({ destination }) => destination !== null).length > 1;
   const parent = !review ? [] : rows.parent.map(({ row, destination }) => {
     const landing = destination === null ? undefined : review.goesTo[destination];
     const key = `${row}:${destination}`;
     if (row === "update") return <UpdatesState key={key} review={review} environmentId={environmentId} />;
-    if (row === "saved") return landing?.saved && pr ? <SavedState key={key} review={review} saved={landing.saved} pullRequest={pr} environmentId={environmentId} /> : null;
+    if (row === "saved") return landing?.saved && pr ? <SavedState key={key} review={review} saved={landing.saved} pullRequest={pr} environmentId={environmentId} several={several} /> : null;
     return (
       <Row key={key} icon={<GitBranchIcon className="size-4 text-muted-foreground" />}
         title={`${plural(landing?.rows.length ?? review.changes, "change")} to save`}
         detail={!landing || !pr ? `into ${review.parent.name}`
-          : `${review.goesTo.length > 1 ? `into ${landing.destination.name} · ` : ""}go live when PR #${pr.number} merges`}>
+          : `${several ? `into ${landing.destination.name} · ` : ""}go live when PR #${pr.number} merges`}>
         <Button size="sm" variant="outline" onClick={() => setSaving({ destination })}>Save</Button>
       </Row>
     );
@@ -211,15 +213,15 @@ function stagedDetail(groups: CanvasEnvironmentChangeGroup[], totalChanges: numb
 const goLive = (n: number) => `${plural(n, "change")} go${n === 1 ? "es" : ""} live`;
 
 /** A PR Environment's changes saved for one Destination: they go live when its pull request merges. Undo is under ⋮. */
-function SavedState({ review, saved, pullRequest, environmentId }: {
-  review: BranchReviewView; saved: ConditionalSaveRow; pullRequest: PullRequest; environmentId: string;
+function SavedState({ review, saved, pullRequest, environmentId, several }: {
+  review: BranchReviewView; saved: ConditionalSaveRow; pullRequest: PullRequest; environmentId: string; several: boolean;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { withdraw } = useConditionalSave({
     organizationSlug: params.organizationSlug, prEnvironmentId: environmentId, destinationEnvironmentId: saved.destinationEnvironmentId, prNumber: pullRequest.number,
   });
   const [details, setDetails] = useState(false);
-  const into = review.goesTo.length > 1 ? ` · into ${review.environmentName(saved.destinationEnvironmentId)}` : "";
+  const into = several ? ` · into ${review.environmentName(saved.destinationEnvironmentId)}` : "";
   return (
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={goLive(saved.rows.length)} detail={`when PR #${pullRequest.number} merges${into}`}>
       <Button size="sm" variant="outline" onClick={() => setDetails(true)}>Details</Button>
