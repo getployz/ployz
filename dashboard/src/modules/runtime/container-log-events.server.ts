@@ -7,6 +7,8 @@ const RETRY_MS = 3_000;
 const OFFLINE_RETRY_MS = 5_000;
 
 const TAIL_BUDGET_MS = 3_000;
+// Past this the follow is left unread until `live`: its transport holds the rest, so nothing is lost or piled up here.
+const HELD_MAX = 1_000;
 
 type ContainerLogStreamEvent = LogEvent | { type: "live" };
 
@@ -23,14 +25,13 @@ export async function* backfillThenFollow(tail: AsyncIterable<LogEvent>, follow:
   const fromFollow = () => followReader.next().then(result => ({ from: "follow" as const, result }));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<{ from: "late" }>(resolve => { timer = setTimeout(resolve, TAIL_BUDGET_MS, { from: "late" }); });
-  // ponytail: held records are unbounded, but only for the tail budget.
   const held: LogEvent[] = [];
   let followDone = false;
   let nextTail = fromTail();
   let nextFollow = fromFollow();
   try {
     for (;;) {
-      const next = await Promise.race(followDone ? [nextTail, late] : [nextTail, nextFollow, late]);
+      const next = await Promise.race(followDone || held.length >= HELD_MAX ? [nextTail, late] : [nextTail, nextFollow, late]);
       if (next.from === "late") break;
       if (next.from === "tail") {
         if (next.result.done) break;
