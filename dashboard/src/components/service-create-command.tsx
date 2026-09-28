@@ -94,8 +94,10 @@ type ServiceCommandProps = {
     y: number;
   };
   initialPanel?: InitialPanel;
+  /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
   onCreated?: (
     result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
+    stillHere: boolean,
   ) => void | Promise<void>;
   onCreateVolume?: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
@@ -306,7 +308,7 @@ function useServiceCreateActions({
       await applyCreatedService(props.organizationSlug, collectionScope, result.data);
       if (props.mode === "service") {
         // Someone who navigated away while it saved stays there; the service still lands on the canvas.
-        if (stillHere()) await props.onCreated?.(result.data);
+        await props.onCreated?.(result.data, stillHere());
         return;
       }
       await navigate({
