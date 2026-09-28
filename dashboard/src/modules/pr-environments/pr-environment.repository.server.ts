@@ -34,9 +34,9 @@ export const prDestinations = Effect.fn("PrEnvironments.prDestinations")(functio
     .leftJoin(prEnvironment, eq(prEnvironment.environmentId, environment.id))
     .where(eq(environment.projectId, row.projectId))
     .orderBy(environment.id, desc(environmentSavedStateSnapshot.createdAt), desc(environmentSavedStateSnapshot.id));
-  const environments = yield* Effect.forEach(rows, (row) => Effect.gen(function* () {
-    const savedServices = row.intent === null ? [] : (yield* decodePersistedSavedEnvironmentIntent(row.intent)).services.map((node) => node.config);
-    return { id: row.id, parentId: row.parentId, prEnvironment: row.prEnvironment !== null, savedServices };
+  const environments = yield* Effect.forEach(rows, (candidate) => Effect.gen(function* () {
+    const savedServices = candidate.intent === null ? [] : (yield* decodePersistedSavedEnvironmentIntent(candidate.intent)).services.map((node) => node.config);
+    return { id: candidate.id, parentId: candidate.parentId, prEnvironment: candidate.prEnvironment !== null, savedServices };
   }));
   return destinations({ environments, repositoryId: row.repositoryId, targetBranch: row.targetBranch });
 });
