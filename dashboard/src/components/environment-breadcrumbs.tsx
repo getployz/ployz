@@ -47,7 +47,7 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
         <span className="truncate">{parent.name}</span>
       </Link>,
     ] : [],
-    <EnvironmentCrumb key="environment" scope={scope} />,
+    <EnvironmentCrumb key={`environment:${scope.environmentSlug}`} scope={scope} />,
     ...section === "architecture" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }

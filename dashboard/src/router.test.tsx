@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act, screen } from "@testing-library/react";
 import { renderToString } from "react-dom/server";
-import { hydrateRoot } from "react-dom/client";
+import { createRoot, hydrateRoot } from "react-dom/client";
+import { useState } from "react";
 import {
   createRootRoute,
   createRoute,
@@ -93,5 +94,40 @@ it("hydrates the initial pending UI for nested client-only routes without replac
     client.history.destroy();
     server.clearCache();
     server.history.destroy();
+  }
+});
+
+it("starts a page fresh when its params change, but not when a child's do", async () => {
+  const appRouter = getRouter();
+  const remountDeps = appRouter.options.defaultRemountDeps;
+  appRouter.history.destroy();
+  const mounts: string[] = [];
+  function Mounted({ name, children }: { name: string; children?: React.ReactNode }) {
+    const [id] = useState(() => { mounts.push(name); return name; });
+    return <>{id}{children}</>;
+  }
+  const root = createRootRoute({ component: Outlet });
+  const environment = createRoute({ getParentRoute: () => root, path: "$environment", component: () => <Mounted name="environment"><Outlet /></Mounted> });
+  const service = createRoute({ getParentRoute: () => environment, path: "$service", component: () => <Mounted name="service" /> });
+  const router = createRouter({
+    routeTree: root.addChildren([environment.addChildren([service])]),
+    history: createMemoryHistory({ initialEntries: ["/production/api"] }),
+    // SAFETY: the app's rule reads only params, which these routes have too.
+    defaultRemountDeps: remountDeps as never,
+  });
+  vi.stubGlobal("scrollTo", () => {});
+  const container = document.createElement("div");
+  document.body.append(container);
+  let rendered: ReturnType<typeof createRoot> | undefined;
+  try {
+    await act(async () => { rendered = createRoot(container); rendered.render(<RouterProvider router={router} />); });
+    await act(() => router.navigate({ href: "/production/web" }));
+    expect(mounts).toEqual(["environment", "service", "service"]);
+    await act(() => router.navigate({ href: "/staging/web" }));
+    expect(mounts).toEqual(["environment", "service", "service", "environment", "service"]);
+  } finally {
+    act(() => rendered?.unmount());
+    container.remove();
+    router.history.destroy();
   }
 });
