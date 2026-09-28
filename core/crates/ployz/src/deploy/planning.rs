@@ -298,7 +298,7 @@ fn seal_plan(
 
 fn plan_operations(intent: &DeployIntent, snapshot: &DeploySnapshot) -> Result<Planned, PlanError> {
     let bound = bind(intent)?;
-    let warnings = hostname_policy_for(&intent.project_name, &bound.requested, snapshot)?;
+    let warnings = hostname_policy_for(intent, &bound.requested, snapshot)?;
     assemble_plan(intent, bound, snapshot, warnings)
 }
 
@@ -324,11 +324,17 @@ fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
 }
 
 fn hostname_policy_for(
-    project_name: &ProjectName,
+    intent: &DeployIntent,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Result<Vec<DeployWarning>, PlanError> {
-    reject_hostname_conflicts(project_name, requested, snapshot)?;
+    // A Service this deploy removes (a rename, say) hands its hostnames to the target.
+    let removed = if intent.prune_refusal(snapshot.is_observer_complete()).is_none() {
+        obsolete_services(intent, &snapshot.services_in(&intent.project_name))
+    } else {
+        Vec::new()
+    };
+    reject_hostname_conflicts(&intent.project_name, requested, snapshot, &removed)?;
     let mut warnings = Vec::new();
     if !snapshot.is_observer_complete()
         && requested
@@ -432,8 +438,10 @@ fn reject_hostname_conflicts(
     project_name: &ProjectName,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
+    removed: &[QualifiedService],
 ) -> Result<(), PlanError> {
-    let owners = hostname_owners(snapshot.containers.iter());
+    let mut owners = hostname_owners(snapshot.containers.iter());
+    owners.retain(|_, owner| !removed.contains(owner));
     let mut claimed = BTreeMap::<&IngressHost, QualifiedService>::new();
     for spec in requested {
         let identity = QualifiedService::new(project_name.clone(), spec.name.clone());

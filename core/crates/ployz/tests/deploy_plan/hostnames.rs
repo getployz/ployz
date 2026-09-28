@@ -72,6 +72,43 @@ fn same_qualified_service_redeploy_keeps_the_hostname() {
 }
 
 #[test]
+fn renamed_service_takes_the_hostname_from_the_name_it_replaces() {
+    let spec = custom_web();
+    let mut old = spec.clone();
+    old.name = ServiceName::parse("web2").unwrap();
+    let snapshot = snapshot_with(vec![container('c', '1', &old, &service_id('a'))]);
+    let plan = plan_ingress([&spec], &snapshot).unwrap();
+    assert_eq!(
+        plan.would_remove,
+        [QualifiedService::parse("app/web2").unwrap()]
+    );
+}
+
+#[test]
+fn renamed_service_conflicts_when_the_old_name_stays() {
+    let spec = custom_web();
+    let mut old = spec.clone();
+    old.name = ServiceName::parse("web2").unwrap();
+    let snapshot = snapshot_with(vec![container('c', '1', &old, &service_id('a'))]);
+    let intent = DeployIntent::new(
+        ProjectName::parse("app").unwrap(),
+        vec![spec.clone()],
+        PlanOptions {
+            selected: vec![ServiceAttempt { name: spec.name }],
+            ..PlanOptions::default()
+        },
+    );
+    let error = preview_deploy(&intent, &snapshot).unwrap_err();
+    assert_eq!(
+        error,
+        PlanError::HostnameConflict {
+            hostname: IngressHost::parse("api.example.com").unwrap(),
+            owner: QualifiedService::parse("app/web2").unwrap(),
+        }
+    );
+}
+
+#[test]
 fn incomplete_snapshot_without_a_visible_publisher_warns_that_detection_is_observer_relative() {
     for spec in [custom_web(), named_web("web.example.com")] {
         let snapshot = DeploySnapshot {
