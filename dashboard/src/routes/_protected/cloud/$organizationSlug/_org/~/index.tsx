@@ -39,7 +39,7 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
 
 function ProjectsPending() {
   return (
-    <DashboardPage>
+    <DashboardPage width="content">
       <Skeleton className="h-7 w-24" />
       <div className="flex items-center justify-between gap-3">
         <Skeleton className="h-9 w-full max-w-md" />
@@ -67,7 +67,7 @@ function ProjectsGridPending() {
 
 function ProjectsError() {
   return (
-    <DashboardPage>
+    <DashboardPage width="content">
       <RouteErrorAlert
         title="Projects couldn’t load"
         description="The project list is unavailable right now. Try loading it again."
@@ -99,7 +99,7 @@ function RouteComponent() {
   const deferredQuery = useDeferredValue(query);
 
   return (
-    <DashboardPage>
+    <DashboardPage width="content">
       {/* The top bar names the page. */}
       <div className="flex justify-end">
         <CreateProjectButton organizationSlug={organizationSlug} />

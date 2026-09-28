@@ -45,7 +45,7 @@ export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
       </Link>,
     ] : [],
     <EnvironmentCrumb key="environment" scope={scope} />,
-    ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-2 font-medium">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
+    ...section === "canvas" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
   ]} />;
 }
 
@@ -86,10 +86,10 @@ export function Crumbs({ items, branchAt }: { items: ReactNode[]; branchAt?: num
 
 const phonesHidden = "hidden min-wf-nav:inline-flex";
 
-export function CrumbTrigger({ label, name, current }: { label: string; name: string; current?: boolean }) {
+export function CrumbTrigger({ label, name, current, className }: { label: string; name: string; current?: boolean; className?: string }) {
   return (
     <PopoverTrigger render={<Button variant={current ? "outline" : "ghost"} size="sm"
-      aria-label={`${label}: ${name}`} title={name} className="min-w-0" />}>
+      aria-label={`${label}: ${name}`} title={name} className={cn("min-w-0", className)} />}>
       <span className="truncate">{name}</span>
       <ChevronsUpDownIcon data-icon="inline-end" />
     </PopoverTrigger>
@@ -115,7 +115,8 @@ function ProjectCrumb({ scope }: { scope: EnvironmentScope }) {
   const go = (destination: DashboardDestination) => { setOpen(false); void navigate(destination); };
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <CrumbTrigger label="Project" name={project?.name ?? scope.projectSlug} />
+      {/* Leads the bar on desktop, so its text lines up where an organization page's title starts. */}
+      <CrumbTrigger label="Project" name={project?.name ?? scope.projectSlug} className="min-wf-nav:-ml-2.5" />
       <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
         <PopoverTitle className="sr-only">Switch project</PopoverTitle>
         <SwitcherLoading isPending={isPending} retry={isError ? () => void refetch() : undefined}>

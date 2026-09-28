@@ -35,7 +35,7 @@ export function DashboardShell({
           {scope.kind === "environment"
             ? <EnvironmentCrumbs scope={scope} />
             : Crumb
-              // A detail page declares its crumb: `Servers / hel-1 ⌄`. The section keeps the list page's title look, so it doesn't jump.
+              // A detail page declares its crumb: `Servers / hel-1 ⌄`. The section reads as the list page's title, so it doesn't jump.
               ? <Crumbs items={[
                   <Link key="section" {...getDashboardDestination(scope, section)}
                     className="truncate rounded-sm font-semibold text-foreground outline-none hover:underline focus-visible:ring-3 focus-visible:ring-ring/50">
@@ -43,7 +43,7 @@ export function DashboardShell({
                   </Link>,
                   <Crumb key="crumb" />,
                 ]} />
-              : <h1 className="truncate font-semibold">{getDashboardSectionLabel(section)}</h1>}
+              : <h1 className="truncate text-sm font-semibold">{getDashboardSectionLabel(section)}</h1>}
           <div className="ml-auto min-wf-nav:hidden"><DashboardAccountMenu scope={scope} /></div>
         </header>
         <NavigationProgress />
