@@ -9,6 +9,10 @@ export function toErrorMessage<T>(error: T, fallback: string): string {
   return isPublicError(error) ? error.message : fallback;
 }
 
+export function isNotFound<T>(error: T) {
+  return isPublicError(error) && error.code === "NOT_FOUND";
+}
+
 export function describeFailureCause(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }

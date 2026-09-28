@@ -9,7 +9,7 @@ import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog"
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
-import { toErrorMessage } from "#/lib/error-message";
+import { isNotFound, toErrorMessage } from "#/lib/error-message";
 import type { DataLossList } from "#/modules/runtime/data-loss-confirm";
 import {
   confirmTeardownServerFn,
@@ -90,9 +90,11 @@ export function TeardownDangerSection({
   const abandon = scope === "organization" && lensStatus === "unreachable";
   const doing = `${abandon ? "Abandoning" : verb === "Close" ? "Closing" : "Deleting"} ${name}`;
 
+  // Deleting drops the rows its status is read through, so it's done once the read can't find them.
+  const gone = busy && isNotFound(latest.error);
   useEffect(() => {
-    if (attempt?.status === "completed") onCompleted?.();
-  }, [attempt?.status]);
+    if (gone) onCompleted?.();
+  }, [gone]);
 
   async function handleRetry() {
     if (!attempt || retrying) return;
