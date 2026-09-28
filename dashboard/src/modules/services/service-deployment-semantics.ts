@@ -18,6 +18,8 @@ export type ServiceDeploymentSemanticInput = {
   latestDeploymentStatus: EnvironmentDeploymentStatus | null;
   /** The Live values the latest attempt deployed empty, as `service.KEY`. */
   missingLiveValues: readonly string[];
+  /** Its Environment is Off: nothing runs until it deploys again. */
+  off?: boolean;
 };
 
 export type ServiceDeploymentSemantics = {
@@ -46,6 +48,11 @@ export function getServiceDeploymentSemantics(
     input.currentDiffRowCount > 0;
   const isDeploying = input.latestDeploymentStatus != null && isActiveDeployment(input.latestDeploymentStatus);
   const lastDeployFailed = input.latestDeploymentStatus === "failed";
+
+  // Deploying turns an Environment back on, so every attempt Off shows came before it.
+  if (input.off) {
+    return { state: undefined, statusText: "Off", showNewBadge: false };
+  }
 
   if (lastDeployFailed) {
     return {

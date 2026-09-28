@@ -13,7 +13,7 @@ import { environment } from "#/modules/project/tables";
 
 import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
-import { TEARDOWN_ATTEMPT_STATUSES, TEARDOWN_SCOPES, type TeardownAttemptStatus, type TeardownOutcome, type TeardownScope, type TeardownTargets } from "#/modules/runtime/teardown";
+import { TEARDOWN_ATTEMPT_SCOPES, TEARDOWN_ATTEMPT_STATUSES, type TeardownAttemptScope, type TeardownAttemptStatus, type TeardownOutcome, type TeardownTargets } from "#/modules/runtime/teardown";
 
 import { VOLUME_REMOVE_ATTEMPT_STATUSES, type VolumeRemoveAttemptStatus, type VolumeRemoveOutcome, type VolumeRemoveVolume } from "#/modules/runtime/volume-removal";
 
@@ -149,7 +149,7 @@ export const teardownAttempt = pgTable(
       .references(() => user.id, { onDelete: "restrict" }),
     projectId: uuid("project_id"),
     environmentId: uuid("environment_id"),
-    scope: text("scope").notNull().$type<TeardownScope>(),
+    scope: text("scope").notNull().$type<TeardownAttemptScope>(),
     confirmDataLoss: jsonb("confirm_data_loss")
       .notNull()
       .$type<DataLossIdentity[]>(),
@@ -183,6 +183,12 @@ export const teardownAttempt = pgTable(
           and ${table.scope} = 'environment'
           and ${table.environmentId} is not null`,
       ),
+    uniqueIndex("teardown_attempt_one_active_shutdown_idx")
+      .on(table.environmentId)
+      .where(
+        sql`${table.status} in ('pending', 'running')
+          and ${table.scope} = 'shutdown'`,
+      ),
     uniqueIndex("teardown_attempt_one_active_project_idx")
       .on(table.projectId)
       .where(
@@ -201,7 +207,7 @@ export const teardownAttempt = pgTable(
       .where(sql`${table.inngestRunId} is not null`),
     check(
       "teardown_attempt_scope_check",
-      sql`${table.scope} in (${sqlStringLiterals(TEARDOWN_SCOPES)})`,
+      sql`${table.scope} in (${sqlStringLiterals(TEARDOWN_ATTEMPT_SCOPES)})`,
     ),
     check(
       "teardown_attempt_status_check",
@@ -210,7 +216,7 @@ export const teardownAttempt = pgTable(
     check(
       "teardown_attempt_scope_ids_check",
       sql`(
-        (${table.scope} = 'environment' and ${table.environmentId} is not null
+        (${table.scope} in ('environment', 'shutdown') and ${table.environmentId} is not null
           and ${table.projectId} is not null)
         or (${table.scope} = 'project' and ${table.projectId} is not null
           and ${table.environmentId} is null)

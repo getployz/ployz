@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from "#/components/ui/card";
 import { getServiceDeploymentSemantics } from "#/modules/services/service-deployment-semantics";
+import { useOff } from "#/modules/branches/branch.collection";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import type {
   CanvasServiceState,
@@ -45,6 +46,7 @@ function ServiceListItem({
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const service = serviceView.service;
   const { runtime } = useRuntimeService(runtimeServiceIdentity(service));
+  const off = useOff(params.organizationSlug, service.environmentId);
   const subtitle = getServiceSubtitle(service);
   const semantics = getServiceDeploymentSemantics({
     isEmpty: service.source.type === "empty",
@@ -53,6 +55,7 @@ function ServiceListItem({
     hasRecordedTargetSnapshot: serviceState.hasRecordedTargetSnapshot,
     latestDeploymentStatus: serviceState.latestDeploymentStatus,
     missingLiveValues: serviceState.missingLiveValues,
+    off,
   });
   const observedContainers = runtime
     ? `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"} observed`

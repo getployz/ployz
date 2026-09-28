@@ -3,7 +3,7 @@ import { useParams } from "@tanstack/react-router";
 import { ExternalLinkIcon, GitBranchIcon, GitPullRequestIcon, InfoIcon, Undo2Icon, XIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "#/components/ui/dialog";
-import { Field, FieldContent, FieldError, FieldLabel } from "#/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
@@ -11,7 +11,7 @@ import { useSaveBranch } from "#/modules/branches/branch-commands";
 import { listNames, plural } from "#/modules/branches/branch-plan";
 import { presentRow, type PresentedRow } from "#/modules/branches/branch-review";
 import type { BranchReviewView, PullRequest } from "#/modules/branches/use-branch-review";
-import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
+import { useConditionalSave, usePrEnvironmentOff } from "#/modules/pr-environments/conditional-save-commands";
 import { githubAppRepository } from "#/modules/pr-environments/repositories";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
@@ -27,7 +27,8 @@ type Picked = Picks["picks"][number];
  * Save: what a Branch puts in its Parent, service by service, as Change · Current · New. × leaves a change out, and
  * tapping New gives the Parent its own value; a new secret asks for one. Nothing deploys: the Parent gets them as its
  * changes to deploy. Unless the Branch is kept or is the Default Environment, it's deleted after saving by default.
- * On a PR Environment, `landing` is one of its Destinations: the changes go live with the pull request instead.
+ * On a PR Environment, `landing` is one of its Destinations: the changes go live with the pull request instead, and it
+ * can shut down after saving (off by default).
  */
 export function SaveSheet({ review, branchId, landing, onClose }: {
   review: BranchReviewView; branchId: string; landing?: BranchReviewView["goesTo"][number]; onClose: () => void;
@@ -44,6 +45,8 @@ export function SaveSheet({ review, branchId, landing, onClose }: {
     organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: target.id, prNumber: pr?.number ?? 0,
   }).save;
   const save = pr ? saveForPr : saveBranch;
+  const { shutDown } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId: branchId, name });
+  const [shutDownAfter, setShutDownAfter] = useState(false);
   const rows = useRowPicks(landing?.rows ?? review.save, review.nameOf);
   const [deleteAfter, setDeleteAfter] = useState(true);
   const deletable = !pr && !review.kept && !isDefault;
@@ -70,6 +73,17 @@ export function SaveSheet({ review, branchId, landing, onClose }: {
               </Field>
             </FieldLabel>
           ) : null}
+          {pr ? (
+            <FieldLabel htmlFor="save-then-shut-down">
+              <Field orientation="horizontal">
+                <FieldContent>
+                  Shut down {name} now
+                  <FieldDescription>Starts again on the next push</FieldDescription>
+                </FieldContent>
+                <Switch id="save-then-shut-down" checked={shutDownAfter} onCheckedChange={setShutDownAfter} />
+              </Field>
+            </FieldLabel>
+          ) : null}
         </div>
         <div className="flex shrink-0 flex-col gap-3 border-t px-6 py-4 sm:flex-row sm:items-center">
           <p className="flex flex-1 items-start gap-2 text-sm text-muted-foreground">
@@ -81,7 +95,10 @@ export function SaveSheet({ review, branchId, landing, onClose }: {
           </p>
           <Button disabled={count === 0 || rows.missing !== undefined || save.isPending}
             onClick={() => landing
-              ? saveForPr.mutate({ review: landing.review, picks: rows.sent }, { onSuccess: onClose })
+              ? saveForPr.mutate({ review: landing.review, picks: rows.sent }, { onSuccess: () => {
+                if (shutDownAfter) shutDown.mutate();
+                onClose();
+              } })
               : saveBranch.mutate({ branchEnvironmentId: branchId, review: review.saveReview, thenDelete: deletable && deleteAfter, picks: rows.sent })}>
             {save.isPending ? <Spinner data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}Save to {destination}
           </Button>

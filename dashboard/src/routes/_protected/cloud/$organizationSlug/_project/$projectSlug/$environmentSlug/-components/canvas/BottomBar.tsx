@@ -3,14 +3,14 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { CircleDashedIcon, GitBranchIcon, GitBranchPlusIcon, GitPullRequestIcon, MoreVerticalIcon } from "lucide-react";
+import { CircleDashedIcon, GitBranchIcon, GitBranchPlusIcon, GitPullRequestIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Kbd } from "#/components/ui/kbd";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { useIsMobile } from "#/hooks/use-mobile";
-import { useBranchUnsettled, useStartingPoint } from "#/modules/branches/branch.collection";
+import { useBranchUnsettled, useOff, useStartingPoint } from "#/modules/branches/branch.collection";
 import { useUpdateBranch } from "#/modules/branches/branch-commands";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
@@ -21,7 +21,7 @@ import { useBranchReview, type BranchReviewView, type PullRequest } from "#/modu
 import { useLineageNames } from "#/modules/branches/use-lineage-names";
 import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
 import { useWaitingSaves } from "#/modules/pr-environments/conditional-save.collection";
-import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
+import { useConditionalSave, usePrEnvironmentOff } from "#/modules/pr-environments/conditional-save-commands";
 import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
 import { useLandedNotes } from "../branch-review/landed-notes";
 import { GoesLiveSheet, SaveSheet } from "../branch-review/SaveSheet";
@@ -55,7 +55,7 @@ type BottomBarProps = {
 
 /**
  * The bottom bar: one row for the Environment itself (a starting point, else changes to deploy, else a running or queued
- * attempt whose page isn't open, else changes that go live with a pull request), and on a Branch a row for its Parent
+ * attempt whose page isn't open, else Off, else changes that go live with a pull request), and on a Branch a row for its Parent
  * (changes to save, else updates), or on a PR Environment one per Destination (changes to save, or saved to go live with
  * the pull request). See bottomBarRows. A starting point's staged nodes are the recipe Branches copy, not pending work.
  */
@@ -95,8 +95,9 @@ export function BottomBar({
   const waiting = useWaitingSaves(params.organizationSlug, environmentId);
   const landed = useLandedNotes(environmentId, groups);
   const pr = review?.pullRequest ?? null;
+  const off = useOff(params.organizationSlug, environmentId);
   const rows = bottomBarRows({
-    startingPoint: startingPoint !== undefined, staged: hasChanges, attempt: shown !== undefined, waiting: waiting.length > 0,
+    startingPoint: startingPoint !== undefined, staged: hasChanges, attempt: shown !== undefined, off, waiting: waiting.length > 0,
     branch: review && {
       changes: review.changes, updates: review.updates,
       // A closed pull request takes no more saves.
@@ -159,6 +160,7 @@ export function BottomBar({
       </DropdownMenu>
     </Row>
   ) : rows.own === "attempt" && shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
+    : rows.own === "off" ? <OffState environmentId={environmentId} />
     : rows.own === "waiting" ? <WaitingState saves={waiting} /> : null;
   // Saying where only when more than one Destination has something.
   const several = rows.parent.filter(({ destination }) => destination !== null).length > 1;
@@ -238,6 +240,18 @@ function SavedState({ review, saved, pullRequest, environmentId, several }: {
           nameOf={(lineage) => review.nameOf(lineage)} onClose={() => setDetails(false)}
           actions={<Button variant="outline" disabled={withdraw.isPending} onClick={() => withdraw.mutate(undefined, { onSuccess: () => setDetails(false) })}>Undo</Button>} />
       ) : null}
+    </Row>
+  );
+}
+
+/** Off: shut down with its settings kept. The next push starts it again, or Deploy now. */
+function OffState({ environmentId }: { environmentId: string }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const document = useEnvironmentDocuments(params.organizationSlug).find((candidate) => candidate.id === environmentId);
+  const { start } = usePrEnvironmentOff({ organizationSlug: params.organizationSlug, environmentId, name: document?.name ?? params.environmentSlug });
+  return (
+    <Row icon={<PowerOffIcon className="size-4 text-muted-foreground" />} title="Off" detail="Starts again on the next push">
+      <Button size="sm" disabled={start.isPending} onClick={() => start.mutate()}>Deploy</Button>
     </Row>
   );
 }

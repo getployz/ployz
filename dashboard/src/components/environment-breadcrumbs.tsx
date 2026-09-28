@@ -2,7 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, Settings2Icon } from "lucide-react";
+import { ChevronsUpDownIcon, GitBranchIcon, GitBranchPlusIcon, GitCompareArrowsIcon, LayoutGridIcon, MoreHorizontalIcon, PowerOffIcon, Settings2Icon } from "lucide-react";
 import { getEnvironmentDeploymentsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import {
@@ -23,6 +23,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { environmentTree } from "#/modules/project/environment-tree";
 import { useBranchReviews } from "#/modules/branches/use-branch-review";
+import { usePrEnvironmentOff } from "#/modules/pr-environments/conditional-save-commands";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
@@ -163,6 +164,8 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
   const current = findEnvironment(projects, environments, scope);
   const currentBranch = branches.find((branch) => branch.environmentId === current?.id);
   const prNumbers = new Map(branches.flatMap((branch) => branch.pullRequest ? [[branch.environmentId, branch.pullRequest.number]] : []));
+  const off = new Set(branches.flatMap((branch) => branch.off ? [branch.environmentId] : []));
+  const { shutDown } = usePrEnvironmentOff({ organizationSlug: scope.organizationSlug, environmentId: current?.id ?? "", name: current?.name ?? "" });
   const tree = environmentTree(environments.filter((environment) => environment.projectId === project?.id), branches);
   // The Org Store keeps each Environment's latest attempt, so having none means it was never deployed.
   const deployed = new Set(deployments.map((deployment) => deployment.environmentId));
@@ -180,6 +183,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
                     prNumbers.has(environment.id) && `PR #${prNumbers.get(environment.id)}`,
+                    off.has(environment.id) && "Off",
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
                     !!review?.changes && `${review.changes} to save`,
@@ -209,6 +213,17 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
                   <GitCompareArrowsIcon />Review {current.name}
+                </CommandItem>}
+                {current && currentBranch?.pullRequest && !currentBranch.off && <CommandItem value="shut-down" disabled={shutDown.isPending}
+                  onSelect={() => {
+                    setOpen(false);
+                    shutDown.mutate();
+                  }}>
+                  <PowerOffIcon />
+                  <span className="flex flex-col">
+                    Shut down {current.name}
+                    <span className="text-muted-foreground">Starts again on the next push</span>
+                  </span>
                 </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);

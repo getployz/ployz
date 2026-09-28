@@ -69,6 +69,11 @@ export function useStartingPoint(organizationSlug: string, environmentId: string
   return environments.find((environment) => environment.id === environmentId);
 }
 
+/** Whether the Environment is Off: shut down, its rows kept, until it deploys again. */
+export function useOff(organizationSlug: string, environmentId: string) {
+  return useWorkspace(organizationSlug).branches.some((branch) => branch.environmentId === environmentId && branch.off);
+}
+
 /** Whether anything is staged here: Working State differs from Applied State, as the server's gate reads it. */
 function useHasStagedChanges(organizationSlug: string, environmentId: string) {
   const document = useEnvironmentDocument(organizationSlug, environmentId);

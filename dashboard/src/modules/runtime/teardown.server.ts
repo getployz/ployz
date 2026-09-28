@@ -428,6 +428,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
     readonly requestedByUserId: string;
     readonly identities: ConfirmTeardownInput["identities"];
     readonly abandon: boolean;
+    readonly shutdown?: boolean;
   },
 ) {
   const plan = planTeardownRuntime({
@@ -451,7 +452,7 @@ const startTeardown = Effect.fn("Teardown.start")(function* (
       projectId: access.scope === "organization" ? null : access.project.id,
       environmentId:
         access.scope === "environment" ? access.environment.id : null,
-      scope: access.scope,
+      scope: input.shutdown ? "shutdown" : access.scope,
       confirmDataLoss: input.identities,
       targets,
     });
@@ -510,6 +511,25 @@ export const prepareSystemTeardown = Effect.fn("Teardown.prepareSystem")(
     const runtime = yield* reachableRuntime(access);
     const dataLoss = yield* teardownDataLoss(access, graph, runtime);
     return { access, runtime, expected: graph.environments.map((environment) => environment.id), identities: dataLoss.rust };
+  },
+);
+
+/**
+ * Shuts one Environment down with no one confirming: its runtime half only, every row kept. Prepare asks the runtime
+ * (holding no locks) for the data-loss report of its namespace alone, not its Branches'; `admit` confirms exactly that,
+ * as `requestedByUserId`: database work only, safe under a caller's locks, which must include its deployment queue.
+ */
+export const prepareShutdown = Effect.fn("Teardown.prepareShutdown")(
+  function* (input: { readonly organizationId: string; readonly environmentId: string }) {
+    const access = yield* loadEnvironmentAccess(input.environmentId, input.organizationId);
+    const graph = { projects: [access.project], environments: [{ ...access.environment, projectSlug: access.project.slug }] };
+    const runtime = yield* reachableRuntime(access);
+    const dataLoss = yield* teardownDataLoss(access, graph, runtime);
+    return {
+      admit: (requestedByUserId: string) => startTeardown(access, graph, runtime, {
+        requestedByUserId, identities: dataLoss.rust, abandon: false, shutdown: true,
+      }),
+    };
   },
 );
 
