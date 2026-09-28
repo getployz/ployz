@@ -84,22 +84,6 @@ describe("DeletionDialog", () => {
     expect(confirm).toHaveBeenCalledWith("evidence:2");
   });
 
-  it("stays open on Escape while the deletion runs", async () => {
-    let finish!: () => void;
-    const confirm = vi.fn(() => new Promise<undefined>((resolve) => { finish = () => resolve(undefined); }));
-    const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue(check([service("web")])), confirm });
-    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
-    await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
-    await waitFor(() => expect(confirm).toHaveBeenCalled());
-
-    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
-    expect(onOpenChange).not.toHaveBeenCalled();
-
-    finish();
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-  });
-
   it("marks what the servers add to Cloud's list as new, first", async () => {
     renderDialog({ load: vi.fn().mockResolvedValue(check([service("web"), volume("leftover", 3)])), confirm: vi.fn() });
     await screen.findByText("New");

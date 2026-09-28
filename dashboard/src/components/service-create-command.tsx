@@ -4,7 +4,6 @@ import { preloadGithubRepos } from "#/modules/github/github.collection";
 import { useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
-import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
@@ -186,67 +185,17 @@ function useServiceCreateActions({
   const createService = useServerFn(createServiceServerFn);
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
 
-  const createEmptyProjectMutation = useMutation({
-    mutationFn: () =>
-      createEmptyProject({
-        data: {
-          organizationSlug: props.organizationSlug,
-        },
-      }),
-    onSuccess: async (receipt) => {
-      await Promise.all([
-        getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
-        getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
-        getEnvironmentSummariesCollection(props.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data.environment)),
-      ]);
-      if (props.mode !== "service") {
-        await props.onCreated?.(receipt.data);
-      }
-    },
-  });
-
-  const createServiceMutation = useMutation({
-    mutationFn: async (input: {
-      environmentId: string;
-      source: ServiceSource;
-      canvasPosition: { x: number; y: number };
-    }) => {
-      return createService({
-        data: {
-          organizationSlug: props.organizationSlug,
-          environmentId: input.environmentId,
-          x: input.canvasPosition.x,
-          y: input.canvasPosition.y,
-          source: input.source,
-        },
-      });
-    },
-    onSuccess: async (result) => {
-      await applyCreatedService(props.organizationSlug, collectionScope, result.data);
-      if (props.mode === "service") {
-        await props.onCreated?.(result.data);
-      }
-    },
-  });
-  const createVolumeMutation = useMutation({
-    mutationFn: (input: { environmentId: string }) =>
-      createVolumeResource({
-        data: {
-          organizationSlug: props.organizationSlug,
-          environmentId: input.environmentId,
-          name: "data",
-          x: 0,
-          y: 0,
-        },
-      }),
-    onSuccess: async (result) => {
-      await applyCreatedResource(props.organizationSlug, collectionScope, result);
-    },
-  });
+  // Holds the project a failed first step already created, so the retry reuses it.
+  const createdProjectRef = useRef<CreationTarget | null>(null);
+  // The ref guards re-entry (two clicks in one tick); the state only renders it.
+  const creatingRef = useRef(false);
+  const [creating, setCreating] = useState(false);
+  const [failure, setFailure] = useState<unknown>(null);
 
   function resetPanelState() {
     setQuery("");
     setFailure(null);
+    createdProjectRef.current = null;
   }
 
   function setActivePanel(nextPanel: InitialPanel) {
@@ -254,22 +203,19 @@ function useServiceCreateActions({
     setPanel({ kind: nextPanel });
   }
 
-  // A retry after a failed step reuses the project already created instead of making another.
-  const createdProjectRef = useRef<CreationTarget | null>(null);
-  // Stays set from the click until navigation finishes, covering the gaps between mutations.
-  const [creating, setCreating] = useState(false);
-  // Every command runs through whileCreating, so this holds each failure, mutation or not.
-  const [failure, setFailure] = useState<unknown>(null);
-
+  /** Runs one command from click until navigation lands; its failure shows in the alert. */
   async function whileCreating(action: () => Promise<void>) {
-    if (creating) return;
+    if (creatingRef.current) return;
+    creatingRef.current = true;
     setCreating(true);
     setFailure(null);
     try {
       await action();
+      createdProjectRef.current = null;
     } catch (error) {
       setFailure(error);
     } finally {
+      creatingRef.current = false;
       setCreating(false);
     }
   }
@@ -294,14 +240,25 @@ function useServiceCreateActions({
 
   async function createProjectTarget(): Promise<CreationTarget> {
     if (createdProjectRef.current) return createdProjectRef.current;
-    const receipt = await createEmptyProjectMutation.mutateAsync();
-    createdProjectRef.current = {
+    const receipt = await createEmptyProject({
+      data: { organizationSlug: props.organizationSlug },
+    });
+    const target = {
       projectSlug: receipt.data.project.slug,
       environmentSlug: receipt.data.environment.namespace,
       environmentId: receipt.data.environment.id,
       canvasPosition: { x: 0, y: 0 },
     };
-    return createdProjectRef.current;
+    createdProjectRef.current = target;
+    await Promise.all([
+      getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
+      getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
+      getEnvironmentSummariesCollection(props.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data.environment)),
+    ]);
+    if (props.mode !== "service") {
+      await props.onCreated?.(receipt.data);
+    }
+    return target;
   }
 
   async function getCreationTarget(): Promise<CreationTarget> {
@@ -326,17 +283,22 @@ function useServiceCreateActions({
   }
 
   const createServiceFromSource = (source: ServiceSource) =>
-    whileCreating(() => createServiceFromSourceNow(source));
-
-  async function createServiceFromSourceNow(source: ServiceSource) {
-    const target = await getCreationTarget();
-    const result = await createServiceMutation.mutateAsync({
-      environmentId: target.environmentId,
-      canvasPosition: target.canvasPosition,
-      source,
-    });
-
-    if (props.mode !== "service") {
+    whileCreating(async () => {
+      const target = await getCreationTarget();
+      const result = await createService({
+        data: {
+          organizationSlug: props.organizationSlug,
+          environmentId: target.environmentId,
+          x: target.canvasPosition.x,
+          y: target.canvasPosition.y,
+          source,
+        },
+      });
+      await applyCreatedService(props.organizationSlug, collectionScope, result.data);
+      if (props.mode === "service") {
+        await props.onCreated?.(result.data);
+        return;
+      }
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
         params: {
@@ -347,8 +309,7 @@ function useServiceCreateActions({
         },
         search: (prev) => prev,
       });
-    }
-  }
+    });
 
   async function createVolume() {
     if (props.mode === "service" && props.onCreateVolume) {
@@ -357,9 +318,16 @@ function useServiceCreateActions({
     }
 
     const target = await getCreationTarget();
-    const result = await createVolumeMutation.mutateAsync({
-      environmentId: target.environmentId,
+    const result = await createVolumeResource({
+      data: {
+        organizationSlug: props.organizationSlug,
+        environmentId: target.environmentId,
+        name: "data",
+        x: 0,
+        y: 0,
+      },
     });
+    await applyCreatedResource(props.organizationSlug, collectionScope, result);
 
     await navigate({
       to: ENVIRONMENT_RESOURCE_ROUTE_TO,
@@ -367,7 +335,7 @@ function useServiceCreateActions({
         organizationSlug: props.organizationSlug,
         projectSlug: target.projectSlug,
         environmentSlug: target.environmentSlug,
-          resourceId: result.data.resource.id,
+        resourceId: result.data.resource.id,
       },
       search: (prev) => prev,
     });

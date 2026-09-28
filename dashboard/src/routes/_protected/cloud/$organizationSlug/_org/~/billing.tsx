@@ -19,6 +19,7 @@ import { Spinner } from "#/components/ui/spinner";
 import { authClient } from "#/auth/auth-client";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import { createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
+import { openCheckoutWhileHere } from "#/modules/billing/checkout";
 import { prefetchRemote, requireBilling } from "#/collections/route-data";
 
 export const Route = createFileRoute(
@@ -107,25 +108,18 @@ function RouteComponent() {
 
   async function openCheckout() {
     const visit = visitRef.current;
-    const left = () => visitRef.current !== visit;
     try {
       setPending(true);
-      const checkout = await createEmbeddedCheckout({
-        data: { organizationSlug },
+      const activeCheckout = await openCheckoutWhileHere({
+        createUrl: async () => (await createEmbeddedCheckout({ data: { organizationSlug } })).url,
+        open: async (url) => {
+          closeActiveCheckout();
+          const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
+          return PolarEmbedCheckout.create(url, { theme: "light" });
+        },
+        left: () => visitRef.current !== visit,
       });
-      if (left()) return;
-
-      closeActiveCheckout();
-
-      const { PolarEmbedCheckout } = await import("@polar-sh/checkout/embed");
-      if (left()) return;
-      const activeCheckout = await PolarEmbedCheckout.create(checkout.url, {
-        theme: "light",
-      });
-      if (left()) {
-        activeCheckout.close();
-        return;
-      }
+      if (!activeCheckout) return;
 
       activeCheckout.addEventListener("close", () => {
         if (activeCheckoutRef.current === activeCheckout) {
@@ -134,7 +128,7 @@ function RouteComponent() {
       });
       activeCheckoutRef.current = activeCheckout;
     } catch {
-      if (!left()) toast.error("Unable to start checkout.");
+      toast.error("Unable to start checkout.");
     } finally {
       setPending(false);
     }

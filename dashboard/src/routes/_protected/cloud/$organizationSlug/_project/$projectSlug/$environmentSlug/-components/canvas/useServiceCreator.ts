@@ -56,21 +56,15 @@ export function useServiceCreator(
 
   async function createBlankService(position: FlowPosition) {
     const placement = computePlacement(position);
-    let receipt;
-    try {
-      receipt = await createService({
-        data: {
-          organizationSlug: params.organizationSlug,
-          environmentId,
-          source: createEmptyServiceSource(),
-          x: placement.x,
-          y: placement.y,
-        },
-      });
-    } catch (error) {
-      toast.error(toErrorMessage(error, "The service couldn’t be created. Try again."));
-      return;
-    }
+    const receipt = await createService({
+      data: {
+        organizationSlug: params.organizationSlug,
+        environmentId,
+        source: createEmptyServiceSource(),
+        x: placement.x,
+        y: placement.y,
+      },
+    });
     await applyCreatedService(params.organizationSlug, collectionScope, receipt.data);
     await navigate({
       to: ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -95,7 +89,9 @@ export function useServiceCreator(
   }
 
   function createBlankServiceAtLastRightClick() {
-    void createBlankService(lastRightClickFlowPosition.current);
+    void createBlankService(lastRightClickFlowPosition.current).catch((error) =>
+      toast.error(toErrorMessage(error, "The service couldn’t be created. Try again.")),
+    );
   }
 
   return {
