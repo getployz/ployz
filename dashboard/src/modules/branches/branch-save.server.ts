@@ -43,7 +43,7 @@ export const saveBranch = Effect.fn("Branches.saveBranch")(function* (actor: Act
     const branch = yield* lockBranchScope(project.id, input.branchEnvironmentId, "update");
     if (!branch) return yield* new NotFound({ message: "The branch was not found." });
     const [pullRequest] = yield* drizzle.select({ number: prEnvironment.number }).from(prEnvironment).where(eq(prEnvironment.environmentId, branch.environmentId));
-    if (pullRequest) return yield* new Conflict({ message: `Merge #${pullRequest.number} on GitHub instead.` });
+    if (pullRequest) return yield* new Conflict({ message: `A PR environment's changes go live with PR #${pullRequest.number}.` });
     const destinationId = branch.parentEnvironmentId;
 
     // 1–2. Lock the Destination and check its revision. Both queues, by id, before the Destination's document (lock
@@ -98,8 +98,8 @@ export const saveBranch = Effect.fn("Branches.saveBranch")(function* (actor: Act
 });
 
 /**
- * The ticked rows as core's picks: new values sealed here, never in the browser (none for an empty one), and each
- * unticked variable of a ticked new service left out, which core would otherwise land with its default.
+ * The ticked rows as core's picks: new values sealed here, never in the browser, and each unticked variable of a ticked
+ * new service left out, which core would otherwise land with its default. The caller refuses an empty new value.
  */
 export function corePicks({ encryption, rows, into, picks }: {
   encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly SavePick[];
@@ -107,21 +107,12 @@ export function corePicks({ encryption, rows, into, picks }: {
   const refs = environmentVariableReferences(into);
   const ticked = picks.map((pick): BranchPick => {
     if (pick.option !== "new") return pick.option ? { key: pick.key, choice: { option: pick.option } } : { key: pick.key };
-    if (pick.value === "") return { key: pick.key, choice: { option: "new" } };
     return { key: pick.key, choice: { option: "new", value: sealValue(encryption, rows, into, pick.key, pick.value, refs) } };
   });
   const newServices = new Set(ticked.flatMap((pick) => pick.key.endsWith(":node") ? [rowLineage(pick)] : []));
   const leftOut = rows.flatMap((row): BranchPick[] => row.role === "move" && row.choice && newServices.has(rowLineage(row))
     && !ticked.some((pick) => pick.key === row.key) ? [{ key: row.key, choice: { option: "leave_out" } }] : []);
   return [...ticked, ...leftOut];
-}
-
-/** `picks` with each new value still missing given an empty one, sealed as its row needs: what landing saves for it. */
-export function withEmptyValues({ encryption, rows, into, picks }: {
-  encryption: Encryption; rows: BranchRow[]; into: SavedEnvironmentIntent; picks: readonly BranchPick[];
-}): BranchPick[] {
-  return picks.map((pick) => pick.choice?.option === "new" && !pick.choice.value
-    ? { key: pick.key, choice: { option: "new", value: sealValue(encryption, rows, into, pick.key, "") } } : pick);
 }
 
 /** A new value for row `key`, sealed when the row is a secret. */

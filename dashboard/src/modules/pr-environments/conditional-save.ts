@@ -4,7 +4,7 @@ import { OrganizationSlug, Uuid } from "#/modules/environment-design/workspace-s
 
 /**
  * A Conditional Save stands while its PR Environment's Working State and its pull request's target Git branch are what
- * they were at approval: any settings change there withdraws it, new commits don't, and edits in the Destination never do.
+ * they were when saved: any settings change there withdraws it, new commits don't, and edits in the Destination never do.
  */
 export const standing = (
   save: { prEnvironmentId: string | null; workingRevision: string; targetBranch: string },
@@ -18,22 +18,22 @@ const HeldOn = {
   destinationEnvironmentId: Uuid,
 };
 
-/** Approve the ticked rows of a PR Environment's Goes to section; `review` is the review string the user saw. */
-export const ApproveConditionalSave = Schema.Struct({
+/** Save the kept rows of a PR Environment's changes for one Destination; `review` is the review string the sheet showed. */
+export const SaveConditionalSave = Schema.Struct({
   ...HeldOn,
   review: Schema.String,
   picks: Schema.mutable(Schema.Array(SavePickSchema)),
 });
-export type ApproveConditionalSave = typeof ApproveConditionalSave.Type;
+export type SaveConditionalSave = typeof SaveConditionalSave.Type;
 
-/** Withdraw the approval (Undo). */
+/** Withdraw the save (Undo). */
 export const WithdrawConditionalSave = Schema.Struct(HeldOn);
 export type WithdrawConditionalSave = typeof WithdrawConditionalSave.Type;
 
-/** A new value an approved row still lacks; stored with the approval without withdrawing it. */
-export const GiveConditionalSaveValue = Schema.Struct({
-  ...HeldOn,
+/** Use a pull request's value that landed only as a hint beside the Destination's own undeployed edit. */
+export const TakePullRequestValue = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  conditionalSaveId: Uuid,
   key: Schema.String,
-  value: Schema.String.check(Schema.isNonEmpty()),
 });
-export type GiveConditionalSaveValue = typeof GiveConditionalSaveValue.Type;
+export type TakePullRequestValue = typeof TakePullRequestValue.Type;

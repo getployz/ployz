@@ -179,7 +179,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   // Computed only while the switcher is open: core compares each Branch with its Parent.
                   const review = parent ? reviewOf(environment.id) : null;
                   const notes = [
-                    prNumbers.has(environment.id) && `#${prNumbers.get(environment.id)}`,
+                    prNumbers.has(environment.id) && `PR #${prNumbers.get(environment.id)}`,
                     environment.id === project?.resolvedEnvironment?.id && "default",
                     !deployed.has(environment.id) && "not deployed",
                     !!review?.changes && `${review.changes} to save`,
@@ -208,7 +208,7 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   void navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
                     params: { organizationSlug, projectSlug, environmentSlug } });
                 }}>
-                  <GitCompareArrowsIcon />{currentBranch.pullRequest ? `What #${currentBranch.pullRequest.number} changes` : `Review ${current.name}`}
+                  <GitCompareArrowsIcon />Review {current.name}
                 </CommandItem>}
                 {current && <CommandItem value="new-branch" onSelect={() => {
                   setOpen(false);

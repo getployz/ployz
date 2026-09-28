@@ -58,7 +58,7 @@ export const prEnvironmentPlan = pgTable(
 
 /**
  * A PR Environment: the Branch the system made for one pull request, whose facts each delivery refreshes from GitHub.
- * With "remove its environment" off it stays after the pull request closes, `closed`, and takes no more approvals.
+ * With "remove its environment" off it stays after the pull request closes, `closed`, and takes no more saves.
  * `retired` once it's being torn down while its pull request lives on: a new one can start beside it, and deliveries
  * leave it be.
  */
@@ -97,16 +97,20 @@ export type PullRequest = typeof prEnvironment.$inferSelect;
 /** A Branch row as the browser has it: a PR Environment's with its pull request. */
 export type BranchRow = typeof environmentBranch.$inferSelect & { pullRequest: PullRequest | null };
 
-/** One approved row as the reviewer saw it: redacted, with its value choice, and whether its new value is still missing. */
-export type HeldRow = { row: ChangeRow; option?: BranchOption; missing: boolean };
+/**
+ * One saved row as the Save sheet showed it: redacted, with its value choice. Once landed, how it came in where the
+ * Destination had changed it too: `staged` as an ordinary change to deploy, or only a `hint` beside the Destination's own
+ * undeployed edit.
+ */
+export type HeldRow = { row: ChangeRow; option?: BranchOption; landed?: "staged" | "hint" };
 
 export type ConditionalSaveState = (typeof conditionalSave.$inferSelect)["state"];
 
-/** A Conditional Save as the browser has it: no sealed values, and its approver's name. */
+/** A Conditional Save as the browser has it: no sealed values. */
 export type ConditionalSaveRow = {
   id: string; organizationId: string; projectId: string; prEnvironmentId: string | null; repositoryId: number; prNumber: number;
   destinationEnvironmentId: string; rows: HeldRow[]; workingRevision: string; targetBranch: string;
-  approvedBy: string | null; approvedAt: Date; state: ConditionalSaveState; landedSavedStateId: string | null;
+  savedAt: Date; state: ConditionalSaveState; landedSavedStateId: string | null;
 };
 
 /**
@@ -119,11 +123,11 @@ export type HeldLanding = {
 };
 
 /**
- * A Conditional Save: a PR Environment's approved changes, held on one Destination until its pull request merges.
- * `standing`: it goes with the PR Environment, and stands while that one's revision and the pull request's target Git
- * branch are what they were at approval. `frozen` at the merge, with its merge commit: it has left the PR Environment,
- * so nothing done there withdraws it, and landing reads `landing` instead. `landed`: only the rows the Destination had
- * changed remain, staged instead of saved and marked until the Destination's next Saved revision.
+ * A Conditional Save: a PR Environment's saved changes, waiting on one Destination to go live with its pull request's
+ * merge commit. `standing`: it goes with the PR Environment, and stands while that one's revision and the pull request's
+ * target Git branch are what they were when saved. `frozen` at the merge, with its merge commit: it has left the PR
+ * Environment, so nothing done there withdraws it, and landing reads `landing` instead. `landed`: only the rows the
+ * Destination had changed too remain, each `staged` or a `hint`, marked until the Destination's next Saved revision.
  * `picks` and `landing` hold sealed values and never reach the browser.
  */
 export const conditionalSave = pgTable(
@@ -143,14 +147,14 @@ export const conditionalSave = pgTable(
       .notNull()
       .references(() => environment.id, { onDelete: "cascade" }),
     rows: jsonb("rows").notNull().$type<HeldRow[]>(),
-    // Core's picks, new values sealed; a missing new value has none.
+    // Core's picks, new values sealed.
     picks: jsonb("picks").notNull().$type<BranchPick[]>(),
     landing: jsonb("landing").notNull().$type<HeldLanding>(),
     workingRevision: uuid("working_revision").notNull(),
     targetBranch: text("target_branch").notNull(),
-    approvedByUserId: uuid("approved_by_user_id")
+    savedByUserId: uuid("saved_by_user_id")
       .references(() => user.id, { onDelete: "set null" }),
-    approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
+    savedAt: timestamp("saved_at", { withTimezone: true }).defaultNow().notNull(),
     mergeCommitSha: text("merge_commit_sha"),
     // The Saved revision landing published.
     landedSavedStateId: uuid("landed_saved_state_id"),

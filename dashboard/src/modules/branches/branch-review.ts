@@ -101,7 +101,7 @@ export function latestDeploy(deployedAt: Record<string, Date> | undefined): Date
 }
 
 export const rowLineage = (row: { key: string }) => row.key.slice(0, row.key.indexOf(":"));
-const rowPath = (row: { key: string }) => row.key.slice(row.key.indexOf(":") + 1);
+export const rowPath = (row: { key: string }) => row.key.slice(row.key.indexOf(":") + 1);
 /** A variable row's variable name: `API_KEY` from `<lineage>:variables.API_KEY`. */
 export const variableName = (row: { key: string }) => rowPath(row).slice("variables.".length);
 
