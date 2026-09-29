@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RemoveVolumesRequest, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{RemoveVolumesRequest, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, PlanQuery, RemovalsQuery, RunEvidence, RunnerId, Start,
-    UploadBase, UploadedSource, VolumeName, VolumeObservation,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunEvidence,
+    RunnerId, Start, UploadBase, UploadedSource, VolumeName, VolumeObservation,
 };
 use serde_json::{Value, json};
 
@@ -51,7 +51,7 @@ pub(crate) fn deploy_command() -> Command {
         ),
     )
     .arg(
-        // ponytail: hidden until `ployz up` uploads to Cloud; it composes this path.
+        // Hidden: `ployz up` is how users upload; tests upload any directory.
         value("upload", None)
             .value_name("DIR")
             .value_hint(ValueHint::DirPath)
@@ -62,7 +62,7 @@ pub(crate) fn deploy_command() -> Command {
 }
 
 /// `--events` and `--detach`, for every command that queues a Deployment and follows it.
-fn following(command: Command) -> Command {
+pub(super) fn following(command: Command) -> Command {
     command
         .arg(
             value("events", None)
@@ -153,7 +153,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    let upload = source.as_deref().map(uploaded_source).transpose()?;
     let accept = matches
         .get_many::<String>("accept-volume-loss")
         .into_iter()
@@ -165,11 +164,44 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let environment = environment(matches)?;
+    let request = Request {
+        environment: environment(matches)?,
+        services,
+        version: matches.get_one::<String>("expect-version").cloned(),
+        source,
+        accept,
+    };
+    upload_and_ship(matches, &store, request, events)?.finish()
+}
+
+/// What a Deploy admits; `source` is the directory it uploads first.
+pub(super) struct Request {
+    pub(super) environment: EnvironmentRef,
+    pub(super) services: Vec<ServiceName>,
+    pub(super) version: Option<String>,
+    pub(super) source: Option<PathBuf>,
+    pub(super) accept: Vec<VolumeName>,
+}
+
+/// Upload `request.source`, admit the Deployment, then run or follow it.
+pub(super) fn upload_and_ship(
+    matches: &ArgMatches,
+    store: &Store,
+    request: Request,
+    events: Option<std::io::BufWriter<std::fs::File>>,
+) -> Result<Shipped, Error> {
+    let Request {
+        environment,
+        services,
+        version,
+        source,
+        accept,
+    } = request;
+    let upload = source.as_deref().map(uploaded_source).transpose()?;
     // The in-process Store trusts this CLI to observe the Servers; Cloud observes
     // them itself.
     let volumes = match store.local() {
-        Some(_) if services.is_empty() => observe(matches, &store, &environment)?,
+        Some(_) if services.is_empty() => observe(matches, store, &environment)?,
         Some(_) | None => None,
     };
     let id = DeploymentId::parse(mint())?;
@@ -186,7 +218,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 id,
                 environment,
                 services: services.clone(),
-                version: matches.get_one::<String>("expect-version").cloned(),
+                version,
                 upload,
                 retry: None,
                 accept_volume_loss: accept,
@@ -201,9 +233,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             );
             failed(matches, &["deploy"])(error)
         })?;
-    ship(
+    shipped(
         matches,
-        &store,
+        store,
         &admitted,
         source.as_deref(),
         events,
@@ -212,7 +244,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Open `--events` before queueing anything, so a bad path ships nothing.
-fn open_events(matches: &ArgMatches) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
+pub(super) fn open_events(
+    matches: &ArgMatches,
+) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
     Ok(matches
         .get_one::<String>("events")
         .map(std::fs::File::create)
@@ -227,10 +261,35 @@ fn ship(
     matches: &ArgMatches,
     store: &Store,
     admitted: &DeploymentSummary,
-    source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
     words: &[&str],
 ) -> Result<(), Error> {
+    shipped(matches, store, admitted, None, events, words)?.finish()
+}
+
+/// A Deployment that ended, or was left to run: its view, the command to run next,
+/// and whether it applied.
+pub(super) struct Shipped {
+    pub(super) view: DeploymentView,
+    pub(super) hint: String,
+    pub(super) ran: Result<(), Error>,
+}
+
+impl Shipped {
+    fn finish(self) -> Result<(), Error> {
+        finish_view(&self.view, Some(self.hint))?;
+        self.ran
+    }
+}
+
+fn shipped(
+    matches: &ArgMatches,
+    store: &Store,
+    admitted: &DeploymentSummary,
+    source: Option<&Path>,
+    events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
+) -> Result<Shipped, Error> {
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
     // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
     // runner runs it otherwise, and this command follows it unless detached.
@@ -266,30 +325,38 @@ fn ship(
             (view, ran)
         }
     };
-    // A failed run that names its fix (a new upload) says so; otherwise read the Deployment.
-    let hint = ran
-        .as_ref()
-        .err()
-        .and_then(|error| {
-            error
-                .report()
-                .details
-                .get("next")?
-                .as_str()
-                .map(str::to_owned)
-        })
-        .or_else(|| {
-            // Cloud's runner found no upload or usable image for these Services.
-            let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = &view.outcome else {
-                return None;
-            };
-            let dir = source.map_or_else(|| ".".into(), |dir| dir.display().to_string());
-            (!needs_upload.is_empty())
-                .then(|| super::store::next(matches, &["deploy", "--upload", &dir]))
-        })
-        .unwrap_or(hint);
-    finish_view(&view, Some(hint))?;
-    ran
+    // A run that found no upload or usable image for its Services says to upload;
+    // one that names another fix says that; otherwise read the Deployment.
+    let cloud_needs_upload = matches!(
+        &view.outcome,
+        Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) if !needs_upload.is_empty()
+    );
+    let details = ran.as_ref().err().map(|error| error.report().details);
+    let local_needs_upload = details.as_ref().is_some_and(|details| {
+        details.pointer("/preparation/kind") == Some(&json!("upload_needed"))
+    });
+    let hint = if cloud_needs_upload || local_needs_upload {
+        upload_again(&view.environment)
+    } else {
+        details
+            .as_ref()
+            .and_then(|details| details.get("next")?.as_str().map(str::to_owned))
+            .unwrap_or(hint)
+    };
+    Ok(Shipped { view, hint, ran })
+}
+
+/// `ployz up` in this Environment, which uploads the directory it runs in. It names
+/// the scope, so an unlinked directory never founds a new Project.
+fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
+    shell_words::join([
+        "ployz",
+        "up",
+        "--project",
+        environment.project.as_str(),
+        "--env",
+        environment.name.as_str(),
+    ])
 }
 
 /// Follow a Deployment Cloud's runner runs until it ends. Each change of its status
@@ -432,12 +499,7 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
 /// Build the Deployment's uploaded Services from `source`, or, without it, reuse their
 /// latest images; record the receipts, and return the plan with the images it keeps
 /// alive until execution.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the runner's store, identity, connection and upload are separate caller-owned inputs"
-)]
 async fn build(
-    matches: &ArgMatches,
     store: &ConfigStore,
     claimed: &Claimed,
     runner: &RunnerId,
@@ -478,20 +540,9 @@ async fn build(
         build_index: 0,
         preferred_machine: None,
     };
-    let upload_again = |mut error: RpcError| -> Error {
-        if let Some(details) = error.details.as_object_mut() {
-            let dir = source.map_or_else(|| ".".into(), |dir| dir.display().to_string());
-            details.insert(
-                "next".into(),
-                json!(super::store::next(matches, &["deploy", "--upload", &dir])),
-            );
-        }
-        error.into()
-    };
     let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
         .await
-        .map_err(std::io::Error::other)?
-        .map_err(upload_again)?;
+        .map_err(std::io::Error::other)??;
     let cancel = crate::cancellation::on_ctrl_c();
     let _stop_listener = cancel.clone().drop_guard();
     let prepared = crate::sdk::prepare::prepare(
@@ -513,7 +564,7 @@ async fn build(
         },
     )
     .await
-    .map_err(|error| upload_again(crate::sdk::preparation_error(error, cancel.is_cancelled())))?;
+    .map_err(|error| crate::sdk::preparation_error(error, cancel.is_cancelled()))?;
     let (plan, retained) = prepared.into_parts();
     let receipts = preparation::receipts(&captured.fingerprints, &retained)
         .into_iter()
@@ -645,18 +696,7 @@ async fn run(
             Err(error) => return Err(not_executed(error.into())),
         }
     } else {
-        match build(
-            matches,
-            store,
-            claimed,
-            runner,
-            &mut client,
-            services,
-            source,
-            &tap,
-        )
-        .await
-        {
+        match build(store, claimed, runner, &mut client, services, source, &tap).await {
             Ok(built) => built,
             Err(error) => return Err(not_executed(error)),
         }
@@ -798,7 +838,7 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
             None,
         )
         .map_err(refused(matches, &source, &words))?;
-    ship(matches, &store, &admitted, None, events, &words)
+    ship(matches, &store, &admitted, events, &words)
 }
 
 fn start(root: &ArgMatches) -> Result<(), Error> {
@@ -812,7 +852,7 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
             deployment: id.clone(),
         })
         .map_err(refused(matches, &id, &words))?;
-    ship(matches, &store, &queued, None, events, &words)
+    ship(matches, &store, &queued, events, &words)
 }
 
 fn cancel(root: &ArgMatches) -> Result<(), Error> {
@@ -841,33 +881,36 @@ fn show(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {
-    crate::output::finish(&Next::new(view, hint), || {
+    crate::output::finish(&Next::new(view, hint), || say_view(view))
+}
+
+/// A Deployment as human text.
+pub(super) fn say_view(view: &DeploymentView) {
+    say!(
+        "Deployment #{} of {}/{}: {:?}",
+        view.deployment.number,
+        view.environment.project,
+        view.environment.name,
+        view.deployment.status
+    );
+    if let Some(upload) = &view.deployment.upload {
+        say!("  {}", provenance(upload));
+    }
+    for node in &view.nodes {
+        say!("  {}: {:?}", node.name, node.outcome);
+    }
+    for build in &view.builds {
+        let commit = build
+            .commit
+            .as_deref()
+            .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
+        let reason = build.message.as_deref().unwrap_or_default();
         say!(
-            "Deployment #{} of {}/{}: {:?}",
-            view.deployment.number,
-            view.environment.project,
-            view.environment.name,
-            view.deployment.status
+            "  build {} from {commit}: {:?} {reason}",
+            build.service,
+            build.status
         );
-        if let Some(upload) = &view.deployment.upload {
-            say!("  {}", provenance(upload));
-        }
-        for node in &view.nodes {
-            say!("  {}: {:?}", node.name, node.outcome);
-        }
-        for build in &view.builds {
-            let commit = build
-                .commit
-                .as_deref()
-                .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
-            let reason = build.message.as_deref().unwrap_or_default();
-            say!(
-                "  build {} from {commit}: {:?} {reason}",
-                build.service,
-                build.status
-            );
-        }
-    })
+    }
 }
 
 #[cfg(test)]

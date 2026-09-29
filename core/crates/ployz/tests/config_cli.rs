@@ -1172,6 +1172,74 @@ fn in_dir(
     (output.status.code(), json)
 }
 
+/// `ployz up` in a directory without Git creates a Project named after it, links it,
+/// adds a Service (on Cloud with a generated domain), uploads it and deploys. Again,
+/// it reuses all of that; an unlinked directory of the same name is refused.
+#[test]
+fn up_ships_a_directory_without_git() {
+    // Adding a Server needs a signed-in device, and is checked before anything else.
+    let (code, unsigned) = ployz(None, &["up", "--server", "root@192.0.2.1"]);
+    assert_eq!(code, Some(1), "{unsigned}");
+    assert_eq!(unsigned["error"]["details"]["next"], json!("ployz login"));
+
+    let args = ["up", "--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = first.path().canonicalize().unwrap().join("My Shop");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        // No Server answers, so the Deployment doesn't apply.
+        let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(3), "{up}");
+        assert_eq!(up["directory"], json!(dir.to_str().unwrap()));
+        let deployment = &up["deployment"];
+        assert_eq!(deployment["environment"]["project"], json!("my-shop"));
+        assert_eq!(deployment["environment"]["name"], json!("production"));
+        assert_eq!(deployment["upload"]["base"], json!(null), "{up}");
+        let id = deployment["id"].as_str().unwrap();
+        assert_eq!(up["next"], json!(format!("ployz deployment show {id}")));
+        match store {
+            Target::Local(_) => {
+                assert_eq!(up["urls"], json!([]));
+                assert_eq!(up.get("dashboard"), None);
+            }
+            Target::Cloud { url, .. } => {
+                assert_eq!(up["urls"], json!(["https://my-shop.acme.ployz.app"]));
+                let namespace = deployment["namespace"].as_str().unwrap();
+                assert_eq!(
+                    up["dashboard"],
+                    json!(format!("{url}/cloud/alice/my-shop/{namespace}"))
+                );
+                assert!(UPLOADS.lock().unwrap().contains_key(id));
+            }
+        }
+
+        let (code, again) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(3), "{again}");
+        assert_eq!(
+            again["deployment"]["environment"]["project"],
+            json!("my-shop")
+        );
+        let (_, services) = in_dir(store, home.path(), &dir, &["service", "ls"], &[]);
+        assert_eq!(
+            services["services"].as_array().map(Vec::len),
+            Some(1),
+            "{services}"
+        );
+
+        let other = second.path().join("My Shop");
+        std::fs::create_dir(&other).unwrap();
+        let (code, taken) = in_dir(store, home.path(), &other, &args, &[]);
+        assert_eq!(code, Some(1), "{taken}");
+        assert_eq!(
+            taken["error"]["details"]["next"],
+            json!("ployz up --project my-shop")
+        );
+    }
+}
+
 #[test]
 fn two_linked_directories_act_on_their_own_environments() {
     for store in &targets() {
@@ -1582,7 +1650,10 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let (code, never) = ployz(Some(&cloud), &["deploy"]);
     assert_eq!(code, Some(3), "{never}");
     assert_eq!(never["outcome"]["needs_upload"], json!(["app"]), "{never}");
-    assert_eq!(never["next"], json!("ployz deploy --upload ."));
+    assert_eq!(
+        never["next"],
+        json!("ployz up --project shop --env production")
+    );
 
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();
