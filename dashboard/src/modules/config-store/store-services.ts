@@ -14,8 +14,11 @@ const MAX_NAME = 63;
 function sourceName(source: NewServiceSource) {
   if (source.type === "git") return source.repository.split("/").at(-1) ?? "";
   if (source.type === "image") return source.image.split("/").at(-1)?.split(/[:@]/)[0] ?? "";
-  return uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });
+  return randomName();
 }
+
+/** A name for something nobody named yet, like `brave-otter`: a DNS label. */
+export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });
 
 /**
  * A new Service's name: a DNS label from its repository or image, numbered until no Service here has it as a name or

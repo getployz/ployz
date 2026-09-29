@@ -49,7 +49,10 @@ import {
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useCreateStoreService } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import type { NewServiceSource } from "#/modules/config-store/store-services";
+import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
+import { environmentsQuery, requireView, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
 type InitialPanel = "root" | "git" | "image";
 type Panel = { kind: InitialPanel };
@@ -179,6 +182,8 @@ type CreationTarget = {
   canvasPosition: { x: number; y: number };
 };
 
+type StoreCreationTarget = CreationTarget & { environmentName: string };
+
 function useServiceCreateActions({
   props,
   setPanel,
@@ -198,6 +203,8 @@ function useServiceCreateActions({
 
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
   const createdProjectRef = useRef<Awaited<ReturnType<typeof createEmptyProject>> | null>(null);
+  const createdStoreProjectRef = useRef<StoreCreationTarget | null>(null);
+  const storeWriter = useStoreWriter(props.organizationSlug);
   // The ref guards re-entry (two clicks in one tick); the state only renders it.
   const creatingRef = useRef(false);
   const [creating, setCreating] = useState(false);
@@ -223,6 +230,7 @@ function useServiceCreateActions({
     try {
       await action();
       createdProjectRef.current = null;
+      createdStoreProjectRef.current = null;
     } catch (error) {
       setFailure(error);
     } finally {
@@ -235,6 +243,20 @@ function useServiceCreateActions({
   async function getServiceModeEnvironment() {
     if (props.mode !== "service") {
       throw new Error("Service mode environment is unavailable in project mode");
+    }
+
+    if (storeEnabled) {
+      const listed = requireView(await collectionScope.queryClient.fetchQuery(
+        storeViewOptions(props.organizationSlug, collectionScope, environmentsQuery(props.projectSlug))));
+      const environment = listed.environments.find((row) => row.name === props.environmentSlug);
+      if (!environment) throw new Error("Environment not found");
+      return {
+        projectSlug: props.projectSlug,
+        environmentSlug: props.environmentSlug,
+        environmentId: environment.id,
+        environmentName: environment.name,
+        canvasPosition: props.canvasPosition,
+      };
     }
 
     const environment = await loadWorkspaceEnvironment(props, collectionScope);
@@ -273,6 +295,23 @@ function useServiceCreateActions({
     };
   }
 
+  /** A new Config Store Project, named like `brave-otter`, whose Default Environment takes the first Service. */
+  async function createStoreProjectTarget(): Promise<StoreCreationTarget> {
+    const made = createdStoreProjectRef.current ?? await (async (): Promise<StoreCreationTarget> => {
+      // SAFETY: Project and Environment ids are UUIDs the caller mints; the Store checks them.
+      const id = crypto.randomUUID() as ProjectId;
+      // SAFETY: as above.
+      const environment = crypto.randomUUID() as EnvironmentId;
+      const written = await storeWriter.commit({ command: "create_project", id, name: randomName(), default_environment: environment })
+        .isPersisted.promise;
+      if (written.written !== "project") throw new Error("The Store didn't create the project.");
+      return { projectSlug: written.project.name, environmentSlug: written.environment.name, environmentName: written.environment.name,
+        environmentId: written.environment.id, canvasPosition: { x: 0, y: 0 } };
+    })();
+    createdStoreProjectRef.current = made;
+    return made;
+  }
+
   async function getCreationTarget(): Promise<CreationTarget> {
     return props.mode === "service"
       ? getServiceModeEnvironment()
@@ -297,15 +336,23 @@ function useServiceCreateActions({
   const createServiceFromSource = (source: ServiceSource) =>
     whileCreating(async () => {
       const stillHere = markHere();
-      // TODO(#1267): a new Project's first Service moves to the Store with Projects.
-      if (storeEnabled && props.mode === "service") {
-        const target = await getServiceModeEnvironment();
+      if (storeEnabled) {
+        const target = props.mode === "service" ? await getServiceModeEnvironment() : await createStoreProjectTarget();
         const created = await createStoreService({
           store: { project: target.projectSlug, environment: target.environmentName },
           environmentId: target.environmentId,
           position: target.canvasPosition,
         }, newServiceSource(source));
-        await props.onCreated?.(created, stillHere());
+        if (props.mode === "service") {
+          await props.onCreated?.(created, stillHere());
+          return;
+        }
+        await navigate({
+          to: ENVIRONMENT_SERVICE_ROUTE_TO,
+          params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
+            serviceId: created.service.id },
+          search: (prev) => prev,
+        });
         return;
       }
       const target = await getCreationTarget();
@@ -384,7 +431,7 @@ function useServiceCreateActions({
       return;
     }
 
-    void whileCreating(() => createProjectTarget().then(navigateToEnvironment));
+    void whileCreating(() => (storeEnabled ? createStoreProjectTarget() : createProjectTarget()).then(navigateToEnvironment));
   }
 
   return {

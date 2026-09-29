@@ -239,5 +239,9 @@ export const callStoreAsMember = Effect.fn("ConfigStore.callAsMember")(function*
   if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  // Only Cloud's own Organization removal forgets an Organization's configuration.
+  if (call.operation === "write" && call.command.command === "remove_organization") {
+    return { ok: false, refusal: { code: "unsupported", message: "Delete an Organization from its settings.", details: null } } satisfies StoreResult<never>;
+  }
   return yield* callStore(organization.id, actor.userId, call);
 });

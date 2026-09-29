@@ -15,9 +15,9 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/resources/$resourceId",
 )({
   loader: async ({ params, context }) => {
-    const environment = await requireEnvironment(context, params);
     // The Environment's loader prefetched its Volumes.
     if (storeEnabled) return;
+    const environment = await requireEnvironment(context, params);
     await prefetchRemote(context, latestVolumeRemoveAttemptQueryOptions({
       organizationSlug: params.organizationSlug, environmentId: environment.id, resourceId: params.resourceId,
     }));

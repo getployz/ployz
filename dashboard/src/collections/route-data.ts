@@ -9,7 +9,7 @@ import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-s
 import { activeBuildTailReads } from "#/modules/deployments/deployment.collection";
 import type { ConfigQuery, EnvironmentRef } from "@ployz/sdk";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import { storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, projectsQuery, requireView, storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -26,8 +26,9 @@ function scopeOf(context: RouteDataContext): CollectionScope {
 }
 
 export async function requireOrganization(context: RouteDataContext, organizationSlug: string) {
-  const organization = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
-  if (organization.activeOrganization?.slug !== organizationSlug) throw notFound();
+  const { activeOrganization } = await context.queryClient.ensureQueryData(organizationStateQueryOptions(organizationSlug));
+  if (activeOrganization?.slug !== organizationSlug) throw notFound();
+  return activeOrganization;
 }
 
 /** Billing exists only on Ployz-hosted Cloud. */
@@ -42,6 +43,20 @@ export async function requireWorkspace(context: RouteDataContext, organizationSl
 
 export async function requireEnvironment(context: RouteDataContext, input: EnvironmentBySlug) {
   return loadWorkspaceEnvironment(input, scopeOf(context));
+}
+
+/** The Organization's Projects in the Config Store. */
+export async function requireStoreProjects(context: RouteDataContext, organizationSlug: string) {
+  return requireView(await context.queryClient.ensureQueryData(storeViewOptions(organizationSlug, scopeOf(context), projectsQuery()))).projects;
+}
+
+/** The Config Store Environment a route names by its Project's name and its own; not found otherwise. */
+export async function requireStoreEnvironment(context: RouteDataContext, input: EnvironmentBySlug) {
+  const result = await context.queryClient.ensureQueryData(
+    storeViewOptions(input.organizationSlug, scopeOf(context), environmentsQuery(input.projectSlug)));
+  const environment = result.ok ? result.value.environments.find((row) => row.name === input.environmentSlug) : undefined;
+  if (!environment) throw notFound();
+  return environment;
 }
 
 /** SSR failure fails the organization route: no org page can render without the Org Store. */

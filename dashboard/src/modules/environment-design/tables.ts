@@ -222,9 +222,8 @@ export const environmentCanvasNodePosition = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id")
-      .notNull()
-      .references(() => environment.id, { onDelete: "cascade" }),
+    // No foreign key: a Config Store Environment lives only in the Store's tables.
+    environmentId: uuid("environment_id").notNull(),
     resourceType: text("resource_type").notNull(),
     resourceId: uuid("resource_id").notNull(),
     x: integer("x").notNull(),

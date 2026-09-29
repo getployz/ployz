@@ -109,7 +109,7 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
   const view = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   const rail = await screen.findByRole("navigation", { name: "Dashboard navigation" });
   if (orgStore === "ready" && scope === "environment") {
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Environment: Production" }).length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Environment: production" }).length).toBeGreaterThan(0));
   }
   return { ...view, router, rail, resolveOrgStore };
 }

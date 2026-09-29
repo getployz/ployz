@@ -20,6 +20,9 @@ import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { createEnvironmentServerFn } from "#/modules/environment-design/workspace-functions";
+import type { EnvironmentId } from "@ployz/sdk";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 
 /** Creates an empty root Environment and opens its canvas. */
 export function CreateEnvironmentDialog({
@@ -36,23 +39,34 @@ export function CreateEnvironmentDialog({
   const markHere = useStillHere();
   const navigate = useNavigate();
   const createEnvironment = useServerFn(createEnvironmentServerFn);
+  const writer = useStoreWriter(organizationSlug);
   const mutation = useMutation({
-    mutationFn: (input: {
+    mutationFn: async (input: {
       organizationSlug: string;
       projectSlug: string;
       name: string;
       stillHere: () => boolean;
-    }) =>
-      createEnvironment({
+    }) => {
+      if (storeEnabled) {
+        // The Store names it as typed, or says why not in the form.
+        // SAFETY: an Environment id is a UUID the caller mints; the Store checks it.
+        const id = crypto.randomUUID() as EnvironmentId;
+        await writer.commit({ command: "create_environment", id, project: input.projectSlug, name: input.name },
+          ["invalid_argument", "conflict"]).isPersisted.promise;
+        return input.name;
+      }
+      const receipt = await createEnvironment({
         data: {
           organizationSlug: input.organizationSlug,
           projectSlug: input.projectSlug,
           name: input.name,
         },
-      }),
-    onSuccess: async (receipt, input) => {
+      });
       await getEnvironmentsCollection(input.organizationSlug, collectionScope).writeCommitted(receipt.data);
       await getEnvironmentSummariesCollection(input.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data));
+      return receipt.data.namespace;
+    },
+    onSuccess: async (environmentSlug, input) => {
       // A completed creation still belongs to its original scope after navigation.
       if (!input.stillHere()) return;
       onOpenChange(false);
@@ -62,7 +76,7 @@ export function CreateEnvironmentDialog({
             kind: "environment",
             organizationSlug: input.organizationSlug,
             projectSlug: input.projectSlug,
-            environmentSlug: receipt.data.namespace,
+            environmentSlug,
           },
           "architecture",
         ),
