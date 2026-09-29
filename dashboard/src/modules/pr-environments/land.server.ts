@@ -30,6 +30,7 @@ import { prDestinations } from "./pr-environment.repository.server";
 import { conditionalSave, prEnvironment, prEnvironmentPlan, type SaveLanding, type SavedRow } from "./tables";
 
 type ConditionalSave = typeof conditionalSave.$inferSelect;
+type Trigger = typeof githubEnvironmentTrigger.$inferSelect;
 type Document = typeof environment.$inferSelect;
 
 const isNode = (pick: { key: string }) => pick.key.endsWith(":node");
@@ -302,12 +303,20 @@ const latestTriggerFor = Effect.fn("PrEnvironments.latestTriggerFor")(function* 
   return latest ?? null;
 });
 
+/** The processed head of `save`'s target Git branch, if any. */
+const processedHeadFor = Effect.fn("PrEnvironments.processedHeadFor")(function* (installationId: number, save: ConditionalSave) {
+  const { drizzle } = yield* Database;
+  const [branch] = yield* drizzle.select({ head: githubBranchProjection.evaluatedHeadSha }).from(githubBranchProjection).where(and(
+    eq(githubBranchProjection.installationId, installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
+    eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
+  return branch?.head ?? null;
+});
+
 /**
  * The merged pull request's frozen Conditional Saves the pushes so far already carry, once its target Git branch's
  * processed head has the merge commit (else the next push that has it carries them). One rides a trigger waiting for
- * CI in its Destination: admitted, it lands them; superseded, it hands them on (`handOverCarried`). With nothing
- * waiting there, the Destination has taken every processed push, so they're saved now. Asks GitHub, outside any
- * transaction.
+ * CI at that head in its Destination: admitted, it lands them. With nothing waiting there, the processed head deploys
+ * nothing in the Destination, so they're saved now. Asks GitHub, outside any transaction.
  */
 export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTriggers")(function* (pullRequest: {
   installationId: number; repositoryId: number; number: number;
@@ -316,17 +325,18 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
   const saves = yield* drizzle.select().from(conditionalSave).where(ofPullRequest(pullRequest));
   let repository: GithubResolvedRepository | undefined;
   for (const save of saves) {
-    const [branch] = yield* drizzle.select({ head: githubBranchProjection.evaluatedHeadSha }).from(githubBranchProjection).where(and(
-      eq(githubBranchProjection.installationId, pullRequest.installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
-      eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
-    if (!branch?.head) continue;
+    const head = yield* processedHeadFor(pullRequest.installationId, save);
+    if (!head) continue;
     repository ??= yield* resolveGithubRepository(pullRequest.installationId, pullRequest.repositoryId);
-    if (!(yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), branch.head))) continue;
+    if (!(yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), head))) continue;
+    // A trigger behind the head is superseded, and what it carries stays frozen: the pushes after it carry that.
+    const waitsAtHead = (trigger: Trigger | null): trigger is Trigger =>
+      trigger?.admissionState === "waiting" && trigger.headSha === head;
     // ponytail: a few looks, as triggers are admitted or superseded meanwhile; past that the next push carries them.
     for (let look = 0; look < 3; look++) {
       const latest = yield* latestTriggerFor(save);
       if (latest?.conditionalSaveIds.includes(save.id)) break;
-      if (latest?.admissionState === "waiting") {
+      if (waitsAtHead(latest)) {
         const [attached] = yield* drizzle.update(githubEnvironmentTrigger)
           .set({ conditionalSaveIds: sql`array_append(${githubEnvironmentTrigger.conditionalSaveIds}, ${save.id}::uuid)` })
           .where(and(eq(githubEnvironmentTrigger.id, latest.id), eq(githubEnvironmentTrigger.admissionState, "waiting")))
@@ -334,31 +344,13 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
         if (attached) break;
         continue;
       }
-      // Under the queue lock nothing may wait for CI there by now, or that trigger carries them instead.
-      if (yield* landNow(save.id, save.destinationEnvironmentId, () => latestTriggerFor(save).pipe(
-        Effect.map((now) => now?.admissionState !== "waiting")))) break;
+      // Under the queue lock the head must still be the one that has the merge commit, else the push that moved it
+      // decides; and nothing may wait for CI at it, or that trigger carries them instead.
+      const stillCarries = () => Effect.all([processedHeadFor(pullRequest.installationId, save), latestTriggerFor(save)])
+        .pipe(Effect.map(([now, latest]) => now === head && !waitsAtHead(latest)));
+      if (yield* landNow(save.id, save.destinationEnvironmentId, stillCarries)) break;
     }
   }
-});
-
-/**
- * A trigger that carries frozen Conditional Saves is superseded unadmitted: they move to the trigger still waiting on
- * its Git branch in the same Destination, or, with none, land now in `document`, whose queue lock and document the
- * caller holds, as close-time landing does. Either way nothing it carried is left behind.
- */
-export const handOverCarried = Effect.fn("PrEnvironments.handOverCarried")(function* (
-  trigger: { id: string; environmentId: string; repositoryId: number; ref: string; conditionalSaveIds: string[] }, document: Document,
-) {
-  if (trigger.conditionalSaveIds.length === 0) return;
-  const { drizzle } = yield* Database;
-  const [waiting] = yield* drizzle.select().from(githubEnvironmentTrigger).where(and(
-    eq(githubEnvironmentTrigger.environmentId, trigger.environmentId), eq(githubEnvironmentTrigger.repositoryId, trigger.repositoryId),
-    eq(githubEnvironmentTrigger.ref, trigger.ref), eq(githubEnvironmentTrigger.admissionState, "waiting"), ne(githubEnvironmentTrigger.id, trigger.id),
-  )).orderBy(desc(githubEnvironmentTrigger.createdAt)).limit(1).for("update");
-  const [next] = waiting ? yield* drizzle.update(githubEnvironmentTrigger)
-    .set({ conditionalSaveIds: [...new Set([...waiting.conditionalSaveIds, ...trigger.conditionalSaveIds])] })
-    .where(eq(githubEnvironmentTrigger.id, waiting.id)).returning({ id: githubEnvironmentTrigger.id }) : [];
-  if (!next) yield* landCarried(trigger.conditionalSaveIds, document);
 });
 
 /**

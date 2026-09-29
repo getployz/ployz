@@ -40,7 +40,7 @@ import {
   admitEnvironmentDeployment,
   loadLatestSavedDeploymentTarget,
 } from "#/modules/deployments/admission.server";
-import { handOverCarried, landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
+import { landCarried, landCarriedInIdle } from "#/modules/pr-environments/land.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import {
   listLatestEnvironmentSavedStatesForGithubBranch,
@@ -366,8 +366,9 @@ const admitGithubTrigger = Effect.fn("Github.admitTrigger")(
     const supersede = () => drizzle.update(schemaGithubEnvironmentTrigger).set({ admissionState: "superseded" })
       .where(eq(schemaGithubEnvironmentTrigger.id, trigger.id));
     if (branch?.evaluatedHeadSha !== trigger.headSha) {
-      // A newer push took over: what this one carries moves on, or is saved now.
-      yield* handOverCarried(trigger, document);
+      // A newer push took over. What this one carries stays frozen: that push carries it if its commit has the merge.
+      // ponytail: unless the save froze after that push looked, while close-time carrying attached it here; then the
+      // next push carries it. A recheck after close commits would close that window.
       yield* supersede();
       return null;
     }
