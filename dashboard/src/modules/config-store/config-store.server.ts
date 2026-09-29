@@ -9,7 +9,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createConfigDeploymentAdmittedEvent } from "#/modules/inngest/events";
+import { createConfigDeploymentAdmittedEvent, createConfigDeploymentStartedEvent } from "#/modules/inngest/events";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
@@ -76,18 +76,20 @@ export const cloudStore = Effect.gen(function* () {
 });
 
 /**
- * Hand an admitted Deployment to Cloud's worker; the refusal to answer instead when it can't. A replayed admission
- * sends the same event, which Inngest drops, so a retried request starts one run.
+ * Hand an admitted or started Deployment to Cloud's worker; the refusal to answer instead when it can't. A replayed
+ * admission sends the same event, which Inngest drops, so a retried request starts one run. A start always sends.
  */
 const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   organizationId: string,
   written: ConfigWritten,
   read: (query: ConfigQuery) => Promise<ConfigView>,
+  started: boolean,
 ) {
   if (written.written !== "deployment") return undefined;
   const view = yield* Effect.tryPromise({ try: () => read({ query: "deployment", id: written.id }), catch: (cause) => cause });
   if (view.view !== "deployment") return yield* Effect.die(new Error("A deployment query answered another view"));
-  const event = createConfigDeploymentAdmittedEvent({ organizationId, environmentId: view.environment.id, deploymentId: written.id });
+  const data = { organizationId, environmentId: view.environment.id, deploymentId: written.id };
+  const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
   return yield* sendInngestEvent(event).pipe(
     Effect.as(undefined),
     Effect.catchTag("InngestEventSendError", () => Effect.succeed<StoreRefusal>({
@@ -151,12 +153,14 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     },
     catch: (cause) => cause,
   }).pipe(
-    // An admitted Deployment goes to Cloud's worker, whoever admitted it.
+    // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
     Effect.flatMap((result) => {
-      if (!result.ok || call.operation !== "write" || call.command.command !== "admit") return Effect.succeed(result);
+      if (!result.ok || call.operation !== "write") return Effect.succeed(result);
+      const { command } = call.command;
+      if (command !== "admit" && command !== "start") return Effect.succeed(result);
       // SAFETY: a write answers what it wrote.
       const written = result.value as ConfigWritten;
-      return dispatchAdmitted(organizationId, written, read).pipe(
+      return dispatchAdmitted(organizationId, written, read, command === "start").pipe(
         Effect.map((refused): StoreResult<ConfigView | ConfigWritten> => refused === undefined ? result : { ok: false, refusal: refused }),
       );
     }),

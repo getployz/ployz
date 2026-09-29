@@ -172,7 +172,9 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
             let written = store.write_trusted(&who, &command, &github());
-            if let (StoreCommand::Admit(_), Ok(written)) = (&command, &written) {
+            if let (StoreCommand::Admit(_) | StoreCommand::Start(_), Ok(written)) =
+                (&command, &written)
+            {
                 dispatch(store, who, written);
             }
             answer(written)
@@ -856,6 +858,67 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
                 assert_eq!(error(store, &args)["code"], json!("unsupported"));
             }
         }
+    }
+}
+
+#[test]
+fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
+    let unreachable = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let (code, deployed) = ployz(Some(store), &[&["deploy"][..], &unreachable].concat());
+        assert_eq!(code, Some(3), "{deployed}");
+        let failed_id = deployed["id"].as_str().unwrap().to_owned();
+        // Saved since: a retry still ships what the failed one froze.
+        ok(store, &["set", "web.replicas=2"]);
+        ok(store, &["publish"]);
+
+        let (code, retried) = ployz(
+            Some(store),
+            &[&["deployment", "retry", &failed_id][..], &unreachable].concat(),
+        );
+        assert_eq!(code, Some(3), "{retried}");
+        assert_eq!(
+            (&retried["number"], &retried["saved"], &retried["status"]),
+            (&json!(2), &json!(1), &json!("failed"))
+        );
+        let id = retried["id"].as_str().unwrap();
+        assert_ne!(id, failed_id);
+        assert_eq!(
+            retried["next"],
+            json!(format!("ployz deployment show {id}"))
+        );
+
+        // An ended Deployment can't start or be cancelled; the refusal shows it.
+        let show = json!(format!("ployz deployment show {failed_id}"));
+        for verb in ["start", "cancel"] {
+            let refused = error(store, &["deployment", verb, &failed_id]);
+            assert_eq!(refused["code"], json!("conflict"));
+            assert_eq!(refused["details"]["next"], show);
+        }
+        let missing = error(
+            store,
+            &[
+                "deployment",
+                "retry",
+                "00000000-0000-4000-8000-000000000999",
+            ],
+        );
+        assert_eq!(missing["code"], json!("not_found"));
+        failed(store, &["deployment", "cancel", "not-an-id"], 2);
+
+        // Logs of a Deployment look in its Environment; this Cluster never answers.
+        failed(store, &["logs", "--deployment", "not-an-id"], 2);
+        let unknown = error(
+            store,
+            &[
+                "logs",
+                "--deployment",
+                "00000000-0000-4000-8000-000000000999",
+            ],
+        );
+        assert_eq!(unknown["code"], json!("not_found"));
     }
 }
 

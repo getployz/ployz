@@ -29,7 +29,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
 
     ployz(&["project", "new", "shop"]);
     ployz(&["service", "add", "web", "--image", SERVICE_CONTAINER_IMAGE]);
-    ployz(&["set", "web.startCommand=sleep 600"]);
+    ployz(&["set", "web.startCommand=sh -c 'echo started; sleep 600'"]);
     // A secret is sealed in the Store and unsealed only for its runner.
     let secrets = dir.path().join("secrets.env");
     std::fs::write(&secrets, "TOKEN=s3cr3t\n").unwrap();
@@ -84,6 +84,15 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             })
     };
     wait_for_web(&mut client, &web_containers, 2).await;
+
+    // A Deployment's logs are those of the containers it created.
+    let scaled_id = scaled["id"].as_str().unwrap();
+    let logs = run(address, &store, &["logs", "--deployment", scaled_id]);
+    assert!(logs.status.success(), "{logs:?}");
+    assert!(
+        String::from_utf8_lossy(&logs.stdout).contains("started"),
+        "{logs:?}"
+    );
     let live = client
         .live_services(ployz_core::EnvironmentValues::Included)
         .await
@@ -113,6 +122,9 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     let removed = ployz(&["deploy"]);
     assert_eq!(removed["status"], json!("applied"), "{removed}");
     wait_for_web(&mut client, &web_containers, 0).await;
+    let gone = run(address, &store, &["logs", "--deployment", scaled_id]);
+    let gone: Value = serde_json::from_slice(&gone.stdout).unwrap();
+    assert_eq!(gone["error"]["code"], json!("not_found"), "{gone}");
 }
 
 /// Wait until the Cluster runs `count` containers of `web`.
@@ -137,7 +149,6 @@ async fn wait_for_web(
     .unwrap();
 }
 
-/// Run `ployz --json ARGS` against `store` and the Cluster at `address`; it must succeed.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
 async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
@@ -187,28 +198,28 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     assert_eq!(rebuilt["status"], json!("applied"), "{rebuilt}");
 }
 
+/// [`run`], with its exit code and JSON (null when stdout isn't one).
 fn attempt(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> (Option<i32>, Value) {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(args)
-        .args(["--json", "--connect", &format!("tcp://{address}")])
-        .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
-        .env_remove("PLOYZ_PROJECT")
-        .env_remove("PLOYZ_ENV")
-        .output()
-        .unwrap();
+    let output = run(address, store, args);
     let json = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
     (output.status.code(), json)
 }
 
-fn ployz(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> Value {
-    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+/// Run `ployz --json ARGS` against `store` and the Cluster at `address`.
+fn run(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
         .args(["--json", "--connect", &format!("tcp://{address}")])
         .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV")
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+/// [`run`], which must succeed.
+fn ployz(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> Value {
+    let output = run(address, store, args);
     assert!(
         output.status.success(),
         "{args:?}: stdout={} stderr={}",

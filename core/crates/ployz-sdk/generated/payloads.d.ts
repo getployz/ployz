@@ -14,7 +14,13 @@ version: string | null,
  * A new upload for Services without a source of their own; none keeps the
  * Environment's latest.
  */
-upload?: UploadedSource | null, };
+upload?: UploadedSource | null,
+/**
+ * Retry this failed, unknown or cancelled Deployment: its Saved revision,
+ * targets and Namespace, whatever was saved since. It names the Environment,
+ * so `environment`, `services`, `version` and `upload` stay empty.
+ */
+retry?: DeploymentId | null, };
 
 export type AdvertisedEndpoint = string;
 
@@ -201,7 +207,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "cancel" } & Cancel;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel;
 
 export type ConfigMount = { config_name: string,
 /**
@@ -1636,6 +1642,8 @@ default: JsonValue,
 apply: Apply, };
 
 export type SourceKind = "empty" | "git" | "image";
+
+export type Start = { deployment: DeploymentId, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 
