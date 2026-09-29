@@ -184,6 +184,36 @@ pub(crate) fn freeze(
     Ok(credentials)
 }
 
+/// Give Service `to` the credential Service `from` holds, if any: a Branch's copy
+/// of a Service pulls with its source's credential until someone rotates it.
+pub(crate) fn copy(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (from_environment, from): (&EnvironmentId, &str),
+    (to_environment, to): (&EnvironmentId, &str),
+) -> Result<(), RpcError> {
+    let Some(sealed) = load(tx, from_environment, from)? else {
+        return Ok(());
+    };
+    tx.execute(
+        "INSERT INTO config_registry_credential \
+         (environment_id, service_id, organization_id, credential) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT (environment_id, service_id) \
+         DO UPDATE SET credential = excluded.credential",
+        &[
+            to_environment.as_str().into(),
+            to.into(),
+            who.organization.as_str().into(),
+            serde_json::to_string(&sealed)
+                .expect("a sealed credential is JSON")
+                .as_str()
+                .into(),
+        ],
+    )?;
+    Ok(())
+}
+
 /// Open frozen credentials for the runner that claimed their Deployment.
 pub(crate) fn unseal(
     frozen: BTreeMap<ServiceName, EncryptedSecretValue>,

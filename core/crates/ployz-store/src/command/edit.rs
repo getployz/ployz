@@ -88,17 +88,7 @@ pub(crate) fn edit(
         ));
     }
     let mut environment = scope::lock(tx, who, &edit.environment)?;
-    if let Some(expect) = edit.expect
-        && expect != environment.summary.revision
-    {
-        return Err(error::conflict(
-            format!(
-                "Working State moved from revision {expect} to {}",
-                environment.summary.revision
-            ),
-            json!({ "revision": environment.summary.revision }),
-        ));
-    }
+    environment.expect(edit.expect)?;
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     for (path, value) in expand(&edit.changes)? {
