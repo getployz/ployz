@@ -615,6 +615,24 @@ fn an_agent_branches_an_environment_without_servers() {
         );
         assert_eq!(saved["staged"], json!(["web"]));
         assert_eq!(saved["next"], json!("ployz deploy --env production"));
+        // Conditional Saves are a PR Environment's; a take names a retained one.
+        let withdraw = error(store, &["env", "save", "--env", "fix-web", "--withdraw"]);
+        assert_eq!(withdraw["code"], json!("invalid_argument"));
+        failed(
+            store,
+            &["env", "save", "--withdraw", "--only", "web.image"],
+            2,
+        );
+        let take = error(
+            store,
+            &[
+                "env",
+                "save",
+                "--take",
+                "00000000-0000-4000-8000-000000000099",
+            ],
+        );
+        assert_eq!(take["code"], json!("not_found"));
         assert_eq!(
             saved["close"],
             json!("ployz env rm fix-web --confirm fix-web")

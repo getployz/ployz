@@ -825,7 +825,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         )
         .unwrap();
     assert_eq!(saved.staged, ["web"]);
-    assert_eq!(saved.branch.environment.name.as_str(), "fix-web");
+    assert_eq!(saved.branch.unwrap().environment.name.as_str(), "fix-web");
     let web = values(&store, &who, "production", "web");
     assert_eq!(
         (

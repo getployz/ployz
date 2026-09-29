@@ -20,5 +20,7 @@ pub struct DiffQuery {
 
 pub(crate) fn diff(tx: &mut dyn Tx, who: &Actor, query: &DiffQuery) -> Result<DiffView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
-    Ok(review::review(tx, &environment)?.view)
+    let mut view = review::review(tx, &environment)?.view;
+    view.hints = crate::conditional_save::hints(tx, &environment.summary.id)?;
+    Ok(view)
 }

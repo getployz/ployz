@@ -62,6 +62,10 @@ pub struct BranchHead {
     /// Service that follows the branch.
     #[serde(default)]
     pub changed: Option<Vec<String>>,
+    /// The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
+    /// Cloud found `head` is or descends from: this push carries those saves.
+    #[serde(default)]
+    pub merged: Vec<String>,
 }
 
 /// A check suite of a commit, as Cloud read it just now.
@@ -160,7 +164,7 @@ pub(crate) fn head(
 
 fn branch_head(tx: &mut dyn Tx, who: &Actor, event: &BranchHead) -> Result<Automated, RpcError> {
     let branch = crate::git::valid_branch(&event.branch)?;
-    for commit in event.base.iter().chain(&event.head) {
+    for commit in event.base.iter().chain(&event.head).chain(&event.merged) {
         commit_sha(commit)?;
     }
     if event
@@ -238,6 +242,8 @@ fn branch_head(tx: &mut dyn Tx, who: &Actor, event: &BranchHead) -> Result<Autom
         "SELECT id FROM config_environment WHERE organization_id = ?1 ORDER BY id",
         &[organization.into()],
     )?;
+    let mut carried =
+        crate::conditional_save::carried(tx, who, event.repository_id, &branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
         let environment =
@@ -247,12 +253,13 @@ fn branch_head(tx: &mut dyn Tx, who: &Actor, event: &BranchHead) -> Result<Autom
             branch: &branch,
             head: new,
         };
+        let saves = carried.remove(&environment).unwrap_or_default();
         deploy(
             tx,
             who,
             &environment,
             &push,
-            Select::Changed(changed),
+            (Select::Changed(changed), &saves),
             &mut automated,
         )?;
     }
@@ -291,7 +298,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
         ],
     )?;
     let waiting = tx.query(
-        "SELECT environment_id, branch, services FROM config_waiting_deploy \
+        "SELECT environment_id, branch, services, saves FROM config_waiting_deploy \
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3 \
          ORDER BY environment_id, branch",
         &[
@@ -306,6 +313,8 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
             EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
         let services: Vec<String> =
             serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("waiting deploy"))?;
+        let saves: Vec<String> =
+            serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("waiting deploy"))?;
         let push = Push {
             repository_id: event.repository_id,
             branch: row.text(1)?,
@@ -316,7 +325,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
             who,
             &environment,
             &push,
-            Select::Services(&services),
+            (Select::Services(&services), &saves),
             &mut automated,
         )?;
     }
@@ -337,16 +346,17 @@ enum Select<'a> {
     Services(&'a [String]),
 }
 
-/// Deploy `environment`'s Services the push selects, wait for CI, or skip it.
+/// Deploy `environment`'s Services the push selects, wait for CI, or skip it; the
+/// frozen Conditional Saves it carries there land first, wait with it, or land now.
 fn deploy(
     tx: &mut dyn Tx,
     who: &Actor,
     environment: &EnvironmentId,
     push: &Push<'_>,
-    select: Select<'_>,
+    (select, saves): (Select<'_>, &[String]),
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    match admit(tx, who, environment, push, select) {
+    match admit(tx, who, environment, push, select, saves) {
         Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
             environment: environment.clone(),
             deployment,
@@ -381,13 +391,22 @@ fn admit(
     id: &EnvironmentId,
     push: &Push<'_>,
     select: Select<'_>,
+    saves: &[String],
 ) -> Result<Option<Deploy>, RpcError> {
-    let environment = scope::lock_id(tx, who, id)?;
+    let mut environment = scope::lock_id(tx, who, id)?;
+    // Where nothing deploys, what the push carries saves now.
+    let land = |tx: &mut dyn Tx, environment: &mut scope::Environment| {
+        saves
+            .iter()
+            .try_for_each(|save| crate::conditional_save::land(tx, who, save, environment))
+    };
     // Off (shut down or being removed) or closing: a push leaves it be.
     if crate::pull_request::closing(tx, id)? || crate::teardown::removing(tx, id)?.is_some() {
+        land(tx, &mut environment)?;
         return Ok(None);
     }
     let Some(saved) = review::latest_saved(tx, id)? else {
+        land(tx, &mut environment)?;
         return Ok(None);
     };
     let mut selected: Vec<&SavedServiceIntent> = Vec::new();
@@ -428,16 +447,18 @@ fn admit(
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
             &key,
         )?;
+        land(tx, &mut environment)?;
         return Ok(None);
     }
     if wait && !passed(tx, who, push)? {
         let services: Vec<&str> = selected.iter().map(|service| service.id.as_str()).collect();
         tx.execute(
             "INSERT INTO config_waiting_deploy \
-             (environment_id, repository_id, branch, organization_id, head, services) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             (environment_id, repository_id, branch, organization_id, head, services, saves) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
              ON CONFLICT (environment_id, repository_id, branch) \
-             DO UPDATE SET head = excluded.head, services = excluded.services",
+             DO UPDATE SET head = excluded.head, services = excluded.services, \
+             saves = excluded.saves",
             &[
                 environment_param,
                 repository_param,
@@ -448,6 +469,7 @@ fn admit(
                     .expect("JSON")
                     .as_str()
                     .into(),
+                serde_json::to_string(saves).expect("JSON").as_str().into(),
             ],
         )?;
         return Ok(Some(Deploy::Waiting));
@@ -457,6 +479,25 @@ fn admit(
          WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
         &key,
     )?;
+    // What the push carries lands in Saved State first, so it deploys too.
+    let selected: Vec<SavedServiceIntent> = selected.into_iter().cloned().collect();
+    let (saved, selected) = match saves.is_empty() {
+        true => (saved, selected),
+        false => {
+            let ids: Vec<String> = selected.iter().map(|service| service.id.clone()).collect();
+            land(tx, &mut environment)?;
+            let saved =
+                review::latest_saved(tx, id)?.ok_or_else(|| error::corrupt("Saved State"))?;
+            let selected = saved
+                .intent
+                .services
+                .iter()
+                .filter(|service| ids.contains(&service.id))
+                .cloned()
+                .collect();
+            (saved, selected)
+        }
+    };
     // Generated domains expand under the Cluster Domain Cloud reserved for the
     // Environment's last Deploy.
     let cluster_domain: Option<Hostname> = match tx
