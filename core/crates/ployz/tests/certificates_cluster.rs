@@ -944,9 +944,9 @@ fn issued_certificates(cluster: &Cluster, index: usize) -> Vec<String> {
     certificate_bodies(cluster, index)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter_map(|line| line["row"][1][1].as_str().map(str::to_owned))
+        .filter_map(|line| line.pointer("/row/1/1")?.as_str().map(str::to_owned))
         .filter_map(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
-        .filter_map(|body| body["certificate"].as_str().map(str::to_owned))
+        .filter_map(|body| body.get("certificate")?.as_str().map(str::to_owned))
         .collect()
 }
 

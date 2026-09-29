@@ -392,11 +392,18 @@ async fn assert_unhealthy_service_is_not_repaired(
     let service_id = ServiceId::random();
     let mut spec = service_spec(&service_id, "no-repair");
     spec.container.healthcheck = Some(healthcheck("false", 1));
-    let plan = deploy_plan(vec![run_without_health_monitor(&machines[0], &spec)]);
-    assert!(matches!(
-        client.confirm(&plan, &CancellationToken::new(), None).await,
-        DeployOutcome::Success { .. }
-    ));
+    // Started directly: a Deploy would refuse to finish on an unhealthy Container.
+    let created = client
+        .create_container(
+            machines[0].id,
+            ContainerKind::ServiceContainer,
+            ProjectName::parse("app").unwrap(),
+            spec,
+            None,
+        )
+        .await
+        .unwrap();
+    start_container(client, machines[0].id, created.container_id).await;
     let before = wait_for_service(client, &service_id, 1).await;
     let id = before.first().unwrap().container_id;
     tokio::time::sleep(Duration::from_secs(3)).await;
