@@ -1,6 +1,7 @@
 //! Review, Publish and Discard through `read` and `write` only, on SQLite and on
 //! Postgres (see `backend`).
 
+use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
@@ -206,14 +207,50 @@ fn resetting_a_new_nodes_setting_uses_its_introduction_and_publishes_nothing() {
     );
 }
 
+/// The paths of `service`'s changed Settings in the diff.
+fn changed(store: &ConfigStore, who: &Actor, service: &str) -> Vec<String> {
+    diff(store, who)
+        .changes
+        .into_iter()
+        .find(|change| change.name == service)
+        .map(|change| change.settings.into_iter().map(|row| row.path).collect())
+        .unwrap_or_default()
+}
+
 #[test]
-fn a_published_new_nodes_setting_has_no_discard_baseline() {
+fn edits_to_a_published_service_never_deployed_are_changes_that_discard_resets() {
     let (store, who) = shop();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.preDeployCommand", json!("Jenje"));
+    // Never deployed, it compares against its introduction: the edit is a change.
+    let view = diff(&store, &who);
+    let web = view
+        .changes
+        .iter()
+        .find(|change| change.name == "web")
+        .unwrap();
+    assert_eq!(web.lifecycle, ReviewLifecycleKind::Create);
+    assert_eq!(web.comparison, Some(ReviewComparisonRole::Introduction));
+    assert_eq!(changed(&store, &who, "web"), ["web.preDeployCommand"]);
+    assert_eq!(view.total_count, 3);
+    // Discard targets it; Saved State never held the edit.
+    let discarded = discard(&store, &who, Some("web.preDeployCommand"), None).unwrap();
+    assert_eq!(discarded.saved, Some(Revision(1)));
+    assert_eq!(
+        value(&store, &who, "web.preDeployCommand"),
+        Some(Value::Null)
+    );
+    assert!(changed(&store, &who, "web").is_empty());
+    // Published with the edit, a discard resets Saved State too.
     set(&store, &who, "web.replicas", json!(4));
     publish(&store, &who, None).unwrap();
-    let error = discard(&store, &who, Some("web.replicas"), None).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::Conflict);
-    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(4)));
+    assert_eq!(changed(&store, &who, "web"), ["web.replicas"]);
+    let discarded = discard(&store, &who, Some("web.replicas"), None).unwrap();
+    assert_eq!(discarded.saved, Some(Revision(3)));
+    assert_eq!(value(&store, &who, "web.replicas"), Some(json!(1)));
+    let view = diff(&store, &who);
+    assert!(view.published);
+    assert!(changed(&store, &who, "web").is_empty());
 }
 
 #[test]
