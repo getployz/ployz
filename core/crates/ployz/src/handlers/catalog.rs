@@ -3,13 +3,13 @@
 
 use clap::{ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
+use ployz_store::EnvironmentQuery;
 use ployz_store::catalog::{self, Explained};
-use ployz_store::{EnvironmentName, EnvironmentQuery, EnvironmentRef, ProjectName};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::{Error, leaf_matches};
-use crate::cli::{env, positional};
+use crate::cli::positional;
 use crate::output::say;
 
 pub(crate) fn schema_command() -> Command {
@@ -171,25 +171,14 @@ pub(crate) fn setting_paths() -> ArgValueCompleter {
 }
 
 /// The Services of the scoped Environment, or none when the Store is out of reach.
-/// Completion sees no flags, so scope comes from `PLOYZ_PROJECT` and `PLOYZ_ENV`.
+/// Completion sees no flags, so scope comes from `PLOYZ_PROJECT`, `PLOYZ_ENV` and the directory link.
 fn services() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
         let config = std::env::var(crate::cli::env::CONFIG)
             .unwrap_or_else(|_| "~/.config/ployz/config.yaml".to_owned());
-        let store =
-            super::store::store_at(&crate::context::expand_home(std::path::Path::new(&config)))
-                .ok()?;
-        let parse = |name: &str| std::env::var(name).ok();
-        let environment = EnvironmentRef {
-            project: parse(env::PROJECT)
-                .map(|name| ProjectName::parse(name.as_str()))
-                .transpose()
-                .ok()?,
-            environment: parse(env::ENVIRONMENT)
-                .map(|name| EnvironmentName::parse(name.as_str()))
-                .transpose()
-                .ok()?,
-        };
+        let config = crate::context::expand_home(std::path::Path::new(&config));
+        let store = super::store::store_at(&config).ok()?;
+        let environment = super::link::scope_from_env(&config).ok()?.at();
         let query = EnvironmentQuery {
             environment,
             path: None,

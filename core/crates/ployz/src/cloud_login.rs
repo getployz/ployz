@@ -222,6 +222,14 @@ impl CredentialStore {
         Ok(signed_in)
     }
 
+    /// The Organization the stored sign-in acts in, without asking Cloud.
+    pub(crate) fn organization(&self) -> Result<Option<Organization>, LoginError> {
+        Ok(match self.load()? {
+            Some(Stored::SignedIn(signed_in)) => Some(signed_in.organization),
+            _ => None,
+        })
+    }
+
     /// The Cloud the stored sign-in or pending code belongs to.
     pub(crate) fn cloud(&self) -> Result<Option<String>, LoginError> {
         Ok(self.load()?.map(|stored| match stored {
