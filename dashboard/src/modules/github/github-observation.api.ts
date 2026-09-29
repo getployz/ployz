@@ -155,6 +155,7 @@ const pullRequestResponseSchema = Schema.Struct({
   merged: Schema.Boolean,
   merge_commit_sha: Schema.NullOr(githubExactShaSchema),
   commits: Schema.Number,
+  updated_at: Schema.optional(Schema.String),
 });
 const installationTokenResponseSchema = Schema.Struct({
   token: Schema.String.check(Schema.isMinLength(1)),
@@ -414,6 +415,8 @@ export const fetchInstallationPullRequest = Effect.fn(
     commits: observed.commits,
     // Only a merged pull request's is its merge commit.
     mergeCommitSha: observed.merged ? observed.merge_commit_sha : null,
+    // GitHub always sends it; the Config Store orders pull request facts by it.
+    updatedAt: observed.updated_at ?? null,
   };
 });
 

@@ -16,6 +16,8 @@ export const storeChangeSources = {
   config_service_policy: { key: ["environment_id"] },
   config_environment_branch: { key: ["environment_id"] },
   config_build_order: { key: ["organization_id"] },
+  config_pr_plan: { key: ["project_id"] },
+  config_pr_environment: { key: ["environment_id"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
 /**

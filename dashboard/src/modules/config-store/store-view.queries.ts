@@ -36,6 +36,10 @@ const refreshedBy = {
   build_order: ["store_organization"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
+  // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
+  pr_plans: ["store_project", "store_environment"],
+  // PR Environments, their Deployments and each Destination's Working State; the facts are Cloud's own writes.
+  pull_request: ["store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
