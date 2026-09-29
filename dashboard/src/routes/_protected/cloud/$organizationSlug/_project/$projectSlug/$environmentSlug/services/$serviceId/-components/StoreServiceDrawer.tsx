@@ -243,9 +243,14 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
       <FieldDescription>{setting.description}</FieldDescription>
       {setting.enum ? (
         <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) edit(next); }}>
-          <SelectTrigger aria-label={setting.title} className="w-full" data-changed={change ? true : undefined}
+          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "h-auto w-full py-1.5" : "w-full"} data-changed={change ? true : undefined}
             title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
-            <SelectValue>{OPTION_LABELS.get(current) ?? current}</SelectValue>
+            <SelectValue>
+              <span className="flex flex-col items-start">
+                <span>{OPTION_LABELS.get(current) ?? current}</span>
+                {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
+              </span>
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
