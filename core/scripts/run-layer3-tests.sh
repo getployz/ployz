@@ -13,11 +13,12 @@ failed=0
 run_suite() {
     local name=$1 started=$SECONDS status=0 result
     shift
+    set -- "$@" --nocapture
     printf '\n::group::%s\n' "$name"
     printf 'Reproduce: '
     printf '%q ' "$@"
     printf '\n'
-    timeout --kill-after=10s "${SUITE_TIMEOUT:-5m}" "$@" --nocapture 2>&1 | tee "$log_dir/$name.log" || status=$?
+    timeout --kill-after=10s "${SUITE_TIMEOUT:-5m}" "$@" 2>&1 | tee "$log_dir/$name.log" || status=$?
     printf '::endgroup::\n'
     result=passed
     if [ "$status" -ne 0 ]; then
@@ -57,7 +58,8 @@ run_suite internal_dns_cluster cargo test --locked --no-fail-fast --package ploy
     --test internal_dns_cluster \
     -- --ignored --test-threads=1
 
-run_suite ingress_cluster cargo test --locked --no-fail-fast --package ployz \
+# The three-Machine projection case alone takes about 5 minutes.
+SUITE_TIMEOUT=10m run_suite ingress_cluster cargo test --locked --no-fail-fast --package ployz \
     --test ingress_cluster \
     -- --ignored --test-threads=1
 
@@ -73,8 +75,8 @@ run_suite workflow_layer3 cargo test --locked --no-fail-fast --package ployz \
     --test workflow_layer3 \
     -- --ignored --test-threads=1
 
-# Ten certificate cases at 15-110 seconds each.
-SUITE_TIMEOUT=15m run_suite certificates_cluster cargo test --locked --no-fail-fast --package ployz \
+# Ten certificate cases at 15-180 seconds each; about 15 minutes locally.
+SUITE_TIMEOUT=20m run_suite certificates_cluster cargo test --locked --no-fail-fast --package ployz \
     --test certificates_cluster \
     -- --ignored --test-threads=1
 

@@ -53,7 +53,7 @@ jobs:
 
   layer3:
     # Compile (10m), then independently bounded suites: build_layer3 20m,
-    # certificates_cluster 15m, nine others 5m each.
+    # certificates_cluster 20m, ingress_cluster 10m, eight others 5m each.
     timeout-minutes: 100
     needs: layer3-image-amd64
     runs-on: ubuntu-latest

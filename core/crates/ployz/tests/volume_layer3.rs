@@ -261,9 +261,11 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     let partial_inspect = ployz(address, ["volume", "inspect", "reachable"]);
     assert!(!partial_inspect.status.success());
 
+    // The reachable removal commits; the unanswered Machine fails the command.
     let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
     assert!(
-        partial_remove.status.success(),
+        !partial_remove.status.success()
+            && String::from_utf8_lossy(&partial_remove.stdout).contains("Deleted volume reachable"),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&partial_remove.stdout),
         String::from_utf8_lossy(&partial_remove.stderr)
