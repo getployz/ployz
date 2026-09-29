@@ -18,7 +18,7 @@ use ployz_core::{
     CORROSION_GOSSIP_PORT, CapabilityName, ContainerKind, ContainerRuntimeObservation,
     ContractDescription, DescribeContractRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
     HealthObservation, LogsOptions, MACHINE_API_PORT, MachineId, MachineRpcServer,
-    MembershipObservation, PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
+    MembershipObservation, NAMESPACE_LABEL, PROTOCOL_MAJOR, RpcError, RpcErrorCode,
     UNREGISTRY_PORT, op,
 };
 use serde_json::{Value, json};
@@ -35,7 +35,7 @@ mod removal_cli;
 mod sdk;
 mod sdk_data_loss;
 mod sdk_destroy_cluster;
-mod sdk_destroy_project;
+mod sdk_destroy_namespace;
 mod sdk_prepare;
 mod sdk_register;
 mod sdk_remove_machine;
@@ -346,7 +346,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
                 name: DockerVolumeName::parse("data").unwrap(),
             },
             options: BTreeMap::from([("type".into(), "none".into())]),
-            labels: BTreeMap::from([(PROJECT_NAME_LABEL.into(), "app".into())]),
+            labels: BTreeMap::from([(NAMESPACE_LABEL.into(), "app".into())]),
             storage: ployz_core::DockerVolumeStorageObservation::Plain {
                 driver: "local".into(),
             },
@@ -378,11 +378,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
             &["volume", "ls", "--json"],
             "/volumes/0/volume/options/type",
             "none",
-        ),
-        (
-            &["project", "ls", "--json"],
-            "/projects/0/services/0",
-            "app/api",
         ),
     ];
     for (args, pointer, expected) in json_cases {
@@ -425,10 +420,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         (
             &["volume", "ls"][..],
             "MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER\none\tdata\tPLAIN\t-\t-\tlocal\n".into(),
-        ),
-        (
-            &["project", "ls"][..],
-            "PROJECT\tSERVICES\tVOLUMES\napp\t2\t1\n".into(),
         ),
     ];
     for (args, expected) in human_cases {
@@ -678,7 +669,7 @@ fn listing_container(
         display_name: format!("{name}-{container_hex}"),
         created_at_unix_nanos: 1,
         machine_id: machine_id('a'),
-        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind,
         runtime,
         effective_healthcheck: None,

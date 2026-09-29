@@ -11,7 +11,7 @@ use ployz_core::{
 fn empty_selected_plans_every_target_service_in_dependency_order() {
     let (db, web, worker, dependencies) = web_db_worker();
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&db, &web, &worker],
         PlanOptions::default(),
     )
@@ -25,7 +25,7 @@ fn apply_web_plans_web_and_db_not_worker() {
     let (db, web, mut worker, dependencies) = web_db_worker();
     worker.container.image = "ghcr.io/getployz/worker:old".into();
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![db, web, spec("worker")],
         PlanOptions {
             selected: vec![attempt("web")],
@@ -53,7 +53,7 @@ fn apply_web_plans_web_and_db_not_worker() {
 fn one_spec_intent_plans_that_name() {
     let plan = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("caddy"),
             PlanOptions::default(),
         ),
@@ -84,7 +84,7 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
         ),
     ]);
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![db, web],
         PlanOptions {
             selected: vec![attempt("web")],
@@ -102,7 +102,7 @@ fn cyclic_apply_dependencies_are_a_plan_error() {
 fn skip_health_on_options_is_set_on_planned_operations() {
     let plan = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("api"),
             PlanOptions {
                 skip_health_monitor: true,
@@ -134,7 +134,7 @@ fn selected_service_healthy_wait_precedes_the_dependent_hook() {
         user: None,
     });
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![db.clone(), web.clone()],
         PlanOptions {
             selected: vec![attempt("web")],
@@ -176,7 +176,7 @@ fn healthy_dependency_does_not_gate_scale_down() {
     let web = spec("web");
     let web_service_id = service_id('a');
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&db, &web],
         PlanOptions::default(),
     )
@@ -214,7 +214,7 @@ fn skip_health_omits_wait_and_warns_for_each_weakened_edge() {
     db.container.healthcheck = Some(configured_healthcheck());
     let web = spec("web");
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![db.clone(), web.clone()],
         PlanOptions {
             skip_health_monitor: true,
@@ -319,7 +319,7 @@ fn targets_container(plan: &ployz::deploy::DeployPreview, id: &ContainerId) -> b
 }
 
 #[test]
-fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
+fn user_namespace_deploy_does_not_replace_or_remove_system_ingress() {
     let mut system_ingress = spec("ingress");
     system_ingress.mode = ServiceMode::Global;
     system_ingress.container.image = "caddy:2.9.1".into();
@@ -328,12 +328,12 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
     shop_caddy.container.image = "caddy:2.10.2".into();
     let mut system_container = container('c', '1', &system_ingress, &service_id('a'));
     system_container
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
 
     let shop = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             shop_caddy,
             PlanOptions::default(),
         ),
@@ -350,11 +350,11 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
     let web = spec("web");
     let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
     leftover
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
     let full = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -370,19 +370,19 @@ fn user_project_deploy_does_not_replace_or_remove_system_ingress() {
 }
 
 #[test]
-fn run_in_a_named_project_replaces_that_projects_matching_service() {
+fn run_in_a_named_namespace_replaces_that_namespaces_matching_service() {
     let mut current = spec("web");
     current.container.image = "nginx:1".into();
     let mut requested = spec("web");
     requested.container.image = "nginx:2".into();
     let mut owned = container('c', '1', &current, &service_id('a'));
     owned
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop").unwrap())
         .unwrap();
 
     let plan = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             requested,
             PlanOptions::default(),
         ),
@@ -403,19 +403,19 @@ fn run_in_a_named_project_replaces_that_projects_matching_service() {
 }
 
 #[test]
-fn run_in_a_named_project_does_not_take_over_another_projects_service() {
+fn run_in_a_named_namespace_does_not_take_over_another_namespaces_service() {
     let mut current = spec("web");
     current.container.image = "nginx:1".into();
     let mut requested = spec("web");
     requested.container.image = "nginx:2".into();
     let mut other = container('c', '1', &current, &service_id('a'));
     other
-        .try_update(|parts| parts.project_name = ProjectName::parse("default").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("default").unwrap())
         .unwrap();
 
     let plan = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             requested,
             PlanOptions::default(),
         ),
@@ -431,16 +431,16 @@ fn run_in_a_named_project_does_not_take_over_another_projects_service() {
 }
 
 #[test]
-fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
+fn imperative_service_in_a_namespace_is_visible_to_a_later_full_deploy() {
     let web = spec("web");
     let debug = spec("debug");
     let mut web_container = container('c', '1', &web, &service_id('a'));
     web_container
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop").unwrap())
         .unwrap();
     let mut debug_container = container('d', '1', &debug, &service_id('b'));
     debug_container
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop").unwrap())
         .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
@@ -449,7 +449,7 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
     };
 
     let mut owned: Vec<_> = snapshot
-        .services_in(&ProjectName::parse("shop").unwrap())
+        .services_in(&Namespace::parse("shop").unwrap())
         .iter()
         .map(|service| service.identity.name.as_str().to_owned())
         .collect();
@@ -458,7 +458,7 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
 
     let plan = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -474,7 +474,7 @@ fn imperative_service_in_a_project_is_visible_to_a_later_full_deploy() {
 }
 
 #[test]
-fn system_project_deploy_still_replaces_its_own_ingress() {
+fn system_namespace_deploy_still_replaces_its_own_ingress() {
     let mut current = spec("ingress");
     current.mode = ServiceMode::Global;
     current.container.image = "caddy:2.9.1".into();
@@ -483,11 +483,11 @@ fn system_project_deploy_still_replaces_its_own_ingress() {
     requested.container.image = "caddy:2.10.2".into();
     let mut system_container = container('c', '1', &current, &service_id('a'));
     system_container
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
 
     let plan = preview_deploy(
-        &DeployIntent::apply_one(ProjectName::system(), requested, PlanOptions::default()),
+        &DeployIntent::apply_one(Namespace::system(), requested, PlanOptions::default()),
         &DeploySnapshot {
             machines: vec![machine('1', "first")],
             containers: vec![system_container],
@@ -509,7 +509,7 @@ fn cloud_lowering_orders_dependency_before_migration_and_container() {
     })).collect();
     let intent = ployz_core::config::lower_deployment(
         serde_json::from_value(serde_json::json!({
-            "projectName": "app", "snapshots": snapshots,
+            "namespace": "app", "snapshots": snapshots,
             "dependencies": {"web": [{"service":"db", "condition":"service_started"}]}
         }))
         .unwrap(),

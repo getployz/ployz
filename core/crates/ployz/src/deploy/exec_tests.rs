@@ -2,16 +2,15 @@ use std::{collections::VecDeque, sync::Mutex};
 
 use ployz_core::{
     ContainerRuntimeObservation, DependencyHealthFailure, DockerVolumeId, DockerVolumeName,
-    HealthFailure, HealthObservation, MembershipObservation, ProjectName, RpcErrorCode,
-    ServiceName,
+    HealthFailure, HealthObservation, MembershipObservation, Namespace, RpcErrorCode, ServiceName,
 };
 
 use crate::deploy::{DeployOutcome, FailedOperation};
 
 use super::*;
 
-fn test_project() -> ProjectName {
-    ProjectName::parse("app").unwrap()
+fn test_namespace() -> Namespace {
+    Namespace::parse("app").unwrap()
 }
 
 #[test]
@@ -31,7 +30,7 @@ async fn execute_with<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> DeployOutcome<ExecutionError> {
     super::execute_operation_sequence(
-        &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_project()),
+        &crate::deploy::DeployPlan::for_execution_test(plan.to_vec(), test_namespace()),
         client,
         cancellation,
         None,
@@ -147,7 +146,7 @@ impl MachineOperations for Scripted {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
-        _project_name: &ProjectName,
+        _namespace: &Namespace,
         _spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
@@ -365,7 +364,7 @@ fn observation(
         display_name: container_id.to_string(),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
-        project_name: test_project(),
+        namespace: test_namespace(),
         kind: ContainerKind::ServiceContainer,
         runtime,
         effective_healthcheck: None,
@@ -529,7 +528,7 @@ fn provisioned_spec() -> ResolvedServiceSpec {
     }
     .admit()
     .unwrap();
-    source.scope_to_project(&test_project());
+    source.scope_to_namespace(&test_namespace());
     let reference = ployz_core::ServiceVolumeReference::parse("data").unwrap();
     service
         .set_volume_graph(

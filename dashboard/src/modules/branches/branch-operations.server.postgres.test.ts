@@ -291,8 +291,8 @@ describe("createBranch", () => {
     await harness.db.insert(schema.teardownAttempt).values({
       organizationId, requestedByUserId: userId, projectId, environmentId: null, scope: "project", confirmDataLoss: [],
       targets: {
-        environments: [{ environmentId: parentId, projectId, projectName: "shop-production", cloudName: "acme/shop/production" }],
-        destroyRuntimeProjects: true, revokePairing: false, runtimeMembership: "untouched",
+        environments: [{ environmentId: parentId, projectId, namespace: "shop-production", cloudName: "acme/shop/production" }],
+        destroyRuntimeNamespaces: true, revokePairing: false, runtimeMembership: "untouched",
       },
     });
     await expect(create({ name: "late" })).rejects.toMatchObject({ _tag: "Conflict", message: expect.stringContaining("is being torn down") });

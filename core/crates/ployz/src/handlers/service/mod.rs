@@ -86,8 +86,8 @@ fn service_counts(service: &ServiceObservation, machines: &[MachineObservation])
         .iter()
         .filter(|machine| machine.membership == MembershipObservation::Up)
     {
-        match spec.placement_eligibility_in_project(
-            &service.identity.project,
+        match spec.placement_eligibility_in_namespace(
+            &service.identity.namespace,
             &machine.machine,
             machine.storage.as_ref(),
         ) {
@@ -667,14 +667,14 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
-    let project = crate::project::explicit(matches)?;
+    let namespace = crate::namespace::explicit(matches)?;
     matches
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .map(|selector| {
             let selector = ServiceSelector::parse(selector.as_str())?;
-            match project.as_ref() {
-                Some(project) => selector.with_project(project).map_err(Into::into),
+            match namespace.as_ref() {
+                Some(namespace) => selector.with_namespace(namespace).map_err(Into::into),
                 None => Ok(selector),
             }
         })
@@ -795,7 +795,7 @@ fn service_ls() -> Command {
 
 fn service_rm() -> Command {
     base("rm", "Remove services")
-        .arg(value("project-name", Some('p')))
+        .arg(value("namespace", None))
         .arg(switch("volumes", None).help(
             "Also remove this Service's named Docker Volumes after the containers are removed",
         ))

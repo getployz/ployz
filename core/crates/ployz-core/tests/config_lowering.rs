@@ -15,7 +15,7 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
     });
     let lower = |config: Value, env: Value| {
         config_request(json!({"operation":"lower_deployment","value":{
-            "projectName":"production","snapshots":[{"config":config,"resolvedEnv":env}]
+            "namespace":"production","snapshots":[{"config":config,"resolvedEnv":env}]
         }}))
     };
 
@@ -70,7 +70,7 @@ fn lowering_refuses_unexpanded_managed_hostnames() {
         "managedHostnames":[{"prefix":"api-production","targetPort":null}]
     });
     let error = config_request(json!({"operation":"lower_deployment","value":{
-        "projectName":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
+        "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
     }}))
     .unwrap_err();
     assert_eq!(error.path, "managedHostnames");
@@ -87,7 +87,7 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
     });
     let lower = |config: Value| {
         config_request(json!({"operation":"lower_deployment","value":{
-            "projectName":"production","snapshots":[{"config":config,"resolvedEnv":{"TOKEN":"authorized-secret","PORT":"8080"}}],
+            "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{"TOKEN":"authorized-secret","PORT":"8080"}}],
             "volumes":[{"volumeResourceId":"00000000-0000-4000-8000-000000000002"}]
         }}))
     };
@@ -142,7 +142,7 @@ fn lower_hook(
         snapshot["setupCommands"] = setup;
     }
     config_request(json!({"operation":"lower_deployment","value":{
-        "projectName":"production","snapshots":[snapshot]
+        "namespace":"production","snapshots":[snapshot]
     }}))
     .map(|intent| intent["target"][0]["pre_deploy"]["command"].clone())
 }

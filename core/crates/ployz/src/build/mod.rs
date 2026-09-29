@@ -432,10 +432,8 @@ mod tests {
             })
             .collect::<Vec<_>>();
         ployz_core::config::lower_deployment(
-            serde_json::from_value(
-                serde_json::json!({"projectName": "app", "snapshots": snapshots}),
-            )
-            .unwrap(),
+            serde_json::from_value(serde_json::json!({"namespace": "app", "snapshots": snapshots}))
+                .unwrap(),
         )
         .unwrap()
     }
@@ -613,7 +611,7 @@ mod tests {
             .unwrap()
         };
         let mut intent = DeployIntent::new(
-            ployz_core::ProjectName::parse("app").unwrap(),
+            ployz_core::Namespace::parse("app").unwrap(),
             vec![spec("one"), spec("two")],
             Default::default(),
         );

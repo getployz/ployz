@@ -31,7 +31,7 @@ it("aborts a quiet build when cancellation polling fails and awaits cleanup", as
   const failedPoll = Effect.promise(() => started).pipe(Effect.andThen(Effect.fail(new Error("Database poll unavailable"))));
   const running = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* Ployz).connect({ connections });
-    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => undefined, controller.signal)
+    return yield* session.prepare({ deployment: { namespace: "test", snapshots: [] }, sources: {} }, async () => undefined, controller.signal)
       .pipe(Effect.raceFirst(watchDeploymentCancellation(failedPoll, controller)));
   })).pipe(Effect.provide(layer), Effect.result));
   await aborted;
@@ -57,5 +57,5 @@ it("gives expanded managed hostnames the same core-valid route ids on every comp
   assert.deepStrictEqual(second.routes, first.routes);
   assert.notStrictEqual(first.routes[0]?.id, first.routes[1]?.id);
   // Core validation refuses route ids that are not UUIDs.
-  lowerDeployment({ projectName: "production", snapshots: [{ serviceId: "api", config: first }] });
+  lowerDeployment({ namespace: "production", snapshots: [{ serviceId: "api", config: first }] });
 });

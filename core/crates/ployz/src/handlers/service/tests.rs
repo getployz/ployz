@@ -154,7 +154,7 @@ fn global_summary_exposes_unknown_storage_and_over_placement() {
                         }],
                     )
                     .unwrap()
-                    .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+                    .scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap())
                     .unwrap()
                     .try_into()
                     .unwrap(),
@@ -294,9 +294,9 @@ fn lifecycle_selectors_deduplicate_names_and_ids() {
 }
 
 #[test]
-fn rm_project_name_removes_an_ambiguous_service_name() {
+fn rm_namespace_removes_an_ambiguous_service_name() {
     let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "service", "rm", "alpha", "--project-name", "st1"])
+        .try_get_matches_from(["ployz", "service", "rm", "alpha", "--namespace", "st1"])
         .unwrap();
     let services = vec![
         service_named('a', "st1", "alpha"),
@@ -563,10 +563,10 @@ fn skipped_volumes_join_the_partial_lifecycle_error() {
     );
 }
 
-fn service_named(id: char, project: &str, name: &str) -> ployz_core::ServiceObservation {
+fn service_named(id: char, namespace: &str, name: &str) -> ployz_core::ServiceObservation {
     let mut container = observation(id, id, name, ContainerRuntimeObservation::Created);
     container
-        .try_update(|parts| parts.project_name = ployz_core::ProjectName::parse(project).unwrap())
+        .try_update(|parts| parts.namespace = ployz_core::Namespace::parse(namespace).unwrap())
         .unwrap();
     ployz_core::ServiceObservation {
         identity: container.identity(),
@@ -627,7 +627,7 @@ fn with_mounts(
     let mut observation = service.containers.pop().unwrap().into_observation();
     observation
         .try_update(|parts| {
-            let project = parts.project_name.clone();
+            let namespace = parts.namespace.clone();
             let (volumes, mounts) = mounts
                 .into_iter()
                 .map(|(source, reference, target)| {
@@ -652,7 +652,7 @@ fn with_mounts(
                 .set_volume_graph(
                     ServiceVolumeGraph::parse(volumes, mounts)
                         .unwrap()
-                        .scope_to_project(&project)
+                        .scope_to_namespace(&namespace)
                         .unwrap()
                         .try_into()
                         .unwrap(),
@@ -745,7 +745,7 @@ fn observation(
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse(machine.to_string().repeat(32)).unwrap(),
-        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime,
         effective_healthcheck: None,

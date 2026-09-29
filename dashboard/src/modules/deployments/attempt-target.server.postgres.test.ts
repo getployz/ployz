@@ -56,7 +56,7 @@ it("writes the target node list against Applied State, counting a failed attempt
   });
   // The failed attempt planned new api and web; only api's operations completed.
   const preview = {
-    project_name: "production", operations: [removeContainer("api", 0), removeContainer("web", 1)], warnings: [], would_remove: [], preserved_volumes: [],
+    namespace: "production", operations: [removeContainer("api", 0), removeContainer("web", 1)], warnings: [], would_remove: [], preserved_volumes: [],
   };
   const [apiOperation, webOperation] = preview.operations.map((row) => row.operation);
   const outcome = { version: 1, outcome: { type: "failed", completed: [apiOperation], unexecuted: [], failed: {

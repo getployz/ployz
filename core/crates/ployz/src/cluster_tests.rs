@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use ployz_core::{
     AdvertisedEndpoint, ContainerRuntimeObservation, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, Machine, MachinePath, MembershipObservation,
-    ProjectName, ServiceId, ServiceName, WireGuardPublicKey,
+    Namespace, ServiceId, ServiceName, WireGuardPublicKey,
 };
 use serde_json::{Value, json};
 
@@ -97,10 +97,17 @@ fn deploy_snapshot_keeps_successful_observations_and_query_gaps() {
     assert_eq!(snapshot.machines, machines);
     assert_eq!(snapshot.containers, [container]);
     assert_eq!(snapshot.volume_snapshot.observations(), [volume]);
-    assert!(snapshot.volume_snapshot.listing_warnings().any(|message| {
-        message.contains(&machine_id('a').to_string())
-            && message.contains("Docker Volume unavailable")
-    }));
+    assert!(
+        snapshot
+            .volume_snapshot
+            .named_failures()
+            .iter()
+            .any(|failure| {
+                let message = failure.to_string();
+                message.contains(&machine_id('a').to_string())
+                    && message.contains("Docker Volume unavailable")
+            })
+    );
     assert_eq!(snapshot.container_failures, expected_container_failures);
     assert_eq!(snapshot.container_omissions, expected_container_omissions);
     assert_eq!(
@@ -275,7 +282,7 @@ fn observation(id: char, machine: char) -> ContainerObservation {
         display_name: "api".into(),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

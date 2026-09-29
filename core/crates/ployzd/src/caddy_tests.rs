@@ -10,7 +10,7 @@ use ployz_core::{
     AdvertisedEndpoint, CertificateHost, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, HOSTNAME_VERIFY_PATH, HealthObservation,
     HostBind, HttpProtocol, INGRESS_VERIFY_PATH, IngressHost, MACHINE_API_PORT, Machine, MachineId,
-    MachineName, PortPublication, ProjectName, ResolvedServiceSpec, ServiceContainer, ServiceId,
+    MachineName, Namespace, PortPublication, ResolvedServiceSpec, ServiceContainer, ServiceId,
     ServiceName, TransportProtocol, WireGuardPublicKey, service_containers,
 };
 use serde_json::json;
@@ -231,7 +231,7 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
     );
     shop_old
         .try_update(|parts| {
-            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.namespace = Namespace::parse("shop").unwrap();
             parts.created_at_unix_nanos = 1;
         })
         .unwrap();
@@ -244,7 +244,7 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
     );
     shop_rollout
         .try_update(|parts| {
-            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.namespace = Namespace::parse("shop").unwrap();
             parts.created_at_unix_nanos = 3;
         })
         .unwrap();
@@ -256,7 +256,7 @@ fn contested_custom_hostname_keeps_one_qualified_service_upstream_set() {
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
     blog.try_update(|parts| {
-        parts.project_name = ProjectName::parse("blog").unwrap();
+        parts.namespace = Namespace::parse("blog").unwrap();
         parts.created_at_unix_nanos = 2;
     })
     .unwrap();
@@ -295,7 +295,7 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
     shop.try_update(|parts| {
-        parts.project_name = ProjectName::parse("shop").unwrap();
+        parts.namespace = Namespace::parse("shop").unwrap();
         parts.created_at_unix_nanos = 1;
     })
     .unwrap();
@@ -307,7 +307,7 @@ fn proxy_owner_may_disagree_across_observation_sets_and_converges_when_they_matc
         vec![ingress("api.example.com", 80, HttpProtocol::Http)],
     );
     blog.try_update(|parts| {
-        parts.project_name = ProjectName::parse("blog").unwrap();
+        parts.namespace = Namespace::parse("blog").unwrap();
         parts.created_at_unix_nanos = 2;
     })
     .unwrap();
@@ -988,7 +988,7 @@ fn ingress(hostname: &str, port: u16, http_protocol: HttpProtocol) -> PortPublic
 
 fn reserved(mut observation: ContainerObservation) -> ContainerObservation {
     observation
-        .try_update(|parts| parts.project_name = ployz_core::ProjectName::system())
+        .try_update(|parts| parts.namespace = ployz_core::Namespace::system())
         .unwrap();
     observation
 }
@@ -1015,7 +1015,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
-        project_name: ployz_core::ProjectName::parse("app").unwrap(),
+        namespace: ployz_core::Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

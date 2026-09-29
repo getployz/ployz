@@ -15,7 +15,7 @@ const environment: NonNullable<ComponentProps<typeof ProjectCard>["environment"]
 };
 
 function container(id: string, state: string, health = "healthy"): RuntimeContainerRecord {
-  return { id, displayName: id, machineId: "machine", projectName: "store-production", kind: "service_container", runtime: { state, health } };
+  return { id, displayName: id, machineId: "machine", namespace: "store-production", kind: "service_container", runtime: { state, health } };
 }
 
 function runtimeService(identity: string, containers: RuntimeContainerRecord[], hookContainers: RuntimeContainerRecord[] = []): RuntimeServiceRecord {

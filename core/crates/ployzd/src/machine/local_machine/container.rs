@@ -5,7 +5,7 @@ use std::{path::Path, sync::Arc};
 use ployz_core::{
     ContainerChanged, ContainerCreated, ContainerId, ContainerKind, CreateVolumeReport,
     CreateVolumeRequest, DockerVolumeName, ImageIngestOpened, ImageIngestReason, ImagePulled,
-    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, ProjectName,
+    ImagesRemoved, LocalMachinePhase, MachineStorageObservation, Namespace,
     PullImageFromMachineRequest, ResolvedServiceSpec, VolumeRemoved,
 };
 
@@ -85,16 +85,16 @@ impl LocalMachine {
     pub(crate) async fn create_container(
         &self,
         kind: ContainerKind,
-        project: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
     ) -> Result<ContainerCreated, Error> {
         // Once admitted, caller cancellation must not let reset overtake a Docker request.
-        let (local, project, spec) = (self.clone(), project.clone(), spec.clone());
+        let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
         self.finish_mutation(async move {
             local
-                .create_container_admitted(kind, &project, &spec, creation_key, deployment_id)
+                .create_container_admitted(kind, &namespace, &spec, creation_key, deployment_id)
                 .await
         })
         .await
@@ -297,7 +297,7 @@ impl LocalMachine {
     async fn create_container_admitted(
         &self,
         kind: ContainerKind,
-        project: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
@@ -318,9 +318,9 @@ impl LocalMachine {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
                     kind,
-                    project_name: project,
+                    namespace,
                     spec,
-                    admission: async { admit_ingress_service(project, spec) },
+                    admission: async { admit_ingress_service(namespace, spec) },
                     storage: self.observe_storage(),
                 },
             )
@@ -332,7 +332,7 @@ impl LocalMachine {
 mod tests {
     use std::sync::Arc;
 
-    use ployz_core::{MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceMode};
+    use ployz_core::{MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceMode};
     use serde_json::json;
 
     use crate::machine::{LocalMachine, LocalMachineError, LocalMachineStore, RecordOwner};
@@ -365,9 +365,15 @@ mod tests {
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
             "container": {"image":"example.test/api", "pull_policy":"missing"}
         })).unwrap();
-        let project = ProjectName::parse("app").unwrap();
+        let namespace = Namespace::parse("app").unwrap();
         let existing = local
-            .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
+            .create_container(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                None,
+                None,
+            )
             .await
             .unwrap();
         let update = serde_json::from_value(json!({
@@ -384,7 +390,7 @@ mod tests {
             ContainerKind::PreDeployHook,
         ] {
             let error = local
-                .create_container(kind, &project, &spec, None, None)
+                .create_container(kind, &namespace, &spec, None, None)
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains("accept"), "{error}");
@@ -423,7 +429,7 @@ mod tests {
         let error = local
             .create_container(
                 ContainerKind::ServiceContainer,
-                &project,
+                &namespace,
                 &ingress,
                 None,
                 None,
@@ -434,7 +440,7 @@ mod tests {
         local
             .create_container(
                 ContainerKind::ServiceContainer,
-                &ProjectName::system(),
+                &Namespace::system(),
                 &ingress,
                 None,
                 None,
@@ -478,16 +484,16 @@ mod tests {
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Replicated { replicas: 1.try_into().unwrap() }).unwrap(),
             "container":{"image":"example.test/api", "pull_policy":"missing"}
         })).unwrap();
-            let project = ProjectName::parse("app").unwrap();
+            let namespace = Namespace::parse("app").unwrap();
             let creating = tokio::spawn({
                 let local = local.clone();
                 let spec = spec.clone();
-                let project = project.clone();
+                let namespace = namespace.clone();
                 async move {
                     local
                         .create_container(
                             ContainerKind::ServiceContainer,
-                            &project,
+                            &namespace,
                             &spec,
                             None,
                             None,
@@ -516,7 +522,13 @@ mod tests {
             assert_eq!(local.record().phase(), LocalMachinePhase::Resetting);
             assert!(matches!(
                 local
-                    .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
+                    .create_container(
+                        ContainerKind::ServiceContainer,
+                        &namespace,
+                        &spec,
+                        None,
+                        None
+                    )
                     .await,
                 Err(LocalMachineError::NotParticipating)
             ));
@@ -542,10 +554,16 @@ mod tests {
             "service_id": ServiceId::random(), "name": "api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
             "container": {"image":"example.test/api", "pull_policy":"missing"}
         })).unwrap();
-        let project = ProjectName::parse("app").unwrap();
+        let namespace = Namespace::parse("app").unwrap();
         assert!(matches!(
             local
-                .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
+                .create_container(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    None,
+                    None
+                )
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));
@@ -576,7 +594,13 @@ mod tests {
             barrier.wait().await;
         });
         local
-            .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
+            .create_container(
+                ContainerKind::ServiceContainer,
+                &namespace,
+                &spec,
+                None,
+                None,
+            )
             .await
             .unwrap();
         release.await.unwrap();
@@ -632,10 +656,16 @@ mod tests {
             "service_id": ServiceId::random(), "name":"api", "mode": serde_json::to_value(ServiceMode::Global).unwrap(),
             "container":{"image":"example.test/api", "pull_policy":"missing"}
         })).unwrap();
-        let project = ProjectName::parse("app").unwrap();
+        let namespace = Namespace::parse("app").unwrap();
         assert!(matches!(
             local
-                .create_container(ContainerKind::ServiceContainer, &project, &spec, None, None)
+                .create_container(
+                    ContainerKind::ServiceContainer,
+                    &namespace,
+                    &spec,
+                    None,
+                    None
+                )
                 .await,
             Err(LocalMachineError::NotParticipating)
         ));

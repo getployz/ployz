@@ -38,7 +38,7 @@ describe("teardown provider outcomes", () => {
     Effect.gen(function* () {
       let closed = 0;
       const calls: unknown[] = [];
-      const projectOutcome: DeployOutcome<ExecutionError> = {
+      const namespaceOutcome: DeployOutcome<ExecutionError> = {
         type: "failed",
         completed: [],
         failed: {
@@ -50,11 +50,11 @@ describe("teardown provider outcomes", () => {
       };
       const connections = [{ management: "ployz1:candidate" }];
       const client = asTestDouble<Client>()({
-        destroyProject: async (
-          ...args: Parameters<Client["destroyProject"]>
+        destroyNamespace: async (
+          ...args: Parameters<Client["destroyNamespace"]>
         ) => {
           calls.push(args);
-          return projectOutcome;
+          return namespaceOutcome;
         },
         removeVolumes: async () => {
           throw new Error("independent volume fallback must not run");
@@ -77,14 +77,14 @@ describe("teardown provider outcomes", () => {
           target: {
             environmentId: "env-1",
             projectId: "project-1",
-            projectName: "app-production",
+            namespace: "app-production",
             cloudName: "acme/app/Production",
           },
           confirmDataLoss: [volume],
         }),
       ).pipe(Effect.provide(runtime));
 
-      expect(result).toEqual(projectOutcome);
+      expect(result).toEqual(namespaceOutcome);
       expect(calls).toEqual([["app-production", { confirmed: [volume] }, true]]);
       expect(closed).toBe(1);
     }),
@@ -93,7 +93,7 @@ describe("teardown provider outcomes", () => {
   effectIt.effect("finds nothing to destroy where the servers have nothing", () =>
     Effect.gen(function* () {
       const client = asTestDouble<Client>()({
-        destroyProject: async () => {
+        destroyNamespace: async () => {
           throw Object.assign(new Error("Project 'app-production' was not found in this Cluster observation. No changes made."), {
             code: "not_found", details: null,
           });
@@ -107,7 +107,7 @@ describe("teardown provider outcomes", () => {
 
       const result = yield* Effect.scoped(destroyEnvironmentActivity({
         organizationId: "org-1",
-        target: { environmentId: "env-1", projectId: "project-1", projectName: "app-production", cloudName: "acme/app/Production" },
+        target: { environmentId: "env-1", projectId: "project-1", namespace: "app-production", cloudName: "acme/app/Production" },
         confirmDataLoss: [],
       })).pipe(Effect.provide(runtime));
 

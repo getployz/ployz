@@ -324,7 +324,7 @@ mod tests {
             display_name: name.into(),
             created_at_unix_nanos: 0,
             machine_id: machine_id(machine),
-            project_name: ployz_core::ProjectName::parse("app").unwrap(),
+            namespace: ployz_core::Namespace::parse("app").unwrap(),
             kind,
             runtime: ContainerRuntimeObservation::Running {
                 health: HealthObservation::Healthy,

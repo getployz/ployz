@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, MACHINE_STORAGE_OBSERVATION_CAPABILITY, MachineId,
-    PROTOCOL_MAJOR, ProjectName, RequestedServiceSpec,
+    Namespace, PROTOCOL_MAJOR, RequestedServiceSpec,
 };
 use serde_json::Value;
 
@@ -131,7 +131,7 @@ async fn deploy_preview_observes_storage_before_refusing_a_stateless_explicit_ta
     }))
     .unwrap();
     let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         requested,
         PlanOptions::default(),
     );

@@ -7,7 +7,7 @@ use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
     GetContainerObservationsRequest, HealthObservation, MachineId, MachineRelease, MachineRpc,
-    MachineUpgradeAttemptId, ProjectName, RequestMachineUpgradeRequest, ResetRequest,
+    MachineUpgradeAttemptId, Namespace, RequestMachineUpgradeRequest, ResetRequest,
     ResolvedServiceSpec, RpcErrorCode, RpcResponseBody, RuntimeWatchRequest, ServiceId,
     ServiceName, op,
 };
@@ -415,7 +415,7 @@ fn container_observation(id: char) -> ContainerObservation {
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,
@@ -459,7 +459,7 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         deployment_id: None,
         creation_key: Some("retry/1".into()),
         kind: ContainerKind::ServiceContainer,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         resolved_spec: serde_json::from_value(json!({
             "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
             "mode":{"mode":"replicated", "replicas":1},
@@ -515,13 +515,13 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         RpcErrorCode::Conflict
     );
     assert_eq!(*containers.lock().unwrap(), original);
-    let mut other_project = request.clone();
-    other_project.project_name = ProjectName::parse("other").unwrap();
+    let mut other_namespace = request.clone();
+    other_namespace.namespace = Namespace::parse("other").unwrap();
     let mut hook = request.clone();
     hook.kind = ContainerKind::PreDeployHook;
     let mut unkeyed = request.clone();
     unkeyed.creation_key = None;
-    for independent in [other_project, hook, unkeyed.clone(), unkeyed] {
+    for independent in [other_namespace, hook, unkeyed.clone(), unkeyed] {
         let count = containers.lock().unwrap().len();
         assert_ne!(
             first.container_id,
@@ -712,7 +712,7 @@ async fn listed_containers_redact_environment_unless_requested() {
                 deployment_id: None,
                 creation_key: None,
                 kind: ContainerKind::ServiceContainer,
-                project_name: ProjectName::parse("app").unwrap(),
+                namespace: Namespace::parse("app").unwrap(),
                 resolved_spec: serde_json::from_value(json!({
                     "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
                     "mode":{"mode":"replicated", "replicas":1},

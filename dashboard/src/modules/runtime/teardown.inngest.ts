@@ -152,12 +152,12 @@ export async function executeProcessTeardown({
     }
     outcome = clusterOutcome;
   } else {
-    const projectTeardowns: NonNullable<
-      TeardownOutcome["projectTeardowns"]
+    const namespaceTeardowns: NonNullable<
+      TeardownOutcome["namespaceTeardowns"]
     > = [];
-    if (attempt.targets.destroyRuntimeProjects) {
+    if (attempt.targets.destroyRuntimeNamespaces) {
       for (const target of attempt.targets.environments) {
-        const projectTeardown = await step.run(
+        const namespaceTeardown = await step.run(
           `destroy-environment-${target.environmentId}`,
           () =>
             runInngestEffect(
@@ -170,12 +170,12 @@ export async function executeProcessTeardown({
               ),
             ),
         );
-        projectTeardowns.push({
-          projectName: target.projectName,
-          outcome: projectTeardown,
+        namespaceTeardowns.push({
+          namespace: target.namespace,
+          outcome: namespaceTeardown,
         });
-        const projectOutcome = teardownOutcome(membership, false, {
-          projectTeardowns: [...projectTeardowns],
+        const namespaceOutcome = teardownOutcome(membership, false, {
+          namespaceTeardowns: [...namespaceTeardowns],
         });
         await step.run(
           `record-project-teardown-${target.environmentId}`,
@@ -184,12 +184,12 @@ export async function executeProcessTeardown({
               recordTeardownRuntimeEvidenceActivity({
                 attemptId: attempt.id,
                 inngestRunId: runId,
-                outcome: projectOutcome,
+                outcome: namespaceOutcome,
                 now: new Date(),
               }),
             ),
         );
-        if (projectTeardown.type === "failed") {
+        if (namespaceTeardown.type === "failed") {
           const partial = await step.run(
             "persist-partial-teardown-outcome",
             () =>
@@ -199,7 +199,7 @@ export async function executeProcessTeardown({
                   inngestRunId: runId,
                   status: "partial",
                   outcome: incompleteTeardownOutcome(membership, {
-                    projectTeardowns: [...projectTeardowns],
+                    namespaceTeardowns: [...namespaceTeardowns],
                   }),
                   now: new Date(),
                 }),
@@ -224,7 +224,7 @@ export async function executeProcessTeardown({
       pairingRemovals = revoked.pairingRemovals;
     }
     outcome = teardownOutcome(membership, pairingRevocationUnconfirmed, {
-      projectTeardowns: [...projectTeardowns],
+      namespaceTeardowns: [...namespaceTeardowns],
       pairingRemovals,
     });
   }

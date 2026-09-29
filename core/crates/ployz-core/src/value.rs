@@ -57,7 +57,7 @@ fn is_service_selector(value: &str) -> bool {
     !value.is_empty()
         && match value.split_once('/') {
             None => true,
-            Some((project, name)) => is_dns_label(project) && is_dns_label(name),
+            Some((namespace, name)) => is_dns_label(namespace) && is_dns_label(name),
         }
 }
 
@@ -432,7 +432,7 @@ validated_string_newtype!(
     /// Unresolved name-or-ID text used to select a Service.
     ServiceSelector,
     "Service Selector",
-    "a Service ID, Qualified Service (project/name), or Service Name",
+    "a Service ID, Qualified Service (namespace/name), or Service Name",
     |value| is_service_selector(value)
 );
 validated_string_newtype!(
@@ -543,26 +543,26 @@ validated_string_newtype!(
     |value| is_dns_label(value)
 );
 validated_string_newtype!(
-    /// A DNS-label Project name. It is an ownership namespace, not a persisted identity.
-    ProjectName,
-    "Project Name",
+    /// A DNS-label Namespace: an observer-derived ownership group, not a persisted identity.
+    Namespace,
+    "Namespace",
     "a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
     |value| is_dns_label(value)
 );
 
 /// Docker label written on resources Ployz manages.
 pub const MANAGED_LABEL: &str = "ployz.managed";
-/// Docker label recording the owning Project.
-pub const PROJECT_NAME_LABEL: &str = "ployz.project.name";
+/// Docker label recording the owning Namespace.
+pub const NAMESPACE_LABEL: &str = "ployz.namespace";
 
-impl ProjectName {
-    /// The reserved Project for Ployz infrastructure.
+impl Namespace {
+    /// The reserved Namespace for Ployz infrastructure.
     pub const SYSTEM: &'static str = "ployz-system";
 
-    /// The reserved Project name for Ployz infrastructure Containers.
+    /// The reserved Namespace for Ployz infrastructure Containers.
     #[must_use]
     pub fn system() -> Self {
-        Self::parse(Self::SYSTEM).expect("the reserved Project name is a valid DNS label")
+        Self::parse(Self::SYSTEM).expect("the reserved Namespace is a valid DNS label")
     }
 
     /// Whether this name is reserved for Ployz infrastructure.
@@ -571,76 +571,76 @@ impl ProjectName {
         self.as_str() == Self::SYSTEM
     }
 
-    /// Physical Docker Volume name for a declared volume owned by this Project.
+    /// Physical Docker Volume name for a declared volume owned by this Namespace.
     #[must_use]
     pub fn volume_name(&self, logical: &DockerVolumeName) -> DockerVolumeName {
         DockerVolumeName::parse(format!("{self}_{logical}"))
-            .expect("a Project Name and Docker Volume name are each non-empty")
+            .expect("a Namespace and Docker Volume name are each non-empty")
     }
 }
 
-/// Logical Service identity: Project Name plus Service Name, written `project/name`.
+/// Logical Service identity: Namespace plus Service Name, written `namespace/name`.
 ///
 /// A Service ID is a separate opaque deployment identity that survives updates.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
 pub struct QualifiedService {
-    pub project: ProjectName,
+    pub namespace: Namespace,
     pub name: ServiceName,
 }
 
 impl QualifiedService {
-    /// Combine an already-valid Project Name and Service Name.
+    /// Combine an already-valid Namespace and Service Name.
     #[must_use]
-    pub fn new(project: ProjectName, name: ServiceName) -> Self {
-        Self { project, name }
+    pub fn new(namespace: Namespace, name: ServiceName) -> Self {
+        Self { namespace, name }
     }
 
-    /// Parse `project/name` where both sides are DNS labels.
+    /// Parse `namespace/name` where both sides are DNS labels.
     ///
     /// # Errors
     ///
     /// Returns [`ValueError`] when `value` is not exactly one `/` between two DNS labels.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, ValueError> {
         let value = value.as_ref();
-        let Some((project, name)) = value.split_once('/') else {
+        let Some((namespace, name)) = value.split_once('/') else {
             return Err(qualified_service_error(value));
         };
-        let project = ProjectName::parse(project).map_err(|_| qualified_service_error(value))?;
+        let namespace = Namespace::parse(namespace).map_err(|_| qualified_service_error(value))?;
         let name = ServiceName::parse(name).map_err(|_| qualified_service_error(value))?;
-        Ok(Self { project, name })
+        Ok(Self { namespace, name })
     }
 
-    /// Internal DNS labels `{name}.{project}` under the `.internal` zone.
+    /// Internal DNS labels `{name}.{namespace}` under the `.internal` zone.
     #[must_use]
     pub fn dns_name(&self) -> String {
-        format!("{}.{}", self.name, self.project)
+        format!("{}.{}", self.name, self.namespace)
     }
 
-    /// Parse Internal DNS labels `{name}.{project}`.
+    /// Parse Internal DNS labels `{name}.{namespace}`.
     ///
     /// # Errors
     ///
     /// Returns [`ValueError`] when `value` is not exactly one `.` between two DNS labels.
     pub fn parse_dns_name(value: impl AsRef<str>) -> Result<Self, ValueError> {
         let value = value.as_ref();
-        let Some((name, project)) = value.split_once('.') else {
+        let Some((name, namespace)) = value.split_once('.') else {
             return Err(dns_name_error(value));
         };
-        if project.contains('.') {
+        if namespace.contains('.') {
             return Err(dns_name_error(value));
         }
-        let project = ProjectName::parse(project).map_err(|_| dns_name_error(value))?;
+        let namespace = Namespace::parse(namespace).map_err(|_| dns_name_error(value))?;
         let name = ServiceName::parse(name).map_err(|_| dns_name_error(value))?;
-        Ok(Self { project, name })
+        Ok(Self { namespace, name })
     }
 
-    /// Infrastructure Ingress Proxy in the reserved Project.
+    /// Infrastructure Ingress Proxy in the reserved Namespace.
     #[must_use]
     pub fn system_ingress() -> Self {
         Self::new(
-            ProjectName::system(),
+            Namespace::system(),
             ServiceName::parse("ingress").expect("ingress is a DNS-label Service Name"),
         )
     }
@@ -650,7 +650,7 @@ fn qualified_service_error(value: &str) -> ValueError {
     ValueError::new(
         "Qualified Service",
         value,
-        "a Project Name, '/', and a Service Name",
+        "a Namespace, '/', and a Service Name",
     )
 }
 
@@ -658,13 +658,13 @@ fn dns_name_error(value: &str) -> ValueError {
     ValueError::new(
         "Qualified Service DNS name",
         value,
-        "a Service Name, '.', and a Project Name",
+        "a Service Name, '.', and a Namespace",
     )
 }
 
 impl fmt::Display for QualifiedService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}/{}", self.project, self.name)
+        write!(formatter, "{}/{}", self.namespace, self.name)
     }
 }
 

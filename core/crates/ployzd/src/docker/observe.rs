@@ -11,7 +11,7 @@ use ployz_core::{
 };
 use tokio_util::sync::CancellationToken;
 
-use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_PROJECT_NAME};
+use super::{ContainerRuntime, Error, LABEL_MANAGED, LABEL_NAMESPACE};
 use crate::corrosion::{LocalContainerSnapshot, LocalVolumeSnapshot, ReplicatedStore};
 use crate::machine::RecordOwner;
 
@@ -100,7 +100,7 @@ impl ContainerRuntime {
             HashMap::from([
                 ("type", vec!["container"]),
                 ("scope", vec!["local"]),
-                ("label", vec![LABEL_MANAGED, LABEL_PROJECT_NAME]),
+                ("label", vec![LABEL_MANAGED, LABEL_NAMESPACE]),
                 (
                     "event",
                     vec![
@@ -337,7 +337,7 @@ mod tests {
             "container_id": "a".repeat(64),
             "display_name": "api-test",
             "machine_id": "b".repeat(32),
-            "project_name": "app",
+            "namespace": "app",
             "kind": "service_container",
             "runtime": { "state": "created" },
             "resolved_spec": {
@@ -396,7 +396,7 @@ mod tests {
                 display_name: "ingress-test".into(),
                 created_at_unix_nanos: 1,
                 machine_id: ployz_core::MachineId::parse("b".repeat(32)).unwrap(),
-                project_name: ployz_core::ProjectName::system(),
+                namespace: ployz_core::Namespace::system(),
                 kind: ployz_core::ContainerKind::ServiceContainer,
                 runtime: ployz_core::ContainerRuntimeObservation::Created,
                 effective_healthcheck: None,
@@ -433,7 +433,7 @@ mod tests {
             "container_id": "a".repeat(64),
             "display_name": "api-test",
             "machine_id": "b".repeat(32),
-            "project_name": "app",
+            "namespace": "app",
             "kind": "service_container",
             "runtime": { "state": "created" },
             "resolved_spec": {

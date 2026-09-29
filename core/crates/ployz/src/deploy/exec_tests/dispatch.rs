@@ -371,7 +371,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
             &client,
             &machine('1'),
             ContainerKind::ServiceContainer,
-            &test_project(),
+            &test_namespace(),
             specification,
             None,
         )
@@ -382,7 +382,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::PreDeployHook,
-        &test_project(),
+        &test_namespace(),
         &service,
         None,
     )
@@ -392,7 +392,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         Some(container('f')),
     )
@@ -402,7 +402,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         Some(container('f')),
     )
@@ -415,7 +415,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         None,
     )
@@ -660,7 +660,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         ..Default::default()
     };
     let intent = DeployIntent::apply_one(
-        test_project(),
+        test_namespace(),
         requested,
         PlanOptions {
             skip_health_monitor: true,
@@ -689,7 +689,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         &client,
         machine_id,
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         spec,
         None,
     )

@@ -9,7 +9,7 @@ use crate::{
 };
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerRuntimeObservation,
-    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
+    DockerVolumeName, InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace,
     RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceMount, ServiceVolume,
     ServiceVolumeGraph, ServiceVolumeReference, StartContainerRequest, StopContainerRequest,
     UpdateOrder, op,
@@ -148,7 +148,7 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
             }],
         )
         .unwrap()
-        .scope_to_project(&ProjectName::parse("app").unwrap())
+        .scope_to_namespace(&Namespace::parse("app").unwrap())
         .unwrap()
         .try_into()
         .unwrap(),
@@ -235,7 +235,7 @@ async fn assert_replacement_health_compensation(
             .create_container(
                 machine.id,
                 ContainerKind::ServiceContainer,
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 old_spec.clone(),
                 None,
             )
@@ -432,7 +432,7 @@ fn failed_hook_id(
 }
 
 fn deploy_plan(operations: Vec<DeployOperation>) -> DeployPlan {
-    DeployPlan::for_execution_test(operations, ProjectName::parse("app").unwrap())
+    DeployPlan::for_execution_test(operations, Namespace::parse("app").unwrap())
 }
 
 fn named_volume(reference: &str, name: &str) -> ServiceVolume {

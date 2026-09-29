@@ -124,35 +124,6 @@ async fn removal_non_tty_yes_environment_cannot_accept_volume_loss() {
 }
 
 #[tokio::test]
-async fn absent_project_reports_observation_and_leaves_machine_unchanged() {
-    let service = DeployService::new(machine('a', "one"));
-    let mutations = service.mutating_rpcs();
-    let (address, server) = listening(service).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "project",
-            "rm",
-            "absent",
-            "--yes",
-        ])
-        .output()
-        .await
-        .unwrap();
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(
-            "Project 'absent' was not found in this Cluster observation. No changes made."
-        ),
-        "{stderr}"
-    );
-    assert_eq!(mutations.load(Ordering::SeqCst), 0);
-    server.abort();
-}
-
-#[tokio::test]
 async fn service_volume_removal_proceeds_when_an_unrelated_machine_is_omitted() {
     let owner = machine('a', "owner");
     let mut unrelated = machine('b', "unrelated");

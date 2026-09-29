@@ -57,7 +57,7 @@ mod tests {
     use super::hostname_owners;
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation, IngressHost,
-        MachineId, ProjectName, QualifiedService, ResolvedServiceSpec, ServiceId, ServiceName,
+        MachineId, Namespace, QualifiedService, ResolvedServiceSpec, ServiceId, ServiceName,
     };
 
     #[test]
@@ -138,7 +138,7 @@ mod tests {
     }
 
     fn observation(
-        project: &str,
+        namespace: &str,
         name: &str,
         service_id: char,
         container: char,
@@ -166,7 +166,7 @@ mod tests {
             display_name: format!("{name}-{container}"),
             created_at_unix_nanos: created_at,
             machine_id: MachineId::parse("1".repeat(32)).unwrap(),
-            project_name: ProjectName::parse(project).unwrap(),
+            namespace: Namespace::parse(namespace).unwrap(),
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,

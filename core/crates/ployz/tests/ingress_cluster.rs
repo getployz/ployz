@@ -7,7 +7,7 @@ use ployz::deploy::plan_deploy;
 use ployz_core::{
     CORROSION_API_PORT, ContainerAction, ContainerId, ContainerKind, GetIngressProxyConfigRequest,
     HOSTNAME_VERIFY_PATH, INGRESS_VERIFY_PATH, ListMachinesRequest, Machine, MachineId,
-    MachineTarget, MembershipObservation, ProjectName, RequestedServiceSpec, ResolvedServiceSpec,
+    MachineTarget, MembershipObservation, Namespace, RequestedServiceSpec, ResolvedServiceSpec,
     ServiceId, StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -511,7 +511,7 @@ async fn deploy(
     };
     let plan = plan_deploy(
         &ployz::deploy::DeployIntent::apply_all(
-            ProjectName::parse("start-first").unwrap(),
+            Namespace::parse("start-first").unwrap(),
             [requested],
             ployz::deploy::PlanOptions {
                 skip_health_monitor: true,
@@ -571,7 +571,7 @@ async fn create_and_start(
         .create_container(
             machine.id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             None,
         )

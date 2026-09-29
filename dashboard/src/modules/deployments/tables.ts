@@ -57,7 +57,7 @@ export type EnvironmentDeploymentServiceActionPolicy = {
 export type EnvironmentDeploymentPreview = {
   storage?: JsonValue[];
   prune_refusal?: PruneRefusal | null;
-  project_name: string;
+  namespace: string;
   operations: JsonValue[];
   warnings: JsonValue[];
   would_remove: JsonValue[];

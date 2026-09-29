@@ -77,7 +77,7 @@ impl ServiceObservation {
     pub fn observed_global_slot(&self) -> Option<ObservedGlobalSlotSpec> {
         let spec = self.observed_global_slot_spec()?;
         Some(ObservedGlobalSlotSpec {
-            identity: QualifiedService::new(self.identity.project.clone(), spec.name.clone()),
+            identity: QualifiedService::new(self.identity.namespace.clone(), spec.name.clone()),
             resolved_spec: spec.clone(),
         })
     }
@@ -309,8 +309,8 @@ mod tests {
 
     use crate::{
         ContainerId, ContainerKind, ContainerObservation, ContainerRef,
-        ContainerRuntimeObservation, MachineFailure, MachineId, MachineSuccess, PartialResult,
-        ProjectName, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode,
+        ContainerRuntimeObservation, MachineFailure, MachineId, MachineSuccess, Namespace,
+        PartialResult, QualifiedService, ResolvedServiceSpec, RpcError, RpcErrorCode,
         ServiceContainer, ServiceId, ServiceName, ServiceSelector,
     };
 
@@ -415,7 +415,7 @@ mod tests {
         let unique_id = ServiceId::parse("d".repeat(32)).unwrap();
         let leftover_id = ServiceId::parse("e".repeat(32)).unwrap();
         let services = super::derive_services([
-            in_project(
+            in_namespace(
                 observation(
                     '1',
                     &staging_id,
@@ -425,7 +425,7 @@ mod tests {
                 ),
                 "shop-staging",
             ),
-            in_project(
+            in_namespace(
                 observation('2', &prod_id, "web", ContainerKind::ServiceContainer, "v2"),
                 "shop-prod",
             ),
@@ -443,7 +443,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 "unique",
             ),
-            in_project(
+            in_namespace(
                 observation(
                     '5',
                     &leftover_id,
@@ -721,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_service_observation_rejects_name_without_project_identity() {
+    fn derived_service_observation_rejects_name_without_namespace_identity() {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let derived = super::derive_services([observation(
             '1',
@@ -828,7 +828,7 @@ mod tests {
             display_name: format!("{name}-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
-            project_name: ProjectName::parse("app").unwrap(),
+            namespace: Namespace::parse("app").unwrap(),
             kind,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
@@ -839,9 +839,12 @@ mod tests {
         .unwrap()
     }
 
-    fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
+    fn in_namespace(
+        mut observation: ContainerObservation,
+        namespace: &str,
+    ) -> ContainerObservation {
         observation
-            .try_update(|parts| parts.project_name = ProjectName::parse(project).unwrap())
+            .try_update(|parts| parts.namespace = Namespace::parse(namespace).unwrap())
             .unwrap();
         observation
     }

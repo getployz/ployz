@@ -117,7 +117,7 @@ async fn reuse(
     )?;
     if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
         || receipt.image.platforms.is_empty()
-        || !crate::build::runs_everywhere(&receipt.image, spec, &intent.project_name, machines)
+        || !crate::build::runs_everywhere(&receipt.image, spec, &intent.namespace, machines)
     {
         return Ok(None);
     }

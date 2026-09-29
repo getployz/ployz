@@ -60,7 +60,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
         })
         .collect::<Vec<_>>();
     crate::sdk::PreparationInput {
-        deployment: json!({"projectName": "example", "snapshots": snapshots}),
+        deployment: json!({"namespace": "example", "snapshots": snapshots}),
         sources: names
             .iter()
             .map(|name| (name.clone(), root.to_owned()))
@@ -1017,7 +1017,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
     .await
     .unwrap();
     let mut deployment = json!({
-        "projectName": "example", "snapshots": [
+        "namespace": "example", "snapshots": [
             {"config": {"version": 2, "privateDns": "one", "source": {
                 "version": 2, "type": "git", "repository": "acme/one", "repositoryId": 42,
                 "access": {"type": "public"}, "rootDir": "/", "branch": {"type": "connected", "name": "main"}
@@ -1351,7 +1351,7 @@ async fn an_outside_build_refuses_an_invalid_deployment_and_an_unbuildable_place
         receipt: None,
     };
     let error = sdk
-        .outside_build(outside(json!({"projectName": "app"})))
+        .outside_build(outside(json!({"namespace": "app"})))
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");

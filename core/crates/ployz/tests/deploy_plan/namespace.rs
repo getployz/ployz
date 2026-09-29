@@ -1,13 +1,13 @@
 use super::support::*;
-use ployz::deploy::{VolumeFate, data_loss_from_plan, plan_project_removal};
+use ployz::deploy::{VolumeFate, data_loss_from_plan, plan_namespace_removal};
 use ployz_core::{DataLoss, PruneRefusal, QualifiedService};
 
-fn project() -> ProjectName {
-    ProjectName::parse("app").unwrap()
+fn namespace() -> Namespace {
+    Namespace::parse("app").unwrap()
 }
 
 #[test]
-fn project_removal_deletes_visible_services_and_preserves_volumes() {
+fn namespace_removal_deletes_visible_services_and_preserves_volumes() {
     let spec = requested(ServiceMode::Global);
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
@@ -19,7 +19,7 @@ fn project_removal_deletes_visible_services_and_preserves_volumes() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Preserve).unwrap();
     assert_eq!(plan.prune_refusal, None);
     assert_eq!(
         plan.would_remove,
@@ -62,7 +62,7 @@ fn incomplete_snapshot_refuses_removal_and_does_not_prune() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Destroy).unwrap();
     assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
     assert!(plan.operations.is_empty());
     assert_eq!(
@@ -85,7 +85,7 @@ fn incomplete_empty_view_still_refuses() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Preserve).unwrap();
     assert_eq!(plan.prune_refusal, Some(PruneRefusal::IncompleteSnapshot));
     assert!(plan.operations.is_empty());
     assert!(plan.would_remove.is_empty());
@@ -101,7 +101,7 @@ fn destroying_volumes_emits_remove_volume_only_when_complete() {
             .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Destroy).unwrap();
     assert_eq!(plan.prune_refusal, None);
     assert_eq!(
         operations(&plan),
@@ -122,7 +122,7 @@ fn unlabeled_volumes_are_never_assigned_or_removed() {
         ..Default::default()
     };
     for fate in [VolumeFate::Preserve, VolumeFate::Destroy] {
-        let plan = plan_project_removal(&project(), &snapshot, fate).unwrap();
+        let plan = plan_namespace_removal(&namespace(), &snapshot, fate).unwrap();
         assert!(
             plan.operations.is_empty(),
             "{fate:?}: {:?}",
@@ -137,7 +137,7 @@ fn unlabeled_volumes_are_never_assigned_or_removed() {
 }
 
 #[test]
-fn volume_only_project_still_plans_preservation() {
+fn volume_only_namespace_still_plans_preservation() {
     let snapshot = DeploySnapshot {
         machines: vec![machine('1', "first")],
         volume_snapshot: VolumeSnapshot::try_from_observations(vec![owned_volume(
@@ -147,26 +147,26 @@ fn volume_only_project_still_plans_preservation() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Preserve).unwrap();
     assert!(plan.operations.is_empty());
     assert_eq!(plan.preserved_volumes.len(), 1);
 }
 
 #[test]
-fn other_project_resources_are_left_alone() {
+fn other_namespace_resources_are_left_alone() {
     let spec = requested(ServiceMode::Global);
     let mut other = container('c', '1', &spec, &service_id('c'));
     other
         .try_update(|parts| {
-            parts.project_name = ProjectName::parse("other").unwrap();
+            parts.namespace = Namespace::parse("other").unwrap();
             parts.resolved_spec.name = ServiceName::parse("web").unwrap();
         })
         .unwrap();
     let mut other_volume = owned_volume(machine_id('1'), "data");
     other_volume
         .labels
-        .insert(PROJECT_NAME_LABEL.to_owned(), "other".to_owned());
-    other_volume.id.name = ProjectName::parse("other")
+        .insert(NAMESPACE_LABEL.to_owned(), "other".to_owned());
+    other_volume.id.name = Namespace::parse("other")
         .unwrap()
         .volume_name(&DockerVolumeName::parse("data").unwrap());
     let snapshot = DeploySnapshot {
@@ -179,7 +179,7 @@ fn other_project_resources_are_left_alone() {
         .expect("valid Volume Snapshot fixture"),
         ..Default::default()
     };
-    let plan = plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap();
+    let plan = plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Destroy).unwrap();
     assert_eq!(
         plan.would_remove,
         [QualifiedService::parse("app/api").unwrap()]
@@ -205,7 +205,7 @@ fn planner_does_not_refuse_reserved_names() {
     let mut ingress = container('b', '1', &spec, &service_id('a'));
     ingress
         .try_update(|parts| {
-            parts.project_name = ProjectName::system();
+            parts.namespace = Namespace::system();
             parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
         })
         .unwrap();
@@ -215,7 +215,7 @@ fn planner_does_not_refuse_reserved_names() {
         ..Default::default()
     };
     let plan =
-        plan_project_removal(&ProjectName::system(), &snapshot, VolumeFate::Preserve).unwrap();
+        plan_namespace_removal(&Namespace::system(), &snapshot, VolumeFate::Preserve).unwrap();
     assert_eq!(plan.prune_refusal, None);
     assert!(plan.would_remove.is_empty());
     assert!(plan.operations.is_empty());
@@ -234,7 +234,7 @@ fn preserving_volumes_is_empty_data_loss() {
     };
     assert_eq!(
         data_loss_from_plan(
-            &plan_project_removal(&project(), &snapshot, VolumeFate::Preserve).unwrap()
+            &plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Preserve).unwrap()
         )
         .data_loss,
         Vec::<DataLoss>::new()
@@ -254,7 +254,7 @@ fn destroying_volumes_names_owned_docker_volumes_only() {
     };
     assert_eq!(
         data_loss_from_plan(
-            &plan_project_removal(&project(), &snapshot, VolumeFate::Destroy).unwrap()
+            &plan_namespace_removal(&namespace(), &snapshot, VolumeFate::Destroy).unwrap()
         )
         .data_loss,
         [DataLoss::DockerVolume {

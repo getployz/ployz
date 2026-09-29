@@ -3,15 +3,15 @@
 //!
 //! This crate is the workspace's only `unsafe_code` exception (napi-rs).
 //! The handwritten façade is connect / session observation and registration /
-//! about / runtime.watch / prepare / build / preview / run / previewProjectRemoval /
+//! about / runtime.watch / prepare / build / preview / run / previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
-//! dataLossIfProjectDestroyed / destroyProject / dataLossIfClusterDestroyed /
+//! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
 //! destroyCluster / close.
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;
 use ployz_core::{
-    DataLossConfirmation, ManagementClientLabel, ProjectName, RemoveVolumesRequest, RpcError,
+    DataLossConfirmation, ManagementClientLabel, Namespace, RemoveVolumesRequest, RpcError,
     RpcErrorCode,
 };
 
@@ -347,24 +347,24 @@ impl Client {
         Ok(DeployPreviewHandle { inner })
     }
 
-    /// Calculate a Project-removal preview. Confirming executes these operations.
+    /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
-    /// a Project Name, the Project is reserved, the session is closed, or
+    /// Returns a generated [`RpcError`] JSON payload when `namespace` is not
+    /// a Namespace, the Namespace is reserved, the session is closed, or
     /// planning fails.
     #[napi]
-    pub async fn preview_project_removal(
+    pub async fn preview_namespace_removal(
         &self,
-        project_name: String,
+        namespace: String,
         destroy_volumes: bool,
     ) -> Result<DeployPreviewHandle> {
-        let project_name = ProjectName::parse(project_name).map_err(invalid_argument)?;
+        let namespace = Namespace::parse(namespace).map_err(invalid_argument)?;
         let volumes = volume_fate(destroy_volumes);
         let inner = self
             .inner
-            .preview_project_removal(project_name, volumes)
+            .preview_namespace_removal(namespace, volumes)
             .await
             .map_err(rpc_to_napi)?;
         Ok(DeployPreviewHandle { inner })
@@ -478,31 +478,31 @@ impl Client {
         to_json(&updated)
     }
 
-    /// Live Observation of Data Loss that destroying `project_name` would cause.
+    /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// `destroy_volumes` false is empty. Mutates nothing.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] JSON payload when `project_name` is not
-    /// a Project Name, the Project is reserved, the session is closed, snapshot
+    /// Returns a generated [`RpcError`] JSON payload when `namespace` is not
+    /// a Namespace, the Namespace is reserved, the session is closed, snapshot
     /// gathering fails, or destroying volumes is requested against a known
     /// incomplete snapshot.
     #[napi]
-    pub async fn data_loss_if_project_destroyed(
+    pub async fn data_loss_if_namespace_destroyed(
         &self,
-        project_name: String,
+        namespace: String,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
         let observed = self
             .inner
-            .data_loss_if_project_destroyed(&project_name, volume_fate(destroy_volumes))
+            .data_loss_if_namespace_destroyed(&namespace, volume_fate(destroy_volumes))
             .await
             .map_err(rpc_to_napi)?;
         to_json(&observed)
     }
 
-    /// Destroy `project_name` after an exact Data Loss confirmation.
+    /// Destroy `namespace` after an exact Data Loss confirmation.
     ///
     /// `confirm_data_loss` must be a DataLossConfirmation object, not a bare
     /// Data Loss list or an ObservedDataLoss read. Confirmed identities that
@@ -512,12 +512,12 @@ impl Client {
     ///
     /// Returns a generated [`RpcError`] JSON payload when `confirm_data_loss`
     /// is not a DataLossConfirmation object, the session is closed, the
-    /// Project cannot be destroyed, or the confirmation does not cover the
+    /// Namespace cannot be destroyed, or the confirmation does not cover the
     /// fresh Data Loss.
     #[napi]
-    pub async fn destroy_project(
+    pub async fn destroy_namespace(
         &self,
-        project_name: String,
+        namespace: String,
         confirm_data_loss: serde_json::Value,
         destroy_volumes: bool,
     ) -> Result<serde_json::Value> {
@@ -525,11 +525,7 @@ impl Client {
             serde_json::from_value(confirm_data_loss).map_err(invalid_argument)?;
         let outcome = self
             .inner
-            .destroy_project(
-                &project_name,
-                &confirm_data_loss,
-                volume_fate(destroy_volumes),
-            )
+            .destroy_namespace(&namespace, &confirm_data_loss, volume_fate(destroy_volumes))
             .await
             .map_err(rpc_to_napi)?;
         to_json(&outcome)

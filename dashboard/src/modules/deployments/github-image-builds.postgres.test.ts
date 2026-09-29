@@ -182,7 +182,7 @@ function fakeClient(fake: Fake) {
       fake.prepared.push(input.build_receipts ?? {});
       const outcome = { type: "success" as const, completed: [] };
       const prepared = asTestDouble<PreparedDeploy>()({
-        project_name: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
+        namespace: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
         buildReceipts: input.build_receipts ?? {}, pruneTargets: [], close: () => undefined,
         confirm: () => ({ abort: () => undefined, finished: Promise.resolve(outcome),
           async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } }),
