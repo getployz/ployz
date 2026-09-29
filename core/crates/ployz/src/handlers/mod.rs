@@ -53,10 +53,15 @@ fn usage_failure(error: clap::Error) -> Error {
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     if matches.get_flag("version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return crate::output::finish(
+            &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
+            || crate::output::say!("{}", env!("CARGO_PKG_VERSION")),
+        );
     }
     if matches.subcommand().is_none() {
+        if matches.get_flag("json") {
+            return Err(Error::usage("a command is required"));
+        }
         command.print_help()?;
         println!();
         return Ok(());

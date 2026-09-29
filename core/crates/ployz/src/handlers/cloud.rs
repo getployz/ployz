@@ -169,7 +169,7 @@ where
                     .expect("already assigned Machine exists"),
             ))
     {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
@@ -253,13 +253,13 @@ where
         (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
         | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "new founding claim requires an uninitialized Machine, but the local phase is {}",
                 phase.as_str().escape_debug()
             )));
         }
         (InitializeMode::Resume, phase) => {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "matching founding Machine cannot resume from local phase {}",
                 phase.as_str().escape_debug()
             )));
@@ -268,7 +268,7 @@ where
     if let FounderLocalState::Resume { machine } = &state
         && !initial_policy.matches(machine)
     {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
@@ -497,7 +497,7 @@ async fn ensure_uninitialized(
         return Ok(client);
     }
     if !reset {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "Machine is already initialised; rerun with --reset to reset it before enrollment"
                 .to_owned(),
         ));
@@ -551,7 +551,7 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::usage(if participating {
+        Error::unavailable(if participating {
             format!(
                 "{}: {error}",
                 crate::handlers::machine::readiness_timeout_message(timeout_message)

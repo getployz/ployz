@@ -28,7 +28,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .unwrap_or_else(|| "default".into());
     if config.contexts.contains_key(&context_name) {
-        return Err(Error::usage(format!(
+        return Err(Error::conflict(format!(
             "context {context_name:?} already exists"
         )));
     }

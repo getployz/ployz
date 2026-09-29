@@ -27,7 +27,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .await?
             .machine_id;
         if selected.id == current && machines.len() > 1 {
-            return Err(Error::usage(
+            return Err(Error::conflict(
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
         }
@@ -40,10 +40,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::usage(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
             }
             if live.containers.omissions.contains(&selected.id) {
-                return Err(Error::usage(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
             }
         }
         let services = services_on(&selected.id, &live);
@@ -115,12 +115,12 @@ pub(super) fn select_machine(
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
     match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(Error::usage(format!(
+        NameMatches::None => Err(Error::not_found(format!(
             "Machine {} was not found",
             selector.as_str().escape_debug()
         ))),
         NameMatches::One(machine) => Ok(machine.clone()),
-        matches @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
+        matches @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
             "Machine name {} is ambiguous: {}",
             selector.as_str().escape_debug(),
             matches
@@ -134,7 +134,7 @@ pub(super) fn select_machine(
 
 fn machine_removal_refusal(error: RpcError) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::usage(format!(
+        Error::unavailable(format!(
             "{error}; use --no-reset to remove it from the Cluster without resetting"
         ))
     } else {

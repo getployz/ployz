@@ -93,8 +93,8 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
     if json() {
         emit(value)
     } else {
-        EMITTED.set(true);
         human();
+        EMITTED.set(true);
         Ok(())
     }
 }
@@ -105,10 +105,10 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
-    EMITTED.set(true);
     let mut stdout = io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, value)?;
     writeln!(stdout)?;
+    EMITTED.set(true);
     Ok(())
 }
 
@@ -132,14 +132,13 @@ pub(crate) fn emit<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
-    EMITTED.set(true);
-    if !json() {
-        return Ok(());
+    if json() {
+        let mut stdout = io::stdout().lock();
+        serde_json::to_writer(&mut stdout, value)?;
+        writeln!(stdout)?;
+        stdout.flush()?;
     }
-    let mut stdout = io::stdout().lock();
-    serde_json::to_writer(&mut stdout, value)?;
-    writeln!(stdout)?;
-    stdout.flush()?;
+    EMITTED.set(true);
     Ok(())
 }
 

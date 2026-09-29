@@ -272,6 +272,28 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert!(message(&json).contains("--no-such-flag"), "{json}");
 }
 
+#[test]
+fn json_without_a_command_is_the_version_or_an_error() {
+    for flag in ["--version", "-V"] {
+        let (code, json, _) = run_json(&["--json", flag]);
+        assert_eq!(code, Some(0), "{flag}");
+        assert_eq!(
+            json,
+            serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
+            "{flag}"
+        );
+    }
+
+    let (code, json, _) = run_json(&["--json"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
+    );
+    assert_eq!(message(&json), "a command is required");
+}
+
 fn message(json: &serde_json::Value) -> &str {
     json.pointer("/error/message")
         .and_then(serde_json::Value::as_str)

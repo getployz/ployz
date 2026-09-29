@@ -44,7 +44,7 @@ A fallible public function has an error-path test at its seam.
 
 Every command that produces a result takes `--json` and prints it through `crate::output`: one JSON object on stdout, keyed by noun (`{"machines": […]}`). Streams print one object per line. Human text uses `say!`, never `println!`, so `--json` keeps stdout parseable.
 
-A fan-out result carries its per-Machine `failures` and `omitted`. A printed result that did not fully succeed exits 3; a failure before any result exits 1 with `{"error": {code, message, details}}` in the RPC error vocabulary. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong.
+A fan-out result carries its per-Machine `failures` and `omitted`. A printed result that did not fully succeed exits 3. A failure before any result prints `{"error": {code, message, details}}` in the RPC error vocabulary and exits 1, or 2 for a rejected command line. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong.
 
 JSON fields are only added, never renamed or repurposed. A short flag has one meaning across the whole tree.
 

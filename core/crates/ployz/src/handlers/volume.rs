@@ -146,14 +146,10 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 &selectors,
             )?;
             let result = client.inspect_volumes(&machines, &name).await;
-            if result
-                .failures
-                .iter()
-                .any(|failure| failure.error.code != RpcErrorCode::NotFound)
-                || !result.omissions.is_empty()
-            {
-                return Err(Error::unavailable(failure_summary(&result)));
-            }
+            // `not_found` only means the volume is not on that Machine.
+            let mut gaps = Gaps::of(&result);
+            gaps.failures
+                .retain(|failure| failure.error.code != RpcErrorCode::NotFound);
             let names = machines
                 .iter()
                 .map(|machine| (machine.machine.id, machine.machine.name.clone()))
@@ -170,11 +166,18 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 })
                 .collect();
             match NameMatches::from_matches(volumes) {
-                NameMatches::None => Err(Error::not_found(format!(
-                    "Docker Volume {} was not found",
-                    name.as_str().escape_debug()
+                NameMatches::None if gaps.failures.is_empty() && gaps.omitted.is_empty() => {
+                    Err(Error::not_found(format!(
+                        "Docker Volume {} was not found",
+                        name.as_str().escape_debug()
+                    )))
+                }
+                NameMatches::None => Err(Error::unavailable(format!(
+                    "Docker Volume {} was not found on the Machines that answered; one or more Machines failed: {}",
+                    name.as_str().escape_debug(),
+                    gap_details(&gaps)
                 ))),
-                NameMatches::One(volume) => output::show(&json!({ "volume": volume })),
+                NameMatches::One(volume) => output::show_fanout("volume", &volume, &gaps),
                 volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
                     "Docker Volume {} is ambiguous; select one Machine: {}",
                     name.as_str().escape_debug(),
@@ -512,9 +515,17 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
-fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
-    let failures = crate::failure::partial_failure_details(result);
-    format!("one or more Machines failed: {failures}")
+fn gap_details(gaps: &Gaps) -> String {
+    gaps.failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
+        .chain(
+            gaps.omitted
+                .iter()
+                .map(|machine_id| format!("{machine_id}: no terminal response")),
+        )
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 #[cfg(test)]

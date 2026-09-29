@@ -160,34 +160,17 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
     (code(error), Value::Null)
 }
 
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "every unlisted connection failure means the Cluster was not reached"
-)]
-fn code(error: &(dyn Error + Send + Sync + 'static)) -> RpcErrorCode {
+/// The `--json` code of a CLI-side error: `invalid_argument` for bad input,
+/// `unavailable` when a target could not be reached, `internal` only for real faults.
+fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<ConnectError>() {
-        return match error {
-            ConnectError::ClientRefused | ConnectError::ClientCleared => {
-                RpcErrorCode::Unauthenticated
-            }
-            ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
-                RpcErrorCode::Unsupported
-            }
-            ConnectError::Context(error) => context_code(error),
-            ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
-                RpcErrorCode::InvalidArgument
-            }
-            _ => RpcErrorCode::Unavailable,
-        };
+        return connect_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<RpcError>() {
+        return error.code.clone();
     }
     if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
-        return match error {
-            MachineSelectorError::NoTargets => RpcErrorCode::InvalidArgument,
-            MachineSelectorError::NoVisibleMachines | MachineSelectorError::NotFound(_) => {
-                RpcErrorCode::NotFound
-            }
-            MachineSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
-        };
+        return machine_selector_code(error);
     }
     if let Some(error) = error.downcast_ref::<ServiceSelectorError>() {
         return match error {
@@ -204,18 +187,230 @@ fn code(error: &(dyn Error + Send + Sync + 'static)) -> RpcErrorCode {
     if let Some(error) = error.downcast_ref::<ContextError>() {
         return context_code(error);
     }
-    if error.is::<TransportError>() {
+    if let Some(error) = error.downcast_ref::<OperatorError>() {
+        return operator_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<PlanError>() {
+        return plan_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<ProvisionError>() {
+        return provision_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<PushError>() {
+        return push_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<CodecError>() {
+        return codec_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<cloud_enroll::Error>() {
+        return cloud_enroll_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<MachineUpdateError>() {
+        return match error {
+            MachineUpdateError::DuplicateName => RpcErrorCode::Conflict,
+            MachineUpdateError::MissingEndpoints => RpcErrorCode::InvalidArgument,
+        };
+    }
+    if let Some(error) = error.downcast_ref::<io::Error>() {
+        return io_code(error);
+    }
+    if error.is::<TransportError>() || error.is::<IngressImageError>() {
         return RpcErrorCode::Unavailable;
     }
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
         || error.is::<ConfigError>()
+        || error.is::<ProjectError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
     {
         return RpcErrorCode::InvalidArgument;
     }
+    // StreamProtocolError, serde_json::Error, and anything unlisted: a real fault.
     RpcErrorCode::Internal
+}
+
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "every unlisted connection failure means the Cluster was not reached"
+)]
+fn connect_code(error: &ConnectError) -> RpcErrorCode {
+    match error {
+        ConnectError::Remote(error) => error.code.clone(),
+        ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
+            RpcErrorCode::Unsupported
+        }
+        ConnectError::Context(error) => context_code(error),
+        ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
+            RpcErrorCode::InvalidArgument
+        }
+        _ => RpcErrorCode::Unavailable,
+    }
+}
+
+fn machine_selector_code(error: &MachineSelectorError) -> RpcErrorCode {
+    match error {
+        MachineSelectorError::NoTargets => RpcErrorCode::InvalidArgument,
+        MachineSelectorError::NoVisibleMachines | MachineSelectorError::NotFound(_) => {
+            RpcErrorCode::NotFound
+        }
+        MachineSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
+    }
+}
+
+fn operator_code(error: &OperatorError) -> RpcErrorCode {
+    match error {
+        OperatorError::Connect(error) => connect_code(error),
+        OperatorError::Selector(error) => code(error),
+        OperatorError::MachineSelector(error) => machine_selector_code(error),
+        OperatorError::Container(error) => code(error),
+        OperatorError::Codec(error) => codec_code(error),
+        OperatorError::OpenContainerLogs { source, .. }
+        | OperatorError::OpenMachineLogs { source, .. } => operator_code(source),
+        OperatorError::Value(_)
+        | OperatorError::TtyRequiresStdin
+        | OperatorError::InvalidServiceSelector(_)
+        | OperatorError::InvalidTail(_)
+        | OperatorError::InvalidLogTime(_)
+        | OperatorError::InvalidProxyPort
+        | OperatorError::InvalidLocalPort(_)
+        | OperatorError::InvalidRemotePort(_)
+        | OperatorError::UnsupportedLogService { .. } => RpcErrorCode::InvalidArgument,
+        OperatorError::NoRegularContainer
+        | OperatorError::NoContainersOnMachines { .. }
+        | OperatorError::NoMachines => RpcErrorCode::NotFound,
+        OperatorError::Rpc(_)
+        | OperatorError::StreamClosed
+        | OperatorError::NoHealthyContainer
+        | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
+        OperatorError::Protocol(_) => RpcErrorCode::Internal,
+    }
+}
+
+fn plan_code(error: &PlanError) -> RpcErrorCode {
+    match error {
+        PlanError::Service { source, .. } => plan_code(source),
+        PlanError::ConflictingHostPublications { .. }
+        | PlanError::ConflictingDockerVolumeDefinitions { .. }
+        | PlanError::DuplicateTargetService { .. }
+        | PlanError::MixedVolumeModes { .. }
+        | PlanError::DependencyCycle { .. } => RpcErrorCode::InvalidArgument,
+        PlanError::Storage { .. }
+        | PlanError::HostPortConflict { .. }
+        | PlanError::InsufficientCapacity
+        | PlanError::NoEligibleMachines { .. }
+        | PlanError::ServiceModeCannotChange
+        | PlanError::ProvisionedVolumeStorageRequired { .. }
+        | PlanError::ProvisionedVolumeStorageUnavailable
+        | PlanError::ExistingPlainVolume { .. }
+        | PlanError::ExistingProvisionedVolumeMismatch { .. }
+        | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
+        PlanError::CapacityUnknown
+        | PlanError::ProvisionedVolumeStorageUnknown { .. }
+        | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
+    }
+}
+
+fn provision_code(error: &ProvisionError) -> RpcErrorCode {
+    match error {
+        ProvisionError::CleanupAfter { primary, .. } => provision_code(primary),
+        ProvisionError::MissingDestination
+        | ProvisionError::RemoteTransport(_)
+        | ProvisionError::Connection(_)
+        | ProvisionError::StorageChoice(_)
+        | ProvisionError::ZfsWithoutInstaller
+        | ProvisionError::NotRoot => RpcErrorCode::InvalidArgument,
+        ProvisionError::SudoRequired { .. } => RpcErrorCode::Unauthenticated,
+        ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
+            RpcErrorCode::Unsupported
+        }
+        ProvisionError::SshClientMissing(_)
+        | ProvisionError::Whoami(_)
+        | ProvisionError::WhoamiFailed(_)
+        | ProvisionError::Sudo(_)
+        | ProvisionError::Platform(_)
+        | ProvisionError::PlatformFailed(_)
+        | ProvisionError::BootstrapDownload { .. }
+        | ProvisionError::Transfer(_)
+        | ProvisionError::TransferFailed { .. } => RpcErrorCode::Unavailable,
+        ProvisionError::WhoamiUtf8
+        | ProvisionError::EmptyUser
+        | ProvisionError::PlatformUtf8
+        | ProvisionError::BootstrapIo { .. }
+        | ProvisionError::BootstrapCommand { .. }
+        | ProvisionError::BootstrapVerification(_)
+        | ProvisionError::Install(_)
+        | ProvisionError::InstallFailed { .. }
+        | ProvisionError::Cleanup(_)
+        | ProvisionError::CleanupFailed { .. }
+        | ProvisionError::StorageInput(_) => RpcErrorCode::Internal,
+    }
+}
+
+fn push_code(error: &PushError) -> RpcErrorCode {
+    match error {
+        PushError::VariantUnavailable { .. } => RpcErrorCode::NotFound,
+        PushError::BuildIncomplete { .. } => RpcErrorCode::Conflict,
+        PushError::InvalidReference { .. } | PushError::InvalidSelector(_) => {
+            RpcErrorCode::InvalidArgument
+        }
+        PushError::Selector(error) => machine_selector_code(error),
+        PushError::Cluster(error) => connect_code(error),
+        PushError::ImageIngest(error) | PushError::PeerPull(error) => error.code.clone(),
+        PushError::UnsupportedImageStore => RpcErrorCode::Unsupported,
+        PushError::Cancelled => RpcErrorCode::Internal,
+    }
+}
+
+fn codec_code(error: &CodecError) -> RpcErrorCode {
+    match error {
+        CodecError::UnsupportedCommand(_) | CodecError::UnsupportedProtocolMajor { .. } => {
+            RpcErrorCode::Unsupported
+        }
+        CodecError::EncodeJson(_)
+        | CodecError::DecodeJson(_)
+        | CodecError::UnexpectedResponse { .. }
+        | CodecError::UnexpectedRequest { .. } => RpcErrorCode::Internal,
+    }
+}
+
+fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
+    match error {
+        cloud_enroll::Error::Timeout(_)
+        | cloud_enroll::Error::Connect(_)
+        | cloud_enroll::Error::Http(_)
+        | cloud_enroll::Error::RetrySameCommand { .. } => RpcErrorCode::Unavailable,
+        cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
+        cloud_enroll::Error::Status { status, .. } => match status {
+            401 | 403 => RpcErrorCode::Unauthenticated,
+            404 => RpcErrorCode::NotFound,
+            409 => RpcErrorCode::Conflict,
+            400..=499 => RpcErrorCode::InvalidArgument,
+            _ => RpcErrorCode::Unavailable,
+        },
+    }
+}
+
+fn io_code(error: &io::Error) -> RpcErrorCode {
+    use io::ErrorKind;
+    let kind = error.kind();
+    if kind == ErrorKind::NotFound {
+        RpcErrorCode::NotFound
+    } else if kind == ErrorKind::InvalidInput {
+        RpcErrorCode::InvalidArgument
+    } else if matches!(
+        kind,
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+    ) {
+        RpcErrorCode::Unavailable
+    } else {
+        RpcErrorCode::Internal
+    }
 }
 
 fn context_code(error: &ContextError) -> RpcErrorCode {
@@ -515,6 +710,12 @@ mod tests {
         );
         assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn bad_log_tail_is_invalid_argument() {
+        let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
+        assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
     }
 
     #[test]

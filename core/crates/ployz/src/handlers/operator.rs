@@ -157,10 +157,10 @@ async fn run_proxy(
     ports: ProxyPorts,
 ) -> Result<(), Error> {
     if !matches!(client.connection().transport(), Transport::Ssh { .. }) {
-        return Err(Error::usage(format!(
-            "proxy dialing is unsupported over {}",
-            client.connection()
-        )));
+        return Err(Error::coded(
+            ployz_core::RpcErrorCode::Unsupported,
+            format!("proxy dialing is unsupported over {}", client.connection()),
+        ));
     }
     let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();

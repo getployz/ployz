@@ -30,15 +30,14 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
-            let storage = client.observe_machine_storage(&mut machines).await;
+            // Storage only feeds replica counts, which warn on unknown eligibility.
+            client.observe_machine_storage(&mut machines).await;
             let live = client
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await?;
             print_observation_warning(&live);
             let services = live.services();
-            let mut gaps = Gaps::of(&live.containers);
-            gaps.extend(&storage.failures, &storage.omissions);
-            output::finish_fanout("services", &services, &gaps, || {
+            output::finish_fanout("services", &services, &Gaps::of(&live.containers), || {
                 say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
                 for service in &services {
                     let counts = service_counts(service, &machines);
@@ -394,7 +393,7 @@ fn service_volume_teardown(
             .into_iter()
             .find(|id| volumes.contains(id))
         {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "Docker Volume {} on {} is still mounted by {}",
                 id.name, id.machine_id, service.identity
             )));
@@ -492,7 +491,7 @@ fn member_volume_ids(
 struct ServiceActionOutcome {
     affected: HashSet<ContainerId>,
     /// One entry per Container the action reached.
-    changed: Vec<ChangedContainer>,
+    containers: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
     container_failures: Vec<ContainerFailure>,
     partial: bool,
@@ -516,7 +515,7 @@ struct ContainerFailure {
 /// The `--json` result of start, stop, and rm.
 #[derive(Serialize)]
 struct ServiceActionResult<'a> {
-    changed: &'a [ChangedContainer],
+    containers: &'a [ChangedContainer],
     /// Containers the action failed on.
     container_failures: &'a [ContainerFailure],
     /// Machines whose Live Observation failed before the action.
@@ -531,7 +530,7 @@ struct ServiceActionResult<'a> {
 impl ServiceActionOutcome {
     fn result<'a>(&'a self, live: &'a LiveServices<RpcError>) -> ServiceActionResult<'a> {
         ServiceActionResult {
-            changed: &self.changed,
+            containers: &self.containers,
             container_failures: &self.container_failures,
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
@@ -614,7 +613,7 @@ async fn apply_service_action(
     }
     Ok(ServiceActionOutcome {
         affected: changed.into_iter().collect(),
-        changed: rows,
+        containers: rows,
         container_failures,
         partial,
     })

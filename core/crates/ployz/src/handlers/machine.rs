@@ -80,7 +80,7 @@ impl ConnectionOptions {
             )));
         };
         if !config.contexts.contains_key(&name) {
-            return Err(Error::usage(format!("context {name:?} not found")));
+            return Err(Error::not_found(format!("context {name:?} not found")));
         }
         Ok((config, name))
     }

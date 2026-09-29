@@ -804,7 +804,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
     let container_id = ContainerId::parse("c".repeat(64)).unwrap();
     let outcome = ServiceActionOutcome {
         affected: HashSet::new(),
-        changed: Vec::new(),
+        containers: Vec::new(),
         container_failures: vec![ContainerFailure {
             machine_id: failed_id,
             container_id,
@@ -815,7 +815,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
     assert_eq!(
         serde_json::to_value(outcome.result(&live)).unwrap(),
         json!({
-            "changed": [],
+            "containers": [],
             "container_failures": [{
                 "machine_id": failed_id,
                 "container_id": container_id,
