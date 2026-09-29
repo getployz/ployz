@@ -597,8 +597,7 @@ fn claims() -> GithubClaims {
 fn grant() -> GithubGrant {
     GithubGrant {
         id: "grant-1".into(),
-        machine: ployz_core::MachineId::parse("0123456789abcdef0123456789abcdef".to_owned())
-            .unwrap(),
+        machine: ployz_core::MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
         fingerprint: "f".repeat(64),
     }
 }

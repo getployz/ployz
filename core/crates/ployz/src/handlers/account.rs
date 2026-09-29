@@ -247,8 +247,8 @@ fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
         .collect::<Vec<_>>()
         .join(", then ");
     let mut json = serde_json::to_value(&view).expect("a Build Order is JSON");
-    if order.is_some() {
-        json["immediate"] = serde_json::json!(true);
+    if let (Some(_), Some(fields)) = (order, json.as_object_mut()) {
+        fields.insert("immediate".to_owned(), serde_json::json!(true));
     }
     crate::output::finish(&json, || match (order, view.build_order) {
         (Some(_), _) => say!("Builds try {builders} from the next build on."),
