@@ -1,7 +1,8 @@
-import { infiniteQueryOptions, queryOptions, useMutationState, useQueries, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery, DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery,
-  EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery, VolumesQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, JsonValue, MoveQuery,
+  ServicesQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -36,6 +37,8 @@ const refreshedBy = {
   removals: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
   branch: ["store_environment", "store_deployment"],
+  // A plan reads the Environment's Working State and what it and its ancestors run.
+  branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
   // A Move compares a Branch with its Parent's Working and Applied State.
   move: ["store_environment", "store_deployment"],
@@ -205,6 +208,41 @@ export function deploymentQuery(id: string): { query: "deployment" } & Deploymen
 /** One Service's build log in a Deployment, by its name when admitted. */
 export function buildLogQuery(deployment: string, service: string): { query: "build_log" } & BuildLogQuery {
   return { query: "build_log", deployment, service };
+}
+
+/** A Branch: its Parent, what it uses live and what Update would stage. Anything else is refused: not a Branch. */
+export function branchQuery(environment: EnvironmentRef): { query: "branch" } & BranchQuery {
+  return { query: "branch", environment };
+}
+
+/** What Save would put in a Branch's Parent. */
+export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
+  return { query: "move", from: branch, into: null };
+}
+
+/** What Update would bring into a Branch from what its Parent runs. */
+export function updateQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
+  return { query: "move", from: null, into: branch };
+}
+
+/** A Project's Environments: which is the default, each one's Parent and a removal on its way. */
+export function environmentsQuery(project: string): { query: "environments" } & EnvironmentsQuery {
+  return { query: "environments", project };
+}
+
+/** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */
+export function branchPlanQuery(from: EnvironmentRef, focus: string[], picks: { copy: string[] } | { preset: BranchPreset }):
+  { query: "branch_plan" } & BranchPlanQuery {
+  return { query: "branch_plan", from, focus, copy: "copy" in picks ? picks.copy : [], preset: "preset" in picks ? picks.preset : null };
+}
+
+/**
+ * A Branch plan while the user picks (null reads none): each pick reads a new plan, and the last one shows until it
+ * arrives. The New branch loader prefetches the first.
+ */
+export function useBranchPlan(organizationSlug: string, query: ReturnType<typeof branchPlanQuery> | null) {
+  const options = storeViewOptions(organizationSlug, useCollectionScope(), query ?? branchPlanQuery({ project: null, environment: null }, [], { copy: [] }));
+  return useQuery({ ...options, staleTime: Infinity, queryFn: query ? options.queryFn : skipToken, placeholderData: keepPreviousData }).data;
 }
 
 /** The first page of a paged Store view has no cursor. */

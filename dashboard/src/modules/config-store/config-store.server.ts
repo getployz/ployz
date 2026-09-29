@@ -206,11 +206,11 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     return { ok: true, value };
   }).pipe(
     // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
-    Effect.tap((result) => result.ok && call.operation === "write"
-      // SAFETY: a write answers what it wrote.
-      ? followStoreEnvironments(organizationId, result.value as ConfigWritten) : Effect.void),
     Effect.flatMap((result) => Effect.gen(function* () {
       if (!result.ok || call.operation !== "write") return result;
+      // SAFETY: a write answers what it wrote.
+      const written = result.value as ConfigWritten;
+      yield* followStoreEnvironments(organizationId, written);
       const command = call.command;
       if (command.command === "cancel") {
         // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
@@ -220,8 +220,6 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
         return result;
       }
       if (command.command !== "admit" && command.command !== "start") return result;
-      // SAFETY: a write answers what it wrote.
-      const written = result.value as ConfigWritten;
       const refused = yield* dispatchAdmitted(organizationId, written, read, command.command === "start");
       return refused === undefined ? result : { ok: false, refusal: refused } satisfies StoreResult<never>;
     })),
