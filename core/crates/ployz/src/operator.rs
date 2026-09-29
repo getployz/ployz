@@ -153,6 +153,8 @@ pub enum OperatorError {
     NoMachines,
     #[error("no Service is running")]
     NoServices,
+    #[error("no running container came from this Deployment")]
+    NoDeploymentContainers,
     #[error("selected Machine disappeared from the snapshot")]
     SnapshotStale,
     #[error("unsupported Machine log service {service:?}; {expected}")]
@@ -417,8 +419,12 @@ pub async fn open_exec(
     })
 }
 
+/// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
+const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
+
 /// Open log streams for `args`; none means every Service in `namespace`, or in the
-/// whole Cluster without one.
+/// whole Cluster without one. `deployment` keeps only the containers that
+/// Deployment created.
 pub async fn open_service_logs(
     client: &mut Client,
     args: &[ServiceArg],
@@ -426,6 +432,7 @@ pub async fn open_service_logs(
     machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     cancellation: CancellationToken,
+    deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
     let machines = client.machines().await?;
     let selected_machines = select_machines(&machines, machine_selectors)?;
@@ -435,7 +442,7 @@ pub async fn open_service_logs(
         .collect::<HashSet<_>>();
     let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
-    let every;
+    let mut every = Vec::new();
     let args = if args.is_empty() {
         every = services
             .iter()
@@ -460,9 +467,19 @@ pub async fn open_service_logs(
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
-            .filter(|container| machine_ids.contains(&container.as_observation().machine_id))
+            .filter(|container| {
+                let observation = container.as_observation();
+                machine_ids.contains(&observation.machine_id)
+                    && deployment.is_none_or(|id| {
+                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
+                    })
+            })
             .collect::<Vec<_>>();
         if containers.is_empty() {
+            // Of every Service, only those the Deployment still has containers of.
+            if deployment.is_some() && !every.is_empty() {
+                continue;
+            }
             return Err(OperatorError::NoContainersOnMachines {
                 service: arg.service.clone(),
             });
@@ -493,6 +510,9 @@ pub async fn open_service_logs(
                 });
             }
         }
+    }
+    if inputs.is_empty() {
+        return Err(OperatorError::NoDeploymentContainers);
     }
     Ok(inputs)
 }

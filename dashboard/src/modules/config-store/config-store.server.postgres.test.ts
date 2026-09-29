@@ -249,7 +249,7 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null,
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         // A retried request replays the admission and sends the same event, which Inngest drops.
@@ -265,6 +265,18 @@ it.live(
         const stranded = yield* request("write", alice, { ...admit, id: "00000000-0000-4000-8000-000000000102" });
         assert.strictEqual(stranded.status, 503);
         assert.strictEqual(stranded.json.error?.code, "unavailable");
+
+        // Deploy now hands the stranded admission to the worker again, unkeyed; a refused start sends nothing.
+        down = false;
+        const start: ConfigCommand = { command: "start", deployment: "00000000-0000-4000-8000-000000000102" };
+        assert.strictEqual((yield* request("write", alice, start)).status, 200);
+        expect(sent.at(-1)).toEqual({
+          name: "config/deployment.admitted",
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: start.deployment },
+        });
+        const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
+        assert.strictEqual(superseded.status, 409);
+        assert.strictEqual(sent.length, 3);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

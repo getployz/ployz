@@ -11,8 +11,8 @@ use ployz_core::{RegistryAuth, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentsQuery, DiffQuery, Discard, Edit, Edited, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, OrganizationId, PlanQuery, ProjectId, ProjectName, RunnerId, ServiceId,
-    SettingPath,
+    EnvironmentRef, OrganizationId, PlanQuery, ProjectId, ProjectName, RunEvidence, RunnerId,
+    ServiceId, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -120,6 +120,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 services: Vec::new(),
                 version: None,
                 upload: None,
+                retry: None,
             },
         )
         .unwrap();
@@ -187,6 +188,32 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         pulls_with(&store, &one),
         [("web".into(), auth(Some("octocat"), "first-token"))],
         "claiming again keeps the admitted credential"
+    );
+    // A retry of it ships the credential it froze, not the rotated one.
+    store
+        .record(
+            &one,
+            &RunnerId::parse("runner").unwrap(),
+            RunEvidence::Abandoned,
+        )
+        .unwrap();
+    let retried = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
+    store
+        .admit(
+            &who(),
+            &Admit {
+                id: retried.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: Some(one.clone()),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        pulls_with(&store, &retried),
+        [("web".into(), auth(Some("octocat"), "first-token"))]
     );
     // Each Service's credential is its own.
     set(

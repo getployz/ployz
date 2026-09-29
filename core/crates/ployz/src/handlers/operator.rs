@@ -13,7 +13,7 @@ use ployz_core::{
     LogBody, LogEntry, LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector,
     select_service,
 };
-use ployz_store::NamespaceQuery;
+use ployz_store::{DeploymentId, NamespaceQuery};
 use tokio::io::copy_bidirectional;
 
 use crate::{
@@ -51,6 +51,11 @@ pub(crate) fn logs_command() -> Command {
             .value_name("SERVICE[:CONTAINER]")
             .num_args(0..)
             .action(ArgAction::Append),
+    )
+    .arg(
+        value("deployment", None)
+            .value_name("ID")
+            .help("Only the running containers this Deployment created, in its Environment"),
     )
 }
 
@@ -177,7 +182,21 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let named = string_values(leaf, "service-or-container");
     let options = log_options(leaf)?;
-    let namespace = scope(root, &["logs"])?;
+    let deployment = leaf
+        .get_one::<String>("deployment")
+        .is_some()
+        .then(|| super::deploy::deployment_id(leaf, "deployment"))
+        .transpose()?;
+    // A Deployment names its Environment, whatever the scope says.
+    let namespace = match &deployment {
+        Some(id) => Some(
+            super::store::store(root)?
+                .deployment(id)
+                .map_err(super::store::failed(leaf, &["logs"]))?
+                .namespace,
+        ),
+        None => scope(root, &["logs"])?,
+    };
     let args = parse_service_args(&named)?
         .into_iter()
         .map(|arg| {
@@ -200,6 +219,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
                 &machines,
                 options,
                 cancellation.clone(),
+                deployment.as_ref().map(DeploymentId::as_str),
             )
             .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await

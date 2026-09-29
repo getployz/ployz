@@ -230,6 +230,7 @@ async fn assert_service_logs(
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .unwrap(),
@@ -283,6 +284,7 @@ async fn assert_service_logs(
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()
@@ -304,6 +306,7 @@ async fn assert_service_logs(
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -320,6 +323,7 @@ async fn assert_service_logs(
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()
@@ -331,6 +335,7 @@ async fn assert_service_logs(
         &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
         log_options(),
         CancellationToken::new(),
+        None,
     )
     .await
     .unwrap();
@@ -343,6 +348,7 @@ async fn assert_service_logs(
             &[FanoutSelector::parse("missing").unwrap()],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()

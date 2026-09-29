@@ -116,6 +116,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             services: Vec::new(),
             version: None,
             upload: None,
+            retry: None,
         },
     )?;
     Ok(id)

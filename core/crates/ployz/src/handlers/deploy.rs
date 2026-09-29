@@ -1,8 +1,8 @@
-//! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store
-//! and read its Deployments. Cloud's runner runs a Deployment admitted over HTTPS,
-//! and `deploy` follows it until it ends. With the hidden in-process Store this CLI
-//! is the Deployment's runner: it claims it, prepares and confirms it on the
-//! Cluster, and records what happened.
+//! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store,
+//! and read, retry, start and cancel its Deployments. Cloud's runner runs a
+//! Deployment admitted over HTTPS, and `deploy` follows it until it ends. With the
+//! hidden in-process Store this CLI is the Deployment's runner: it claims it,
+//! prepares and confirms it on the Cluster, and records what happened.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::config::{ServiceSource, parse_service_config};
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, PlanQuery, RunEvidence, RunnerId, UploadBase, UploadedSource,
+    Admit, Cancel, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary,
+    DeploymentView, DeploymentsQuery, PlanQuery, RunEvidence, RunnerId, Start, UploadBase,
+    UploadedSource,
 };
 use serde_json::{Value, json};
 
@@ -24,38 +25,31 @@ use super::store::{
 };
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
+use crate::cloud_account::StoreCallError;
 use crate::deploy::ApplyError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
 pub(crate) fn deploy_command() -> Command {
-    scoped(base(
-        "deploy",
-        "Publish staged changes if needed, then deploy them and follow the Deployment",
-    ))
-    .arg(
-        positional("service", false)
-            .action(ArgAction::Append)
-            .help("Deploy only these Services [default: every Service]"),
-    )
-    .arg(
-        switch("plan", None).help("Show what would deploy, from authored state alone; run nothing"),
-    )
-    .arg(
-        value("expect-version", None)
-            .value_name("VERSION")
-            .help("Refuse unless this is still the latest `ployz diff` version"),
-    )
-    .arg(
-        value("events", None)
-            .value_name("FILE")
-            .value_hint(ValueHint::FilePath)
-            .help("Also write progress to FILE as NDJSON"),
-    )
-    .arg(
-        switch("detach", None)
-            .conflicts_with("events")
-            .help("Return the queued Deployment at once instead of following it"),
+    following(
+        scoped(base(
+            "deploy",
+            "Publish staged changes if needed, then deploy them and follow the Deployment",
+        ))
+        .arg(
+            positional("service", false)
+                .action(ArgAction::Append)
+                .help("Deploy only these Services [default: every Service]"),
+        )
+        .arg(
+            switch("plan", None)
+                .help("Show what would deploy, from authored state alone; run nothing"),
+        )
+        .arg(
+            value("expect-version", None)
+                .value_name("VERSION")
+                .help("Refuse unless this is still the latest `ployz diff` version"),
+        ),
     )
     .arg(
         // ponytail: hidden until `ployz up` uploads to Cloud; it composes this path.
@@ -67,12 +61,28 @@ pub(crate) fn deploy_command() -> Command {
     )
 }
 
+/// `--events` and `--detach`, for every command that queues a Deployment and follows it.
+fn following(command: Command) -> Command {
+    command
+        .arg(
+            value("events", None)
+                .value_name("FILE")
+                .value_hint(ValueHint::FilePath)
+                .help("Also write progress to FILE as NDJSON"),
+        )
+        .arg(
+            switch("detach", None)
+                .conflicts_with("events")
+                .help("Return the queued Deployment at once instead of following it"),
+        )
+}
+
 /// How often `deploy` reads a Deployment Cloud runs while following it.
 const FOLLOW_POLL: Duration = Duration::from_secs(1);
 
 pub(crate) fn deployment_command() -> Command {
     Command::new("deployment")
-        .about("Read Deployments")
+        .about("Read, retry, start and cancel Deployments")
         .arg_required_else_help(true)
         .subcommand(
             scoped(Command::new("ls").about("List Deployments, newest first"))
@@ -88,6 +98,25 @@ pub(crate) fn deployment_command() -> Command {
                 .about("Show a Deployment with its Deploy Preview and Node Outcomes")
                 .arg(positional("id", true)),
         )
+        .subcommand(
+            following(base(
+                "retry",
+                "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
+            ))
+            .arg(positional("id", true)),
+        )
+        .subcommand(
+            following(base(
+                "start",
+                "Hand a queued Deployment to a runner now, and follow it",
+            ))
+            .arg(positional("id", true)),
+        )
+        .subcommand(
+            Command::new("cancel")
+                .about("Cancel a Deployment: a queued one never runs, a running one stops")
+                .arg(positional("id", true)),
+        )
 }
 
 pub(super) fn deployment_handler(path: &str) -> Option<(super::Handler, super::Json)> {
@@ -95,6 +124,9 @@ pub(super) fn deployment_handler(path: &str) -> Option<(super::Handler, super::J
     Some(match path {
         "ls" => (ls, Supported),
         "show" => (show, Supported),
+        "retry" => (retry, Supported),
+        "start" => (start, Supported),
+        "cancel" => (cancel, Supported),
         _ => return None,
     })
 }
@@ -116,12 +148,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
-    // Open the events file before admitting, so a bad path deploys nothing.
-    let events = matches
-        .get_one::<String>("events")
-        .map(std::fs::File::create)
-        .transpose()?
-        .map(std::io::BufWriter::new);
+    let events = open_events(matches)?;
     let source = matches
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
@@ -140,8 +167,39 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             services,
             version: matches.get_one::<String>("expect-version").cloned(),
             upload,
+            retry: None,
         })
         .map_err(|error| failed(matches, &["deploy"])(with_refresh_hint(error, matches, "diff")))?;
+    ship(
+        matches,
+        &store,
+        &admitted,
+        source.as_deref(),
+        events,
+        &["deploy"],
+    )
+}
+
+/// Open `--events` before queueing anything, so a bad path ships nothing.
+fn open_events(matches: &ArgMatches) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
+    Ok(matches
+        .get_one::<String>("events")
+        .map(std::fs::File::create)
+        .transpose()?
+        .map(std::io::BufWriter::new))
+}
+
+/// Run or follow a queued Deployment and report it; `source` is the directory
+/// uploaded for it, and `words` name the command for its failures. Exits 3 unless
+/// it applied.
+fn ship(
+    matches: &ArgMatches,
+    store: &Store,
+    admitted: &DeploymentSummary,
+    source: Option<&Path>,
+    events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
+) -> Result<(), Error> {
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
     // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
     // runner runs it otherwise, and this command follows it unless detached.
@@ -155,27 +213,20 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         Some(local) => {
             let runner = RunnerId::parse(format!("cli-{}", mint()))?;
             let claimed = local.claim(&admitted.id, &runner)?;
-            let ran = runtime()?.block_on(run(
-                matches,
-                local,
-                &claimed,
-                &runner,
-                source.as_deref(),
-                events,
-            ));
+            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, source, events));
             let view = store
                 .deployment(&admitted.id)
-                .map_err(failed(matches, &["deploy"]))?;
+                .map_err(failed(matches, words))?;
             (view, ran)
         }
         None if matches.get_flag("detach") => {
             let view = store
                 .deployment(&admitted.id)
-                .map_err(failed(matches, &["deploy"]))?;
+                .map_err(failed(matches, words))?;
             (view, Ok(()))
         }
         None => {
-            let view = follow(matches, &store, &admitted, events)?;
+            let view = follow(matches, store, admitted, events, words)?;
             let ran = if view.deployment.status == DeploymentStatus::Applied {
                 Ok(())
             } else {
@@ -209,6 +260,7 @@ fn follow(
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
 ) -> Result<DeploymentView, Error> {
     eprintln!(
         "Following Deployment #{}; stopping this leaves it running.",
@@ -218,7 +270,7 @@ fn follow(
     loop {
         let view = store
             .deployment(&admitted.id)
-            .map_err(failed(matches, &["deploy"]))?;
+            .map_err(failed(matches, words))?;
         let progress = serde_json::json!({
             "type": "deployment",
             "status": view.deployment.status,
@@ -468,6 +520,8 @@ async fn run(
         Ok(client) => client,
         Err(error) => return Err(not_executed(error)),
     };
+    // Its containers carry its ID, which `logs --deployment` reads.
+    client.deployment_id = id.as_str().parse().ok();
     let services = claimed
         .deployment
         .upload
@@ -568,10 +622,84 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Argument `arg`, a Deployment ID.
+pub(super) fn deployment_id(matches: &ArgMatches, arg: &str) -> Result<DeploymentId, Error> {
+    DeploymentId::parse(required(matches, arg)?)
+        .map_err(|_| Error::usage("Expected a Deployment ID (a UUID)").with_exit(USAGE_EXIT))
+}
+
+/// A refused retry, start or cancel points at the Deployment's current state.
+fn refused<'a>(
+    matches: &'a ArgMatches,
+    id: &'a DeploymentId,
+    words: &'a [&'a str],
+) -> impl FnOnce(StoreCallError) -> Error + 'a {
+    move |mut error| {
+        if let StoreCallError::Refused(refusal) = &mut error
+            && refusal.code == RpcErrorCode::Conflict
+            && let Some(details) = refusal.details.as_object_mut()
+        {
+            details.insert(
+                "next".into(),
+                shell_words::join(["ployz", "deployment", "show", id.as_str()]).into(),
+            );
+        }
+        failed(matches, words)(error)
+    }
+}
+
+fn retry(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let source = deployment_id(matches, "id")?;
+    let store = store(root)?;
+    let events = open_events(matches)?;
+    let words = ["deployment", "retry"];
+    let admitted = store
+        .admit(&Admit {
+            id: DeploymentId::parse(mint())?,
+            environment: ployz_store::EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            retry: Some(source.clone()),
+        })
+        .map_err(refused(matches, &source, &words))?;
+    ship(matches, &store, &admitted, None, events, &words)
+}
+
+fn start(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let id = deployment_id(matches, "id")?;
+    let store = store(root)?;
+    let events = open_events(matches)?;
+    let words = ["deployment", "start"];
+    let queued = store
+        .start(&Start {
+            deployment: id.clone(),
+        })
+        .map_err(refused(matches, &id, &words))?;
+    ship(matches, &store, &queued, None, events, &words)
+}
+
+fn cancel(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let id = deployment_id(matches, "id")?;
+    let store = store(root)?;
+    store
+        .cancel(&Cancel {
+            deployment: id.clone(),
+        })
+        .map_err(refused(matches, &id, &["deployment", "cancel"]))?;
+    let view = store
+        .deployment(&id)
+        .map_err(failed(matches, &["deployment", "cancel"]))?;
+    let hint = shell_words::join(["ployz", "deployment", "show", id.as_str()]);
+    finish_view(&view, Some(hint))
+}
+
 fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = DeploymentId::parse(required(matches, "id")?)
-        .map_err(|_| Error::usage("Expected a Deployment ID (a UUID)").with_exit(USAGE_EXIT))?;
+    let id = deployment_id(matches, "id")?;
     let view = store(root)?
         .deployment(&id)
         .map_err(failed(matches, &["deployment", "show"]))?;

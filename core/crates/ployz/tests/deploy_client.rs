@@ -983,6 +983,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 services: Vec::new(),
                 version: None,
                 upload: None,
+                retry: None,
             },
         )
         .unwrap();
@@ -1023,6 +1024,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         services: Vec::new(),
         version: None,
         upload: None,
+        retry: None,
     };
     store.admit(&who, &admit).unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(

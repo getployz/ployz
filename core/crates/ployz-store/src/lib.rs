@@ -243,6 +243,14 @@ impl ConfigStore {
         self.storage.write(|tx| command::admit(tx, who, admit))
     }
 
+    /// [`Command::Start`]: check a queued Deployment can still go to a runner.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` unless the Deployment is queued.
+    pub fn start(&self, who: &Actor, start: &Start) -> Result<DeploymentSummary, RpcError> {
+        self.storage.write(|tx| command::start(tx, who, start))
+    }
+
     /// [`Command::Cancel`].
     ///
     /// # Errors
