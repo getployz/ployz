@@ -654,6 +654,20 @@ fn create(
             })
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
+    // Generated domains expand under the Cluster Domain of the start-from's last
+    // Deploy. Refused before anything is written: a PR Environment that can't deploy
+    // isn't made.
+    let cluster_domain = cluster_domain(tx, &start.summary.id)?;
+    if cluster_domain.is_none() && crate::domain::has_generated(working) {
+        return Err(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: format!(
+                "Deploy {} once first: generated domains need the Cluster Domain Cloud reserves at a Deploy",
+                start.summary.name
+            ),
+            details: json!({}),
+        });
+    }
     let name = free_name(tx, start, event.number)?;
     let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
     let from = EnvironmentRef {
@@ -687,8 +701,6 @@ fn create(
             number(event.number)?.into(),
         ],
     )?;
-    // Generated domains expand under the Cluster Domain of the start-from's last Deploy.
-    let cluster_domain = cluster_domain(tx, &start.summary.id)?;
     let trusted = Trusted {
         domains: crate::DomainEvidence {
             cluster_domain: cluster_domain.map(|name| ClusterDomain {
