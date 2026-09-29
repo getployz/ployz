@@ -85,7 +85,20 @@ waiting: Array<EnvironmentId>,
 /**
  * Environments that would have deployed but can't, and why.
  */
-skipped: Array<Skipped>, };
+skipped: Array<Skipped>,
+/**
+ * Branches the Store is closing that still run on the Servers: Cloud admits
+ * their removal (`Admit { remove }`) with the runtime evidence it gathers.
+ */
+closing: Array<EnvironmentSummary>,
+/**
+ * Environments deleted: nothing of them runs on the Servers any more.
+ */
+removed: Array<EnvironmentSummary>,
+/**
+ * Pull requests whose GitHub check Cloud publishes again.
+ */
+checks: Array<PullRequestRef>, };
 
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
@@ -378,7 +391,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "set_pr_plan" } & SetPrPlan;
 
 export type ConfigDomainEvidence = {
 /**
@@ -409,7 +422,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "environments" } & EnvironmentsQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -431,9 +444,9 @@ volumes?: VolumeObservation,
  */
 uploader?: string | null, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "environments" } & EnvironmentsView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "environments" } & EnvironmentsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "pr_plans" } & PrPlansView;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -804,6 +817,12 @@ export type DeploymentsView = { environment: EnvironmentSummary, deployments: Ar
  * Pass as `cursor` for the next page; none on the last.
  */
 next_cursor: string | null, };
+
+export type Destination = { name: EnvironmentName,
+/**
+ * The PR Environment's changes a Save would move there.
+ */
+changes: number, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
@@ -1649,6 +1668,30 @@ unresolved: Array<string>, };
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
+export type PrEnvironment = { environment: EnvironmentSummary,
+/**
+ * Its latest Deployment.
+ */
+deployment: DeploymentSummary | null,
+/**
+ * Where its merge lands: each Environment that deploys the target branch.
+ */
+destinations: Array<Destination>, };
+
+export type PrPlan = { repository: string, enabled: boolean,
+/**
+ * None until picked, or once that Environment is gone.
+ */
+start_from: EnvironmentName | null, copy: Array<string>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean, };
+
+export type PrPlansQuery = {
+/**
+ * The Project; omitted means the Organization's only Project.
+ */
+project: ProjectName | null, };
+
+export type PrPlansView = { project: ProjectSummary, plans: Array<PrPlan>, };
+
 export type PreDeployCommand = [string, ...string[]];
 
 export type PreDeployHook = { command: PreDeployCommand, environment: { [key in string]: string }, privileged: boolean | null, timeout_millis: number | null, user: string | null, };
@@ -1728,6 +1771,59 @@ saved: Revision,
 created: boolean, };
 
 export type PullPolicy = "always" | "missing" | "never";
+
+export type PullRequest = { repository_id: number, number: number, title: string,
+/**
+ * Its author's login.
+ */
+author: string,
+/**
+ * Whether its author is a bot.
+ */
+bot: boolean,
+/**
+ * The branch it merges from.
+ */
+head_branch: string,
+/**
+ * That branch's head commit.
+ */
+head: string,
+/**
+ * The branch it merges into.
+ */
+target_branch: string, commits: number, open: boolean,
+/**
+ * Its merge commit, once merged.
+ */
+merge_commit: string | null,
+/**
+ * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
+ */
+updated: string, };
+
+export type PullRequestQuery = { repository_id: number, number: number, };
+
+export type PullRequestRef = { repository_id: number, number: number, };
+
+export type PullRequestView = {
+/**
+ * The latest facts Cloud reported; none before the first.
+ */
+pull_request: PullRequest | null,
+/**
+ * Its PR Environments, one per Project, not being closed.
+ */
+environments: Array<PrEnvironment>,
+/**
+ * Ready to merge: nothing waits to be saved into an Environment that deploys
+ * its target branch.
+ */
+passing: boolean,
+/**
+ * Why, in a few words.
+ */
+reason: string, };
 
 export type QualifiedService = string;
 
@@ -2188,6 +2284,40 @@ export type SetDefaultEnvironment = { environment: EnvironmentRef, };
 
 export type SetManagementClientResponse = { capability: string | null, };
 
+export type SetPrPlan = {
+/**
+ * The Project; omitted means the Organization's only Project.
+ */
+project: ProjectName | null,
+/**
+ * The repository, like `acme/app`: one some Service of the Project deploys from.
+ */
+repository: string,
+/**
+ * Whether its pull requests get PR Environments.
+ */
+enabled: boolean | null,
+/**
+ * The Environment each PR Environment is a Branch of.
+ */
+start_from: EnvironmentName | null,
+/**
+ * What else each copies from it, by name; the repository's Services always are.
+ */
+copy: Array<string> | null,
+/**
+ * Commands to run in its Own Copies before they first deploy.
+ */
+setup: Array<SetupCommand> | null,
+/**
+ * Remove a PR Environment when its pull request closes.
+ */
+remove_on_close: boolean | null,
+/**
+ * Make PR Environments for bots' pull requests too.
+ */
+include_bots: boolean | null, };
+
 export type SettingPath = string;
 
 export type SettingRow = {
@@ -2287,7 +2417,13 @@ name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
 
-export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite;
+export type Sweep = {
+/**
+ * Cloud's clock, in seconds since the Unix epoch.
+ */
+now: number, };
+
+export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep;
 
 export type TelemetryObservation = { "scope": "bridge_capacity",
 /**
