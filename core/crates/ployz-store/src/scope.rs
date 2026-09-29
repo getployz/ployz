@@ -195,6 +195,29 @@ pub(crate) fn lock(
     load(tx, project, &id)
 }
 
+/// Lock and load Environment `id` of `who`'s Organization, as [`lock`] does.
+pub(crate) fn lock_id(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &EnvironmentId,
+) -> Result<Environment, RpcError> {
+    let rows = tx.query(
+        "SELECT p.name FROM config_environment e JOIN config_project p ON p.id = e.project_id \
+         WHERE e.id = ?1 AND e.organization_id = ?2",
+        &[id.as_str().into(), who.organization.as_str().into()],
+    )?;
+    let project = stored(ProjectName::parse(
+        rows.first()
+            .ok_or_else(|| error::not_found("No such Environment", json!({})))?
+            .text(0)?,
+    ))?;
+    tx.execute(
+        "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    load(tx, project, id)
+}
+
 /// Which Environment `at` names, without reading its Working State.
 fn resolve(
     tx: &mut dyn Tx,

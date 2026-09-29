@@ -9,6 +9,7 @@ import type {
   ConfigWritten,
   DeploymentSummary,
   GitSource,
+  SystemEvent,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -283,6 +284,13 @@ export interface ConfigStore {
   ): Promise<DeploymentSummary>;
   /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
   abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
+  /**
+   * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
+   * Deployments it admitted, or rejects `conflict` when a branch head's `base` is no longer the Store's head.
+   */
+  system(organization: string, event: SystemEvent): Promise<ConfigWritten>;
+  /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
+  branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
 }
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.

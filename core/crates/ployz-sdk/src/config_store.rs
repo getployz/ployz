@@ -208,6 +208,46 @@ impl ConfigStore {
         self.run(move || store.record(&deployment, &runner, RunEvidence::Abandoned))
             .await
     }
+
+    /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
+    /// resolves to what it did (`ConfigWritten`, `automated`). Only Cloud's GitHub
+    /// workers call this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a branch head's base is stale, or a storage error.
+    #[napi]
+    pub async fn system(
+        &self,
+        organization: String,
+        event: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let event: ployz_store::SystemEvent = serde_json::from_value(whole(event))
+            .map_err(|_| invalid_argument("Expected a system event"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.system(&who.organization, &event))
+            .await
+    }
+
+    /// The head of a GitHub branch the Store last saw for the Organization, or null:
+    /// what Cloud compares a new head from. Only Cloud's GitHub workers call this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn branch_head(
+        &self,
+        organization: String,
+        repository_id: i64,
+        branch: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let repository_id = u64::try_from(repository_id)
+            .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.branch_head(&who.organization, repository_id, &branch))
+            .await
+    }
 }
 
 impl ConfigStore {
@@ -266,8 +306,37 @@ fn unavailable(message: &str) -> Error {
 /// Evidence Cloud gathered itself (`ConfigTrusted`), or none.
 fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> {
     Ok(trusted
-        .map(serde_json::from_value)
+        .map(|trusted| serde_json::from_value(whole(trusted)))
         .transpose()
         .map_err(|_| invalid_argument("Expected Config Store evidence"))?
         .unwrap_or_default())
+}
+
+/// `value` with whole numbers as integers: JavaScript hands GitHub's IDs past 2^31
+/// over as floats, which integer fields refuse.
+fn whole(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(number) => match number.as_f64() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "only whole, non-negative values below 2^53 are converted"
+            )]
+            Some(float)
+                if float.fract() == 0.0 && (0.0..9_007_199_254_740_992.0).contains(&float) =>
+            {
+                Value::from(float as u64)
+            }
+            Some(_) | None => Value::Number(number),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(whole).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, whole(value)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::String(_) => value,
+    }
 }
