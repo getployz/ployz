@@ -54,10 +54,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
         ..Trusted::default()
@@ -70,7 +70,7 @@ fn shop() -> (ConfigStore, Actor) {
                     id: ServiceId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
-                    repository: "acme/web".into(),
+                    repository: backend::repo_name("acme/web"),
                     branch: None,
                 },
                 &evidence,
@@ -99,7 +99,7 @@ fn plan(store: &ConfigStore, who: &Actor, set: SetPrPlan) {
 fn on() -> SetPrPlan {
     SetPrPlan {
         project: None,
-        repository: "acme/web".into(),
+        repository: backend::repo_name("acme/web"),
         enabled: Some(true),
         start_from: Some(EnvironmentName::parse("production").unwrap()),
         copy: None,
@@ -111,14 +111,14 @@ fn on() -> SetPrPlan {
 
 fn facts(open: bool, updated: &str) -> PullRequest {
     PullRequest {
-        repository_id: 11,
-        number: 5,
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
         bot: false,
-        head_branch: "search".into(),
-        head: HEAD.into(),
-        target_branch: "main".into(),
+        head_branch: backend::git_branch("search"),
+        head: backend::sha(HEAD),
+        target_branch: backend::git_branch("main"),
         commits: 1,
         open,
         merge_commit: None,
@@ -254,7 +254,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
         .set_pr_plan(
             &who,
             &SetPrPlan {
-                repository: "acme/nope".into(),
+                repository: backend::repo_name("acme/nope"),
                 ..on()
             },
         )
@@ -283,7 +283,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
     );
     let view = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
     let plan = &view.plans[0];
-    assert_eq!(plan.repository, "acme/web");
+    assert_eq!(plan.repository.as_str(), "acme/web");
     assert!(plan.enabled && plan.include_bots && !plan.remove_on_close);
     assert_eq!(
         plan.start_from.as_ref().map(ToString::to_string).as_deref(),
@@ -317,16 +317,18 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .unwrap();
     assert_eq!(branch.parent.to_string(), "production");
     assert_eq!(
-        branch.pull_request.map(|pr| (pr.repository_id, pr.number)),
+        branch
+            .pull_request
+            .map(|pr| (pr.repository_id.get(), pr.number.get())),
         Some((11, 5))
     );
     // The plan lists it as open, by the facts Cloud reported.
     let plans = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
     let open = &plans.plans[0].open;
-    assert_eq!(plans.plans[0].repository_id, 11);
+    assert_eq!(plans.plans[0].repository_id.get(), 11);
     assert_eq!(open.len(), 1);
     assert_eq!(
-        (open[0].number, open[0].environment.to_string()),
+        (open[0].number.get(), open[0].environment.to_string()),
         (5, "pr-5".into())
     );
     let services = store
@@ -346,8 +348,8 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert!(
         sources
             .iter()
-            .all(|source| source.commit.as_deref() == Some(HEAD)
-                && source.branch.as_deref() == Some("search"))
+            .all(|source| source.commit == Some(backend::sha(HEAD))
+                && source.branch == Some(backend::git_branch("search")))
     );
 
     // A replay, or a later synchronize, makes no second one; a bot's needs the plan's say.
@@ -358,8 +360,8 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .pull_request(
             &who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -388,8 +390,8 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .pull_request(
             &who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -430,7 +432,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
 
     // A renamed head branch: it tracks the new name, in Working and Saved State.
     let mut renamed = facts(true, "2026-09-29T10:10:00Z");
-    renamed.head_branch = "search-v2".into();
+    renamed.head_branch = backend::git_branch("search-v2");
     pull(&store, &who, renamed);
     let redeploy = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
@@ -452,12 +454,12 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
             .sources(&redeploy)
             .unwrap()
             .iter()
-            .all(|source| source.branch.as_deref() == Some("search-v2"))
+            .all(|source| source.branch == Some(backend::git_branch("search-v2")))
     );
     run(&store, &redeploy, &["web", "api"]);
 
     let mut closed = facts(false, "2026-09-29T11:00:00Z");
-    closed.head_branch = "search-v2".into();
+    closed.head_branch = backend::git_branch("search-v2");
     let closing = pull(&store, &who, closed);
     assert_eq!(closing.closing.len(), 1, "{closing:?}");
     assert_eq!(closing.closing[0].name.to_string(), "pr-5");
@@ -466,10 +468,10 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
         &store,
         &who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "search-v2".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search-v2"),
             base: None,
-            head: Some("2".repeat(40)),
+            head: Some(backend::sha(&"2".repeat(40))),
             changed: None,
             merged: Vec::new(),
         }),
@@ -506,10 +508,10 @@ fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
         &store,
         &who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "search".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search"),
             base: None,
-            head: Some("2".repeat(40)),
+            head: Some(backend::sha(&"2".repeat(40))),
             changed: None,
             merged: Vec::new(),
         }),

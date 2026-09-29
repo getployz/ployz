@@ -31,8 +31,8 @@ fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
 
-fn commit(n: u8) -> String {
-    format!("{n:x}").repeat(40)
+fn commit(n: u8) -> ployz_store::CommitSha {
+    backend::sha(&format!("{n:x}").repeat(40))
 }
 
 fn at(environment: &str) -> EnvironmentRef {
@@ -59,10 +59,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
         ..Trusted::default()
@@ -75,7 +75,7 @@ fn shop() -> (ConfigStore, Actor) {
                     id: ServiceId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse(name).unwrap(),
-                    repository: "acme/web".into(),
+                    repository: backend::repo_name("acme/web"),
                     branch: None,
                 },
                 &evidence,
@@ -88,7 +88,7 @@ fn shop() -> (ConfigStore, Actor) {
             &who,
             &SetPrPlan {
                 project: None,
-                repository: "acme/web".into(),
+                repository: backend::repo_name("acme/web"),
                 enabled: Some(true),
                 start_from: Some(EnvironmentName::parse("production").unwrap()),
                 copy: None,
@@ -139,19 +139,24 @@ fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Va
         .unwrap();
 }
 
-fn facts(open: bool, merge: Option<&str>, reached: Option<String>, second: u8) -> PullRequest {
+fn facts(
+    open: bool,
+    merge: Option<&str>,
+    reached: Option<ployz_store::CommitSha>,
+    second: u8,
+) -> PullRequest {
     PullRequest {
-        repository_id: 11,
-        number: 5,
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
         bot: false,
-        head_branch: "search".into(),
+        head_branch: backend::git_branch("search"),
         head: commit(1),
-        target_branch: "main".into(),
+        target_branch: backend::git_branch("main"),
         commits: 1,
         open,
-        merge_commit: merge.map(Into::into),
+        merge_commit: merge.map(backend::sha),
         merge_reached: reached,
         updated: format!("2026-09-29T10:00:{second:02}Z"),
     }
@@ -168,17 +173,23 @@ fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
 }
 
 fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automated {
-    let base = store.branch_head(&who.organization, 11, "main").unwrap();
+    let base = store
+        .branch_head(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     observe(
         store,
         who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "main".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("main"),
             base,
             head: Some(commit(head)),
             changed: None,
-            merged: merged.iter().map(|merge| (*merge).to_owned()).collect(),
+            merged: merged.iter().map(|merge| backend::sha(merge)).collect(),
         }),
     )
 }
@@ -225,8 +236,8 @@ fn check(store: &ConfigStore, who: &Actor) -> (bool, String) {
         .pull_request(
             who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -318,18 +329,33 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
     );
 
     // The merge push arrived first: Cloud reports the merge, and the save freezes.
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
-    assert_eq!((pending.standing, pending.merged.len()), (vec![5], 0));
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
+    assert_eq!(
+        (pending.standing, pending.merged.len()),
+        (vec![backend::pr_number(5)], 0)
+    );
     let closed = observe(
         &store,
         &who,
         SystemEvent::PullRequest(facts(false, Some(MERGE), None, 2)),
     );
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     assert_eq!(
         (pending.standing.len(), pending.merged),
-        (0, vec![MERGE.to_owned()])
+        (0, vec![backend::sha(MERGE)])
     );
     assert!(env(&store, &who, "production").get("MODE").is_none());
 
@@ -345,7 +371,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         &store,
         &who,
         SystemEvent::CheckSuite(CheckSuite {
-            repository_id: 11,
+            repository_id: backend::repo_id(11),
             suite: 1,
             head: commit(5),
             status: "completed".into(),
@@ -359,7 +385,13 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         resolved(&store, &passed.admitted[0].deployment.id, "TOKEN"),
         json!("pr-secret")
     );
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     assert!(pending.merged.is_empty());
 }
 
@@ -425,7 +457,12 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             &hint.value,
             hint.pull_request
         ),
-        ("web.env.MODE", Landed::Hint, &json!("pr"), 5)
+        (
+            "web.env.MODE",
+            Landed::Hint,
+            &json!("pr"),
+            backend::pr_number(5)
+        )
     );
     let take = |row: Option<&str>| {
         Move::Take(Take {

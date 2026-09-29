@@ -1399,12 +1399,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         update,
-        pull_request: crate::pull_request::of(tx, &branch.summary.id)?.map(
-            |(repository_id, number)| crate::PullRequestRef {
-                repository_id,
-                number,
-            },
-        ),
+        pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
     })
 }
 
@@ -1860,7 +1855,10 @@ fn chain(tx: &mut dyn Tx, parent: &EnvironmentId) -> Result<Vec<Ancestor>, RpcEr
 }
 
 /// The Environments `id` comes from, nearest first: none for a root.
-fn ancestors(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Vec<EnvironmentId>, RpcError> {
+pub(crate) fn ancestors(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+) -> Result<Vec<EnvironmentId>, RpcError> {
     let mut found: Vec<EnvironmentId> = Vec::new();
     let mut at = id.clone();
     while let Some(row) = row(tx, &at)? {

@@ -39,7 +39,7 @@ pub use branch::{
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
-    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun,
+    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun, RunEnd,
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
@@ -49,9 +49,9 @@ pub use deployment::{
     RunEvidence, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
-    AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, Domain, DomainAction,
-    DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainView,
-    DomainsQuery, DomainsView, RemoveDomain,
+    AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
+    DomainAction, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
+    DomainView, DomainsQuery, DomainsView, RemoveDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
@@ -555,7 +555,7 @@ impl ConfigStore {
     pub fn pin(
         &self,
         deployment: &DeploymentId,
-        commits: &std::collections::BTreeMap<ployz_core::ServiceName, String>,
+        commits: &std::collections::BTreeMap<ployz_core::ServiceName, CommitSha>,
     ) -> Result<Vec<GitSource>, RpcError> {
         self.storage.write(|tx| build::pin(tx, deployment, commits))
     }
@@ -588,9 +588,9 @@ impl ConfigStore {
     pub fn branch_head(
         &self,
         organization: &OrganizationId,
-        repository_id: u64,
-        branch: &str,
-    ) -> Result<Option<String>, RpcError> {
+        repository_id: RepositoryId,
+        branch: &BranchName,
+    ) -> Result<Option<CommitSha>, RpcError> {
         self.storage
             .read(|tx| automation::head(tx, organization, repository_id, branch))
     }
@@ -604,8 +604,8 @@ impl ConfigStore {
     pub fn pending_saves(
         &self,
         organization: &OrganizationId,
-        repository_id: u64,
-        branch: &str,
+        repository_id: RepositoryId,
+        branch: &BranchName,
     ) -> Result<PendingSaves, RpcError> {
         let who = Actor::system(organization.clone());
         self.storage
@@ -784,7 +784,7 @@ impl ConfigStore {
     pub fn github_input(
         &self,
         id: &GithubBuildId,
-    ) -> Result<(serde_json::Value, String, Option<serde_json::Value>), RpcError> {
+    ) -> Result<(serde_json::Value, CommitSha, Option<serde_json::Value>), RpcError> {
         self.storage
             .read(|tx| build::github_input(tx, id, &self.sealing))
     }

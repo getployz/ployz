@@ -372,10 +372,10 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             .iter()
             .zip(11..)
             .map(|(name, repository_id)| AuthorizedRepository {
-                repository: format!("acme/{name}"),
-                repository_id,
+                repository: ployz_store::RepositoryName::parse(format!("acme/{name}")).unwrap(),
+                repository_id: ployz_store::RepositoryId::parse(repository_id).unwrap(),
                 access: ServiceGitAccess::Public,
-                default_branch: "main".into(),
+                default_branch: ployz_store::BranchName::parse("main").unwrap(),
                 branches: Vec::new(),
             })
             .collect(),
@@ -392,7 +392,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(*name).unwrap(),
-                    repository: format!("acme/{name}"),
+                    repository: ployz_store::RepositoryName::parse(format!("acme/{name}")).unwrap(),
                     branch: None,
                 },
                 &evidence,
@@ -451,7 +451,12 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 .unwrap();
             let pins = names
                 .iter()
-                .map(|name| (ServiceName::parse(*name).unwrap(), commit.clone()))
+                .map(|name| {
+                    (
+                        ServiceName::parse(*name).unwrap(),
+                        ployz_store::CommitSha::parse(commit.as_str()).unwrap(),
+                    )
+                })
                 .collect();
             store.pin(&id, &pins).unwrap();
             ployz::sdk::run_deployment(

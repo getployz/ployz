@@ -19,12 +19,13 @@
 //! `staged`; both → not saved, the pull request's value only a `hint` a take
 //! stages. Landed rows stay marked until the Destination's next Saved revision.
 
+use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId};
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::RpcError;
 use ployz_core::config::{
     BranchChanges, BranchHostnames, BranchPick, BranchRole, SavedEnvironmentIntent,
-    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceSource,
+    SavedVariableIntent, SavedVariableValue,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,8 +43,7 @@ use crate::{Actor, deployment, error, policy, review, teardown};
 pub struct ConditionalSave {
     /// Pass to [`Take::from`] to use a hint it left.
     pub id: ConditionalSaveId,
-    #[ts(type = "number")]
-    pub pull_request: u64,
+    pub pull_request: PullRequestNumber,
     /// The rows it holds.
     pub rows: Vec<String>,
     pub state: SaveState,
@@ -76,8 +76,7 @@ pub enum Landed {
 pub struct PullRequestHint {
     /// The Conditional Save: pass to [`Take::from`].
     pub save: ConditionalSaveId,
-    #[ts(type = "number")]
-    pub pull_request: u64,
+    pub pull_request: PullRequestNumber,
     /// `NODE.path`, as a Move names it.
     pub row: String,
     /// The pull request's value; secrets read `{"secret": true}`.
@@ -90,11 +89,10 @@ pub struct PullRequestHint {
 pub struct PendingSaves {
     /// Pull requests into the branch with a Conditional Save standing: Cloud reports
     /// each that merged first, so its saves freeze.
-    #[ts(type = "number[]")]
-    pub standing: Vec<u64>,
+    pub standing: Vec<PullRequestNumber>,
     /// Merge commits of frozen ones: Cloud reports which the new head contains
     /// ([`crate::BranchHead::merged`]).
-    pub merged: Vec<String>,
+    pub merged: Vec<CommitSha>,
 }
 
 /// A Conditional Save as stored.
@@ -143,7 +141,7 @@ struct Row {
 struct Found {
     environment: EnvironmentId,
     state: SaveState,
-    number: u64,
+    number: PullRequestNumber,
     stored: Stored,
 }
 
@@ -188,7 +186,11 @@ fn sides(
     lock: bool,
 ) -> Result<Sides, RpcError> {
     let pr = scope::environment(tx, who, from)?;
-    let Some((repository_id, number)) = pull_request::of(tx, &pr.summary.id)? else {
+    let Some(PullRequestRef {
+        repository_id,
+        number,
+    }) = pull_request::of(tx, &pr.summary.id)?
+    else {
         return Err(error::invalid(
             format!(
                 "{} is not a PR Environment: its changes save now",
@@ -392,8 +394,8 @@ pub(crate) fn save(
             who.organization.as_str().into(),
             sides.into.summary.id.as_str().into(),
             sides.pr.summary.id.as_str().into(),
-            pull_request::repository(sides.facts.repository_id)?.into(),
-            pull_request::number(sides.facts.number)?.into(),
+            sides.facts.repository_id.into(),
+            sides.facts.number.into(),
             sides.facts.target_branch.as_str().into(),
             scope::revision_param(sides.pr.summary.revision)?.into(),
             deployment::now().into(),
@@ -622,8 +624,8 @@ pub(crate) fn involved(
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
         &[
             who.organization.as_str().into(),
-            pull_request::repository(event.repository_id)?.into(),
-            pull_request::number(event.number)?.into(),
+            event.repository_id.into(),
+            event.number.into(),
         ],
     )?;
     let mut ids = Vec::new();
@@ -641,8 +643,8 @@ pub(crate) fn withdraw(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Res
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
         &[
             who.organization.as_str().into(),
-            pull_request::repository(event.repository_id)?.into(),
-            pull_request::number(event.number)?.into(),
+            event.repository_id.into(),
+            event.number.into(),
         ],
     )?;
     Ok(())
@@ -662,8 +664,8 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
          ORDER BY saved_at, id",
         &[
             who.organization.as_str().into(),
-            pull_request::repository(event.repository_id)?.into(),
-            pull_request::number(event.number)?.into(),
+            event.repository_id.into(),
+            event.number.into(),
         ],
     )?;
     let mut frozen = Vec::new();
@@ -676,7 +678,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
         let stands = match &event.merge_commit {
             Some(_) => {
                 u64::try_from(row.int(3)?).ok() == Some(environment.summary.revision.0)
-                    && row.text(4)? == event.target_branch
+                    && row.text(4)? == event.target_branch.as_str()
                     && !pull_request::closing(tx, &pr)?
                     && pull_request::destinations_of(
                         tx,
@@ -694,7 +696,11 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
                  SET state = 'frozen', pr_environment_id = '', merge_commit = ?2 WHERE id = ?1",
                 &[
                     id.as_str().into(),
-                    event.merge_commit.as_deref().unwrap_or_default().into(),
+                    event
+                        .merge_commit
+                        .as_ref()
+                        .map_or("", CommitSha::as_str)
+                        .into(),
                 ],
             )?;
             frozen.push((id, into));
@@ -735,14 +741,14 @@ fn wait_with(
     tx: &mut dyn Tx,
     into: &EnvironmentId,
     event: &PullRequest,
-    head: &str,
+    head: &CommitSha,
     id: &ConditionalSaveId,
 ) -> Result<bool, RpcError> {
     let key: [crate::storage::Param<'_>; 4] = [
         into.as_str().into(),
-        pull_request::repository(event.repository_id)?.into(),
+        event.repository_id.into(),
         event.target_branch.as_str().into(),
-        head.into(),
+        head.as_str().into(),
     ];
     let rows = tx.query(
         "SELECT saves FROM config_waiting_deploy \
@@ -775,18 +781,14 @@ fn wait_with(
 fn deploys_on_push(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
-    repository_id: u64,
-    branch: &str,
+    repository_id: RepositoryId,
+    branch: &BranchName,
 ) -> Result<bool, RpcError> {
     let Some(saved) = review::latest_saved(tx, environment)? else {
         return Ok(false);
     };
     for service in &saved.intent.services {
-        let follows = matches!(
-            &service.config.source,
-            ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
-                if *at == repository_id && name == branch
-        );
+        let follows = crate::git::tracks(service, repository_id, branch);
         if follows && policy::load(tx, environment, &service.id)?.auto_deploy {
             return Ok(true);
         }
@@ -799,9 +801,9 @@ fn deploys_on_push(
 pub(crate) fn carried(
     tx: &mut dyn Tx,
     who: &Actor,
-    repository_id: u64,
-    branch: &str,
-    merged: &[String],
+    repository_id: RepositoryId,
+    branch: &BranchName,
+    merged: &[CommitSha],
 ) -> Result<BTreeMap<EnvironmentId, Vec<ConditionalSaveId>>, RpcError> {
     let mut carried: BTreeMap<EnvironmentId, Vec<ConditionalSaveId>> = BTreeMap::new();
     if merged.is_empty() {
@@ -813,13 +815,13 @@ pub(crate) fn carried(
          ORDER BY saved_at, id",
         &[
             who.organization.as_str().into(),
-            pull_request::repository(repository_id)?.into(),
-            branch.into(),
+            repository_id.into(),
+            branch.as_str().into(),
         ],
     )?;
     for row in rows {
         let commit = row.text(2)?;
-        if merged.iter().any(|merged| merged == commit) {
+        if merged.iter().any(|merged| merged.as_str() == commit) {
             carried
                 .entry(environment_id(row.text(1)?)?)
                 .or_default()
@@ -832,8 +834,8 @@ pub(crate) fn carried(
 pub(crate) fn pending(
     tx: &mut dyn Tx,
     who: &Actor,
-    repository_id: u64,
-    branch: &str,
+    repository_id: RepositoryId,
+    branch: &BranchName,
 ) -> Result<PendingSaves, RpcError> {
     let rows = tx.query(
         "SELECT DISTINCT state, number, merge_commit FROM config_conditional_save \
@@ -841,21 +843,21 @@ pub(crate) fn pending(
          AND state IN ('standing', 'frozen') ORDER BY state, number, merge_commit",
         &[
             who.organization.as_str().into(),
-            pull_request::repository(repository_id)?.into(),
-            branch.into(),
+            repository_id.into(),
+            branch.as_str().into(),
         ],
     )?;
     let mut pending = PendingSaves::default();
     for row in rows {
         match row.text(0)? {
             "standing" => {
-                let number = u64::try_from(row.int(1)?).map_err(|_| error::corrupt("number"))?;
+                let number = row.number(1, "Conditional Save")?;
                 if !pending.standing.contains(&number) {
                     pending.standing.push(number);
                 }
             }
             _ => {
-                let commit = row.text(2)?.to_owned();
+                let commit = row.parse(2, "Conditional Save")?;
                 if !pending.merged.contains(&commit) {
                     pending.merged.push(commit);
                 }
@@ -1041,7 +1043,7 @@ pub(crate) fn hints(
         if stored.landed != latest {
             continue;
         }
-        let number = u64::try_from(row.int(1)?).map_err(|_| error::corrupt("number"))?;
+        let number = row.number(1, "Conditional Save")?;
         for saved in stored.rows {
             hints.push(PullRequestHint {
                 save: save_id(row.text(0)?)?,
@@ -1061,7 +1063,7 @@ pub(crate) fn standing_in(
     tx: &mut dyn Tx,
     pr: &Environment,
     into: &EnvironmentId,
-    target: &str,
+    target: Option<&BranchName>,
 ) -> Result<Option<(ConditionalSaveId, bool, usize)>, RpcError> {
     let rows = tx.query(
         "SELECT id, working_revision, target_branch, saved FROM config_conditional_save \
@@ -1071,8 +1073,9 @@ pub(crate) fn standing_in(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let stands =
-        u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0) && row.text(2)? == target;
+    let held = row.text(2)?;
+    let stands = u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0)
+        && target.is_some_and(|target| held == target.as_str());
     Ok(Some((
         save_id(row.text(0)?)?,
         stands,
@@ -1149,7 +1152,7 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSaveId) -> Result<Option<F
         environment: environment_id(row.text(0)?)?,
         state: serde_json::from_value(json!(row.text(1)?))
             .map_err(|_| error::corrupt("Conditional Save"))?,
-        number: u64::try_from(row.int(2)?).map_err(|_| error::corrupt("number"))?,
+        number: row.number(2, "Conditional Save")?,
         stored: parse(row.text(3)?)?,
     }))
 }

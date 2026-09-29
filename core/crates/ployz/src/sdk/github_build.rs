@@ -17,6 +17,7 @@ use ployz_core::{
 };
 use ployz_store::{
     BuildStatus, ConfigStore, GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport,
+    RunEnd,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -61,7 +62,7 @@ pub async fn github_start(
     let receipt = receipt.and_then(|receipt| serde_json::from_value(receipt).ok());
     let outside = match session(connections).await {
         Ok(session) => {
-            let outside = outside(&session, deployment, commit, receipt).await;
+            let outside = outside(&session, deployment, commit.to_string(), receipt).await;
             session.close().await;
             outside
         }
@@ -167,7 +168,7 @@ pub async fn github_check_in(
     let deployment = only(&input, &id.service);
     let fingerprint = super::expected_fingerprints(
         deployment.clone(),
-        BTreeMap::from([(id.service.clone(), commit.clone())]),
+        BTreeMap::from([(id.service.clone(), commit.to_string())]),
         BTreeMap::new(),
     )?
     .remove(&id.service)
@@ -203,7 +204,7 @@ pub async fn github_check_in(
     session.close().await;
     Ok(GithubCheckIn {
         grant: minted.grant.to_secret_string(),
-        commit,
+        commit: commit.to_string(),
         fingerprint,
         ployz_version: super::preparation::VERSION.to_owned(),
         deployment,
@@ -279,19 +280,24 @@ pub async fn github_report(
         .iter()
         .map(|line| log_line(&line.event))
         .collect();
-    let platforms = match report.install_failed {
+    let run_end = match report.install_failed {
         // No final report: GitHub failed it, so the next Builder takes it.
         Some(version) => {
             lines.push(format!("GitHub couldn't install ployz {version}\n"));
             None
         }
-        None => report.platforms,
+        None => report
+            .platforms
+            .map(|platforms| match platforms.is_empty() {
+                true => RunEnd::Failed,
+                false => RunEnd::Built { platforms },
+            }),
     };
-    let ended = platforms.is_some();
+    let ended = run_end.is_some();
     let report = GithubReport {
         from: report.from,
         lines,
-        platforms,
+        ended: run_end,
     };
     let received = call(&store, move |store| {
         let build = store.github_authorize(&id, &claims)?;
@@ -359,8 +365,8 @@ pub async fn github_finish(
                 };
                 return settle(&store, id, run_id, end).await;
             };
-            match (pushed, build.platforms.as_deref()) {
-                (Some(pushed), Some(platforms)) if !platforms.is_empty() => {
+            match (pushed, &build.ended) {
+                (Some(pushed), Some(RunEnd::Built { platforms })) => {
                     let tag = format!(
                         "{}:{RETAINED_DIGEST_TAG_PREFIX}{}",
                         repository(&id)?,
@@ -380,7 +386,7 @@ pub async fn github_finish(
                         receipt: serde_json::to_value(receipt).expect("a build receipt is JSON"),
                     }
                 }
-                (_, Some([])) => GithubEnd::Failed {
+                (_, Some(RunEnd::Failed)) => GithubEnd::Failed {
                     message: "a build step failed".to_owned(),
                 },
                 _ if timed_out => GithubEnd::Skipped {
