@@ -1199,6 +1199,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(listed["deployments"][0]["id"], json!(id));
         assert_eq!(listed["next_cursor"], Value::Null);
         failed(store, &["deployment", "show", "not-an-id"], 2);
+        // Its number, as everything prints it, names it too.
+        let number = shown["number"].to_string();
+        assert_eq!(ok(store, &["deployment", "show", &number])["id"], json!(id));
+        let hashed = format!("#{number}");
+        assert_eq!(ok(store, &["deployment", "show", &hashed])["id"], json!(id));
+        let missing = error(store, &["deployment", "show", "999"]);
+        assert_eq!(missing["code"], json!("not_found"), "{missing}");
 
         // Detached, `deploy` returns the Deployment Cloud's runner runs at once.
         match store {

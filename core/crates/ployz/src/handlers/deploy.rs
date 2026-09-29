@@ -94,29 +94,37 @@ pub(crate) fn deployment_command() -> Command {
                 .arg(value("cursor", None).help("The next_cursor of the previous page")),
         )
         .subcommand(
-            Command::new("show")
-                .about("Show a Deployment with its Deploy Preview and Node Outcomes")
-                .arg(positional("id", true)),
+            scoped(
+                Command::new("show")
+                    .about("Show a Deployment with its Deploy Preview and Node Outcomes"),
+            )
+            .arg(id()),
         )
         .subcommand(
-            following(base(
+            following(scoped(base(
                 "retry",
                 "Deploy again exactly what a failed, unknown or cancelled Deployment froze, and follow it",
-            ))
-            .arg(positional("id", true)),
+            )))
+            .arg(id()),
         )
         .subcommand(
-            following(base(
+            following(scoped(base(
                 "start",
                 "Hand a queued Deployment to a runner now, and follow it",
-            ))
-            .arg(positional("id", true)),
+            )))
+            .arg(id()),
         )
         .subcommand(
-            Command::new("cancel")
-                .about("Cancel a Deployment: a queued one never runs, a running one stops")
-                .arg(positional("id", true)),
+            scoped(
+                Command::new("cancel")
+                    .about("Cancel a Deployment: a queued one never runs, a running one stops"),
+            )
+            .arg(id()),
         )
+}
+
+fn id() -> clap::Arg {
+    positional("id", true).help("The Deployment's ID, or its number in the Environment")
 }
 
 pub(super) fn deployment_handler(path: &str) -> Option<(super::Handler, super::Json)> {
@@ -812,10 +820,35 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Argument `arg`, a Deployment ID.
-pub(super) fn deployment_id(matches: &ArgMatches, arg: &str) -> Result<DeploymentId, Error> {
-    DeploymentId::parse(required(matches, arg)?)
-        .map_err(|_| Error::usage("Expected a Deployment ID (a UUID)").with_exit(USAGE_EXIT))
+/// Argument `arg`: a Deployment ID, or its number (`#N`) in the scoped Environment.
+pub(super) fn deployment_id(
+    matches: &ArgMatches,
+    store: &Store,
+    arg: &str,
+) -> Result<DeploymentId, Error> {
+    let given = required(matches, arg)?;
+    let Ok(number) = given.trim_start_matches('#').parse::<u64>() else {
+        return DeploymentId::parse(given)
+            .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
+    };
+    // Pages hold Deployments numbered below the cursor, newest first.
+    let page = store
+        .deployments(&DeploymentsQuery {
+            environment: environment(matches)?,
+            limit: Some(1),
+            cursor: number.checked_add(1).map(|cursor| cursor.to_string()),
+        })
+        .map_err(failed(matches, &["deployment", "ls"]))?;
+    page.deployments
+        .into_iter()
+        .find(|deployment| deployment.number == number)
+        .map(|deployment| deployment.id)
+        .ok_or_else(|| {
+            Error::not_found(format!(
+                "{}/{} has no Deployment #{number}",
+                page.environment.project, page.environment.name
+            ))
+        })
 }
 
 /// A refused retry, start or cancel points at the Deployment's current state.
@@ -840,8 +873,8 @@ fn refused<'a>(
 
 fn retry(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let source = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let source = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
     let words = ["deployment", "retry"];
     let admitted = store
@@ -864,8 +897,8 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
 
 fn start(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
     let words = ["deployment", "start"];
     let queued = store
@@ -878,8 +911,8 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
 
 fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
     let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
     store
         .cancel(&Cancel {
             deployment: id.clone(),
@@ -894,8 +927,9 @@ fn cancel(root: &ArgMatches) -> Result<(), Error> {
 
 fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = deployment_id(matches, "id")?;
-    let view = store(root)?
+    let store = store(root)?;
+    let id = deployment_id(matches, &store, "id")?;
+    let view = store
         .deployment(&id)
         .map_err(failed(matches, &["deployment", "show"]))?;
     finish_view(&view, None)
