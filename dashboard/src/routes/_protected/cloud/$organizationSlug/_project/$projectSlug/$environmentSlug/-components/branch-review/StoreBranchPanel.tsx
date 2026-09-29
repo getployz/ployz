@@ -65,7 +65,8 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
-    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} onFinish={() => void closing.close()} /> : null,
+    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} shutDown={branch.pull_request !== null}
+      onFinish={() => void closing.close()} /> : null,
     // A PR Environment saves into each Destination for the merge, not into its Parent now.
     branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} /> : saveView?.rows.length ? (
       <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`${plural(saveView.rows.length, "change")} to save`}
@@ -104,6 +105,11 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
           onCheckedChange={(kept) => void writer.commit({ command: "keep_branch", environment: store, kept })}>
           Keep this branch
         </DropdownMenuCheckboxItem>
+        {branch.pull_request ? (
+          <DropdownMenuItem disabled={removal !== null} onClick={() => void closing.shutDown()}>
+            Shut down until the next push
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || removal !== null}
           title={me?.default ? `${name} is the project's default` : undefined} onClick={() => setAsking(true)}>
           Close {name}…
@@ -143,8 +149,17 @@ const conflicts = (view: MoveView) => view.rows.filter((row) => row.conflict).le
 /** "web, api": the nodes the rows touch, once each. */
 const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => presentMoveRow(row).node))].join(", ");
 
-/** A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. */
-function RemovalNews({ lead, name, status, onFinish }: { lead: boolean; name: string; status: DeploymentStatus; onFinish: () => void }) {
+/**
+ * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
+ * stays off until the pull request's next push brings it back.
+ */
+function RemovalNews({ lead, name, status, shutDown, onFinish }: {
+  lead: boolean; name: string; status: DeploymentStatus; shutDown: boolean; onFinish: () => void;
+}) {
+  if (status === "applied" && shutDown) {
+    return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shut down" detail="The next push brings it back"
+      action={<Button size="sm" variant="outline" onClick={onFinish}>Close {name}</Button>} />;
+  }
   if (status === "applied") {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off the servers" detail={`Finish closing ${name}`}
       action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Finish closing</Button>} />;
@@ -214,6 +229,8 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   const { machines } = useRuntimeLens(params.organizationSlug);
   const place = `${store.project ?? ""}/${store.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
+  // Shutting down takes it off the Servers and keeps it; closing then removes it.
+  const [shutting, setShutting] = useState(false);
   const name = branch.environment.name;
   const latest = deployments[0];
   const offServers = latest === undefined || (latest.remove && latest.status === "applied");
@@ -222,12 +239,13 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.parent,
   }, "architecture"));
 
-  async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }): Promise<DeletionCheck<Acceptance> | null> {
+  async function takeOff({ accept, version }: { accept: readonly string[]; version: string | null }, shut = shutting): Promise<DeletionCheck<Acceptance> | null> {
     try {
       await writer.commit({
         command: "admit", id: crypto.randomUUID(), environment: store, services: [], version, remove: true, accept_volume_loss: [...accept],
       }).isPersisted.promise;
-      toast(`${name} is coming off the servers`, { description: "Its panel finishes closing it once it's off." });
+      toast(`${name} is coming off the servers`,
+        { description: shut ? "The pull request's next push brings it back." : "Its panel finishes closing it once it's off." });
       return null;
     } catch (error) {
       const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
@@ -241,7 +259,13 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     }
   }
 
+  async function shutDown() {
+    setShutting(true);
+    setLoss(await takeOff({ accept: [], version: null }, true));
+  }
+
   async function close() {
+    setShutting(false);
     if (!offServers) {
       setLoss(await takeOff({ accept: [], version: null }));
       return;
@@ -258,14 +282,15 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
 
   return {
     close,
+    shutDown,
     leave: async () => { await leave(); },
     dialog: (
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title="Closing deletes data"
+        title={shutting ? "Shutting down deletes data" : "Closing deletes data"}
         place={place}
-        confirmLabel="Close branch"
+        confirmLabel={shutting ? "Shut down" : "Close branch"}
         items={loss?.items}
         callbacks={{
           load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
