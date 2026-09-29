@@ -1,3 +1,7 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 //! The Config Store's behaviour suite, through `read` and `write` only. It runs on
 //! in-memory SQLite here and joins the Postgres suite once that adapter exists.
 
@@ -59,6 +63,7 @@ fn get(store: &ConfigStore, who: &Actor, path: Option<&str>) -> EnvironmentView 
     let query = Query::Environment(EnvironmentQuery {
         environment: EnvironmentRef::default(),
         path: path.map(Into::into),
+        all: false,
     });
     let View::Environment(view) = store.read(who, &query).unwrap() else {
         unreachable!("an Environment query reads an Environment")
@@ -103,11 +108,114 @@ fn an_image_service_shows_every_setting_with_its_default() {
     assert_eq!(
         serde_json::to_value(&view.settings).unwrap(),
         json!([
-            { "path": "web.command", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.cpuLimit", "value": null, "default": null, "apply": "staged" },
             { "path": "web.image", "value": "nginx:1", "default": null, "apply": "staged" },
+            { "path": "web.maxRetries", "value": 10, "default": 10, "apply": "staged" },
+            { "path": "web.memLimit", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.preDeployCommand", "value": null, "default": null, "apply": "staged" },
             { "path": "web.replicas", "value": 1, "default": 1, "apply": "staged" },
+            { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
+            { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
         ])
     );
+    assert_eq!(
+        json!(view.values),
+        json!({ "image": "nginx:1", "maxRetries": 10, "replicas": 1, "restartPolicy": "unless-stopped" })
+    );
+}
+
+#[test]
+fn the_whole_environment_shows_only_what_is_set_unless_all() {
+    let (store, who) = shop();
+    store
+        .write(&who, edit(None, vec![set("web.cpuLimit", json!("0.5"))]))
+        .unwrap();
+    let view = get(&store, &who, None);
+    let paths = view
+        .settings
+        .iter()
+        .map(|row| row.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["web.cpuLimit", "web.image"]);
+    assert_eq!(view.values, None);
+    let query = Query::Environment(EnvironmentQuery {
+        all: true,
+        ..EnvironmentQuery::default()
+    });
+    let View::Environment(all) = store.read(&who, &query).unwrap() else {
+        unreachable!("an Environment query reads an Environment")
+    };
+    assert_eq!(all.settings.len(), 8);
+    assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
+}
+
+fn patch(value: Value) -> Change {
+    Change::Patch {
+        path: "web".into(),
+        value,
+    }
+}
+
+#[test]
+fn every_setting_round_trips_get_patch_get() {
+    let (store, who) = shop();
+    let catalog = ployz_store::catalog::schema(Some("web")).unwrap();
+    let mut values = get(&store, &who, Some("web")).values.unwrap();
+    for (name, setting) in catalog["properties"].as_object().unwrap() {
+        values.insert(name.clone(), setting["examples"][0].clone());
+    }
+    store
+        .write(&who, edit(None, vec![patch(Value::Object(values.clone()))]))
+        .unwrap();
+    let after = get(&store, &who, Some("web")).values.unwrap();
+    assert_eq!(json!(after), json!(values));
+    let Written::Edited(again) = store
+        .write(&who, edit(None, vec![patch(Value::Object(after))]))
+        .unwrap()
+    else {
+        panic!("expected an edit");
+    };
+    assert!(again.staged.is_empty(), "sending get back changes nothing");
+}
+
+#[test]
+fn a_patch_keeps_omitted_settings_and_never_clears() {
+    let (store, who) = shop();
+    store
+        .write(&who, edit(None, vec![set("web.memLimit", json!(2))]))
+        .unwrap();
+    let Written::Edited(edited) = store
+        .write(&who, edit(None, vec![patch(json!({ "replicas": 3 }))]))
+        .unwrap()
+    else {
+        panic!("expected an edit");
+    };
+    assert_eq!(edited.staged, ["web.replicas"]);
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(2.0));
+    for (body, code) in [
+        (json!({ "memLimit": null }), RpcErrorCode::InvalidArgument),
+        (json!({ "replica": 2 }), RpcErrorCode::InvalidArgument),
+        (json!([1]), RpcErrorCode::InvalidArgument),
+    ] {
+        let error = store
+            .write(&who, edit(None, vec![patch(body.clone())]))
+            .unwrap_err();
+        assert_eq!(error.code, code, "{body}");
+    }
+    let error = store
+        .write(
+            &who,
+            edit(
+                None,
+                vec![Change::Patch {
+                    path: "web.replicas".into(),
+                    value: json!({}),
+                }],
+            ),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(value(&store, &who, "web.memLimit"), json!(2.0));
 }
 
 #[test]
@@ -120,7 +228,7 @@ fn set_stages_text_values_and_unset_restores_the_default() {
                 None,
                 vec![
                     set("web.replicas", json!("3")),
-                    set("web.command", json!("  nginx -g 'daemon off;' ")),
+                    set("web.startCommand", json!("  nginx -g 'daemon off;' ")),
                     set("web.image", json!("nginx:2")),
                 ],
             ),
@@ -129,12 +237,15 @@ fn set_stages_text_values_and_unset_restores_the_default() {
     else {
         panic!("expected an edit");
     };
-    assert_eq!(edited.staged, ["web.replicas", "web.command", "web.image"]);
+    assert_eq!(
+        edited.staged,
+        ["web.replicas", "web.startCommand", "web.image"]
+    );
     assert!(edited.immediate.is_empty());
     assert_eq!(edited.environment.revision, Revision(3));
     assert_eq!(value(&store, &who, "web.replicas"), json!(3));
     assert_eq!(
-        value(&store, &who, "web.command"),
+        value(&store, &who, "web.startCommand"),
         json!("nginx -g 'daemon off;'")
     );
     assert_eq!(value(&store, &who, "web.image"), json!("nginx:2"));
@@ -149,14 +260,14 @@ fn set_stages_text_values_and_unset_restores_the_default() {
                         path: "web.replicas".into(),
                     },
                     Change::Unset {
-                        path: "web.command".into(),
+                        path: "web.startCommand".into(),
                     },
                 ],
             ),
         )
         .unwrap();
     assert_eq!(value(&store, &who, "web.replicas"), json!(1));
-    assert_eq!(value(&store, &who, "web.command"), Value::Null);
+    assert_eq!(value(&store, &who, "web.startCommand"), Value::Null);
 }
 
 #[test]
@@ -169,7 +280,7 @@ fn an_edit_that_changes_nothing_keeps_the_revision() {
         panic!("expected an edit");
     };
     assert_eq!(edited.environment.revision, Revision(2));
-    assert_eq!(edited.staged, ["web.replicas"]);
+    assert!(edited.staged.is_empty());
 }
 
 #[test]
@@ -246,7 +357,10 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
                 second
                     .write(
                         &who,
-                        edit(None, vec![set("web.command", json!(format!("run {n}")))]),
+                        edit(
+                            None,
+                            vec![set("web.startCommand", json!(format!("run {n}")))],
+                        ),
                     )
                     .unwrap();
             }
@@ -255,7 +369,7 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
         command.join().unwrap();
     });
     assert_eq!(value(&first, &who, "web.replicas"), json!(11));
-    assert_eq!(value(&first, &who, "web.command"), json!("run 9"));
+    assert_eq!(value(&first, &who, "web.startCommand"), json!("run 9"));
     assert_eq!(get(&second, &who, None).environment.revision, Revision(22));
 }
 
@@ -313,14 +427,42 @@ fn wrong_paths_and_values_name_the_fix() {
     let error = store
         .write(&who, edit(None, vec![set("web.replica", json!(2))]))
         .unwrap_err();
+    assert_eq!(error.details["did_you_mean"], "replicas");
+    assert_eq!(
+        error.details["valid_children"],
+        json!([
+            "cpuLimit",
+            "image",
+            "maxRetries",
+            "memLimit",
+            "preDeployCommand",
+            "replicas",
+            "restartPolicy",
+            "startCommand"
+        ])
+    );
+    let error = store
+        .write(&who, edit(None, vec![set("web.cpuLimit", json!(65))]))
+        .unwrap_err();
     assert_eq!(
         error.details,
-        json!({ "settings": ["command", "image", "replicas"] })
+        json!({
+            "setting": "cpuLimit",
+            "expected": { "type": "number", "exclusiveMinimum": 0, "maximum": 64 },
+            "example": 0.5,
+        })
     );
     let error = store
         .write(&who, edit(None, vec![set("api.replicas", json!(2))]))
         .unwrap_err();
-    assert_eq!(error.details, json!({ "services": ["web"] }));
+    assert_eq!(
+        error.details,
+        json!({ "did_you_mean": null, "valid_children": ["web"] })
+    );
+    let error = store
+        .write(&who, edit(None, vec![set("wbe.replicas", json!(2))]))
+        .unwrap_err();
+    assert_eq!(error.details["did_you_mean"], "web");
 }
 
 #[test]
@@ -377,6 +519,7 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
             environment: Some(EnvironmentName::parse("staging").unwrap()),
         },
         path: None,
+        all: true,
     });
     let View::Environment(view) = store.read(&who, &query).unwrap() else {
         unreachable!("an Environment query reads an Environment")

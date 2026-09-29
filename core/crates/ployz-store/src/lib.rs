@@ -2,6 +2,7 @@
 //! synchronous interface. `read` answers a [`Query`] and `write` applies a
 //! [`Command`], each in one transaction. Storage is its only I/O.
 
+pub mod catalog;
 mod command;
 mod error;
 mod id;
