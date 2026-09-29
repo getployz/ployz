@@ -33,6 +33,7 @@ const refreshedBy = {
   removals: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
   branch: ["store_environment", "store_deployment"],
+  build_order: ["store_organization"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;

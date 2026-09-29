@@ -53,7 +53,7 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 18] = [
+    pub(crate) const ALL: [Self; 19] = [
         Self::CpuLimit,
         Self::Image,
         Self::MaxRetries,
@@ -72,6 +72,7 @@ impl ServiceSetting {
         Self::Policy(PolicySetting::AutoDeploy),
         Self::Policy(PolicySetting::WaitForCi),
         Self::Policy(PolicySetting::WatchPaths),
+        Self::Policy(PolicySetting::PreferredBuilder),
     ];
 
     pub(crate) const fn name(self) -> &'static str {

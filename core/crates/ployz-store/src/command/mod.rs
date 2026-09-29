@@ -80,6 +80,8 @@ pub enum Command {
     CopyNode(crate::CopyNode),
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch),
+    /// Set the Organization's Build Order, at once.
+    SetBuildOrder(crate::SetBuildOrder),
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
     /// Delete an Environment nothing of which runs on the Servers.
@@ -115,6 +117,7 @@ impl Command {
             | Self::UpdateBranch(_)
             | Self::CopyNode(_)
             | Self::KeepBranch(_)
+            | Self::SetBuildOrder(_)
             | Self::SetDefaultEnvironment(_)
             | Self::RemoveEnvironment(_)
             | Self::SetPrPlan(_) => Vec::new(),
@@ -155,6 +158,8 @@ pub enum Written {
     Automated(crate::Automated),
     /// A Branch was made, updated, given an Own Copy, or kept.
     Branch(crate::Branched),
+    /// The Build Order was set; it applies to the next build.
+    BuildOrder(crate::BuildOrderView),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
@@ -207,6 +212,9 @@ pub(crate) fn run(
         }
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
+        Command::SetBuildOrder(set) => {
+            crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
+        }
         Command::SetDefaultEnvironment(set) => {
             crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
         }
