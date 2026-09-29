@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import type { EncryptedSecretValue } from "#/db/tables";
 import { environmentCanvasNodePosition, service, serviceRegistryCredential } from "./tables";
 import { environment, project } from "#/modules/project/tables";
 import { organizationIdForEnvironment, organizationIdForProject } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
+import { NotFound } from "#/server/public-error";
 import { SecretEncryption, type SecretEncryptionService } from "#/utils/encrypted-secret.server";
 import { decodeStrict } from "./schema";
 import { serviceCanvasPositionSelectSchema, type ServiceCanvasPositionRecord } from "./services";
@@ -108,6 +109,8 @@ export const insertCanvasPosition = Effect.fn(
 export const upsertCanvasPosition = Effect.fn(
   "EnvironmentDesign.upsertCanvasPosition",
 )(function* (input: {
+  /** Whose it is: a position names the Environment by id only, which a Config Store one isn't in this database. */
+  readonly organizationId: string | SQL<string>;
   readonly environmentId: string;
   readonly serviceId: string;
   readonly x: number;
@@ -118,7 +121,7 @@ export const upsertCanvasPosition = Effect.fn(
   const rows = yield* database.drizzle
     .insert(environmentCanvasNodePosition)
     .values({
-      organizationId: organizationIdForEnvironment(input.environmentId),
+      organizationId: input.organizationId,
       environmentId: input.environmentId,
       resourceType: "service",
       resourceId: input.serviceId,
@@ -132,9 +135,11 @@ export const upsertCanvasPosition = Effect.fn(
         environmentCanvasNodePosition.resourceType,
         environmentCanvasNodePosition.resourceId,
       ],
+      // Only its own Organization moves it.
+      setWhere: eq(environmentCanvasNodePosition.organizationId, input.organizationId),
       set: { x: Math.round(input.x), y: Math.round(input.y), updatedAt: now },
     })
     .returning();
-  if (!rows[0]) return yield* Effect.die("PostgreSQL did not return the canvas position.");
+  if (!rows[0]) return yield* new NotFound({ message: "Environment not found." });
   return rows[0];
 });
