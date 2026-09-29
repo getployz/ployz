@@ -49,6 +49,15 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             for row in &change.settings {
                 say!("  {}: {} -> {}", row.path, row.before, row.after);
             }
+            match change.data {
+                Some(ployz_store::DataEffect::Deleted) => say!(
+                    "  deletes this Volume's data on the Servers: deploy asks to accept it by name"
+                ),
+                Some(ployz_store::DataEffect::Kept) => {
+                    say!("  a detached Volume keeps its data");
+                }
+                None => {}
+            }
         }
         if view.published && !view.changes.is_empty() {
             say!(

@@ -107,6 +107,15 @@ store_string!(
     ServiceId, "a Service ID (a UUID)", is_uuid, "ployz_core::ServiceId"
 );
 store_string!(
+    /// A Volume's durable identity, minted by the caller that creates it. It is also
+    /// the lineage of the Volume it creates.
+    VolumeId, "a Volume ID (a UUID)", is_uuid
+);
+store_string!(
+    /// A Volume's name, unique in its Environment: a lowercase DNS label.
+    VolumeName, "a Volume name: lowercase letters, digits and -", is_name
+);
+store_string!(
     /// A Deployment's durable identity, minted by the caller that admits it.
     DeploymentId, "a Deployment ID (a UUID)", is_uuid
 );

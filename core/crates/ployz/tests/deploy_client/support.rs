@@ -61,6 +61,8 @@ pub(super) struct DeployService {
     hold_health: bool,
     start_error: Option<RpcError>,
     listing_failures: Vec<MachineId>,
+    /// Docker Volumes created and not yet removed.
+    pub(super) volumes: Arc<Mutex<Vec<DockerVolume>>>,
 }
 
 impl DeployService {
@@ -86,6 +88,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -111,6 +114,7 @@ impl DeployService {
             hold_health: false,
             start_error: None,
             listing_failures: Vec::new(),
+            volumes: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -337,7 +341,7 @@ impl MachineRpc for DeployService {
         _request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         encoded(RpcResponse::from(VolumeInventory {
-            volumes: Vec::new(),
+            volumes: self.volumes.lock().unwrap().clone(),
             failures: Vec::new(),
         }))
     }
@@ -387,6 +391,7 @@ impl MachineRpc for DeployService {
             labels: create.labels,
             storage,
         };
+        self.volumes.lock().unwrap().push(volume.clone());
         let report = self.create_volume_verification_error.clone().map_or(
             CreateVolumeReport::Verified {
                 volume: volume.clone(),
@@ -665,10 +670,20 @@ impl MachineRpc for DeployService {
     }
     async fn remove_volume(
         &self,
-        _request: Request<OpaquePayload>,
+        request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.record_mutation();
-        unused()
+        let machine_id = machine_from_metadata(&request)?;
+        let RpcRequestBody::RemoveVolume(remove) =
+            request.into_inner().decode_request().unwrap().body
+        else {
+            return Err(Status::invalid_argument("expected remove_volume"));
+        };
+        self.volumes
+            .lock()
+            .unwrap()
+            .retain(|volume| volume.id.machine_id != machine_id || volume.id.name != remove.name);
+        encoded(RpcResponse::from(ployz_core::VolumeRemoved {}))
     }
     async fn stop_container(
         &self,

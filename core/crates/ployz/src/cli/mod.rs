@@ -219,39 +219,18 @@ mod tests {
                 ])
                 .is_ok()
         );
-        for args in [
-            vec![
-                "ployz",
-                "server",
-                "rm",
-                "worker",
-                "--no-reset",
-                "--accept-volume-loss",
-                "data",
-            ],
-            vec!["ployz", "volume", "rm", "--force", "--yes"],
-        ] {
-            assert!(super::command().try_get_matches_from(args).is_err());
-        }
-    }
-
-    #[test]
-    fn volume_rm_still_takes_volume_names_with_yes() {
-        let matches = super::command()
-            .try_get_matches_from(["ployz", "volume", "rm", "data", "logs", "--yes"])
-            .unwrap();
-        let rm = matches
-            .subcommand_matches("volume")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("volume-name")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["data", "logs"]
+        assert!(
+            super::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "rm",
+                    "worker",
+                    "--no-reset",
+                    "--accept-volume-loss",
+                    "data",
+                ])
+                .is_err()
         );
     }
 }

@@ -16,6 +16,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::git::GitSetting;
+use crate::id::VolumeName;
 use crate::trusted::Trusted;
 use crate::variables::VariableKey;
 
@@ -402,7 +403,8 @@ pub(crate) fn image_source(
 
 /// What a request addresses in an Environment: `SERVICE` for a whole Service,
 /// `SERVICE.SETTING` for one of its Settings, `SERVICE.env.KEY` for one of its
-/// variables, or `SERVICE.env.KEY.exported` for whether other Services see it.
+/// variables, `SERVICE.env.KEY.exported` for whether other Services see it, or
+/// `SERVICE.mounts.VOLUME` for where it mounts a Volume.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -419,6 +421,8 @@ pub(crate) enum Target {
     Variable(VariableKey),
     /// Whether a variable is exported.
     Exported(VariableKey),
+    /// Where the Service mounts a Volume.
+    Mount(VolumeName),
 }
 
 impl SettingPath {
@@ -442,6 +446,16 @@ impl SettingPath {
                     "Name a variable: SERVICE.env.KEY",
                     json!({ "example": format!("{service}.env.DATABASE_URL") }),
                 ));
+            }
+            Some("mounts") => {
+                return Err(error::invalid(
+                    "Name a Volume: SERVICE.mounts.VOLUME",
+                    json!({ "example": format!("{service}.mounts.data") }),
+                ));
+            }
+            Some(rest) if rest.starts_with("mounts.") => {
+                let volume = rest.strip_prefix("mounts.").unwrap_or_default();
+                Some(Target::Mount(VolumeName::parse(volume)?))
             }
             Some(rest) => Some(match rest.strip_prefix("env.") {
                 None => Target::Setting(ServiceSetting::parse(rest)?),
@@ -470,7 +484,7 @@ impl SettingPath {
     pub(crate) const fn setting(&self) -> Option<ServiceSetting> {
         match self.target {
             Some(Target::Setting(setting)) => Some(setting),
-            Some(Target::Variable(_) | Target::Exported(_)) | None => None,
+            Some(Target::Variable(_) | Target::Exported(_) | Target::Mount(_)) | None => None,
         }
     }
 
@@ -507,6 +521,7 @@ impl fmt::Display for SettingPath {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
             Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
             Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
+            Some(Target::Mount(volume)) => write!(formatter, "{service}.mounts.{volume}"),
             None => write!(formatter, "{service}"),
         }
     }

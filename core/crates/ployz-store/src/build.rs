@@ -268,7 +268,7 @@ impl BuildRow {
             service: stored
                 .nodes
                 .iter()
-                .find(|node| node.service == self.service)
+                .find(|node| node.service.as_ref() == Some(&self.service))
                 .map_or_else(|| self.service.to_string(), |node| node.name.clone()),
             commit: self.commit.clone(),
             status: self.status,

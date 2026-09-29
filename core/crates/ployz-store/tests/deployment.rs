@@ -14,7 +14,8 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
     ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
-    ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, UploadBase, UploadedSource, View,
+    ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
+    UploadedSource, View,
 };
 use serde_json::{Value, json};
 
@@ -83,7 +84,9 @@ fn admit(
             version,
             upload: None,
             retry: None,
+            accept_volume_loss: Vec::new(),
         },
+        &Trusted::default(),
     )
 }
 
@@ -134,10 +137,13 @@ fn preview(services: &[&str]) -> DeployPreview {
 }
 
 fn succeeded(services: &[&str]) -> RunEvidence {
-    RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "success",
-        "completed": services.iter().map(|service| operation(service)).collect::<Vec<_>>()
-    }))))
+    RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "success",
+            "completed": services.iter().map(|service| operation(service)).collect::<Vec<_>>()
+        }))),
+        removed: Vec::new(),
+    }
 }
 
 fn outcome(value: Value) -> DeployOutcome<ExecutionError> {
@@ -237,11 +243,14 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         code(store.record(&id(1), &a, succeeded(&["web"]))),
         RpcErrorCode::InvalidArgument
     );
-    let partial = RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "failed", "completed": [operation("web")],
-        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-        "unexecuted": []
-    }))));
+    let partial = RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
     store.record(&id(1), &a, partial).unwrap();
     assert_eq!(
         store.deployment(&who, &id(1)).unwrap().deployment.status,
@@ -388,11 +397,14 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
         DeploymentStatus::Cancelling
     );
     // Its runner stops it partway and records what ran.
-    let stopped = RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "failed", "completed": [operation("web")],
-        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-        "unexecuted": []
-    }))));
+    let stopped = RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
     store.record(&id(1), &a, stopped).unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
     assert_eq!(
@@ -489,7 +501,9 @@ fn retry(
             version: None,
             upload: None,
             retry: Some(id(source)),
+            accept_volume_loss: Vec::new(),
         },
+        &ployz_store::Trusted::default(),
     )
 }
 
@@ -504,11 +518,14 @@ fn fail_api(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     store
         .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    let failed = RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "failed", "completed": [operation("web")],
-        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-        "unexecuted": []
-    }))));
+    let failed = RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
     store.record(&id(n), &a, failed).unwrap();
     intent
 }
@@ -578,7 +595,9 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
             version: None,
             upload: None,
             retry: Some(id(1)),
+            accept_volume_loss: Vec::new(),
         },
+        &ployz_store::Trusted::default(),
     );
     assert_eq!(code(narrowed), RpcErrorCode::InvalidArgument);
     assert_eq!(code(retry(&store, &other, 9, 1)), RpcErrorCode::NotFound);
@@ -899,7 +918,9 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 version: None,
                 upload,
                 retry: None,
+                accept_volume_loss: Vec::new(),
             },
+            &ployz_store::Trusted::default(),
         )
     };
     let mut bad = upload.clone();

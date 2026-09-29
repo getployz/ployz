@@ -13,12 +13,12 @@ use super::{Command, replayable};
 use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;
-use crate::id::DeploymentId;
+use crate::id::{DeploymentId, VolumeName};
 use crate::registry;
-use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
+use crate::{removal, review};
 
 /// Deploy an Environment: all of it, or only some Services. Or, with `retry`,
 /// ship again exactly what an ended Deployment froze.
@@ -45,6 +45,10 @@ pub struct Admit {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub retry: Option<DeploymentId>,
+    /// Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
+    /// deletes data refuses with `confirmation_required` unless it names each one.
+    #[serde(default)]
+    pub accept_volume_loss: Vec<VolumeName>,
 }
 
 /// Cancel a Deployment: a queued one never runs, and a running one stops.
@@ -99,13 +103,16 @@ fn admitted(
             || !admit.services.is_empty()
             || admit.version.is_some()
             || admit.upload.is_some()
+            || !admit.accept_volume_loss.is_empty()
         {
             return Err(error::invalid(
                 "A retry ships what its Deployment froze: leave environment, services, \
-                 version and upload empty",
+                 version, upload and accept_volume_loss empty",
                 json!({}),
             ));
         }
+        // The retry deletes exactly the Docker Volumes its source's review accepted,
+        // which the copied target nodes carry: nothing new, so no new review.
         return deployment::retry(tx, who, &admit.id, source);
     }
     let environment = scope::lock(tx, who, &admit.environment)?;
@@ -136,6 +143,18 @@ fn admitted(
     )?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working);
+    // Only a full Deploy removes nodes, so only it can delete data.
+    let removed = if admit.services.is_empty() {
+        removal::removed(&review.head.applied, &saved_intent, &namespace)?
+    } else {
+        Vec::new()
+    };
+    let losses = removal::review(
+        removed,
+        trusted.volumes.as_ref(),
+        &admit.accept_volume_loss,
+        &review.view.version,
+    )?;
     let mut frozen = deployment::freeze(
         id,
         &saved_intent,
@@ -143,6 +162,7 @@ fn admitted(
         &admit.services,
         namespace,
         cluster_domain,
+        &losses,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     deployment::admit(tx, who, admit, id, saved, &frozen)

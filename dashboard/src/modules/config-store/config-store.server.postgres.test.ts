@@ -264,7 +264,7 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null,
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null, accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         // A retried request replays the admission and sends the same event, which Inngest drops.
@@ -421,6 +421,7 @@ it.live(
 
         const admit: ConfigCommand = {
           command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+          accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);

@@ -121,7 +121,9 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 version: None,
                 upload: None,
                 retry: None,
+                accept_volume_loss: Vec::new(),
             },
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     id
@@ -208,7 +210,9 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
                 version: None,
                 upload: None,
                 retry: Some(one.clone()),
+                accept_volume_loss: Vec::new(),
             },
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     assert_eq!(

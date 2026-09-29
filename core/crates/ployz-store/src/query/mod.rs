@@ -6,6 +6,7 @@ pub(crate) mod deployment;
 mod diff;
 mod environment;
 mod service;
+mod volume;
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,10 @@ pub use service::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
 pub(crate) use service::{service, services};
+pub use volume::{
+    RemovalsQuery, RemovalsView, VolumeListing, VolumeQuery, VolumeView, VolumesQuery, VolumesView,
+};
+pub(crate) use volume::{removals, volume, volumes};
 
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
@@ -54,6 +59,12 @@ pub enum Query {
     Domains(crate::DomainsQuery),
     /// One public domain, which Cloud observes afresh first.
     Domain(crate::DomainQuery),
+    /// An Environment's Volumes.
+    Volumes(VolumesQuery),
+    /// One Volume.
+    Volume(VolumeQuery),
+    /// The deployed Volumes a full Deploy would remove.
+    Removals(RemovalsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -83,6 +94,12 @@ pub enum View {
     Domains(crate::DomainsView),
     /// One public domain.
     Domain(crate::DomainView),
+    /// An Environment's Volumes.
+    Volumes(VolumesView),
+    /// One Volume.
+    Volume(VolumeView),
+    /// What a full Deploy would remove.
+    Removals(RemovalsView),
 }
 
 pub(crate) fn run(
@@ -105,5 +122,8 @@ pub(crate) fn run(
         Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
         Query::Domains(query) => crate::domain::domains(tx, who, query, trusted).map(View::Domains),
         Query::Domain(query) => crate::domain::domain(tx, who, query, trusted).map(View::Domain),
+        Query::Volumes(query) => volumes(tx, who, query).map(View::Volumes),
+        Query::Volume(query) => volume(tx, who, query).map(View::Volume),
+        Query::Removals(query) => removals(tx, who, query).map(View::Removals),
     }
 }

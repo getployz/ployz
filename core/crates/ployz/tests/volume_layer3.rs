@@ -1,17 +1,13 @@
-use std::{
-    collections::BTreeMap,
-    process::{Command, Output},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use ployz::{
     connect::{SystemConnector, connect_selected_with},
     context::{Connection, ConnectionSource, SelectedConnections},
-    volume::{filter_volumes, machine_volumes},
 };
 use ployz_core::{
-    ContainerKind, CreateVolumeRequest, DockerVolumeName, ListMachinesRequest, MachineTarget,
-    NameMatches, Namespace, ResolvedServiceSpec, ServiceId, op,
+    ContainerKind, CreateVolumeRequest, DockerVolumeId, DockerVolumeName, ListMachinesRequest,
+    MachineTarget, Namespace, RemoveVolumesRequest, ResolvedServiceSpec, ServiceId,
+    VolumeRemovalOutcome, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::json;
@@ -19,81 +15,11 @@ use serde_json::json;
 /// L3-008, L3-013, L3-047..L3-055, L3-067, and the machine-local-volume negative family.
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
-async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
+async fn volume_mounts_and_partial_results_stay_machine_local() {
     let plan = ClusterPlan::new(&format!("l3-volume-product-{}", std::process::id()), 2).unwrap();
     let cluster = Cluster::create(plan).unwrap();
     cluster.initialize_two().await.unwrap();
     let address = cluster.api_socket_address(0).unwrap();
-
-    for machine in ["machine-1", "machine-2"] {
-        let output = ployz(
-            address,
-            ["volume", "create", "shared", "--machine", machine],
-        );
-        assert!(
-            output.status.success(),
-            "stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    let listed = ployz(address, ["volume", "ls"]);
-    assert!(listed.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&listed.stdout)
-            .matches("shared")
-            .count(),
-        2
-    );
-    for selector in ["*", "missing-machine"] {
-        let create = ployz(
-            address,
-            ["volume", "create", "invalid", "--machine", selector],
-        );
-        assert!(!create.status.success());
-    }
-    assert!(!String::from_utf8_lossy(&ployz(address, ["volume", "ls"]).stdout).contains("invalid"));
-    let ambiguous = ployz(address, ["volume", "inspect", "shared"]);
-    assert!(!ambiguous.status.success());
-    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous"));
-    let qualified = ployz(
-        address,
-        ["volume", "inspect", "shared", "--machine", "machine-1"],
-    );
-    assert!(qualified.status.success());
-    assert!(String::from_utf8_lossy(&qualified.stdout).contains("\"machine_name\": \"machine-1\""));
-
-    let mixed_remove = ployz(
-        address,
-        [
-            "volume",
-            "rm",
-            "shared",
-            "missing",
-            "--machine",
-            "machine-1",
-            "--yes",
-        ],
-    );
-    assert!(!mixed_remove.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&ployz(address, ["volume", "ls"]).stdout)
-            .matches("shared")
-            .count(),
-        2
-    );
-
-    let cancelled = ployz(
-        address,
-        ["volume", "rm", "shared", "--machine", "machine-1"],
-    );
-    assert!(!cancelled.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&ployz(address, ["volume", "ls"]).stdout)
-            .matches("shared")
-            .count(),
-        2
-    );
 
     let mut client = connect_selected_with(
         SelectedConnections {
@@ -113,6 +39,21 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
         panic!("expected two Machines: {machines:?}")
     };
     let shared = DockerVolumeName::parse("shared").unwrap();
+    for machine in &machines {
+        create_volume(&mut client, &machine.machine.id, &shared).await;
+    }
+    let shared_ids = |volumes: &[ployz_core::MachineSuccess<ployz_core::VolumeInventory>]| {
+        volumes
+            .iter()
+            .flat_map(|success| &success.value.volumes)
+            .filter(|volume| volume.id.name == shared)
+            .map(|volume| volume.id.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        shared_ids(&client.list_volumes(&machines).await.successes).len(),
+        2
+    );
     let mut mounted_containers = Vec::new();
     for (index, machine) in machines.iter().enumerate() {
         cluster
@@ -201,33 +142,25 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .any(|volume| volume.id.name == missing)
     );
 
-    let mut remove = Command::new(env!("CARGO_BIN_EXE_ployz"));
-    remove
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "volume",
-            "rm",
-            "shared",
-            "--machine",
-            "machine-1",
-        ])
-        .env("PLOYZ_AUTO_CONFIRM", "true");
-    let removed = remove.output().unwrap();
+    let removed = client
+        .remove_volumes(RemoveVolumesRequest {
+            volumes: vec![DockerVolumeId {
+                machine_id: first_machine.machine.id,
+                name: shared.clone(),
+            }],
+            force: false,
+        })
+        .await
+        .unwrap();
     assert!(
-        removed.status.success(),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&removed.stdout),
-        String::from_utf8_lossy(&removed.stderr)
+        matches!(removed.as_slice(), [removal] if removal.outcome == VolumeRemovalOutcome::Removed),
+        "{removed:?}"
     );
-    let remaining = machine_volumes(&machines, &client.list_volumes(&machines).await);
-    assert!(matches!(
-        NameMatches::from_matches(filter_volumes(
-            &remaining,
-            std::slice::from_ref(&shared),
-        )),
-        NameMatches::One(volume) if volume.machine_name.as_str() == "machine-2"
-    ));
+    let remaining = shared_ids(&client.list_volumes(&machines).await.successes);
+    assert_eq!(
+        remaining.iter().map(|id| id.machine_id).collect::<Vec<_>>(),
+        [second_machine.machine.id]
+    );
 
     client
         .call::<op::CreateVolume>(
@@ -258,21 +191,20 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     };
     assert_eq!(failure.machine_id, second_machine.machine.id);
 
-    let partial_inspect = ployz(address, ["volume", "inspect", "reachable"]);
-    assert!(!partial_inspect.status.success());
-
-    // The reachable removal commits; the unanswered Machine fails the command.
-    let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
+    // The reachable Machine's Docker Volume goes; the other Machine is never asked.
+    let partial_remove = client
+        .remove_volumes(RemoveVolumesRequest {
+            volumes: vec![DockerVolumeId {
+                machine_id: first_machine.machine.id,
+                name: DockerVolumeName::parse("reachable").unwrap(),
+            }],
+            force: false,
+        })
+        .await
+        .unwrap();
     assert!(
-        !partial_remove.status.success()
-            && String::from_utf8_lossy(&partial_remove.stdout).contains("Deleted volume reachable"),
-        "stdout={} stderr={}",
-        String::from_utf8_lossy(&partial_remove.stdout),
-        String::from_utf8_lossy(&partial_remove.stderr)
-    );
-    assert!(
-        String::from_utf8_lossy(&partial_remove.stderr)
-            .contains("was not checked and may hold a same-named Docker Volume")
+        matches!(partial_remove.as_slice(), [removal] if removal.outcome == VolumeRemovalOutcome::Removed),
+        "{partial_remove:?}"
     );
     let reachable = client
         .list_volumes(std::slice::from_ref(first_machine))
@@ -311,10 +243,21 @@ fn mount_spec(index: usize, name: &DockerVolumeName) -> ResolvedServiceSpec {
     .unwrap()
 }
 
-fn ployz<const N: usize>(address: std::net::SocketAddr, args: [&str; N]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["--connect", &format!("tcp://{address}")])
-        .args(args)
-        .output()
-        .unwrap()
+async fn create_volume(
+    client: &mut ployz::connect::Client,
+    machine: &ployz_core::MachineId,
+    name: &DockerVolumeName,
+) {
+    client
+        .call::<op::CreateVolume>(
+            CreateVolumeRequest {
+                name: name.clone(),
+                driver: "local".into(),
+                options: BTreeMap::new(),
+                labels: BTreeMap::new(),
+            },
+            Some(&MachineTarget::from(machine)),
+        )
+        .await
+        .unwrap();
 }

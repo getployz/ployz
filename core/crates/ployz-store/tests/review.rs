@@ -128,10 +128,11 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000003", "name": "web",
                 "lifecycle": "create", "comparison": "introduction",
                 "settings": [{ "path": "web.replicas", "kind": "update", "before": 1, "after": 3, "canRestore": true }],
+                "data": null,
             },
             {
                 "type": "service", "id": "00000000-0000-4000-8000-000000000004", "name": "api",
-                "lifecycle": "create", "comparison": "introduction", "settings": [],
+                "lifecycle": "create", "comparison": "introduction", "settings": [], "data": null,
             },
         ])
     );
