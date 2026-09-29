@@ -35,6 +35,9 @@ import { readCollection } from "#/collections/read.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { Polar } from "#/modules/billing/polar-provider.server";
+import { fakeGithubApi } from "#/test/fake-github";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import {
@@ -132,6 +135,9 @@ function enrollmentTestClient(
     Layer.succeed(Database, database),
     Layer.succeed(InngestClient, inngest),
     Layer.succeed(SecretEncryption, enrollmentSettings.encryption),
+    // The founder's join deploys published Environments through the Store; these tests publish none.
+    Layer.succeed(GithubApi, fakeGithubApi().service),
+    Layer.succeed(Polar, { mode: "self_hosted" }),
   );
   const layer = OrganizationRuntimeLive.pipe(Layer.provideMerge(dependencies));
   const runtime = ManagedRuntime.make(layer);
