@@ -12,8 +12,10 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::Revision;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{Apply, ServiceSetting, SettingPath};
+use crate::sealing::SealingKey;
+use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
+use crate::variables::{self, VariableKey};
 use crate::{Actor, Trusted};
 
 /// Apply every change to one Environment, all or none.
@@ -34,14 +36,16 @@ pub struct Edit {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
-    /// Set a value. Text is accepted for any Setting type.
+    /// Set a value. Text is accepted for any Setting type. A variable
+    /// (`SERVICE.env.KEY`) takes text, `{"secret": true}` to keep its secret, or
+    /// `{"secret": "…"}` to seal a new one.
     Set {
         /// The Setting.
         path: SettingPath,
         /// Its new value.
         value: Value,
     },
-    /// Return a Setting to its default.
+    /// Return a Setting to its default, or delete a variable.
     Unset {
         /// The Setting.
         path: SettingPath,
@@ -71,6 +75,7 @@ pub struct Edited {
 pub(crate) fn edit(
     tx: &mut dyn Tx,
     who: &Actor,
+    sealing: &SealingKey,
     edit: &Edit,
     trusted: &Trusted,
 ) -> Result<Edited, RpcError> {
@@ -94,17 +99,40 @@ pub(crate) fn edit(
     }
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
-    for (path, setting, value) in expand(&edit.changes)? {
-        let service = environment.service_mut(path.service())?;
-        let was = setting.value(&service.config);
-        match value {
-            Some(value) => setting.set(&mut service.config, value, trusted)?,
-            None => setting.unset(&mut service.config)?,
-        }
-        if setting.value(&service.config) == was {
+    for (path, value) in expand(&edit.changes)? {
+        let service = path.service();
+        let (changed, apply) = match (path.target(), value) {
+            (Some(Target::Setting(setting)), value) => {
+                let config = &mut environment.service_mut(service)?.config;
+                let was = setting.value(config);
+                match value {
+                    Some(value) => setting.set(config, value, trusted)?,
+                    None => setting.unset(config)?,
+                }
+                (setting.value(config) != was, setting.apply())
+            }
+            (Some(Target::Variable(key)), Some(value)) => (
+                variables::set(&mut environment, service, key, value, sealing)?,
+                Apply::Staged,
+            ),
+            (Some(Target::Exported(key)), Some(value)) => (
+                variables::set_exported(&mut environment, service, key, value)?,
+                Apply::Staged,
+            ),
+            (Some(Target::Variable(key)), None) => (
+                variables::unset(&mut environment, service, key, false)?,
+                Apply::Staged,
+            ),
+            (Some(Target::Exported(key)), None) => (
+                variables::unset(&mut environment, service, key, true)?,
+                Apply::Staged,
+            ),
+            (None, _) => return Err(name_a_setting(&path)),
+        };
+        if !changed {
             continue;
         }
-        let list = match setting.apply() {
+        let list = match apply {
             Apply::Staged => &mut staged,
             Apply::Immediate => &mut immediate,
         };
@@ -123,23 +151,15 @@ pub(crate) fn edit(
     })
 }
 
-/// Every change as one Setting to set (with its value) or unset.
-fn expand(
-    changes: &[Change],
-) -> Result<Vec<(SettingPath, ServiceSetting, Option<Value>)>, RpcError> {
+/// Every change as one path to set (with its value) or unset.
+fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcError> {
     let mut expanded = Vec::new();
     for change in changes {
         match change {
-            Change::Set { path, value } => {
-                let (path, setting) = one(path)?;
-                expanded.push((path, setting, Some(value.clone())));
-            }
-            Change::Unset { path } => {
-                let (path, setting) = one(path)?;
-                expanded.push((path, setting, None));
-            }
+            Change::Set { path, value } => expanded.push((path.clone(), Some(value.clone()))),
+            Change::Unset { path } => expanded.push((path.clone(), None)),
             Change::Patch { path, value } => {
-                if path.setting().is_some() {
+                if path.target().is_some() {
                     return Err(error::invalid(
                         "A patch addresses a Service: set SERVICE --patch",
                         json!({ "example": path.service() }),
@@ -152,9 +172,23 @@ fn expand(
                     ));
                 };
                 for (name, value) in object {
+                    if name == "env" {
+                        let Some(variables) = value.as_object() else {
+                            return Err(error::invalid(
+                                "env is a JSON object of variables",
+                                json!({ "example": { "env": { "LOG_LEVEL": "info" } } }),
+                            ));
+                        };
+                        for (key, value) in variables {
+                            let key = VariableKey::parse(key)?;
+                            let path = SettingPath::at(path.service(), Target::Variable(key));
+                            expanded.push((path, Some(value.clone())));
+                        }
+                        continue;
+                    }
                     let setting = ServiceSetting::parse(name)?;
                     let path = SettingPath::of(path.service(), setting);
-                    expanded.push((path, setting, Some(value.clone())));
+                    expanded.push((path, Some(value.clone())));
                 }
             }
         }
@@ -162,15 +196,12 @@ fn expand(
     Ok(expanded)
 }
 
-fn one(path: &SettingPath) -> Result<(SettingPath, ServiceSetting), RpcError> {
-    let Some(setting) = path.setting() else {
-        return Err(error::invalid(
-            "Name a Setting: SERVICE.SETTING",
-            json!({
-                "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-                "example": format!("{}.replicas", path.service()),
-            }),
-        ));
-    };
-    Ok((path.clone(), setting))
+fn name_a_setting(path: &SettingPath) -> RpcError {
+    error::invalid(
+        "Name a Setting: SERVICE.SETTING",
+        json!({
+            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+            "example": format!("{}.replicas", path.service()),
+        }),
+    )
 }

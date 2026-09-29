@@ -1,12 +1,15 @@
 //! `ployz get`, `set` and `unset`: read and edit Settings in the Config Store.
 //!
+//! Variables are `SERVICE.env.KEY`; a secret's value comes only from stdin
+//! (`--secret`) or an env file, and reads show it as `{"secret": true}`.
+//!
 //! `get` narrows by depth: the whole Environment shows what differs from a default
 //! (`--all` adds the rest), `get SERVICE` shows every Setting plus the `values`
 //! object that `set SERVICE --patch` takes back.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_store::{Change, Edit, EnvironmentQuery, Revision, SettingPath};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::store::{Next, environment, failed, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
@@ -18,7 +21,7 @@ pub(crate) fn get_command() -> Command {
     scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
         .arg(
             positional("path", false)
-                .help("SERVICE or SERVICE.SETTING")
+                .help("SERVICE, SERVICE.SETTING or SERVICE.env.KEY")
                 .add(super::catalog::setting_paths()),
         )
         .arg(switch("all", None).help("Include Settings at their default across the Environment"))
@@ -30,13 +33,22 @@ pub(crate) fn set_command() -> Command {
             positional("assignment", true)
                 .action(ArgAction::Append)
                 .value_name("PATH=VALUE")
-                .help("For example web.replicas=3, or the SERVICE a --patch applies to")
+                .help("For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY for --secret")
                 .add(super::catalog::setting_paths()),
         )
         .arg(
             value("patch", None)
                 .value_name("JSON")
                 .help("Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin"),
+        )
+        .arg(
+            switch("secret", None)
+                .help("Seal the variable's value, read from stdin: set web.env.KEY --secret. With --from-env-file, seal every value"),
+        )
+        .arg(
+            value("from-env-file", None)
+                .value_name("FILE")
+                .help("Set a Service's variables from a .env file; - reads stdin. Variables that are secret stay secret"),
         )
         .arg(expect())
 }
@@ -46,7 +58,7 @@ pub(crate) fn unset_command() -> Command {
         .arg(
             positional("path", true)
                 .action(ArgAction::Append)
-                .help("SERVICE.SETTING")
+                .help("SERVICE.SETTING, or SERVICE.env.KEY to delete a variable")
                 .add(super::catalog::setting_paths()),
         )
         .arg(expect())
@@ -107,29 +119,72 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    if let Some(file) = matches.get_one::<String>("from-env-file") {
+        return set_from_env_file(root, file);
+    }
     if let Some(patch) = matches.get_one::<String>("patch") {
-        let service = match matches.get_many::<String>("assignment") {
-            Some(mut paths) if paths.len() == 1 => paths.next().cloned(),
-            Some(_) | None => None,
-        }
-        .ok_or_else(|| {
-            Error::usage(
-                "--patch takes one SERVICE, for example set web --patch '{\"replicas\":3}'",
-            )
-        })?;
-        let patch = if patch == "-" {
-            std::io::read_to_string(std::io::stdin())?
-        } else {
+        let inline = patch != "-";
+        let service = one_service(
+            matches,
+            "--patch takes one SERVICE, for example set web --patch '{\"replicas\":3}'",
+        )?;
+        let patch = if inline {
             patch.clone()
+        } else {
+            std::io::read_to_string(std::io::stdin())?
         };
-        let value = serde_json::from_str(&patch).map_err(|_| {
+        let value: Value = serde_json::from_str(&patch).map_err(|_| {
             Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
         })?;
+        // A new secret on the command line would land in shell history.
+        let sealing = |variable: &Value| {
+            [Some(variable), variable.get("value")]
+                .into_iter()
+                .flatten()
+                .any(|value| value.get("secret").is_some_and(Value::is_string))
+        };
+        let inline_secret = value
+            .get("env")
+            .and_then(Value::as_object)
+            .is_some_and(|env| env.values().any(sealing));
+        if inline_secret && inline {
+            return Err(Error::usage(
+                "A new secret never goes on the command line: use --patch -, --secret or --from-env-file",
+            )
+            .with_exit(USAGE_EXIT));
+        }
         return edit(
             matches,
             vec![Change::Patch {
                 path: SettingPath::parse(&service)?,
                 value,
+            }],
+        );
+    }
+    if matches.get_flag("secret") {
+        let path = one_service(
+            matches,
+            "--secret reads one value from stdin: set web.env.KEY --secret",
+        )?;
+        if path.contains('=') {
+            return Err(Error::usage(
+                "--secret reads the value from stdin, never the command line: set web.env.KEY --secret",
+            )
+            .with_exit(USAGE_EXIT));
+        }
+        let mut secret = std::io::read_to_string(std::io::stdin())?;
+        // `echo VALUE |` ends it with a newline that is not part of the secret.
+        if secret.ends_with('\n') {
+            secret.pop();
+            if secret.ends_with('\r') {
+                secret.pop();
+            }
+        }
+        return edit(
+            root,
+            vec![Change::Set {
+                path: SettingPath::parse(&path)?,
+                value: json!({ "secret": secret }),
             }],
         );
     }
@@ -151,6 +206,123 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
+/// The one positional a flag applies to.
+fn one_service(matches: &ArgMatches, usage: &'static str) -> Result<String, Error> {
+    match matches.get_many::<String>("assignment") {
+        Some(mut paths) if paths.len() == 1 => paths.next().cloned(),
+        Some(_) | None => None,
+    }
+    .ok_or_else(|| Error::usage(usage).with_exit(USAGE_EXIT))
+}
+
+/// `set SERVICE --from-env-file FILE [--secret]`: every variable in the file, in one
+/// edit. A variable the Service already holds as a secret is sealed again, never
+/// made plain.
+fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let service = one_service(
+        matches,
+        "--from-env-file takes one SERVICE: set web --from-env-file .env",
+    )?;
+    let service = SettingPath::parse(&service)?;
+    let text = if file == "-" {
+        std::io::read_to_string(std::io::stdin())?
+    } else {
+        std::fs::read_to_string(file)
+            .map_err(|_| Error::usage("Can't read the env file").with_exit(USAGE_EXIT))?
+    };
+    let variables = env_file(&text)?;
+    let seal_all = matches.get_flag("secret");
+    let secret = if seal_all {
+        Vec::new()
+    } else {
+        let view = store(root)?
+            .environment(&EnvironmentQuery {
+                environment: environment(matches)?,
+                path: Some(service.clone()),
+                all: false,
+            })
+            .map_err(failed(matches, &["get", &service.to_string()]))?;
+        let marker = json!({ "secret": true });
+        view.values
+            .and_then(|mut values| values.remove("env"))
+            .and_then(|env| env.as_object().cloned())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, value)| *value == marker || value.get("value") == Some(&marker))
+            .map(|(key, _)| key)
+            .collect()
+    };
+    let changes = variables
+        .into_iter()
+        .map(|(key, value)| {
+            let sealed = seal_all || secret.contains(&key.to_ascii_uppercase());
+            Ok(Change::Set {
+                path: SettingPath::parse(&format!("{service}.env.{key}"))?,
+                value: if sealed {
+                    json!({ "secret": value })
+                } else {
+                    Value::String(value)
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    if changes.is_empty() {
+        return Err(Error::usage("The env file sets no variables").with_exit(USAGE_EXIT));
+    }
+    let mut words = ["set", &service.to_string(), "--from-env-file", "FILE"]
+        .map(str::to_owned)
+        .to_vec();
+    if seal_all {
+        words.push("--secret".to_owned());
+    }
+    edit_as(root, changes, &words)
+}
+
+/// `KEY=VALUE` lines of a .env file: `#` comments and blank lines skipped, an
+/// optional `export `, values optionally quoted. Errors name the line, never its text.
+fn env_file(text: &str) -> Result<Vec<(String, String)>, Error> {
+    let mut variables = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(
+                Error::usage(format!("Env file line {}: expected KEY=VALUE", number + 1))
+                    .with_exit(USAGE_EXIT),
+            );
+        };
+        let value = value.trim();
+        let quoted = |quote: char| {
+            value
+                .strip_prefix(quote)
+                .and_then(|value| value.strip_suffix(quote))
+        };
+        let value = if let Some(inner) = quoted('"') {
+            inner
+                .replace("\\\\", "\u{0}")
+                .replace("\\n", "\n")
+                .replace("\\\"", "\"")
+                .replace('\u{0}', "\\")
+        } else if let Some(inner) = quoted('\'') {
+            inner.to_owned()
+        } else {
+            // An unquoted value ends at a ` #` comment.
+            value
+                .split(" #")
+                .next()
+                .unwrap_or_default()
+                .trim_end()
+                .to_owned()
+        };
+        variables.push((key.trim().to_owned(), value));
+    }
+    Ok(variables)
+}
+
 pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let changes = matches
@@ -167,13 +339,18 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+    let words = rerun(&changes);
+    edit_as(root, changes, &words)
+}
+
+/// Apply `changes`; `words` is the command that reruns it, values left out.
+fn edit_as(root: &ArgMatches, changes: Vec<Change>, words: &[String]) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
         changes,
     };
-    let words = rerun(&edit.changes);
     let words = words.iter().map(String::as_str).collect::<Vec<_>>();
     let store = store(root)?;
     let edited = store
@@ -204,6 +381,9 @@ fn rerun(changes: &[Change]) -> Vec<String> {
     let mut words = vec![verb.to_owned()];
     for change in changes {
         match change {
+            Change::Set { path, value } if value.get("secret").is_some_and(Value::is_string) => {
+                words.extend([path.to_string(), "--secret".to_owned()]);
+            }
             Change::Set { path, .. } => words.push(format!("{path}=VALUE")),
             Change::Unset { path } => words.push(path.to_string()),
             Change::Patch { path, .. } => {

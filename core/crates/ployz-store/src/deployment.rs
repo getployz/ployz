@@ -1,6 +1,7 @@
-//! Deployments. Admission freezes what a Deployment ships: a Saved revision, its
-//! target nodes and the Deploy Intent lowered from them. A runner `claim`s it and
-//! `record`s its evidence, and each confirmed Node Outcome advances Applied State.
+//! Deployments. Admission freezes what a Deployment ships: a Saved revision and its
+//! target nodes, checked to lower. A runner `claim`s it and receives the Deploy
+//! Intent lowered from them, secrets unsealed; it `record`s its evidence, and each
+//! confirmed Node Outcome advances Applied State.
 //! The Head that reviews compare against comes from here too.
 
 use ployz_core::config::{
@@ -20,7 +21,9 @@ use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
 use crate::review::{self, Head};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
+use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx};
+use crate::variables;
 
 /// Where a Deployment is in its life.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -158,10 +161,10 @@ pub(crate) struct TargetNode {
     service: ServiceName,
 }
 
-/// What admission freezes.
+/// What admission freezes, besides the Saved revision.
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
-    pub(crate) intent: DeployIntent,
+    pub(crate) namespace: Namespace,
 }
 
 impl Frozen {
@@ -184,16 +187,15 @@ struct Stored {
     environment: EnvironmentId,
     namespace: Namespace,
     nodes: Vec<TargetNode>,
-    intent: String,
     run: Run,
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, intent, run";
+     namespace, run";
 
-/// Freeze a Deployment of `saved`: its target nodes and the Deploy Intent lowered from
-/// them. `services` narrows it; none targets every Service, including the removal of
-/// those Applied State holds and `saved` does not.
+/// Freeze a Deployment of `saved`: its target nodes, checked to lower to a Deploy
+/// Intent. `services` narrows it; none targets every Service, including the removal
+/// of those Applied State holds and `saved` does not.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
@@ -236,14 +238,31 @@ pub(crate) fn freeze(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    lower(environment, saved, services, namespace.clone(), None)?;
+    Ok(Frozen { nodes, namespace })
+}
+
+/// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
+/// (none: every Service). Variables resolve here; secrets, and values that
+/// reference one, only with `unseal`, and are left out without it.
+fn lower(
+    environment: &EnvironmentId,
+    saved: &SavedEnvironmentIntent,
+    services: &[ServiceName],
+    namespace: Namespace,
+    unseal: Option<&SealingKey>,
+) -> Result<DeployIntent, RpcError> {
     let compiled = compile_environment_intent(environment.as_str(), saved.clone());
+    let mut resolved = variables::resolve(&compiled, unseal)?;
     let snapshots: Vec<Value> = compiled
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
-            CompiledNodeConfig::Service(config) => {
-                Some(json!({ "serviceId": node.node_id, "config": config }))
-            }
+            CompiledNodeConfig::Service(config) => Some(json!({
+                "serviceId": node.node_id,
+                "resolvedEnv": resolved.remove(&node.node_id).unwrap_or_default(),
+                "config": config,
+            })),
             CompiledNodeConfig::Volume(_) => None,
         })
         .collect();
@@ -253,30 +272,26 @@ pub(crate) fn freeze(
         .map(|producer| (producer.owner_lineage_id, json!(producer.owner_id)))
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
-    let selected: Vec<Value> = if services.is_empty() {
-        Vec::new()
-    } else {
-        nodes
-            .iter()
-            .map(|node| json!({ "name": node.service }))
-            .collect()
-    };
-    // ponytail: no variables or secrets yet, so every Service's resolved env is empty.
-    // Variables (6a) resolve here, and secrets only at `claim`.
+    let selected: Vec<Value> = saved
+        .services
+        .iter()
+        .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
+        .map(|service| json!({ "name": service.config.private_dns }))
+        .collect();
     let input = json!({
         "namespace": namespace,
         "snapshots": snapshots,
         "lineages": lineages,
         "selected": selected,
     });
-    let intent = lower_deployment(serde_json::from_value(input).expect("lowering input is valid"))
-        .map_err(|error| {
+    lower_deployment(serde_json::from_value(input).expect("lowering input is valid")).map_err(
+        |error| {
             error::invalid(
                 format!("This Environment can't deploy: {}", error.message),
                 json!({ "path": error.path }),
             )
-        })?;
-    Ok(Frozen { nodes, intent })
+        },
+    )
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
@@ -316,8 +331,8 @@ pub(crate) fn admit(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, intent, run) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10)",
+          namespace, run) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -326,8 +341,7 @@ pub(crate) fn admit(
             revision_param(saved)?.into(),
             json_text(&summary.services).as_str().into(),
             json_text(&frozen.nodes).as_str().into(),
-            frozen.intent.namespace.as_str().into(),
-            json_text(&frozen.intent).as_str().into(),
+            frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
         ],
     )?;
@@ -401,6 +415,7 @@ pub(crate) fn claim(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     runner: &RunnerId,
+    sealing: &SealingKey,
 ) -> Result<Claimed, RpcError> {
     let mut stored = locked(tx, id)?;
     match stored.summary.status {
@@ -427,8 +442,14 @@ pub(crate) fn claim(
             save(tx, &stored)?;
         }
     }
-    let intent =
-        serde_json::from_str(&stored.intent).map_err(|_| error::corrupt("Deploy Intent"))?;
+    let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+    let intent = lower(
+        &stored.environment,
+        &saved,
+        &stored.summary.services,
+        stored.namespace,
+        Some(sealing),
+    )?;
     Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -733,8 +754,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         nodes: serde_json::from_value(json(6, "Deployment")?)
             .map_err(|_| error::corrupt("Deployment"))?,
         namespace: Namespace::parse(row.text(7)?).map_err(|_| error::corrupt("Namespace"))?,
-        intent: row.text(8)?.to_owned(),
-        run: serde_json::from_value(json(9, "Deployment run")?)
+        run: serde_json::from_value(json(8, "Deployment run")?)
             .map_err(|_| error::corrupt("Deployment run"))?,
     })
     .map(|mut stored| {

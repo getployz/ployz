@@ -121,6 +121,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
+                        if row.path.starts_with("env.") {
+                            row.before = shown_env(row.before);
+                            row.after = shown_env(row.after);
+                        }
                         row.path = match ServiceSetting::ALL
                             .into_iter()
                             .find(|setting| setting.field() == row.path)
@@ -185,6 +189,15 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                 settings: vec![row],
             }),
         }
+    }
+}
+
+/// A variable change as `get` shows values: text, or `{"secret": true}`.
+fn shown_env(value: serde_json::Value) -> serde_json::Value {
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("secret") => json!({ "secret": true }),
+        Some(_) => value.get("value").cloned().unwrap_or_default(),
+        None => value,
     }
 }
 

@@ -15,7 +15,7 @@ use std::process::Command;
 
 use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
-use ployz_store::{Actor, AuthorizedRepository, ConfigStore, OrganizationId, Trusted};
+use ployz_store::{Actor, AuthorizedRepository, ConfigStore, OrganizationId, SealingKey, Trusted};
 use serde_json::{Value, json};
 
 /// Where the CLI's Config Store is.
@@ -104,7 +104,7 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
 fn fake_cloud() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             serve(&store, stream.unwrap()).unwrap();
@@ -1037,4 +1037,117 @@ fn github_lists_branches_and_disconnects_in_cloud() {
     let pending = ok(&cloud, &["github", "connect"]);
     assert_eq!(pending["status"], "pending");
     assert_eq!(pending["next"], "ployz github connect --wait");
+}
+
+/// Run `ployz --json ARGS` against `store` with `input` on stdin; returns (exit code, stdout).
+fn piped(store: &Target, args: &[&str], input: &str) -> (Option<i32>, String) {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = store.command(home.path());
+    command
+        .arg("--json")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8(output.stdout).unwrap(),
+    )
+}
+
+#[test]
+fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        ok(store, &["service", "add", "api", "--image", "nginx:1"]);
+
+        let set = ok(
+            store,
+            &[
+                "set",
+                "web.env.db_host=db",
+                "api.env.URL=http://${{ web.DB_HOST }}",
+            ],
+        );
+        assert_eq!(set["staged"], json!(["web.env.DB_HOST", "api.env.URL"]));
+        assert_eq!(set["next"], json!("ployz diff"));
+        let (code, sealed) = piped(store, &["set", "web.env.TOKEN", "--secret"], "s3cr3t\n");
+        assert_eq!(code, Some(0), "{sealed}");
+        assert!(!sealed.contains("s3cr3t"));
+        assert_eq!(
+            ok(store, &["get", "web.env.TOKEN"])["settings"][0]["value"],
+            json!({ "secret": true })
+        );
+        let refused = error(store, &["set", "web.env.TOKEN=plain-text"]);
+        assert_eq!(refused["code"], json!("invalid_argument"));
+        assert!(!refused.to_string().contains("plain-text"));
+        failed(store, &["set", "web.env.TOKEN=x", "--secret"], 2);
+        failed(
+            store,
+            &[
+                "set",
+                "web",
+                "--patch",
+                r#"{"env":{"TOKEN":{"secret":"x"}}}"#,
+            ],
+            2,
+        );
+
+        // A variable that is secret stays secret; the others are plain.
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "# app\nexport QUOTED=\"a b\\n\"\nRAW='lit ${{ x }}'\nTOKEN=rotated-s3cr3t\nLEVEL=info # comment\n",
+        )
+        .unwrap();
+        let path = file.path().to_str().unwrap();
+        let imported = ok(store, &["set", "web", "--from-env-file", path]);
+        assert_eq!(
+            imported["staged"],
+            json!([
+                "web.env.QUOTED",
+                "web.env.RAW",
+                "web.env.TOKEN",
+                "web.env.LEVEL"
+            ])
+        );
+        let env = ok(store, &["get", "web"])["values"]["env"].clone();
+        assert_eq!(
+            env,
+            json!({
+                "DB_HOST": "db",
+                "LEVEL": "info",
+                "QUOTED": "a b\n",
+                "RAW": "lit ${{ x }}",
+                "TOKEN": { "secret": true },
+            })
+        );
+        failed(
+            store,
+            &["set", "web", "--from-env-file", "/nonexistent/.env"],
+            2,
+        );
+
+        let diff = ok(store, &["diff"]).to_string();
+        assert!(!diff.contains("s3cr3t"), "{diff}");
+        let (_, deployed) = ployz(
+            Some(store),
+            &[
+                "deploy",
+                "--connect",
+                "tcp://127.0.0.1:1",
+                "--ssh-timeout",
+                "1",
+            ],
+        );
+        assert!(!deployed.to_string().contains("s3cr3t"), "{deployed}");
+    }
 }

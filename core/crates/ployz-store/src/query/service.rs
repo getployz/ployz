@@ -126,7 +126,7 @@ pub(crate) fn service(
         environment: environment.summary,
         lineage: ServiceId::parse(listed.node.lineage_id.as_str())
             .map_err(|_| crate::error::corrupt("Service lineage"))?,
-        values: super::environment::values(&listed.node),
+        values: super::environment::values(&listed.node, &environment.working),
         changes: listed.changes,
         service: listed.listing,
     })

@@ -8,7 +8,8 @@ use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
 use crate::error;
-use crate::settings::{ServiceSetting, SettingPath};
+use crate::settings::{ServiceSetting, SettingPath, Target};
+use crate::variables;
 
 /// Bumped whenever a published path, type or meaning changes.
 pub const CATALOG_VERSION: u32 = 1;
@@ -17,6 +18,9 @@ const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// A node name: a lowercase DNS label.
 const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+
+/// A variable name, as stored.
+const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";
 
 /// The whole catalog, or the part at `SERVICE` or `SERVICE.SETTING`.
 ///
@@ -35,7 +39,7 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
         })));
     };
     let path = SettingPath::parse(path)?;
-    Ok(versioned(path.setting().map_or_else(service, setting)))
+    Ok(versioned(path.target().map_or_else(service, target)))
 }
 
 /// One Setting: its canonical path and its schema.
@@ -54,7 +58,7 @@ pub struct Explained {
 /// `did_you_mean` and `valid_children`.
 pub fn explain(path: &str) -> Result<Explained, RpcError> {
     let parsed = SettingPath::parse(path)?;
-    let Some(one) = parsed.setting() else {
+    let Some(one) = parsed.target() else {
         let names = ServiceSetting::ALL.map(ServiceSetting::name);
         return Err(error::invalid(
             "Name a Setting: SERVICE.SETTING",
@@ -65,7 +69,7 @@ pub fn explain(path: &str) -> Result<Explained, RpcError> {
         ));
     };
     Ok(Explained {
-        schema: setting(one),
+        schema: target(one),
         path: parsed,
     })
 }
@@ -93,10 +97,27 @@ fn versioned(mut schema: Value) -> Value {
 }
 
 fn service() -> Value {
-    let properties = ServiceSetting::ALL
+    let mut properties = ServiceSetting::ALL
         .into_iter()
         .map(|one| (one.name().to_owned(), setting(one)))
         .collect::<Map<_, _>>();
+    properties.insert(
+        "env".to_owned(),
+        json!({
+            "title": "Variables",
+            "description": "Environment variables by name, each at SERVICE.env.KEY. A patch sets the ones it names and keeps the rest; unset deletes one.",
+            "type": "object",
+            "patternProperties": { VARIABLE_KEY: variables::schema() },
+            "additionalProperties": false,
+            "examples": [{
+                "LOG_LEVEL": "info",
+                "PUBLIC_URL": { "value": "http://${{ PLOYZ_PRIVATE_DOMAIN }}", "exported": true },
+            }],
+            "x-ployz-apply": "staged",
+            "x-ployz-secret": true,
+            "x-ployz-data-loss": false,
+        }),
+    );
     json!({
         "title": "Service",
         "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
@@ -104,6 +125,23 @@ fn service() -> Value {
         "properties": properties,
         "additionalProperties": false,
     })
+}
+
+fn target(target: &Target) -> Value {
+    match target {
+        Target::Setting(one) => setting(*one),
+        Target::Variable(_) => variables::schema(),
+        Target::Exported(_) => json!({
+            "title": "Exported",
+            "description": "Whether other Services are meant to reference this variable as ${{ service.KEY }}.",
+            "type": "boolean",
+            "default": false,
+            "examples": [true],
+            "x-ployz-apply": "staged",
+            "x-ployz-secret": false,
+            "x-ployz-data-loss": false,
+        }),
+    }
 }
 
 fn setting(one: ServiceSetting) -> Value {
@@ -152,18 +190,58 @@ mod tests {
     #[test]
     fn every_example_and_default_satisfies_its_schema() {
         let service = schema(Some("web")).unwrap();
-        for (name, property) in service["properties"].as_object().unwrap() {
+        let variable = [
+            ("web.env.K".to_owned(), schema(Some("web.env.K")).unwrap()),
+            (
+                "web.env.K.exported".to_owned(),
+                schema(Some("web.env.K.exported")).unwrap(),
+            ),
+        ];
+        let properties = service["properties"].as_object().unwrap().clone();
+        for (name, property) in properties.into_iter().chain(variable) {
             for example in property["examples"].as_array().unwrap() {
-                assert!(satisfies(example, property), "{name}: {example}");
+                assert!(satisfies(example, &property), "{name}: {example}");
             }
             if let Some(default) = property.get("default") {
-                assert!(satisfies(default, property), "{name} default");
+                assert!(satisfies(default, &property), "{name} default");
             }
         }
     }
 
     /// The JSON Schema keywords the catalog emits.
     fn satisfies(value: &Value, schema: &Value) -> bool {
+        if let Some(options) = schema.get("oneOf").and_then(Value::as_array) {
+            return options.iter().filter(|one| satisfies(value, one)).count() == 1;
+        }
+        if let Some(constant) = schema.get("const") {
+            return value == constant;
+        }
+        if schema["type"] == "object" {
+            let Some(object) = value.as_object() else {
+                return false;
+            };
+            let required = schema
+                .get("required")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .all(|key| object.contains_key(key.as_str().unwrap()));
+            return required
+                && object.iter().all(|(key, value)| {
+                    let own = schema
+                        .get("properties")
+                        .and_then(|properties| properties.get(key));
+                    // Every pattern is a name pattern; the test does not check names.
+                    let pattern = schema
+                        .get("patternProperties")
+                        .and_then(|patterns| patterns.as_object()?.values().next());
+                    own.or(pattern)
+                        .is_some_and(|schema| satisfies(value, schema))
+                });
+        }
+        if schema["type"] == "boolean" {
+            return value.is_boolean();
+        }
         let number = |key: &str| schema.get(key).and_then(Value::as_f64);
         let typed = match schema["type"].as_str().unwrap() {
             "string" => value.as_str().is_some_and(|text| {

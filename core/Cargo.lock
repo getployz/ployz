@@ -3450,8 +3450,11 @@ dependencies = [
 name = "ployz-store"
 version = "0.1.2-beta.50"
 dependencies = [
+ "base64 0.22.1",
+ "hex",
  "ployz-core",
  "postgres",
+ "ring",
  "rusqlite",
  "serde",
  "serde_json",

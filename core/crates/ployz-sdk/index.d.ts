@@ -261,6 +261,7 @@ export interface ConfigStore {
 }
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.
+ * Secrets are sealed with a key derived from `sealingSecret` (Cloud's encryption secret).
  * Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`.
  */
-export declare function openConfigStore(url: string): Promise<ConfigStore>;
+export declare function openConfigStore(url: string, sealingSecret: string): Promise<ConfigStore>;

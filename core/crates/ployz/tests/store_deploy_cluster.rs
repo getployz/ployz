@@ -30,10 +30,22 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     ployz(&["project", "new", "shop"]);
     ployz(&["service", "add", "web", "--image", SERVICE_CONTAINER_IMAGE]);
     ployz(&["set", "web.startCommand=sleep 600"]);
+    // A secret is sealed in the Store and unsealed only for its runner.
+    let secrets = dir.path().join("secrets.env");
+    std::fs::write(&secrets, "TOKEN=s3cr3t\n").unwrap();
+    ployz(&[
+        "set",
+        "web",
+        "--from-env-file",
+        secrets.to_str().unwrap(),
+        "--secret",
+    ]);
+    ployz(&["set", "web.env.GREETING=hi-${{ TOKEN }}"]);
     let deployed = ployz(&["deploy", "--events", events.to_str().unwrap()]);
     assert_eq!(deployed["status"], json!("applied"), "{deployed}");
     assert_eq!(deployed["nodes"][0]["outcome"], json!("applied"));
     assert!(deployed["preview"].is_object());
+    assert!(!deployed.to_string().contains("s3cr3t"));
     let progress = std::fs::read_to_string(&events).unwrap();
     assert!(progress.lines().count() > 0);
     for line in progress.lines() {
@@ -72,6 +84,24 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             })
     };
     wait_for_web(&mut client, &web_containers, 2).await;
+    let live = client
+        .live_services(ployz_core::EnvironmentValues::Included)
+        .await
+        .unwrap();
+    let services = live.services();
+    let web = services
+        .iter()
+        .find(|service| service.has_name("web"))
+        .unwrap();
+    assert!(web.containers.iter().all(|container| {
+        container
+            .as_observation()
+            .resolved_spec
+            .container
+            .environment
+            .get("GREETING")
+            == Some(&"hi-s3cr3t".to_owned())
+    }));
 
     // A staged removal leaves the running Service alone until a Deploy removes it.
     ployz(&["service", "rm", "web"]);
@@ -94,7 +124,7 @@ async fn wait_for_web(
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client
-                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .live_services(ployz_core::EnvironmentValues::Included)
                 .await
                 && web_containers(&live) == count
             {

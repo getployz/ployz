@@ -106,6 +106,7 @@ pub enum Written {
 pub(crate) fn run(
     tx: &mut dyn Tx,
     who: &Actor,
+    sealing: &crate::SealingKey,
     command: &Command,
     trusted: &Trusted,
 ) -> Result<Written, RpcError> {
@@ -124,7 +125,7 @@ pub(crate) fn run(
         Command::RemoveService(remove) => {
             remove_service(tx, who, remove).map(Written::ServiceRemoved)
         }
-        Command::Edit(edit) => self::edit(tx, who, edit, trusted).map(Written::Edited),
+        Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
         Command::Admit(request) => admit(tx, who, request).map(Written::Deployment),

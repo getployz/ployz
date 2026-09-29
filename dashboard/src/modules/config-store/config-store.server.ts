@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Redacted, Schema } from "effect";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
@@ -39,11 +39,14 @@ const attachChangeLog = Effect.gen(function* () {
 /** One Store handle per database for the process; a failed open is retried by the next call. */
 const opened = new Map<string, Promise<ConfigStore>>();
 
-/** The Config Store in `database`, whose URL is `url`, with Cloud's change log attached to its tables. */
-export function storeAt(url: string, database: DatabaseService) {
+/**
+ * The Config Store in `database`, whose URL is `url`, with Cloud's change log attached to its tables. It seals secrets
+ * with Cloud's encryption secret, so its ciphertext stays readable by Cloud's own sealing.
+ */
+export function storeAt(url: string, database: DatabaseService, sealingSecret: string) {
   let store = opened.get(url);
   if (store === undefined) {
-    store = openConfigStore(url).then(async (handle) => {
+    store = openConfigStore(url, sealingSecret).then(async (handle) => {
       await Effect.runPromise(attachChangeLog.pipe(Effect.provideService(Database, database)));
       return handle;
     });
@@ -104,8 +107,9 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   const organization = caller.organization.id;
+  const openStore = () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret));
   const read = (query: ConfigQuery) =>
-    storeAt(config.database.url.href, database).then((store) => store.read(organization, query));
+    openStore().then((store) => store.read(organization, query));
   const trusted = operation === "write"
     ? yield* gatherGitEvidence(organization, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(input)), read).pipe(
       Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
@@ -114,7 +118,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (trusted === null) return refusal({ code: "unavailable", message: "GitHub didn't answer; retry.", details: null });
   return yield* Effect.tryPromise({
     try: async () => {
-      const store = await storeAt(config.database.url.href, database);
+      const store = await openStore();
       // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
       return operation === "read"
         ? await store.read(organization, input as ConfigQuery)
