@@ -33,6 +33,7 @@ import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest
 import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
+import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -64,5 +65,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     createPostPrCheck(inngest),
+    createRunStoreDeployment(inngest),
   ];
 }
