@@ -2037,7 +2037,7 @@ version: string | null,
  * deletes their data. Publishing one refuses with `confirmation_required` unless
  * it names each one and passes the `version` that refusal handed back.
  */
-accept_volume_loss: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>, };
 
 export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 

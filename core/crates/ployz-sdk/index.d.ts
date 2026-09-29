@@ -7,6 +7,8 @@ import type {
   VolumeObservation,
   ConfigView,
   ConfigWritten,
+  OrganizationRemoved,
+  Unclaimed,
   DeploymentSummary,
   GitSource,
   SystemEvent,
@@ -270,8 +272,11 @@ export interface ConfigStore {
    * never the caller's.
    */
   read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
-  /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
-  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
+  /**
+   * `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. `principal` is who
+   * Cloud authenticated, which Deployments record as their admitter and uploader; none for Cloud itself.
+   */
+  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string): Promise<ConfigWritten>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
   deploymentSources(deployment: string): Promise<GitSource[]>;
   /**
@@ -297,7 +302,11 @@ export interface ConfigStore {
    * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
    * Deployments it admitted, or rejects `conflict` when a branch head's `base` is no longer the Store's head.
    */
-  system(organization: string, event: SystemEvent): Promise<ConfigWritten>;
+  system(organization: string, event: SystemEvent, trusted?: ConfigTrusted): Promise<ConfigWritten>;
+  /** Cloud's Organization removal only: forget its configuration once it has no Project. */
+  removeOrganization(organization: string): Promise<OrganizationRemoved>;
+  /** Cloud's sweep only: queued Deployments no runner claimed, admitted before `before` (Unix seconds), oldest first. */
+  unclaimed(before: number): Promise<Unclaimed[]>;
   /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
   branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
   /**
