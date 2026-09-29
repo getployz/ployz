@@ -2,6 +2,7 @@ import type {
   ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
+import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
 
 /** One changed Setting in Details. */
@@ -164,7 +165,6 @@ export function previewLines(preview: JsonValue | null): string[] | null {
   const { operations, would_remove, volumes_to_create, warnings } = decoded.value;
   const counts = new Map<string, number>();
   for (const { service_name } of operations) counts.set(service_name ?? "Environment", (counts.get(service_name ?? "Environment") ?? 0) + 1);
-  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
   return [
     operations.length === 0 ? "Nothing to change" : `${plural(operations.length, "operation")}: ${[...counts].map(([name, n]) => `${name} ${n}`).join(", ")}`,
     ...(volumes_to_create.length ? [`Creates ${plural(volumes_to_create.length, "volume")}`] : []),

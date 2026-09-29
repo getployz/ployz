@@ -73,7 +73,7 @@ export function CanvasFlow({
   const selectedNodePositionKey = selectedNode ? `${selectedNode.position.x}:${selectedNode.position.y}` : null;
   // While picking a Branch, links into what it would use live are dashed. A plan names nodes.
   const picking = usePickingView();
-  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.lineageId] : []));
+  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.name] : []));
   const pickedLiveIds = new Set([
     ...store.services.flatMap(({ service }) => liveRoles.has(service.name) ? [service.id] : []),
     ...store.volumes.flatMap((volume) => liveRoles.has(volume.name) ? [volume.id] : []),

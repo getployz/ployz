@@ -10,7 +10,6 @@ import { Switch } from "#/components/ui/switch";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
 import { ownLineages } from "#/modules/config-store/branch-picks";
-import { planOf } from "#/modules/config-store/store-branches";
 import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
@@ -200,27 +199,16 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
   const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: [...focus, ...picks] }) : null);
   const view = result?.ok ? result.value : null;
   if (!active || !view) return null;
-  const plan = planOf(view);
-  const byName = new Map(view.nodes.map((node) => [node.name, node]));
   const fromPr = new Set(focus);
-  const own = ownLineages(plan).filter((name) => !fromPr.has(name));
+  const own = ownLineages(view).filter((name) => !fromPr.has(name));
   return {
     parent: { name: view.from.name },
-    plan,
+    plan: view,
     presets: [],
     fromPr,
-    fixed: (node) => fromPr.has(node.lineageId) || (node.role === "own" && node.because !== "picked")
-      || (node.role === "live" && (byName.get(node.lineageId)?.owner ?? view.from.name) !== view.from.name),
-    liveOwner: (name) => ({ ownsData: byName.get(name)?.data ?? false }),
-    ownerName: (name) => byName.get(name)?.owner ?? view.from.name,
+    fixed: (node) => fromPr.has(node.name) || (node.role === "own" && node.because !== "picked")
+      || (node.role === "live" && (node.owner ?? view.from.name) !== view.from.name),
     setPreset: () => undefined,
-    toggled: (name) => {
-      const node = byName.get(name);
-      if (!node) return undefined;
-      return node.toggled === "own"
-        ? { lineageId: node.name, nodeType: node.kind, role: "own", because: "picked" }
-        : { lineageId: node.name, nodeType: node.kind, role: node.toggled };
-    },
     toggle: (name) => {
       const next = own.includes(name) ? own.filter((other) => other !== name) : [...own, name];
       setCopy(next);
