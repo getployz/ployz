@@ -63,7 +63,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
 
   return {
     deploy: () => void admit({ accept: [], version: null }).then(setLoss),
-    publish: () => { writer.commit({ command: "publish", environment, version: null }); },
+    publish: () => { writer.commit({ command: "publish", environment, version: null, accept_volume_loss: [] }); },
     discard,
     dialog: (
       <DeletionDialog

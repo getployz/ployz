@@ -13,7 +13,7 @@ import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
@@ -22,6 +22,7 @@ import { resolveCaller } from "#/modules/identity/caller.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
+import { organizationMachine } from "#/modules/machines/tables";
 import { Database } from "#/server/database.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { encodePublicError, NotFound, statusForPublicError } from "#/server/public-error";
@@ -153,10 +154,6 @@ it.live(
         assert.strictEqual(foreign.status, 404);
         assert.strictEqual(foreign.json.error?.code, "not_found");
 
-        // Only Cloud's own Organization removal forgets an Organization's configuration.
-        const forget = yield* request("write", alice, { command: "remove_organization" });
-        assert.strictEqual(forget.json.error?.code, "unsupported");
-
         const invalid = yield* request("write", alice, { command: "claim", deployment: "d1" });
         assert.strictEqual(invalid.status, 422);
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");
@@ -232,7 +229,7 @@ it.live(
         assert.strictEqual(refused.json.error?.code, "invalid_argument");
         assert.deepStrictEqual(yield* logged(), []);
 
-        assert.strictEqual((yield* request("write", alice, { command: "publish", environment: here, version: null })).status, 200);
+        assert.strictEqual((yield* request("write", alice, { command: "publish", environment: here, version: null, accept_volume_loss: [] })).status, 200);
         // Every write locks its Environment's row, which logs the Environment too.
         assert.sameMembers(yield* logged(), [`config_environment: ${ENVIRONMENT}`, `config_saved: ${ENVIRONMENT}`]);
       }).pipe(Effect.provide(layer));
@@ -255,6 +252,7 @@ it.live(
       const layer = yield* cloudLayer({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
@@ -370,6 +368,7 @@ it.live(
       const layer = yield* cloudLayer({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
@@ -446,6 +445,7 @@ it.live(
       const layer = yield* cloudLayer({}, inngest);
       yield* Effect.gen(function* () {
         const alice = yield* signUp("alice");
+        yield* enrollStoreServer((yield* resolveCaller(new Headers({ cookie: alice }))).organization.id);
         const bob = yield* signUp("bob");
         yield* request("write", alice, shop);
         yield* request("write", alice, {
@@ -482,8 +482,9 @@ it.live(
         // Kept while it may still run, so a replaced worker finds it.
         yield* releaseUpload(store, organizationId, first);
         assert.strictEqual(yield* held(first), 1);
+        // Its Server left: its upload was read, and nothing ran.
+        yield* drizzle.delete(organizationMachine);
         const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first }, "cloud-test");
-        // No Server is enrolled: its upload was read, and nothing ran.
         expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
         assert.strictEqual(yield* held(first), 0);
         assert.strictEqual(yield* held(second), 1);

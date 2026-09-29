@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import type { MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
@@ -13,7 +15,9 @@ import { Database, DatabaseLive } from "#/server/database.server";
 import { testConfigEnvironment } from "#/test/config-environment";
 import { fakeGithubApi } from "#/test/fake-github";
 import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { organizationMachine } from "#/modules/machines/tables";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { SecretEncryption, SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 
 /**
  * Cloud with the Config Store in a fresh database, and everything its Store workers use: GitHub as `github` answers
@@ -52,4 +56,20 @@ export const seedStoreOrganization = Effect.fn(function* (id: string) {
   yield* drizzle.insert(member).values({ userId, organizationId: id, role: "owner" });
   yield* drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
   return userId;
+});
+
+/** Pair Organization `id` with Cloud and enroll one Server, unreachable, so the Store admits Deployments there. */
+export const enrollStoreServer = Effect.fn(function* (id: string) {
+  const { drizzle } = yield* Database;
+  const encryption = yield* SecretEncryption;
+  // SAFETY: 32 lowercase hex digits, the Machine ID representation.
+  const machineId = "0".repeat(32) as MachineId;
+  const secret = "ppair_fixture_store";
+  yield* drizzle.insert(organizationPairing).values({
+    organizationId: id, encryptedPairingSecret: encryption.encrypt(secret), founderPublicKey: "founder-key", founderClaimMachineId: machineId,
+  });
+  yield* drizzle.insert(organizationMachine).values({
+    organizationId: id, machineId, clusterKey: createHash("sha256").update(secret).digest("hex"),
+    encryptedCapability: encryption.encrypt(`ployz1:cloud:${machineId}`), isDialEntry: true,
+  });
 });

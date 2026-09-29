@@ -323,13 +323,16 @@ async function openConfigStore(url, sealingSecret) {
   const store = await withRpcError(native.openConfigStore(url, sealingSecret));
   return {
     read: (organization, query, trusted) => withRpcError(store.read(organization, query, trusted)),
-    write: (organization, command, trusted) => withRpcError(store.write(organization, command, trusted)),
+    write: (organization, command, trusted, principal) =>
+      withRpcError(store.write(organization, command, trusted, principal)),
     deploymentSources: (deployment) => withRpcError(store.deploymentSources(deployment)),
     pinSources: (deployment, commits) => withRpcError(store.pinSources(deployment, commits)),
     runDeployment: (organization, deployment, runner, connections, sources) =>
       withRpcError(store.runDeployment(organization, deployment, runner, connections, sources)),
     abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
-    system: (organization, event) => withRpcError(store.system(organization, event)),
+    system: (organization, event, trusted) => withRpcError(store.system(organization, event, trusted)),
+    removeOrganization: (organization) => withRpcError(store.removeOrganization(organization)),
+    unclaimed: (before) => withRpcError(store.unclaimed(before)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),
     pendingSaves: (organization, repositoryId, branch) =>

@@ -70,7 +70,7 @@ export function StoreDeploymentRows({ service, returnTo }: { service: ServiceLis
           <ItemTitle className="w-full"><span className="truncate">Deployment #{deployment.number}</span></ItemTitle>
           <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
-            {" · "}<span className="truncate">{deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}`}</span>
+            {" · "}<span className="truncate">{deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}${deployment.admitted_by ? ` · by ${deployment.admitted_by}` : ""}`}</span>
           </ItemDescription>
         </ItemContent>
       </Item>
