@@ -17,7 +17,7 @@ const TRY_PROMISE_ALLOWLIST = new Set([
   "server/database.server.ts",
   "modules/inngest/client.ts",
   "modules/inngest/worker.server.ts",
-  "modules/environment-design/workspace-bootstrap.server.ts",
+  "modules/organization/organization-state.server.ts",
   "routes/api/cli/-cli.handler.ts",
   "routes/api/cli/-handlers.ts",
   "routes/api/config/-config.handler.ts",

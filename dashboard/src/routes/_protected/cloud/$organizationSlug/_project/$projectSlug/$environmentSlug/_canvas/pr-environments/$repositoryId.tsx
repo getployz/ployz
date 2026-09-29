@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
-import { prPlansQuery, missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pull-requests";
+import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pr-grants.queries";
 import { environmentsQuery } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorError, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { StorePrPlanPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel";
