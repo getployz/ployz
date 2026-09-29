@@ -10,7 +10,6 @@ use crate::Actor;
 use crate::error;
 use crate::id::ServiceId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::Apply;
 use crate::storage::Tx;
 
 /// Create a Service that runs `image`. Its name is its Private DNS name.
@@ -23,12 +22,19 @@ pub struct CreateService {
     pub image: String,
 }
 
+/// The new Service, staged in Working State until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ServiceCreated {
+    pub service: ServiceSummary,
+    pub environment: EnvironmentSummary,
+    pub staged: Vec<String>,
+    pub immediate: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ServiceSummary {
     pub id: ServiceId,
     pub name: ServiceName,
-    pub environment: EnvironmentSummary,
-    pub apply: Apply,
 }
 
 pub(super) fn create(
@@ -98,10 +104,13 @@ pub(super) fn create(
         ],
     )?;
     Ok(ServiceCreated {
-        id: create.id.clone(),
-        name: create.name.clone(),
+        service: ServiceSummary {
+            id: create.id.clone(),
+            name: create.name.clone(),
+        },
         environment: environment.summary,
-        apply: Apply::Staged,
+        staged: vec![create.name.to_string()],
+        immediate: Vec::new(),
     })
 }
 

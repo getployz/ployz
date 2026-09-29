@@ -10,6 +10,10 @@ pub mod env {
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
+    pub const ENVIRONMENT: &str = "PLOYZ_ENV";
+    pub const PROJECT: &str = "PLOYZ_PROJECT";
+    /// Hidden test mode: host the Config Store in-process (`sqlite:PATH`). Not for users.
+    pub const STORE: &str = "PLOYZ_STORE";
 }
 
 #[must_use]
@@ -24,11 +28,16 @@ pub fn command() -> Command {
         .subcommand(handlers::build::command())
         .subcommand(handlers::cloud::command())
         .subcommand(handlers::context::command())
+        .subcommand(handlers::env::command())
+        .subcommand(handlers::config::get_command())
         .subcommand(handlers::ingress::command())
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::machine::command())
+        .subcommand(handlers::project::command())
         .subcommand(handlers::service::command())
+        .subcommand(handlers::config::set_command())
+        .subcommand(handlers::config::unset_command())
         .subcommand(handlers::volume::command())
         .subcommand(completion())
 }

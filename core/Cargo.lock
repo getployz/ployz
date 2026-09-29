@@ -3293,6 +3293,7 @@ dependencies = [
  "oci-client",
  "ployz-build",
  "ployz-core",
+ "ployz-store",
  "ployz-testkit",
  "regex",
  "reqwest",
