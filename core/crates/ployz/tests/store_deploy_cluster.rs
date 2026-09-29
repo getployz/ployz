@@ -29,10 +29,22 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     ployz(&["project", "new", "shop"]);
     ployz(&["service", "add", "web", "--image", SERVICE_CONTAINER_IMAGE]);
     ployz(&["set", "web.startCommand=sleep 600"]);
+    // A secret is sealed in the Store and unsealed only for its runner.
+    let secrets = dir.path().join("secrets.env");
+    std::fs::write(&secrets, "TOKEN=s3cr3t\n").unwrap();
+    ployz(&[
+        "set",
+        "web",
+        "--from-env-file",
+        secrets.to_str().unwrap(),
+        "--secret",
+    ]);
+    ployz(&["set", "web.env.GREETING=hi-${{ TOKEN }}"]);
     let deployed = ployz(&["deploy", "--events", events.to_str().unwrap()]);
     assert_eq!(deployed["status"], json!("applied"), "{deployed}");
     assert_eq!(deployed["nodes"][0]["outcome"], json!("applied"));
     assert!(deployed["preview"].is_object());
+    assert!(!deployed.to_string().contains("s3cr3t"));
     let progress = std::fs::read_to_string(&events).unwrap();
     assert!(progress.lines().count() > 0);
     for line in progress.lines() {
@@ -62,13 +74,16 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client
-                .live_services(ployz_core::EnvironmentValues::Redacted)
+                .live_services(ployz_core::EnvironmentValues::Included)
                 .await
                 && live.services().iter().any(|service| {
                     service.has_name("web")
                         && service.containers.len() == 2
                         && service.containers.iter().all(|container| {
-                            container.as_observation().namespace.as_str() == "shop-production"
+                            let observed = container.as_observation();
+                            observed.namespace.as_str() == "shop-production"
+                                && observed.resolved_spec.container.environment.get("GREETING")
+                                    == Some(&"hi-s3cr3t".to_owned())
                         })
                 })
             {

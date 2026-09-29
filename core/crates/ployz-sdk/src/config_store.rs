@@ -30,13 +30,15 @@ pub struct ConfigStore {
 }
 
 /// Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests),
-/// migrating its tables as needed.
+/// migrating its tables as needed. It seals secrets with a key derived from
+/// `sealing_secret`, Cloud's encryption secret.
 ///
 /// # Errors
 /// Returns `invalid_argument` for an unsupported URL, or a storage error.
 #[napi]
-pub async fn open_config_store(url: String) -> Result<ConfigStore> {
-    let store = blocking(move || ployz_store::ConfigStore::open(&url)).await?;
+pub async fn open_config_store(url: String, sealing_secret: String) -> Result<ConfigStore> {
+    let sealing = ployz_store::SealingKey::new(sealing_secret.as_bytes()).map_err(rpc_to_napi)?;
+    let store = blocking(move || ployz_store::ConfigStore::open(&url, sealing)).await?;
     Ok(ConfigStore {
         store: Arc::new(store),
         permits: Arc::new(Semaphore::new(CONCURRENCY)),

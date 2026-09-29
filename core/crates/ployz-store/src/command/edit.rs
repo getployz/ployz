@@ -15,8 +15,8 @@ use crate::id::Revision;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
-use crate::variables::{self, VariableKey};
 use crate::storage::Tx;
+use crate::variables::{self, VariableKey};
 
 /// Apply every change to one Environment, all or none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]

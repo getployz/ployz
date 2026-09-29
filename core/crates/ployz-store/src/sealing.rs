@@ -4,6 +4,8 @@
 //! bytes, the tag 16 bytes, each base64; fingerprints are `v1:` and hex.
 
 use std::fmt;
+use std::io::{ErrorKind, Write as _};
+use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
@@ -45,12 +47,48 @@ impl SealingKey {
             }
             context.finish()
         };
-        let cipher = hash(&[secret]).as_ref().try_into().expect("SHA-256 is 32 bytes");
+        let cipher = hash(&[secret])
+            .as_ref()
+            .try_into()
+            .expect("SHA-256 is 32 bytes");
         let fingerprint = hash(&[FINGERPRINT_KEY_PURPOSE, b"\0", secret]);
         Ok(Self {
             cipher,
             fingerprint: hmac::Key::new(hmac::HMAC_SHA256, fingerprint.as_ref()),
         })
+    }
+
+    /// The key in the key file at `path`, creating the file with a random secret
+    /// first when there is none: the hidden test mode's key.
+    ///
+    /// # Errors
+    /// Returns `unavailable` when the file can't be read or created.
+    pub fn from_file(path: &Path) -> Result<Self, RpcError> {
+        let unreadable =
+            || error::unavailable("The Config Store's key file can't be read or created");
+        match std::fs::read(path) {
+            Ok(secret) => return Self::new(&secret),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => return Err(unreadable()),
+        }
+        let mut secret = [0; 32];
+        SystemRandom::new()
+            .fill(&mut secret)
+            .expect("the system random source works");
+        let secret = hex::encode(secret);
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        // ponytail: a concurrent first open may read the file before it is written; retry then.
+        match options.open(path) {
+            Ok(mut file) => file
+                .write_all(secret.as_bytes())
+                .map_err(|_| unreadable())?,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => return Self::from_file(path),
+            Err(_) => return Err(unreadable()),
+        }
+        Self::new(secret.as_bytes())
     }
 
     fn aead(&self) -> LessSafeKey {
@@ -81,7 +119,8 @@ impl SealingKey {
     /// # Errors
     /// Returns `internal` when it was sealed under another key or was altered.
     pub(crate) fn open(&self, sealed: &EncryptedSecretValue) -> Result<String, RpcError> {
-        let unreadable = || error::internal("A sealed secret could not be opened with this Store's key");
+        let unreadable =
+            || error::internal("A sealed secret could not be opened with this Store's key");
         let decode = |text: &str| STANDARD.decode(text).map_err(|_| unreadable());
         let iv: [u8; NONCE_LEN] = decode(&sealed.iv)?.try_into().map_err(|_| unreadable())?;
         let tag = decode(&sealed.tag)?;

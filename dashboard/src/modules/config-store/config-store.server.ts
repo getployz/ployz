@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore } from "@ployz/sdk";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { AppConfig } from "#/server/config.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -16,10 +16,11 @@ const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk
 /** One Store handle per database for the process; a failed open is retried by the next call. */
 const opened = new Map<string, Promise<ConfigStore>>();
 
-function storeAt(url: string) {
+/** The Store seals secrets with Cloud's encryption secret, so its ciphertext stays readable by Cloud's own sealing. */
+function storeAt(url: string, sealingSecret: string) {
   let store = opened.get(url);
   if (store === undefined) {
-    store = openConfigStore(url);
+    store = openConfigStore(url, sealingSecret);
     opened.set(url, store);
     store.catch(() => opened.delete(url));
   }
@@ -76,7 +77,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   });
   return yield* Effect.tryPromise({
     try: async () => {
-      const store = await storeAt(url.href);
+      const store = await storeAt(url.href, Redacted.value(config.encryptionSecret));
       // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
       return operation === "read"
         ? await store.read(caller.organization.id, input as ConfigQuery)
