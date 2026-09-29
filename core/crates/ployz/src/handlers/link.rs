@@ -542,9 +542,9 @@ fn print(status: &Status, hint: Option<&str>) {
     }
     for deployment in &status.deploying {
         say!(
-            "Deployment {} is {:?}.",
+            "Deployment {} is {}.",
             deployment.number,
-            deployment.status
+            super::store::word(&deployment.status)
         );
     }
     for attention in &status.attention {

@@ -597,3 +597,34 @@ pub(crate) fn failed<'matches>(
         error.into()
     }
 }
+
+/// A unit enum variant as the word its JSON uses, such as `not_applied`.
+pub(crate) fn word(value: &impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+/// Argument `arg`, a Service name. Core's name error quotes the value; a rejected
+/// value is never echoed.
+pub(crate) fn service_name(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<ployz_core::ServiceName, Error> {
+    ployz_core::ServiceName::parse(super::required(matches, arg)?).map_err(|_| {
+        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
+            .with_exit(crate::failure::USAGE_EXIT)
+    })
+}
+
+/// Argument `arg`, a Volume name.
+pub(crate) fn volume_name(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<ployz_store::VolumeName, Error> {
+    ployz_store::VolumeName::parse(super::required(matches, arg)?).map_err(|_| {
+        Error::usage("Expected a Volume name: lowercase letters, digits and -, like data")
+            .with_exit(crate::failure::USAGE_EXIT)
+    })
+}

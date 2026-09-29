@@ -142,32 +142,24 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-/// Start or stop the addressed Environment's Services.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, usage, or wait error, or [`Error::partial`].
-pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
-    lifecycle(
-        root,
-        match action {
-            ContainerAction::Start => &[ContainerAction::Start],
-            ContainerAction::Stop => &[ContainerAction::Stop],
-            ContainerAction::Remove => &[ContainerAction::Remove],
-        },
-    )
-}
-
 /// Stop, then start, the addressed Environment's Services. Every Container is started
 /// again even when stopping one failed, so a failed restart never leaves a Service down.
 /// Both steps wait for their Container Observations, each bounded by the barrier timeout.
 fn restart(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
+    lifecycle(
+        root,
+        "restart",
+        &[ContainerAction::Stop, ContainerAction::Start],
+    )
 }
 
-fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(), Error> {
+/// Start or stop the addressed Environment's Services, as `command`.
+fn lifecycle(
+    root: &ArgMatches,
+    command: &str,
+    actions: &'static [ContainerAction],
+) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let command = leaf_name(root);
     let namespace = super::operator::scope(root, &["service", command])?;
     let selectors = change_selectors(leaf, namespace.as_ref())?;
     let (signal, timeout) = stop_options(leaf, actions)?;
@@ -203,21 +195,6 @@ fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(
             }
         })
     })
-}
-
-/// The name of the leaf subcommand: `start`, `stop` or `restart`.
-fn leaf_name(mut matches: &ArgMatches) -> &'static str {
-    let mut name = "";
-    while let Some((child, next)) = matches.subcommand() {
-        name = match child {
-            "start" => "start",
-            "stop" => "stop",
-            "restart" => "restart",
-            _ => name,
-        };
-        matches = next;
-    }
-    name
 }
 
 struct ServiceActionOutcome {
@@ -503,8 +480,14 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
         "rename" => (authored::rename, Supported),
         "restart" => (restart, Supported),
         "rm" => (authored::remove, Supported),
-        "start" => (|root| change(root, ContainerAction::Start), Supported),
-        "stop" => (|root| change(root, ContainerAction::Stop), Supported),
+        "start" => (
+            |root| lifecycle(root, "start", &[ContainerAction::Start]),
+            Supported,
+        ),
+        "stop" => (
+            |root| lifecycle(root, "stop", &[ContainerAction::Stop]),
+            Supported,
+        ),
         _ => return None,
     })
 }

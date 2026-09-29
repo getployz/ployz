@@ -274,10 +274,10 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
         }
         for build in &builds {
             crate::output::say!(
-                "== {} from {}: {:?}",
+                "== {} from {}: {}",
                 build.build.service,
                 build.build.commit.as_deref().unwrap_or("the upload"),
-                build.build.status
+                super::store::word(&build.build.status)
             );
             crate::output::say!("{}", build.log);
         }

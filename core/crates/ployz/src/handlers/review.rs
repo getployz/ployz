@@ -45,7 +45,11 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
             say!("No staged changes in {where_}.");
         }
         for change in &view.changes {
-            say!("{} ({:?})", change.name, change.lifecycle);
+            say!(
+                "{} ({})",
+                change.name,
+                super::store::word(&change.lifecycle)
+            );
             for row in &change.settings {
                 say!("  {}: {} -> {}", row.path, row.before, row.after);
             }

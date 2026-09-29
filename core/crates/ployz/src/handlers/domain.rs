@@ -4,7 +4,6 @@
 //! with at most one action.
 
 use clap::{ArgMatches, Command};
-use ployz_core::ServiceName;
 use ployz_store::{
     AddDomain, DomainAction, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainsQuery,
     Hostname, RemoveDomain,
@@ -75,7 +74,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     let add = AddDomain {
         environment: store::environment(matches)?,
-        service: service_name(matches)?,
+        service: store::service_name(matches, "service")?,
         hostname,
         port: matches.get_one::<u16>("port").copied(),
     };
@@ -105,7 +104,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let service = matches
         .get_one::<String>("service")
-        .map(|_| service_name(matches))
+        .map(|_| store::service_name(matches, "service"))
         .transpose()?;
     let query = DomainsQuery {
         environment: store::environment(matches)?,
@@ -198,12 +197,4 @@ fn show(row: &DomainRow) {
             );
         }
     }
-}
-
-fn service_name(matches: &ArgMatches) -> Result<ServiceName, Error> {
-    // Core's name error quotes the value; a rejected value is never echoed.
-    ServiceName::parse(required(matches, "service")?).map_err(|_| {
-        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
-            .with_exit(USAGE_EXIT)
-    })
 }
