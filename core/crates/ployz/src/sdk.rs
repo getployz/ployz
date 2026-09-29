@@ -405,7 +405,9 @@ impl Session {
     }
 
     /// Start one Image Build. `input` holds exactly one Git Service with its
-    /// checkout and commit; its receipt, if any, is a reuse hint. When
+    /// checkout and commit, or one uploaded Service with or without its source;
+    /// its receipt, if any, is a reuse hint, and the only way to serve an upload
+    /// that came without source. When
     /// `start_within` passes before a Build Machine admits the build, the build
     /// is withdrawn and `finished` reports [`BuildOutcome::Queued`]. An admitted
     /// build always runs to its end. The Machine's temporary image retention
@@ -885,6 +887,7 @@ fn preparation_error(
                 details,
             }
         }
+        PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
         PreparationError::Cancelled => RpcError {
             code: RpcErrorCode::Unavailable,
             message,

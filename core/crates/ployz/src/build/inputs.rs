@@ -1,7 +1,7 @@
 //! Attempt-local build inputs isolate Docker execution from later source edits.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{self, Read as _},
     os::unix::fs::{DirBuilderExt as _, PermissionsExt as _, symlink},
@@ -360,6 +360,41 @@ fn copy(
     }
 }
 
+/// An Uploaded Source's content digest: lowercase hex sha256 over every path, byte,
+/// mode and link under `root`, except a top-level `.git`, which is never uploaded.
+///
+/// # Errors
+/// Fails on unreadable entries and sockets or special files.
+pub(crate) fn content_digest(root: &Path) -> Result<String, Error> {
+    fn walk(path: &Path, root: &Path, paths: &mut BTreeSet<PathBuf>) -> io::Result<()> {
+        for entry in fs::read_dir(path)? {
+            let entry = entry?.path();
+            let relative = entry.strip_prefix(root).expect("entry is under root");
+            if relative == Path::new(".git") {
+                continue;
+            }
+            paths.insert(relative.to_owned());
+            if fs::symlink_metadata(&entry)?.is_dir() {
+                walk(&entry, root, paths)?;
+            }
+        }
+        Ok(())
+    }
+    let digest = (|| {
+        let mut paths = BTreeSet::new();
+        walk(root, root, &mut paths)?;
+        fingerprint(
+            root,
+            Some(&Selection {
+                paths,
+                ignore: Vec::new(),
+            }),
+        )
+    })()
+    .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?;
+    Ok(hex::encode(digest))
+}
+
 // Open every component without following links, so a source edit cannot turn a
 // file or its parent into a route to uncaptured host bytes during copy/hash.
 fn source_file(path: &Path, root: &Path) -> io::Result<fs::File> {
@@ -454,6 +489,38 @@ mod tests {
     use super::*;
 
     use std::os::unix::net::UnixListener;
+
+    #[test]
+    fn content_digest_covers_paths_bytes_modes_and_links_but_not_git() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir(root.join("src")).unwrap();
+        fs::write(root.join("src/app"), "one").unwrap();
+        symlink("src/app", root.join("link")).unwrap();
+        let digest = content_digest(root).unwrap();
+        assert!(ployz_core::is_lower_hex(&digest, 64), "{digest}");
+        fs::create_dir(root.join(".git")).unwrap();
+        fs::write(root.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+        assert_eq!(content_digest(root).unwrap(), digest, ".git is never uploaded");
+        let changed = |edit: &dyn Fn()| {
+            edit();
+            content_digest(root).unwrap()
+        };
+        let mut seen = BTreeSet::from([digest]);
+        let edits: [&dyn Fn(); 5] = [
+            &|| fs::write(root.join("src/app"), "two").unwrap(),
+            &|| fs::set_permissions(root.join("src/app"), fs::Permissions::from_mode(0o755)).unwrap(),
+            &|| {
+                fs::remove_file(root.join("link")).unwrap();
+                symlink("src", root.join("link")).unwrap();
+            },
+            &|| fs::rename(root.join("src/app"), root.join("src/main")).unwrap(),
+            &|| fs::write(root.join("src/.git"), "").unwrap(),
+        ];
+        for edit in edits {
+            assert!(seen.insert(changed(edit)), "every edit changes the digest");
+        }
+    }
 
     #[test]
     fn ignored_special_files_do_not_enter_capture() {

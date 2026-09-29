@@ -775,8 +775,8 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
-/// Fingerprints a build of these pinned commits would carry, without a checkout.
-/// Input: `{deployment, source_commits}` as in preparation.
+/// Fingerprints a build of these pinned commits and uploads would carry, without
+/// any source. Input: `{deployment, source_commits, uploads?}` as in preparation.
 ///
 /// # Errors
 /// Rejects an invalid deployment or a commit for a non-Git Service.
@@ -787,10 +787,12 @@ pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value>
     struct Input {
         deployment: serde_json::Value,
         source_commits: std::collections::BTreeMap<ployz_core::ServiceName, String>,
+        #[serde(default)]
+        uploads: std::collections::BTreeMap<ployz_core::ServiceName, String>,
     }
     let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
     to_json(
-        &sdk::expected_fingerprints(input.deployment, input.source_commits).map_err(rpc_to_napi)?,
+        &sdk::expected_fingerprints(input.deployment, input.source_commits, input.uploads).map_err(rpc_to_napi)?,
     )
 }
 
