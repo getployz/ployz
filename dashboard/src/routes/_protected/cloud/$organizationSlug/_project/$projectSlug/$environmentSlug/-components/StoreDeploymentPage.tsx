@@ -9,6 +9,7 @@ import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
 import { RelativeTime } from "#/components/relative-time";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -181,6 +182,8 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
   const [cancelOpen, setCancelOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const actions = deploymentActions(deployment.status);
+  // With no Server, nothing can run it: the way on is adding one.
+  const { noServers } = useRuntimeLens(params.organizationSlug);
 
   async function retry() {
     const id = crypto.randomUUID();
@@ -209,8 +212,11 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
           <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
         </Button>
       ) : null}
-      {actions.retry ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
-      {actions.start ? (
+      {noServers && (actions.retry || actions.start) ? (
+        <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>
+      ) : null}
+      {actions.retry && !noServers ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
+      {actions.start && !noServers ? (
         <Button size="sm" variant="outline" onClick={() => { writer.commit({ command: "start", deployment: deployment.id }); }}>Deploy now</Button>
       ) : null}
       {actions.cancel ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}

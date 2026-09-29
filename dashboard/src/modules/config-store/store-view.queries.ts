@@ -10,6 +10,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
 import type { StoreResult, StoreViewOf } from "./store.contract";
+import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -319,6 +320,24 @@ export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizat
 /** Reads one Store view; see `useStoreViews`. */
 export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
   return useStoreViews(organizationSlug, [query] as const)[0];
+}
+
+/**
+ * Changes open pull requests saved into `environment` for their merge (standing Conditional Saves), by pull request:
+ * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
+ */
+// ponytail: one pull request view per open PR of the Project; a Store view of saves into an Environment when PRs pile up.
+export function useSavesInto(organizationSlug: string, project: string, environment: string) {
+  const scope = useCollectionScope();
+  const plans = useCachedStoreView(organizationSlug, prPlansQuery(project));
+  const open = plans?.ok ? plans.value.plans.flatMap((plan) => plan.open.map((pr) => ({ repository_id: plan.repository_id, number: pr.number }))) : [];
+  const views = useQueries({ queries: open.map((pr) => storeViewOptions(organizationSlug, scope, pullRequestQuery(pr))) });
+  return views.flatMap(({ data }) => {
+    if (!data?.ok || !data.value.pull_request) return [];
+    const { number } = data.value.pull_request;
+    return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
+      destination.name === environment && destination.save?.standing ? [{ number, changes: destination.save.changes }] : []));
+  });
 }
 
 /**
