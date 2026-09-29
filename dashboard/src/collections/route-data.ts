@@ -7,9 +7,9 @@ import {
 } from "#/modules/environment-design/workspace.queries";
 import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-schemas";
 import { activeBuildTailReads } from "#/modules/deployments/deployment.collection";
-import type { ConfigQuery } from "@ployz/sdk";
+import type { ConfigQuery, EnvironmentRef } from "@ployz/sdk";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import { storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { storeDeploymentsOptions, storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -78,6 +78,19 @@ export async function prefetchActiveBuildTails(context: RouteDataContext, input:
 export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
   if (!storeEnabled) return;
   await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));
+}
+
+/**
+ * An Environment page's Store reads, started together: `queries`, and the first page of its Deployments (the bottom
+ * bar's in-flight one, the Deployments list). Nothing while the Store is dark.
+ */
+export async function prefetchStoreEnvironment(context: RouteDataContext, organizationSlug: string, environment: EnvironmentRef,
+  ...queries: ConfigQuery[]) {
+  if (!storeEnabled) return;
+  await Promise.all([
+    prefetchStoreViews(context, organizationSlug, ...queries),
+    prefetchRemotePages(context, storeDeploymentsOptions(organizationSlug, scopeOf(context), environment)),
+  ]);
 }
 
 /** `prefetchRemote` for a paged read: its first page. */
