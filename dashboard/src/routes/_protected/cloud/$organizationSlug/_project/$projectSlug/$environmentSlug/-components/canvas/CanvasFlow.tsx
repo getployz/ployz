@@ -192,10 +192,10 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const ref = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store;
-  const actions = useStoreChangeActions(params.organizationSlug, ref,
+  const { diff } = store;
+  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
-  const { diff } = store;
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>

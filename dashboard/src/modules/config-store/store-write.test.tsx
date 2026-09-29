@@ -9,7 +9,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
-import { editStoreEnvironment, useStoreWriter } from "./store-write";
+import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -54,7 +54,8 @@ function setup(initial: EnvironmentView) {
     const result = shown.result.current;
     return result.ok ? result.value.settings.find((row) => row.path === path)?.value : undefined;
   };
-  return { scope, store, write, replicas, value };
+  const writer = renderHook(() => useStoreWriter("acme"), { wrapper }).result.current;
+  return { scope, store, write, replicas, value, writer, edit: (edit: StoreEdit) => writer.edit(edit) };
 }
 
 const edited = (revision: number): StoreResult<ConfigWritten> =>
@@ -69,11 +70,11 @@ it("shows an edit at once, saves edits in order against the newest revision, and
     return edited(4);
   });
 
-  let one!: ReturnType<typeof editStoreEnvironment>;
-  let two!: ReturnType<typeof editStoreEnvironment>;
-  act(() => { one = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(3) }); });
+  let one!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  let two!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { one = test.edit({ environment: ref, changes: replicas(3) }); });
   await waitFor(() => expect(test.replicas()).toBe(3));
-  act(() => { two = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(5) }); });
+  act(() => { two = test.edit({ environment: ref, changes: replicas(5) }); });
   await waitFor(() => expect(test.replicas()).toBe(5));
   // The second waits for the first: one queue per Environment.
   expect(test.write).toHaveBeenCalledTimes(1);
@@ -94,8 +95,8 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
   const refused = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => refused.promise);
 
-  let edit!: ReturnType<typeof editStoreEnvironment>;
-  act(() => { edit = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(3) }); });
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
+  act(() => { edit = test.edit({ environment: ref, changes: replicas(3) }); });
   await waitFor(() => expect(test.replicas()).toBe(3));
   // The CLI moved Working State before this tab heard about it.
   test.store.current = view(3, 7);
@@ -113,24 +114,35 @@ it("seals a variable at once, and a refused seal leaves it as it was", async () 
   const refused = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => refused.promise);
 
-  let edit!: ReturnType<typeof editStoreEnvironment>;
+  let edit!: ReturnType<ReturnType<typeof useStoreWriter>["edit"]>;
   const seal = [{ op: "set" as const, path: "web.env.TOKEN", value: { secret: "abc" } }];
-  act(() => { edit = editStoreEnvironment("acme", test.scope, { environment: ref, changes: seal }); });
+  act(() => { edit = test.edit({ environment: ref, changes: seal }); });
   await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
   refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "Could not seal", details: null } });
   await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
   await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
 });
 
-it("applies pending set, unset and patch changes over a view, and its one-Service values", () => {
-  const shown = withPendingChanges(view(1, 1, { replicas: 1, startCommand: "serve" }), [
+it("shows pending sets and unsets as their values, in order, knowing no edit rules", () => {
+  const shown = withPendingChanges(view(1, 1), [
     { op: "set", path: "web.replicas", value: 4 },
     { op: "unset", path: "web.startCommand" },
-    { op: "patch", path: "web", value: { replicas: 6 } },
-    { op: "set", path: "web.unknown", value: 1 },
+    { op: "set", path: "web.replicas", value: 6 },
   ]);
   expect(shown.settings.map((row) => row.value)).toEqual([6, null]);
-  expect(shown.values).toEqual({ replicas: 6 });
+});
+
+it("runs a Move after pending edits in every Environment", async () => {
+  const test = setup(view(2, 1));
+  const edit = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
+  act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
+  const moved = test.writer.commit({ command: "move", from: ref, into: null, picks: null });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(test.write).toHaveBeenCalledTimes(1);
+  edit.resolve(edited(3));
+  await moved.isPersisted.promise;
+  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
 });
 
 it("refetches only the views a changed Store table family backs", () => {
