@@ -528,7 +528,14 @@ fn unchanged_ingress_follows_a_role_change_on_only_that_server() {
         .iter()
         .filter_map(|row| match &row.operation {
             DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
-            _ => None,
+            DeployOperation::PrepareVolumes { .. }
+            | DeployOperation::WaitHealthy { .. }
+            | DeployOperation::StopContainer { .. }
+            | DeployOperation::RemoveContainer { .. }
+            | DeployOperation::ReplaceContainer(_)
+            | DeployOperation::StopHook { .. }
+            | DeployOperation::RunHook { .. }
+            | DeployOperation::RemoveVolume { .. } => None,
         })
         .collect::<Vec<_>>();
     assert_eq!(runs, [machine_id('3')]);

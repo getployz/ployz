@@ -450,6 +450,7 @@ mod tests {
         (result, outcome, client.moved)
     }
 
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_failed_daemon_upgrade_stops_before_the_ingress_proxy_moves() {
         let machines = [machine('a', 1), machine('b', 2)];
@@ -466,6 +467,7 @@ mod tests {
         assert!(moved.is_empty());
     }
 
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn a_failed_ingress_move_after_upgraded_daemons_is_partial_with_the_rerun() {
         let machines = [machine('a', 1), machine('b', 2)];
@@ -494,6 +496,7 @@ mod tests {
         assert_eq!(moved, [IngressImage::Latest]);
     }
 
+    #[expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
     #[tokio::test]
     async fn servers_without_the_ingress_role_leave_the_proxy_alone() {
         let mut builder = machine('a', 1);
