@@ -187,6 +187,189 @@ async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
     assert_eq!(rebuilt["status"], json!("applied"), "{rebuilt}");
 }
 
+/// Cloud's runner builds each Git Service from its checkout at its pinned commit, all
+/// at once, before preparing. A failed build fails the Deployment but keeps the others'
+/// receipts, so a retry rebuilds only what failed.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_failed() {
+    use std::collections::BTreeMap;
+
+    use ployz_core::ServiceName;
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildStatus, Change, ConfigStore,
+        CreateGitService, CreateProject, DeploymentId, DeploymentStatus, Edit, EnvironmentId,
+        EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId,
+        SettingPath, Trusted,
+    };
+
+    let plan = ClusterPlan::new(&format!("l3-store-git-{}", std::process::id()), 1).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_entry().await.unwrap();
+    let address = cluster.api_socket_address(0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
+    let who = Actor {
+        organization: OrganizationId::parse("org").unwrap(),
+    };
+    store
+        .create_project(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let names = ["web", "api"];
+    let evidence = Trusted {
+        repositories: names
+            .iter()
+            .zip(11..)
+            .map(|(name, repository_id)| AuthorizedRepository {
+                repository: format!("acme/{name}"),
+                repository_id,
+                access: ServiceGitAccess::Public,
+                default_branch: "main".into(),
+                branches: Vec::new(),
+            })
+            .collect(),
+    };
+    let mut checkouts = BTreeMap::new();
+    let sources = tempfile::tempdir().unwrap();
+    for (n, name) in names.iter().enumerate() {
+        store
+            .create_git_service(
+                &who,
+                &CreateGitService {
+                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
+                        .unwrap(),
+                    environment: EnvironmentRef::default(),
+                    name: ServiceName::parse(*name).unwrap(),
+                    repository: format!("acme/{name}"),
+                    branch: None,
+                },
+                &evidence,
+            )
+            .unwrap();
+        let checkout = sources.path().join(name);
+        std::fs::create_dir(&checkout).unwrap();
+        checkouts.insert(ServiceName::parse(*name).unwrap(), checkout);
+    }
+    let dockerfile = |name: &str, run: &str| {
+        std::fs::write(
+            sources.path().join(name).join("Dockerfile"),
+            format!("FROM alpine:3.23.3\nRUN {run}\nCMD [\"sleep\", \"600\"]\n"),
+        )
+        .unwrap();
+    };
+    dockerfile("web", "echo built-web");
+    dockerfile("api", "echo broken-api && exit 1");
+    store
+        .edit(
+            &who,
+            &Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: names
+                    .iter()
+                    .map(|name| Change::Set {
+                        path: SettingPath::parse(&format!("{name}.buildMethod")).unwrap(),
+                        value: json!("dockerfile"),
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+
+    let commit = "c".repeat(40);
+    let deploy = |n: u8| {
+        let store = Arc::clone(&store);
+        let (who, checkouts, commit) = (who.clone(), checkouts.clone(), commit.clone());
+        async move {
+            let id =
+                DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+            store
+                .admit(
+                    &who,
+                    &Admit {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: None,
+                    },
+                )
+                .unwrap();
+            let pins = names
+                .iter()
+                .map(|name| (ServiceName::parse(*name).unwrap(), commit.clone()))
+                .collect();
+            store.pin(&id, &pins).unwrap();
+            ployz::sdk::run_deployment(
+                Arc::clone(&store),
+                who.clone(),
+                id.clone(),
+                RunnerId::parse(format!("cloud-{n}")).unwrap(),
+                vec![Connection::tcp(address)],
+                Ok(checkouts),
+            )
+            .await
+            .unwrap();
+            store.deployment(&who, &id).unwrap()
+        }
+    };
+    let statuses = |view: &ployz_store::DeploymentView| {
+        view.builds
+            .iter()
+            .map(|build| (build.service.clone(), build.status))
+            .collect::<BTreeMap<_, _>>()
+    };
+
+    let failed = deploy(1).await;
+    assert_eq!(
+        failed.deployment.status,
+        DeploymentStatus::Failed,
+        "{failed:?}"
+    );
+    assert_eq!(
+        statuses(&failed),
+        BTreeMap::from([
+            ("api".to_owned(), BuildStatus::Failed),
+            ("web".to_owned(), BuildStatus::Built),
+        ])
+    );
+    let log = store
+        .build_log(
+            &who,
+            &BuildLogQuery {
+                deployment: failed.deployment.id.clone(),
+                service: ServiceName::parse("api").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(log.log.contains("broken-api"), "{}", log.log);
+
+    dockerfile("api", "echo fixed-api");
+    let retried = deploy(2).await;
+    assert_eq!(
+        retried.deployment.status,
+        DeploymentStatus::Applied,
+        "{retried:?}"
+    );
+    assert_eq!(
+        statuses(&retried),
+        BTreeMap::from([
+            ("api".to_owned(), BuildStatus::Built),
+            ("web".to_owned(), BuildStatus::Reused),
+        ])
+    );
+}
+
 fn attempt(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> (Option<i32>, Value) {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)
