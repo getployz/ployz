@@ -205,7 +205,7 @@ impl Run {
                     .map(|hint| BTreeMap::from([(source.service.clone(), hint)]))
                     .unwrap_or_default(),
                 build_index: index,
-                preferred_machine: source.preferred_machine.clone(),
+                preferred_machine: source.preferred_machine,
             };
             builds.push((source, hint, session.build(input, None)?));
         }

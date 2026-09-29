@@ -144,7 +144,7 @@ impl Preferred {
     fn parse(value: &Value) -> Result<Self, RpcError> {
         match value.as_str() {
             Some("github") => Ok(Self::Github),
-            Some(text) => MachineId::parse(text.trim().to_owned())
+            Some(text) => MachineId::parse(text.trim())
                 .map(Self::Server)
                 .map_err(|_| SETTING.invalid("expected \"github\" or a Server's Machine ID")),
             None => Err(SETTING.invalid("expected \"github\" or a Server's Machine ID")),
