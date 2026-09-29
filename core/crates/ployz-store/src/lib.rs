@@ -30,7 +30,7 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
-    /// Open the Store at `url` (`sqlite:PATH`, or `sqlite::memory:` for tests),
+    /// Open the Store at `url` (`postgres://…` in Cloud; `sqlite:PATH`, or `sqlite::memory:` for tests),
     /// creating and migrating its tables as needed.
     ///
     /// # Errors
