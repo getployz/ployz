@@ -22,6 +22,7 @@ pub(crate) mod project;
 pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
+pub(crate) mod setup;
 pub(crate) mod store;
 pub(crate) mod volume;
 
@@ -32,6 +33,11 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
+    // Only root help shows the footer, so skip reading the skill otherwise.
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if args.is_empty() || args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        command = command.after_help(setup::help_footer());
+    }
     let matches = command.clone().try_get_matches().map_err(usage_failure)?;
     crate::output::set_json(matches.get_flag("json"));
     dispatch(&matches, &mut command)
@@ -271,6 +277,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("schema", "") => Some((catalog::schema, Json::Supported)),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
+        ("setup", rest) => setup::handler(rest),
         ("set", "") => Some((config::set, Json::Supported)),
         ("token", rest) => account::token_handler(rest),
         ("unset", "") => Some((config::unset, Json::Supported)),

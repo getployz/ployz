@@ -51,6 +51,7 @@ pub fn command() -> Command {
         .subcommand(handlers::review::publish_command())
         .subcommand(handlers::catalog::schema_command())
         .subcommand(handlers::config::set_command())
+        .subcommand(handlers::setup::command())
         .subcommand(handlers::config::unset_command())
         .subcommand(handlers::volume::command())
         .subcommand(completion())

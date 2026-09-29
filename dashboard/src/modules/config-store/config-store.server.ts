@@ -95,6 +95,8 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (request.method !== "POST" || (operation !== "read" && operation !== "write")) {
     return yield* new NotFound({ message: "Not found." });
   }
+  // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
+  yield* Effect.annotateCurrentSpan("ployz.agent", request.headers.get("x-ployz-agent") ?? "none");
   const caller = yield* resolveCaller(request.headers);
   const input: unknown = yield* Effect.tryPromise({
     try: () => request.json(),
