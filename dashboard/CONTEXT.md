@@ -1,28 +1,12 @@
 # Ployz Cloud
 
-Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. Shared runtime bootstrap terms follow the [Ployz runtime glossary](../core/CONTEXT.md) and are mirrored here for Cloud product language.
+Ployz Cloud is the product and workflow context around creating, connecting, and operating Ployz runtime machines. It hosts each Organization's Config Store; authored-configuration terms (Working State, Saved State, Discard, Branches, Save, Update) live in the [core glossary](../core/CONTEXT.md). Shared runtime bootstrap terms follow that glossary too and are mirrored here for Cloud product language.
 
 ## Language
-
-**Environment Node**:
-A deployable element of an Environment whose desired configuration participates in reviewed snapshots. Services and Environment Resources are Environment Nodes, while retaining distinct storage and lifecycle behavior.
-_Avoid_: Canvas node when referring to deployment identity
-
-**Service Metadata**:
-The display name of a Service, stored on its stable identity and saved immediately. Renaming does not change Private DNS, the stable service slug, Working State, or any accepted deployment. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable slug.
-_Avoid_: Deployable name, DNS alias
 
 **Deployment Policy**:
 Immediate Service preferences controlling automated admission and where its Image Builds start: automatic Git deployment, waiting for CI, watch paths, image update preference, and the Preferred Builder. Trigger evaluation combines current policy with Saved configuration and rechecks policy under the Environment lock before admission. Policy never enters configuration comparison or Discard. Waiting for CI counts check suites from other GitHub Apps, never Ployz's own. Waiting Git triggers resume after check-suite events or the ingestion sweep; all selected Services share one Environment admission.
 _Avoid_: Staged source settings, runtime configuration
-
-**Registry Credential**:
-Current encrypted authentication material owned by a Service identity, with a new revision on rotation. Deployable configuration contains only its stable credential reference. Connecting or disconnecting that reference is staged; rotating its contents is immediate. Admission freezes the credential revision and encrypted material with the deployment snapshots. Discard cannot undo a rotation.
-_Avoid_: Saved credential contents, credential revision as configuration
-
-**Environment Resource**:
-A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Volumes are the current Environment Resource type; effects on a Service's container template remain Service-owned.
-_Avoid_: Generic canvas item, Service subtype
 
 **Cloud Bootstrap Invite**:
 A time-limited Cloud permission that can issue one or more single-redemption Cloud Bootstrap Tokens for an Organization Cluster. A valid token redeem request is the approval boundary for each tokenized machine use; an invite grants bootstrap permission, not cluster truth.
@@ -43,10 +27,6 @@ _Avoid_: Machine in user-facing copy, Cloud server record
 **Server Policy**:
 The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.
 _Avoid_: Server settings draft, machine config, cluster-wide roles
-
-**Volume Kind**:
-The explicit, user-chosen kind of a Cloud Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local; the kind is chosen at creation and shown with its trade-offs, never inferred from whether a size was typed.
-_Avoid_: Storage class, volume type dropdown, managed volume toggle
 
 **Cloud Bootstrap Token**:
 The single-redemption bearer secret embedded in a copied Cloud Bootstrap Invite command. The token is not the org, cluster, machine identity, join token, or callback credential.
@@ -113,20 +93,12 @@ Whether an Organization may link a custom hostname to a Service. Granted when th
 _Avoid_: Entitlement, feature flag, paid feature check
 
 **Cloud Lens**:
-Cloud's role after bootstrap is to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
+Cloud's role after bootstrap is to host the Organization's Config Store and to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth
 
 **Organization change log**:
 Cloud's record of which rows of an Organization's organization-owned tables changed, written by database triggers and read by transaction horizon (xid) cursor. Open tabs follow it through one change stream per Organization and re-read only the changed rows; runtime sessions follow it to notice a removed pairing. It keeps 24 hours; a cursor older than the oldest retained change reads in full. It names changes, not their content, and is never a source of truth.
 _Avoid_: Event log, audit log, outbox, notification channel
-
-**Cloud Deployment Attempt**:
-The Cloud-owned, user-visible attempt to turn one frozen Attempt Target into runtime state through queueing, planning, building, and authoritative deploy. It remains one Environment-level attempt even when successful Environment Nodes apply and failed nodes remain pending independently.
-_Avoid_: Prepared snapshot, build workflow, Core Deploy
-
-**Working State**:
-The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity, Node Introduction, and canvas position when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
-_Avoid_: Saved State, deployable revision, client diff ledger
 
 **Cluster Domain**:
 The generated base hostname an Organization holds from Hosted DNS, owned by the Organization rather than by any Cloud Pairing, so it survives teardown and re-pairing. Cloud reserves it on the first deployment that needs a generated hostname; until then the Organization has none. Hosted DNS picks the name and it never changes: no rename, no manual release, and a name Hosted DNS reaps or retires is an operator incident, not a replacement. Cloud publishes the apex records for reachable ingress Servers, renews its lease hourly whether or not a Cluster is paired, keeps one wildcard certificate for the name and `*.name` (replaced within 30 days of expiry, its key stored encrypted in Cloud) published to the Cluster as Certificate Material, and releases it only when the Organization is deleted. The runtime never holds it; managed hostnames reach the runtime already expanded into explicit hostnames.
@@ -135,37 +107,12 @@ _Avoid_: Hosted DNS hostname as runtime state, generated domain as pairing state
 **Public Domain Variable**:
 `PLOYZ_PUBLIC_DOMAIN` is the last linked custom domain in a Service's captured route list, otherwise the last generated hostname expanded against the Organization's Cluster Domain during deployment preparation. DNS and certificate health do not affect selection. Domain lists retain link order; port edits retain position, removal falls back to the preceding domain, and relinking appends. With no public hostname the managed variable is absent. Cloud exposes it for references and injects it into the deployment environment; authored overrides retain the usual variable precedence. Running containers keep the value captured for their deployment.
 
-**Environment Publication Review**:
-Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Save and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
-_Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
-
-**Saved State Command**:
-One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard publishes at most one replacement revision in the same transaction as its Working State reset.
-_Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
-
-**Derived Service Configuration**:
-The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
-At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
-_Avoid_: Saved Service config, copied consumer snapshot, second source of truth
-
-**Applied State**:
-The per-Environment-Node projection of the latest confirmed runtime outcomes. Successful or removed nodes advance independently; failed or skipped nodes retain their previous Applied State.
-_Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
-
-**Node Outcome**:
-One Environment Node's result within a Cloud Deployment Attempt: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
-_Avoid_: Applied, Skipped, Succeeded, Live (the Environment as it is now is not an outcome)
-
 **Deployment Page**:
-The page for one Cloud Deployment Attempt: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only in its list. The canvas never enters an attempt; it always draws the Environment as it is now.
+The page for one Deployment: each Environment Node it changed, with its Node Outcome and Deployment Logs. While it is open, the canvas behind it lights up the nodes it changed; nodes since deleted or removed appear only in its list. The canvas never enters an attempt; it always draws the Environment as it is now.
 _Avoid_: Deployment Mode, Editor Mode, deployment view of the canvas
 
-**Attempt Target**:
-The immutable complete runtime target frozen when a queued deployment request starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
-_Avoid_: Saved state, deploy preview, mutable queued request
-
 **Target Node List**:
-The Environment Nodes a Cloud Deployment Attempt covers, each marked changed, removed or needing a build against Applied State. It is provisional while the attempt is queued and freezes with the Attempt Target when the attempt starts.
+The Environment Nodes a Deployment covers, each marked changed, removed or needing a build against Applied State. It is provisional while the attempt is queued and freezes with the Attempt Target when the attempt starts.
 _Avoid_: Attempt nodes, deployment diff, queued node preview
 
 **Deployment Requirement**:
@@ -176,61 +123,9 @@ _Avoid_: Healthcheck policy, application version constraint, optional service, i
 An approved pending update to an opted-in Service included alongside another Service's Git-triggered deployment, where the triggering Service is required. An eligible pending revision is attempted once per new triggering deployment, even if an earlier attempt failed and recovered; pending updates do not start background retry loops.
 _Avoid_: Optimistic UI update, background updater
 
-**Node Introduction**:
-The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the reset source for edits made before the node has Saved or Applied State; it is not a second editable draft.
-_Avoid_: Initial diff, creation event log, default config
-
-**Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Cloud Deployment Attempt's authored Saved revision to Working State, falling back to per-node Applied State when no attempt is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only while a node is absent from Head, Saved State, and Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
-_Avoid_: Persisted diff, mutation log, deployment snapshot
-
-**Discard**:
-One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
-_Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
-
-**Default Environment**:
-The Environment a project opens, chosen in the project's settings. There is no per-user remembered Environment.
-_Avoid_: Remembered environment, primary environment, main environment
-
 **Branch**:
-An Environment made from another Environment, its Parent, that runs Own Copies of the nodes picked when it was made and uses what they need from its Parent as Live Nodes. A Branch closes, by teardown, when it is deleted after a Save unless it is a Kept Branch, and after 7 days without a deploy unless it is kept or was never deployed.
+An Environment made from another, its Parent; see the core glossary. In Cloud, a Branch that isn't a Kept Branch also closes, by teardown, after 7 days without a deploy, unless it was never deployed.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch (always "Git branch")
-
-**Parent**:
-The Environment a Branch was made from. An Environment without one, such as production, is a root.
-_Avoid_: Base, upstream, source environment
-
-**Destination**:
-Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
-_Avoid_: Target, save target
-
-**Kept Branch**:
-A Branch that stays after saving and never closes on its own, such as staging.
-_Avoid_: Long-lived environment, permanent branch
-
-**Own Copy**:
-An Environment Node a Branch runs itself, made from its Parent's configuration. An Own Copy of a Volume starts empty.
-_Avoid_: Clone (a copy of data), fork
-
-**Live Node**:
-An Environment Node a Branch uses from another Environment while it keeps running there, drawn dashed. The Branch deploys nothing for it, captures its values each time the Branch deploys, and reads and writes its real data.
-_Avoid_: Portal, shared node, borrowed node; Live as a Node Outcome
-
-**Starting point**:
-A Branch that was never deployed, kept as the recipe other Branches copy from. Its nodes stay staged until it deploys once.
-_Avoid_: Template, draft branch
-
-**Setup Command**:
-A command a Branch runs in one Own Copy's new image before that service first starts, after the nodes it uses are running. It runs again on later deploys until it succeeds once. It prepares the Own Copy's data, for example by seeding it.
-_Avoid_: Seed script, data hook, post-deploy hook
-
-**Save**:
-Putting a Branch's changes, chosen change by change, into its Destination's Working State, where they become the Destination's changes to deploy. Save never waits for the Branch to deploy: it takes the Branch's Working State, whether or not it runs. The Branch is deleted after saving unless it is kept or the user opts out.
-_Avoid_: Merge (a GitHub merge only), promote, deploy to parent
-
-**Update**:
-Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
-_Avoid_: Pull, sync, rebase
 
 **PR Environment**:
 A Branch made automatically for one pull request from a Git branch of the same repository. Its Own Copies of the repository's Services run the pull request's code with one replica each, and it closes when the pull request closes. Its changes reach its Destination only through a Conditional Save.
@@ -245,11 +140,11 @@ An Environment shut down with its settings kept: its services and their data are
 _Avoid_: Paused, stopped, sleeping, scaled to zero
 
 **Cloud Deployment Stage**:
-The current progress of a Cloud Deployment Attempt. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
+The current progress of a Deployment. Durable statuses are queued, planning, and deploying before a terminal outcome. Image Builds start when the attempt is dispatched and are progress within any non-terminal status; they never hold the Environment execution slot. Image delivery is progress within deploying; that status owns the Environment execution slot until cleanup completes or the outcome is recorded as unknown. Image Cleanup runs after the terminal outcome releases the slot and never changes the status. It is distinct from a runtime Phase, which groups dependency-ordered services inside a Deploy Plan.
 _Avoid_: Phase, prepared, build status
 
 **Pending Attempt**:
-A queued Cloud Deployment Attempt admitted while another queued attempt is already building (it has a run). An Environment has at most one building and one pending attempt, besides the attempt holding the execution slot. The newest admission, manual or automatic, always replaces the pending attempt, including a Retry or one carrying a reviewed volume removal; the replacement's Saved revision still carries that review, so the removal still happens. The building attempt is never replaced. The pending attempt is dispatched, and its Image Builds start, only when the building attempt leaves queued: it takes the slot, fails, or is cancelled.
+A queued Deployment admitted while another queued attempt is already building (it has a run). An Environment has at most one building and one pending attempt, besides the attempt holding the execution slot. The newest admission, manual or automatic, always replaces the pending attempt, including a Retry or one carrying a reviewed volume removal; the replacement's Saved revision still carries that review, so the removal still happens. The building attempt is never replaced. The pending attempt is dispatched, and its Image Builds start, only when the building attempt leaves queued: it takes the slot, fails, or is cancelled.
 _Avoid_: Waiting attempt, second queue, backlog
 
 **Deploy Preview**:
@@ -257,20 +152,19 @@ The read-only Core projection Cloud persists after preparation and image deliver
 _Avoid_: Deploy Plan, reservation, dry run
 
 **Build Receipt**:
-Private evidence retained from a completed Image Build so deployment in the same or a later Cloud Deployment Attempt can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
+Private evidence retained from a completed Image Build so deployment in the same or a later Deployment can reuse matching build output. Core rechecks content availability and required platforms; receipt retention does not advance Applied State.
 _Avoid_: Applied image, deployment success
 
 **Build Platform Requirement**:
-The set of target platforms a service image must cover for one Cloud Deployment Attempt, derived by shared Core preparation from placement and build settings. Preparation checks actual destinations again before image delivery. A reused image receipt may cover a superset.
+The set of target platforms a service image must cover for one Deployment, derived by shared Core preparation from placement and build settings. Preparation checks actual destinations again before image delivery. A reused image receipt may cover a superset.
 _Avoid_: Organization Cluster architecture, global build platform, builder architecture
 
-
 **Deployment Logs**:
-The user-facing output for a Cloud Deployment Attempt: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
+The user-facing output for a Deployment: its lifecycle events together with output from the Service Containers and Hook Containers created by that attempt. Availability of container output is distinct from retention of the attempt’s lifecycle history.
 _Avoid_: Deploy Progress alone, Build Logs
 
 **Image Build**:
-The build of one Service image within a Cloud Deployment Attempt, with its own Build Steps, output, and outcome. An attempt's Image Builds may run on different Builders at the same time; when one fails, the others still finish and leave Build Receipts before the attempt fails.
+The build of one Service image within a Deployment, with its own Build Steps, output, and outcome. An attempt's Image Builds may run on different Builders at the same time; when one fails, the others still finish and leave Build Receipts before the attempt fails.
 _Avoid_: Build batch, combined build log, Bake run
 
 **Builder**:
@@ -289,14 +183,10 @@ _Avoid_: Builder override, pinned builder, build target
 The `.github/workflows/ployz-build.yml` file that lets GitHub Actions be a Builder for one repository. It only runs when Cloud dispatches it, and calls the `getployz/build` Action. A repository is ready when the workflow is active on its default branch; Cloud checks this from GitHub and never writes the file itself.
 _Avoid_: CI pipeline, build config, GitHub integration
 
-**Build Method**:
-How a Service's image is described for building: a Dockerfile or Railpack.
-_Avoid_: Builder, builder type
-
 **Build Step**:
 One unit of an Image Build: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload, waiting for a runner, installing ployz, pushing, or sending the image to a Machine. Each is recorded where it happens, so its timing is honest: Cloud times the wait for a runner, the runner its install and push, the Engine the rest. A Build Step is keyed stably within one Builder's go at its Image Build, changes state until it completes, and owns the output attributed to it. Each go is a section of the Image Build's one log; a later one opens with why the build moved there. Build Steps are retained with the attempt, separately from lifecycle history.
 _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
 
-Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Cloud Deployment Attempt and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
+Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.

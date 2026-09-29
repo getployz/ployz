@@ -1,9 +1,11 @@
 # Ployz design
 
-Ployz is the distributed deployment engine behind Ployz Cloud. Cloud is the
-primary product surface; the CLI and SDK are adapters into the same system. The
-Deploy Intent authored in Cloud is the only authored model; there is no second
-authoring format.
+Ployz is a distributed deployment engine and the Config Store that holds what
+it deploys. The CLI and the dashboard are equal surfaces over the same core
+operations: every change to authored configuration goes through the Config
+Store, which Cloud hosts for each Organization. A
+Deploy Intent is derived from Saved State when a Deploy is admitted; there is no
+second authoring format.
 
 Ployz runs containerized services across a Cluster of user-owned Docker Machines
 joined by a flat WireGuard mesh. There is no central control plane: every Machine
@@ -160,7 +162,8 @@ unreachable.
 
 ## 7. Cloud drives, never owns
 
-**The bet.** Cloud is the primary way users drive Ployz, but it is not a Cluster
+**The bet.** Cloud hosts each Organization's Config Store and drives its Deploys,
+whether a user works in the dashboard or the CLI, but it is not a Cluster
 controller and holds no runtime truth. SSH and the Management Capability use the
 same Machine RPC connection seam. The daemon serves Machine RPC in-process on its
 Management Identity, an iroh key that is not a mesh peer; clients reach it through
