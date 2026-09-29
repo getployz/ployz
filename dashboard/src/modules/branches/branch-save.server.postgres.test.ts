@@ -18,6 +18,7 @@ import type { PloyzSession } from "#/modules/runtime/ployz.server";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { type PostgresTestHarness, startPostgresTestHarness } from "#/test/postgres";
 import { saveBranch } from "./branch-save.server";
+import { tryCloseBranch } from "./branch-close.server";
 import { updateBranch } from "./branch-update.server";
 import { createBranch } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
@@ -282,6 +283,20 @@ describe("saveBranch", () => {
 
     expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
     expect(await teardowns()).toEqual([]);
+  });
+
+  it("refuses to save a Branch whose close was admitted, from a review still open", async () => {
+    const branch = await create("closing");
+    await settle(branch.id);
+    await edit(branch.id, setImage("web:2"));
+    const seen = await review(branch.id);
+    expect(await provide(tryCloseBranch(branch.id))).toBe(true);
+    const refusal = await provide(Effect.flip(saveBranch({ userId }, {
+      organizationSlug: "acme", branchEnvironmentId: branch.id, destinationRevision: seen.revision, review: seen.review,
+      picks: defaults(seen.rows), thenDelete: true,
+    })));
+    expect(refusal.message).toBe("This branch is closing.");
+    expect((await intentOf(parentId)).services.find((node) => node.lineageId === webLineage)?.config.source).toMatchObject({ image: "web:1" });
   });
 
   it("deletes a Branch after saving while it deploys: its attempt is cancelled, then it tears down", async () => {

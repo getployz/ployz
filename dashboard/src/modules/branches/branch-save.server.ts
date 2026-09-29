@@ -19,6 +19,7 @@ import { variableValueColumnsForWrite } from "#/modules/environment-design/varia
 import { loadAppliedIntent } from "#/modules/environment-design/saved-state-operations.server";
 import { loadEnvironmentSnapshotProjection } from "#/modules/deployments/environment-state.repository.server";
 import { lockEnvironmentDeploymentQueues } from "#/modules/deployments/queue-lock.server";
+import { activeTeardownFor } from "#/modules/runtime/teardown.repository";
 import { tryCloseBranch } from "./branch-close.server";
 import { core, landChanges, loadIdentitySources } from "./branch-operations.server";
 import { branchHostnameSuffix } from "./branch-plan";
@@ -49,6 +50,10 @@ export const saveBranch = Effect.fn("Branches.saveBranch")(function* (actor: Act
     // 1–2. Lock the Destination and check its revision. Both queues, by id, before the Destination's document (lock
     // order: lockProjectDefault).
     yield* lockEnvironmentDeploymentQueues([destinationId, input.branchEnvironmentId]);
+    // A close admits under the same locks; a review left open after it would stage changes the Branch no longer offers.
+    if ((yield* activeTeardownFor([input.branchEnvironmentId])).size > 0) {
+      return yield* new Conflict({ message: "This branch is closing.", userFacing: true });
+    }
     const document = yield* loadEnvironmentDocument(destinationId, true);
     yield* requireDocumentRevision(document, input.destinationRevision);
 
