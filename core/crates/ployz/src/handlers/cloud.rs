@@ -601,7 +601,6 @@ async fn wait_phase(
     })
 }
 
-
 pub(crate) fn command() -> Command {
     Command::new("cloud")
         .about("Manage Cloud")

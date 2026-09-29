@@ -530,7 +530,6 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
-
 pub(crate) fn command() -> Command {
     base("volume", "Manage volumes")
         .arg_required_else_help(true)
