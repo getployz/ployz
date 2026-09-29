@@ -31,6 +31,7 @@ import {
 } from "#/modules/cluster-domain/sync.inngest";
 import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
 import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
+import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
   createCancelVolumeRemove,
@@ -53,6 +54,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createProcessMachineRemove(inngest),
     createCancelMachineRemove(inngest),
     createApplyServerPolicyChange(inngest),
+    createRetireServerAccess(inngest),
     createProcessVolumeRemove(inngest),
     createCancelVolumeRemove(inngest),
     createProcessTeardown(inngest),

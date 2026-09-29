@@ -1,5 +1,7 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
+import { createHash } from "node:crypto";
+import type { Client } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
@@ -7,6 +9,12 @@ import { organizationBillingState } from "#/modules/billing/tables";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
+import { asTestDouble } from "#/lib/test-double";
+import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
+import { organizationMachine, serverAccess } from "#/modules/machines/tables";
+import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
@@ -24,7 +32,55 @@ const hostedPolar: PolarService = {
   createCustomerPortal: () => Effect.succeed({ customerPortalUrl: "https://polar.test/portal" }),
 };
 
-const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test") {
+const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
+
+/** Fake Servers keyed by Machine ID: each holds its Management Client slots, and can go offline. */
+function fakeServers() {
+  const servers = new Map<string, { online: boolean; slots: Map<string, string> }>();
+  let sets = 0;
+  const layer = makePloyzLayer({
+    connect: async (options) => {
+      const [connection] = options.connections;
+      const server = connection && "machine_id" in connection ? servers.get(connection.machine_id ?? "") : undefined;
+      if (server === undefined || !server.online) throw new Error("Endpoint unavailable");
+      return asTestDouble<Client>()({
+        setManagementClient: async (label: string) => {
+          sets += 1;
+          const capability = `ployz1:${connection?.machine_id}:${label}:${sets}`;
+          server.slots.set(label, capability);
+          return capability;
+        },
+        clearManagementClient: async (label: string) => { server.slots.delete(label); },
+        close: async () => undefined,
+      });
+    },
+  });
+  return { servers, layer, sets: () => sets };
+}
+
+const pairingSecret = "ppair_fixture_server_access";
+
+/** Pair the Organization with Cloud and enroll one Server. */
+const enroll = Effect.fn(function* (organizationId: string, machineId: string, first: boolean) {
+  const database = yield* Database;
+  if (first) {
+    yield* database.drizzle.insert(organizationPairing).values({
+      organizationId,
+      encryptedPairingSecret: encryption.encrypt(pairingSecret),
+      founderPublicKey: "founder-key",
+      founderClaimMachineId: machineId,
+    });
+  }
+  yield* database.drizzle.insert(organizationMachine).values({
+    organizationId,
+    machineId,
+    clusterKey: createHash("sha256").update(pairingSecret).digest("hex"),
+    encryptedCapability: encryption.encrypt(`ployz1:cloud:${machineId}`),
+    isDialEntry: first,
+  });
+});
+
+const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test", ployz: Layer.Layer<Ployz> = fakeServers().layer) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
     env: { ...testConfigEnvironment(), NODE_ENV: nodeEnv, DATABASE_URL: testDatabase.url.href },
@@ -36,6 +92,8 @@ const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test") {
     databaseLayer,
     Layer.succeed(Polar, polar),
     Layer.succeed(InngestClient, new Inngest({ id: "cli-test" })),
+    Layer.succeed(SecretEncryption, encryption),
+    ployz,
   );
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
 });
@@ -49,6 +107,11 @@ type Reply = {
   readonly removed?: { readonly id: string; readonly kind: string };
   readonly billing?: { readonly self_hosted: boolean; readonly pro: boolean; readonly custom_domains: boolean };
   readonly url?: string;
+  readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
+  readonly unreachable?: ReadonlyArray<string>;
+  readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
+  readonly signed_out?: { readonly id: string };
+  readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
 
 type As = { readonly cookie?: string; readonly bearer?: string };
@@ -249,6 +312,96 @@ it.live(
           orgs.json.organizations?.filter((row) => row.current).map((row) => row.slug),
           [bob.organization.slug],
         );
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "each device and token gets its own holder per Server, on first use and on Servers enrolled later; "
+    + "revocation clears only its holders and reports offline Servers until a retry confirms",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer({ mode: "self_hosted" }, "test", fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const first = "00000000000000000000000000001239";
+        const later = "00000000000000000000000000001240";
+        const alice = yield* signUp("alice");
+        const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0]?.id ?? assert.fail("no device");
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 30 })).json.token
+          ?? assert.fail("no token");
+        const ci = { bearer: token.secret };
+
+        // Login needed no Server: nothing is paired yet.
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json, { connections: [], unreachable: [] });
+        yield* enroll(alice.organization.id, first, true);
+        fake.servers.set(first, { online: true, slots: new Map() });
+
+        const access = (yield* cli("POST", "server-access", alice)).json;
+        const deviceKey = access.connections?.[0]?.management ?? assert.fail("no capability");
+        assert.deepStrictEqual(access, { connections: [{ machine_id: first, management: deviceKey }], unreachable: [] });
+        assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(device)), deviceKey);
+        // Held, not re-provisioned; stored only encrypted.
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.connections, access.connections);
+        assert.strictEqual(fake.sets(), 1);
+        assert.notInclude(JSON.stringify(yield* database.drizzle.select().from(serverAccess)), deviceKey);
+
+        // Isolation: the token holds its own slot and key.
+        const tokenKey = (yield* cli("POST", "server-access", ci)).json.connections?.[0]?.management;
+        assert.notStrictEqual(tokenKey, deviceKey);
+        assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(token.id)), tokenKey);
+
+        // A Server enrolled after login: unreachable while offline, provisioned once it answers.
+        yield* enroll(alice.organization.id, later, false);
+        const laterServer = { online: false, slots: new Map<string, string>() };
+        fake.servers.set(later, laterServer);
+        assert.deepStrictEqual((yield* cli("POST", "server-access", alice)).json.unreachable, [later]);
+        laterServer.online = true;
+        const both = (yield* cli("POST", "server-access", alice)).json;
+        assert.deepStrictEqual(both.connections?.map((row) => row.machine_id).sort(), [first, later]);
+        assert.deepStrictEqual(both.unreachable, []);
+
+        // A token can't log out; revoking it clears only its own holder.
+        assert.strictEqual((yield* cli("POST", "logout", ci)).status, 422);
+        const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 30 })).json.token
+          ?? assert.fail("no token");
+        const ci2 = { bearer: second.secret };
+        const revoked = (yield* cli("DELETE", `tokens/${token.id}`, alice)).json;
+        assert.deepStrictEqual(revoked.servers, { confirmed: [first], unconfirmed: [] });
+        assert.isFalse(fake.servers.get(first)?.slots.has(serverAccessLabel(token.id)));
+        assert.strictEqual(fake.servers.get(first)?.slots.get(serverAccessLabel(device)), deviceKey);
+
+        // Logout with a Server offline: Cloud cuts the device off at once and reports the Server still to confirm.
+        laterServer.online = false;
+        const out = (yield* cli("POST", "logout", alice)).json;
+        assert.deepStrictEqual(out, { signed_out: { id: device }, servers: { confirmed: [first], unconfirmed: [later] } });
+        assert.strictEqual((yield* cli("POST", "server-access", alice)).status, 401);
+        assert.isTrue(laterServer.slots.has(serverAccessLabel(device)));
+        const [pending] = yield* database.drizzle.select().from(serverAccess).where(eq(serverAccess.credentialId, device));
+        assert.strictEqual(pending?.encryptedCapability, null);
+        assert.deepStrictEqual((yield* cli("GET", "tokens", ci2)).json.revoking,
+          [{ id: device, kind: "device", unconfirmed: [later] }]);
+
+        // Rerunning `token rm` retries once the Server is back.
+        laterServer.online = true;
+        const retried = (yield* cli("DELETE", `tokens/${device}`, ci2)).json;
+        assert.deepStrictEqual(retried.removed, { id: device, kind: "device" });
+        assert.deepStrictEqual(retried.servers, { confirmed: [later], unconfirmed: [] });
+        assert.isFalse(laterServer.slots.has(serverAccessLabel(device)));
+        assert.deepStrictEqual((yield* cli("GET", "tokens", ci2)).json.revoking, []);
+        assert.strictEqual((yield* cli("DELETE", `tokens/${device}`, ci2)).status, 404);
+
+        // Expiry is caught by the sweep.
+        yield* cli("POST", "server-access", ci2);
+        assert.isTrue(fake.servers.get(first)?.slots.has(serverAccessLabel(second.id)));
+        yield* database.drizzle.update(organizationToken)
+          .set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(organizationToken.id, second.id));
+        const swept = yield* retireServerAccess();
+        assert.deepStrictEqual([...swept.confirmed].sort(), [first, later]);
+        assert.isFalse(fake.servers.get(first)?.slots.has(serverAccessLabel(second.id)));
+        assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
