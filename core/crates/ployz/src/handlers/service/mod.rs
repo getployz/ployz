@@ -782,7 +782,8 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
     else {
         unreachable!("a Service create writes a Service");
     };
-    output::finish(&created, || {
+    let hint = Some(super::config::next(matches, &["diff"]));
+    output::finish(&super::config::Next::new(&created, hint), || {
         say!(
             "Staged Service {} in {}/{} (revision {}).",
             created.service.name,

@@ -139,3 +139,55 @@ fn mistakes_fail_with_their_codes() {
     assert_eq!(code, Some(1));
     assert_eq!(json.pointer("/error/code"), Some(&json!("unsupported")));
 }
+
+#[test]
+fn an_agent_reviews_publishes_and_discards() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.db");
+    ok(&store, &["project", "new", "shop"]);
+    let added = ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
+    assert_eq!(added.get("next"), Some(&json!("ployz diff")));
+    let set = ok(&store, &["set", "web.replicas=3"]);
+    assert_eq!(set.get("next"), Some(&json!("ployz diff")));
+
+    let diff = ok(&store, &["diff"]);
+    let version = diff
+        .get("version")
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned();
+    assert_eq!(diff.pointer("/changes/0/name"), Some(&json!("web")));
+    assert_eq!(diff.pointer("/changes/0/lifecycle"), Some(&json!("create")));
+    assert_eq!(
+        diff.pointer("/changes/0/settings/0/path"),
+        Some(&json!("web.replicas"))
+    );
+    assert_eq!(
+        diff.get("next"),
+        Some(&json!(format!("ployz publish --version {version}")))
+    );
+
+    // A review taken before another edit is stale.
+    ok(&store, &["set", "web.command=nginx"]);
+    let stale = error(&store, &["publish", "--version", &version]);
+    assert_eq!(stale.get("code"), Some(&json!("conflict")));
+    assert_eq!(stale.pointer("/details/next"), Some(&json!("ployz diff")));
+    let fresh = stale
+        .pointer("/details/diff/version")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    let published = ok(&store, &["publish", "--version", fresh]);
+    assert_eq!(published.get("saved"), Some(&json!(1)));
+    assert_eq!(published.get("created"), Some(&json!(true)));
+    let diff = ok(&store, &["diff"]);
+    assert_eq!(diff.get("published"), Some(&json!(true)));
+    assert_eq!(diff.get("next"), None, "nothing left to publish");
+
+    // The Service is published but not deployed: discarding it unpublishes it too.
+    let discarded = ok(&store, &["discard", "web"]);
+    assert_eq!(discarded.get("saved"), Some(&json!(2)));
+    assert_eq!(discarded.get("next"), Some(&json!("ployz diff")));
+    assert_eq!(ok(&store, &["diff"]).get("changes"), Some(&json!([])));
+}

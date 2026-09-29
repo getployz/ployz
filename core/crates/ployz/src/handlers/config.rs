@@ -4,7 +4,7 @@
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    Actor, Change, ConfigStore, Edit, Edited, EnvironmentName, EnvironmentQuery, EnvironmentRef,
+    Actor, Change, ConfigStore, Edit, EnvironmentName, EnvironmentQuery, EnvironmentRef,
     OrganizationId, ProjectName, Query, Revision, View, Written,
 };
 use serde_json::{Value, json};
@@ -110,7 +110,9 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         environment: environment(matches)?,
         path: matches.get_one::<String>("path").cloned(),
     });
-    let View::Environment(view) = store.read(&actor, &query)?;
+    let View::Environment(view) = store.read(&actor, &query)? else {
+        unreachable!("an Environment query reads an Environment");
+    };
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -170,14 +172,11 @@ fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
             changes,
         }),
     );
-    let Written::Edited(edited) = written.map_err(|error| stale(error, matches))? else {
+    let Written::Edited(edited) = written.map_err(|error| stale(error, matches, "get"))? else {
         unreachable!("an edit writes an edit");
     };
-    report(&edited)
-}
-
-fn report(edited: &Edited) -> Result<(), Error> {
-    crate::output::finish(edited, || {
+    let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
+    crate::output::finish(&Next::new(&edited, hint), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
         if !edited.staged.is_empty() {
             say!(
@@ -192,19 +191,40 @@ fn report(edited: &Edited) -> Result<(), Error> {
     })
 }
 
-/// A refused `--expect` names the command that shows the fresh state.
-fn stale(error: ployz_core::RpcError, matches: &ArgMatches) -> Error {
+/// A command's result and, when there is one, the command to run next.
+#[derive(serde::Serialize)]
+pub(crate) struct Next<'a, T> {
+    #[serde(flatten)]
+    value: &'a T,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+impl<'a, T> Next<'a, T> {
+    pub(crate) fn new(value: &'a T, next: Option<String>) -> Self {
+        Self { value, next }
+    }
+}
+
+/// `ployz WORDS…` in the same Project and Environment as this command.
+pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
+    let mut next = vec!["ployz".to_owned()];
+    next.extend(words.iter().map(|word| (*word).to_owned()));
+    for flag in ["project", "env"] {
+        if let Some(value) = matches.get_one::<String>(flag) {
+            next.extend([format!("--{flag}"), value.clone()]);
+        }
+    }
+    shell_words::join(next)
+}
+
+/// A refused stale write names the `read` command that shows the fresh state.
+pub(crate) fn stale(error: ployz_core::RpcError, matches: &ArgMatches, read: &str) -> Error {
     let mut error = error;
     if error.code == RpcErrorCode::Conflict
         && let Some(details) = error.details.as_object_mut()
     {
-        let mut next = vec!["ployz".to_owned(), "get".to_owned()];
-        for flag in ["project", "env"] {
-            if let Some(value) = matches.get_one::<String>(flag) {
-                next.extend([format!("--{flag}"), value.clone()]);
-            }
-        }
-        details.insert("next".into(), json!(shell_words::join(next)));
+        details.insert("next".into(), json!(next(matches, &[read])));
     }
     error.into()
 }
