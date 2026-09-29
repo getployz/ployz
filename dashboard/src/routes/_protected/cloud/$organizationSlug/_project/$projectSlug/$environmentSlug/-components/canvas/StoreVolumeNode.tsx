@@ -9,6 +9,8 @@ import { outcomeCardState } from "#/components/deployment-outcome-badges";
 import { cn } from "#/lib/utils";
 import { useNodeLighting } from "../deployment-page";
 import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
+import { PickedNode } from "./PickableNode";
+import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /** A Config Store Volume on the canvas and in its phone list: its mount paths, and what the next Deploy does to it. */
@@ -49,6 +51,8 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
 }
 
 export function StoreVolumeNode({ data, selected }: { data: { volume: VolumeListing }; selected?: boolean }) {
+  const pick = useNodePick(data.volume.name);
+  if (pick) return <PickedNode pick={pick} name={data.volume.name} nodeId={data.volume.id} icon={<HardDriveIcon />} />;
   return (
     <>
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />

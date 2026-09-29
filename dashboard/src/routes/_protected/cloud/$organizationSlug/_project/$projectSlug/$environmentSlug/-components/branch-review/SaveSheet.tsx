@@ -23,23 +23,34 @@ import { cn } from "#/lib/utils";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 type RowPick = { ticked: boolean; option?: BranchOption; value: string };
+/**
+ * A change as a sheet shows it, from the Cloud document's rows or the Config Store's: `node` adds a whole node, and a
+ * `conflict` row changed on the receiving side too.
+ */
+type SheetRow = { key: string; node: boolean; conflict: boolean; choice?: BranchChoice | undefined };
 /** One row of a sheet. Without `pick` it's read-only. */
-type Entry = { row: ChangeRow; presented: PresentedRow; choice?: BranchChoice; pick?: RowPick };
+type Entry = { row: SheetRow; presented: PresentedRow; choice?: BranchChoice | undefined; pick?: RowPick };
 type Picks = ReturnType<typeof useRowPicks>;
+
+/** A Cloud document row as a sheet row. */
+const sheetRow = (row: ChangeRow): SheetRow => ({
+  key: row.key, node: row.key.endsWith(":node"), conflict: row.role === "move" && row.conflict, choice: row.role === "move" ? row.choice : undefined,
+});
+const sheetEntries = (rows: ChangeRow[], nameOf: (lineage: string) => string) =>
+  rows.map((row) => ({ row: sheetRow(row), presented: presentRow(row, nameOf) }));
 
 /**
  * A tick per row and a value choice per variable, starting from core's defaults. `sent` is what the server takes: the
  * ticked rows' keys, options and new values ("" for none). Unticking a new node leaves out its settings too.
  */
-function useRowPicks(rows: ChangeRow[], nameOf: (lineage: string) => string) {
+export function useRowPicks(rows: Array<{ row: SheetRow; presented: PresentedRow }>) {
   const [edits, setEdits] = useState<Record<string, Partial<RowPick>>>({});
-  const picks = rows.map((row) => {
-    const choice = row.role === "move" ? row.choice : undefined;
-    const pick: RowPick = { ticked: true, option: choice?.default, value: "", ...edits[row.key] };
-    return { row, choice, pick, presented: presentRow(row, nameOf) };
+  const picks = rows.map(({ row, presented }) => {
+    const pick: RowPick = { ticked: true, option: row.choice?.default, value: "", ...edits[row.key] };
+    return { row, choice: row.choice, pick, presented };
   });
   const edit = (key: string, change: Partial<RowPick>) => setEdits((current) => ({ ...current, [key]: { ...current[key], ...change } }));
-  const leftOut = new Set(picks.flatMap(({ row, pick, presented }) => row.key.endsWith(":node") && !pick.ticked ? [presented.lineageId] : []));
+  const leftOut = new Set(picks.flatMap(({ row, pick, presented }) => row.node && !pick.ticked ? [presented.lineageId] : []));
   const ticked = picks.filter(({ pick, presented }) => pick.ticked && !leftOut.has(presented.lineageId));
   return {
     picks, edit, ticked,
@@ -58,7 +69,7 @@ export function SaveSheet({ review, branchId, onClose }: { review: BranchReviewV
   const destination = review.parent;
   const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branchId);
   const save = useSaveBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: name, destination });
-  const rows = useRowPicks(review.save, review.nameOf);
+  const rows = useRowPicks(sheetEntries(review.save, review.nameOf));
   const [deleteAfter, setDeleteAfter] = useState(true);
   const deletable = !review.kept && !isDefault;
   return (
@@ -85,7 +96,7 @@ export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }:
   const destination = landing.destination.name;
   const { save } = useConditionalSave({ organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: landing.destination.id });
   const [shutDownAfter, setShutDownAfter] = useState(false);
-  const rows = useRowPicks(landing.rows, review.nameOf);
+  const rows = useRowPicks(sheetEntries(landing.rows, review.nameOf));
   const repository = document?.intent.services.map(({ config }) => githubAppRepository(config))
     .find((candidate) => candidate?.repositoryId === pullRequest.repositoryId)?.repository;
   return (
@@ -126,7 +137,7 @@ export function GoesLiveSheet({ title, saves, nameOf, actions, onClose }: {
 type Saves = ReadonlyArray<Pick<ConditionalSaveRow, "prNumber" | "prEnvironmentId" | "rows">>;
 
 function savedEntries(saves: Saves, nameOf: (lineage: string, prEnvironmentId: string | null) => string) {
-  return saves.flatMap((save) => save.rows.map(({ row }): Entry => ({ row, presented: presentRow(row, (lineage) => nameOf(lineage, save.prEnvironmentId)) })));
+  return saves.flatMap((save) => save.rows.map(({ row }): Entry => ({ row: sheetRow(row), presented: presentRow(row, (lineage) => nameOf(lineage, save.prEnvironmentId)) })));
 }
 
 /** What goes live with pull requests, read-only and neutral, as a section of another sheet. */
@@ -140,7 +151,7 @@ export function GoesLiveChanges({ title, saves, nameOf }: { title: string; saves
 }
 
 /** The sheet: a service per section, a consequence line and its actions. Without `picks` it's read-only. */
-function Sheet({ title, subtitle, entries, picks, destination = "", info, actions, error = null, onClose, children }: {
+export function Sheet({ title, subtitle, entries, picks, destination = "", info, actions, error = null, onClose, children }: {
   title: string; subtitle?: ReactNode; entries: Entry[]; picks?: Picks; destination?: string; info: string; actions: ReactNode;
   error?: string | null; onClose: () => void; children?: ReactNode;
 }) {
@@ -171,11 +182,11 @@ function ServiceSections({ entries, picks, destination = "" }: { entries: Entry[
 }
 
 /** Why Save can't run yet, or null. */
-function saveInfo(rows: Picks, destination: string) {
+export function saveInfo(rows: Picks, destination: string) {
   return rows.missing ? `Enter ${destination}'s value for ${rows.missing.presented.label}.` : rows.ticked.length === 0 ? "Nothing to save." : null;
 }
 
-function SaveButton({ picks, destination, pending, onClick }: { picks: Picks; destination: string; pending: boolean; onClick: () => void }) {
+export function SaveButton({ picks, destination, pending, onClick }: { picks: Picks; destination: string; pending: boolean; onClick: () => void }) {
   return (
     <Button disabled={picks.ticked.length === 0 || picks.missing !== undefined || pending} onClick={onClick}>
       {pending ? <Spinner data-icon="inline-start" /> : <GitBranchIcon data-icon="inline-start" />}Save to {destination}
@@ -183,7 +194,7 @@ function SaveButton({ picks, destination, pending, onClick }: { picks: Picks; de
   );
 }
 
-function SwitchField({ id, label, description, checked, onChange }: {
+export function SwitchField({ id, label, description, checked, onChange }: {
   id: string; label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void;
 }) {
   return (
@@ -198,7 +209,7 @@ function SwitchField({ id, label, description, checked, onChange }: {
 
 /** One service: what happens to it, then its settings as Change · Current · New. A new service's own row is its header's ×. */
 function ServiceChanges({ group, picks, destination }: { group: Entry[]; picks: Picks | undefined; destination: string }) {
-  const node = group.find(({ row }) => row.key.endsWith(":node"));
+  const node = group.find(({ row }) => row.node);
   const settings = group.filter((entry) => entry !== node);
   const first = group[0];
   if (!first) return null;
@@ -234,7 +245,7 @@ function SettingRow({ entry, picks, destination }: { entry: Entry; picks: Picks 
     <>
       <span className={cn("col-span-full flex flex-wrap items-center gap-1.5 pt-2 font-medium sm:col-span-1 sm:pt-0", off && "text-muted-foreground line-through")}>
         {presented.label}
-        {picks && row.role === "move" && row.conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {destination} too</Badge> : null}
+        {picks && row.conflict ? <Badge variant="warning"><TriangleAlertIcon />Changed in {destination} too</Badge> : null}
       </span>
       <Value className={cn(off && "opacity-50")}>{presented.before || "—"}</Value>
       {picks ? <><NewValue entry={entry} picks={picks} destination={destination} /><LeaveOut entry={entry} picks={picks} /></>
@@ -268,7 +279,7 @@ function Value({ className, children }: { className?: string; children: string }
 }
 
 function LeaveOut({ entry: { row, pick, presented }, picks }: { entry: Entry; picks: Picks }) {
-  const what = `${presented.node}${presented.label && !row.key.endsWith(":node") ? ` · ${presented.label}` : ""}`;
+  const what = `${presented.node}${presented.label && !row.node ? ` · ${presented.label}` : ""}`;
   const ticked = pick?.ticked ?? true;
   return (
     <Button size="icon-sm" variant="ghost" aria-label={ticked ? `Leave out ${what}` : `Save ${what}`}

@@ -292,7 +292,12 @@ pub(crate) fn view(tx: &mut dyn Tx, who: &Actor, query: &MoveQuery) -> Result<Mo
 
 /// Save a PR Environment's picked changes for one Destination, replacing its save
 /// there; `picks: []` withdraws it.
-pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
+pub(crate) fn save(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    sealing: &crate::SealingKey,
+    request: &Move,
+) -> Result<Moved, RpcError> {
     let sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
     let checks = vec![PullRequestRef {
         repository_id: sides.facts.repository_id,
@@ -350,7 +355,8 @@ pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
     }
     let picks = branch::picks(
         &moving,
-        &sides.into.working,
+        &sides.into,
+        sealing,
         &changes.rows,
         request.picks.as_deref(),
     )?;

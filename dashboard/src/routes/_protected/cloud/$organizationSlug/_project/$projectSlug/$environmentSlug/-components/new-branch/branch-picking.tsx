@@ -77,19 +77,48 @@ function usePickingState(newBranch: { focus: string | null } | null, prPlan: { r
 export type BranchPicking = NonNullable<ReturnType<typeof usePickingState>>;
 const BranchPickingContext = createContext<BranchPicking | null>(null);
 
+type PlanNode = BranchPlan["nodes"][number];
+
+/**
+ * What the pick rows and canvas cards read and do, over the Cloud document (nodes by lineage) or the Config Store's
+ * plan (nodes by name).
+ */
+export type PickingView = {
+  parent: { name: string };
+  plan: BranchPlan;
+  presets: ReadonlyArray<{ preset: BranchPreset }>;
+  fromPr: ReadonlySet<string>;
+  fixed: (node: PlanNode) => boolean;
+  liveOwner: (lineage: string) => { ownsData: boolean } | null | undefined;
+  ownerName: (lineage: string) => string;
+  setPreset: (preset: BranchPreset) => void;
+  /** The node's role if it were toggled, for the choice sheet. */
+  toggled: (lineage: string) => PlanNode | undefined;
+  toggle: (lineage: string) => void;
+};
+const PickingViewContext = createContext<PickingView | null>(null);
+
 /** Holds the picks while a New branch panel (opened on `newBranch.focus`) or a PR Environments plan page is open. */
 export function BranchPickingProvider({ newBranch, prPlan, children }: {
   newBranch: { focus: string | null } | null;
   prPlan: { repositoryId: number } | null;
   children: ReactNode;
 }) {
-  return <BranchPickingContext value={usePickingState(newBranch, prPlan)}>{children}</BranchPickingContext>;
+  const picking = usePickingState(newBranch, prPlan);
+  return <BranchPickingContext value={picking}><PickingViewContext value={picking}>{children}</PickingViewContext></BranchPickingContext>;
 }
 
-/** The open panel's picks; null when nothing is being picked. */
+/** Shares picks made over the Config Store with the pick rows and the canvas; without any, the outer picks show. */
+export function PickingViewProvider({ picking, children }: { picking: PickingView | null; children: ReactNode }) {
+  const outer = use(PickingViewContext);
+  return <PickingViewContext value={picking ?? outer}>{children}</PickingViewContext>;
+}
+
+/** The open panel's picks over the Cloud document; null when nothing is being picked. */
 export const useBranchPicking = () => use(BranchPickingContext);
 
-type PlanNode = BranchPlan["nodes"][number];
+/** The open panel's picks, whichever backend plans them; null when nothing is being picked. */
+export const usePickingView = () => use(PickingViewContext);
 
 export type NodePick = {
   role: PlanNode["role"];
@@ -103,7 +132,7 @@ export type NodePick = {
 };
 
 /** What `node` becomes in the Branch being picked. */
-export function nodePick(picking: BranchPicking, node: PlanNode): NodePick {
+export function nodePick(picking: PickingView, node: PlanNode): NodePick {
   return {
     role: node.role,
     label: node.role === "live" ? `${picking.ownerName(node.lineageId)}'s` : node.role === "left_out" ? "Not included"
@@ -116,7 +145,7 @@ export function nodePick(picking: BranchPicking, node: PlanNode): NodePick {
 
 /** What a canvas node becomes in the Branch being picked; null when nothing is being picked or the plan omits it. */
 export function useNodePick(lineageId: string | undefined): NodePick | null {
-  const picking = useBranchPicking();
+  const picking = usePickingView();
   const node = picking?.plan.nodes.find((candidate) => candidate.lineageId === lineageId);
   return picking && node ? nodePick(picking, node) : null;
 }

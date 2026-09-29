@@ -1,6 +1,7 @@
 import { Suspense, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentView, NodeOutcome } from "@ployz/sdk";
+import { GitBranchPlusIcon } from "lucide-react";
 import { ContainerLogs } from "#/components/container-logs";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
@@ -22,7 +23,7 @@ import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-s
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
-import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 
 const BUILT = new Set<BuildView["status"]>(["built", "reused"]);
 
@@ -69,7 +70,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <h2 className="min-w-0 text-base font-medium break-words">Deploys {targetsLabel(deployment)}</h2>
-            <StoreDeploymentActions deployment={deployment} />
+            <StoreDeploymentActions deployment={deployment} focused={focused} />
           </div>
           <p className="flex items-center gap-1 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
@@ -170,7 +171,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
  * Retry an ended Deployment that didn't apply (it ships what it froze), Deploy now a queued one nothing is running
  * yet, Cancel one before it ends. Whoever admitted it, CLI or dashboard: they share one queue per Environment.
  */
-function StoreDeploymentActions({ deployment }: { deployment: DeploymentView }) {
+function StoreDeploymentActions({ deployment, focused }: { deployment: DeploymentView; focused: NodeOutcome | undefined }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const writer = useStoreWriter(params.organizationSlug);
@@ -194,8 +195,17 @@ function StoreDeploymentActions({ deployment }: { deployment: DeploymentView }) 
     }
   }
 
+  // A failed Deployment's focused Service it didn't apply can be fixed on a Branch, with the change that failed.
+  const fixing = deployment.status === "failed" && focused && focused.outcome !== "applied" ? focused.name : null;
+
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
+      {fixing ? (
+        <Button size="sm" variant="outline" nativeButton={false} render={<Link to={ENVIRONMENT_NEW_BRANCH_ROUTE_TO}
+          params={params} search={{ focus: fixing, fix: deployment.id }} />}>
+          <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
+        </Button>
+      ) : null}
       {actions.retry ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
       {actions.start ? (
         <Button size="sm" variant="outline" onClick={() => { writer.commit({ command: "start", deployment: deployment.id }); }}>Deploy now</Button>

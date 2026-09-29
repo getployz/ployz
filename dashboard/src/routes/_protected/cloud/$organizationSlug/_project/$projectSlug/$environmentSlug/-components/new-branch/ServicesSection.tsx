@@ -6,7 +6,7 @@ import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/comp
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
 import { presetTitles, type BranchPlan } from "#/modules/branches/branch-plan";
-import { nodePick, type BranchPicking } from "./branch-picking";
+import { nodePick, type PickingView } from "./branch-picking";
 
 type PlanNode = BranchPlan["nodes"][number];
 
@@ -15,7 +15,7 @@ type PlanNode = BranchPlan["nodes"][number];
  * right. Tapping a row opens a sheet with its two choices, one line each; a Live Node with real data is amber.
  */
 export function ServicesSection({ picking, nameOf, target, who }: {
-  picking: BranchPicking;
+  picking: PickingView;
   nameOf: (lineage: string) => string;
   /** The right column's heading: the branch's name, or "each pull request". */
   target: ReactNode;

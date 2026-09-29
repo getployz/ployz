@@ -11,6 +11,8 @@ import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 import { ServiceContextMenu } from "./ServiceContextMenu";
+import { PickedNode } from "./PickableNode";
+import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon, getServiceStatusClasses } from "./service-node-helpers";
 import type { StoreCanvasService } from "./types";
 
@@ -73,6 +75,10 @@ export function StoreServiceCard({ service, subtitle, changeCount, selected, cla
 }
 
 export function StoreServiceNode({ data, selected }: { data: StoreCanvasService; selected?: boolean }) {
+  const pick = useNodePick(data.service.name);
+  if (pick) {
+    return <PickedNode pick={pick} name={data.service.name} nodeId={data.service.id} icon={getServiceIcon({ source: { type: data.service.source } })} />;
+  }
   return (
     <>
       <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
