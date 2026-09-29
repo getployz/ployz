@@ -157,8 +157,8 @@ mod tests {
             .decode(private.as_bytes())
             .unwrap();
         let decoded: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
-        assert_eq!(decoded["username"], "octocat");
-        assert_eq!(decoded["password"], "token");
+        assert_eq!(decoded.get("username"), Some(&"octocat".into()));
+        assert_eq!(decoded.get("password"), Some(&"token".into()));
         assert!(
             public
                 .as_ref()

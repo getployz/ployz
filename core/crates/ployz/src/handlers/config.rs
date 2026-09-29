@@ -33,7 +33,7 @@ pub(crate) fn set_command() -> Command {
             positional("assignment", true)
                 .action(ArgAction::Append)
                 .value_name("PATH=VALUE")
-                .help("For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY for --secret")
+                .help("For example web.replicas=3 or web.env.LOG_LEVEL=info; the SERVICE a --patch or --from-env-file applies to; web.env.KEY or web.registryCredential for --secret")
                 .add(super::catalog::setting_paths()),
         )
         .arg(
@@ -43,7 +43,7 @@ pub(crate) fn set_command() -> Command {
         )
         .arg(
             switch("secret", None)
-                .help("Seal the variable's value, read from stdin: set web.env.KEY --secret. With --from-env-file, seal every value"),
+                .help("Seal a value read from stdin: set web.env.KEY --secret, or set web.registryCredential --secret for a private image's token. With --from-env-file, seal every value"),
         )
         .arg(
             value("from-env-file", None)
@@ -146,7 +146,8 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         let inline_secret = value
             .get("env")
             .and_then(Value::as_object)
-            .is_some_and(|env| env.values().any(sealing));
+            .is_some_and(|env| env.values().any(sealing))
+            || value.get("registryCredential").is_some_and(sealing);
         if inline_secret && inline {
             return Err(Error::usage(
                 "A new secret never goes on the command line: use --patch -, --secret or --from-env-file",

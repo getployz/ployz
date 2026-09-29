@@ -62,9 +62,11 @@ pub(crate) fn set(
         (None, Some(_)) => false,
         (Some(new), stored) => {
             let unchanged = match stored {
-                Some(stored) => serde_json::from_str::<Credential>(&sealing.open(stored)?)
-                    .map_err(|_| error::corrupt("registry credential"))?
-                    == new,
+                Some(stored) => {
+                    serde_json::from_str::<Credential>(&sealing.open(stored)?)
+                        .map_err(|_| error::corrupt("registry credential"))?
+                        == new
+                }
                 None => false,
             };
             if !unchanged {
@@ -79,7 +81,10 @@ pub(crate) fn set(
                         environment_id.as_str().into(),
                         node.id.as_str().into(),
                         who.organization.as_str().into(),
-                        serde_json::to_string(&sealed).expect("JSON").as_str().into(),
+                        serde_json::to_string(&sealed)
+                            .expect("JSON")
+                            .as_str()
+                            .into(),
                     ],
                 )?;
             }
@@ -103,7 +108,10 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
         )
     };
     let fields = value.as_object().ok_or_else(invalid)?;
-    if fields.keys().any(|key| key != "username" && key != "secret") {
+    if fields
+        .keys()
+        .any(|key| key != "username" && key != "secret")
+    {
         return Err(invalid());
     }
     let username = match fields.get("username") {
@@ -117,9 +125,9 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
     };
     match fields.get("secret") {
         Some(Value::Bool(true)) if username.is_none() => Ok(None),
-        Some(Value::Bool(true)) => Err(SETTING.invalid(
-            "a new username needs its secret: send both, with --patch -",
-        )),
+        Some(Value::Bool(true)) => {
+            Err(SETTING.invalid("a new username needs its secret: send both, with --patch -"))
+        }
         Some(Value::String(secret)) if !secret.trim().is_empty() => Ok(Some(Credential {
             username,
             secret: secret.trim().to_owned(),
