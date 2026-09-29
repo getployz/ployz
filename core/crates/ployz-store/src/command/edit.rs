@@ -171,7 +171,7 @@ pub(crate) fn edit(
                 super::volume::detach(&mut environment, service, volume)?,
                 Apply::Staged,
             ),
-            (None, _) => return Err(name_a_setting(&path)),
+            (None, _) => return Err(crate::settings::name_a_setting(path.node())),
         };
         if !changed {
             continue;
@@ -253,14 +253,4 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
         }
     }
     Ok(expanded)
-}
-
-fn name_a_setting(path: &SettingPath) -> RpcError {
-    error::invalid(
-        "Name a Setting: SERVICE.SETTING",
-        json!({
-            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-            "example": format!("{}.replicas", path.node()),
-        }),
-    )
 }

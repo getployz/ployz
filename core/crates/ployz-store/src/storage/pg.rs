@@ -142,15 +142,12 @@ fn row(row: &postgres::Row) -> Result<Row, RpcError> {
             .get(index)
             .map(|column| column.type_().clone());
         Ok(match kind {
-            Some(Type::TEXT | Type::VARCHAR) => row
+            Some(Type::TEXT) => row
                 .try_get::<_, Option<String>>(index)?
                 .map_or(Cell::Null, Cell::Text),
             Some(Type::INT8) => row
                 .try_get::<_, Option<i64>>(index)?
                 .map_or(Cell::Null, Cell::Int),
-            Some(Type::INT4) => row
-                .try_get::<_, Option<i32>>(index)?
-                .map_or(Cell::Null, |value| Cell::Int(value.into())),
             // The schema has no such columns; reading one reports corruption.
             _ => Cell::Null,
         })

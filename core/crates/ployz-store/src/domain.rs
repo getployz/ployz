@@ -9,7 +9,6 @@
 
 use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, ServiceManagedHostname, ServiceRoute,
-    parse_environment_intent,
 };
 use ployz_core::{
     CertificateAvailability, CertificateFailureKind, CertificateObservation, IngressHost, RpcError,
@@ -122,8 +121,6 @@ pub struct DomainStaged {
     pub domain: Domain,
     /// Its Service, when this changed it; empty when it already was so.
     pub staged: Vec<SettingPath>,
-    /// What took effect at once: never anything here.
-    pub immediate: Vec<SettingPath>,
 }
 
 /// A Service's public domain.
@@ -380,7 +377,6 @@ pub(crate) fn add_domain(
         } else {
             Vec::new()
         },
-        immediate: Vec::new(),
     })
 }
 
@@ -411,7 +407,6 @@ pub(crate) fn remove_domain(
         environment: environment.summary,
         staged: vec![SettingPath::whole(&found.service)],
         domain: found,
-        immediate: Vec::new(),
     })
 }
 
@@ -581,12 +576,7 @@ fn other_environments(
         ],
     )?
     .iter()
-    .map(|row| {
-        serde_json::from_str(row.text(0)?)
-            .ok()
-            .and_then(|value| parse_environment_intent(value).ok())
-            .ok_or_else(|| error::corrupt("Working State"))
-    })
+    .map(|row| row.intent(0, "Working State"))
     .collect()
 }
 

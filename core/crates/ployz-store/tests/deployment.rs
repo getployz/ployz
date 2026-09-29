@@ -871,7 +871,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let upload = UploadedSource {
         digest: "d".repeat(64),
         base: Some(UploadBase {
-            commit: "c".repeat(40),
+            commit: backend::sha(&"c".repeat(40)),
             changed: true,
         }),
         uploader: None,

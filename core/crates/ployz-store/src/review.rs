@@ -10,7 +10,7 @@ use ployz_core::config::{
     ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent,
     ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
-    parse_environment_intent, project_environment_changes,
+    project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -335,20 +335,18 @@ pub(crate) fn latest_saved(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let intent = serde_json::from_str(row.text(1)?)
-        .ok()
-        .and_then(|value| parse_environment_intent(value).ok())
-        .ok_or_else(|| error::corrupt("Saved State"))?;
+    let intent = row.intent(1, "Saved State")?;
     Ok(Some(Saved {
-        revision: Revision(u64::try_from(row.int(0)?).map_err(|_| error::corrupt("revision"))?),
+        revision: Revision(row.number(0, "revision")?),
         intent: canonicalize_environment_intent(intent),
     }))
 }
 
-pub(crate) fn empty(like: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
+/// An Environment `name` with nothing in it.
+pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
     SavedEnvironmentIntent {
-        version: like.version,
-        environment_slug: like.environment_slug.clone(),
+        version: 1,
+        environment_slug: name.to_owned(),
         services: Vec::new(),
         volumes: Vec::new(),
     }

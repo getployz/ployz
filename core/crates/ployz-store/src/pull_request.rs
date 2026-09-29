@@ -425,8 +425,7 @@ fn repositories(
     )?;
     let mut found = std::collections::BTreeMap::new();
     for row in rows {
-        let id =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
         for service in scope::load_by_id(tx, &id)?.working.services {
             if let ServiceSource::Git {
                 repository,
@@ -478,8 +477,7 @@ fn open_in(
     let mut open = Vec::new();
     for row in rows {
         let number: PullRequestNumber = row.number(0, "pull request")?;
-        let environment =
-            EnvironmentName::parse(row.text(1)?).map_err(|_| error::corrupt("Environment name"))?;
+        let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
         let facts = facts(tx, who, repository_id, number)?;
         open.push(OpenPullRequest {
             number,
@@ -593,22 +591,7 @@ pub(crate) fn pull_request(
     validate(event)?;
     let organization = who.organization.as_str();
     let (repository_id, number) = (event.repository_id, event.number);
-    let key: [crate::storage::Param<'_>; 3] =
-        [organization.into(), repository_id.into(), number.into()];
-    let before: Option<PullRequest> = match tx
-        .query(
-            "SELECT facts FROM config_pull_request \
-             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
-            &key,
-        )?
-        .first()
-    {
-        Some(row) => {
-            Some(serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("pull request"))?)
-        }
-        None => None,
-    };
-    let [organization_param, repository_param, number_param] = key;
+    let before = facts(tx, who, repository_id, number)?;
     let written = tx.execute(
         "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
@@ -616,9 +599,9 @@ pub(crate) fn pull_request(
          facts = excluded.facts, updated = excluded.updated \
          WHERE excluded.updated >= config_pull_request.updated",
         &[
-            organization_param,
-            repository_param,
-            number_param,
+            organization.into(),
+            repository_id.into(),
+            number.into(),
             serde_json::to_string(event)
                 .expect("facts are JSON")
                 .as_str()
@@ -687,8 +670,7 @@ fn start_froms(
     )?;
     let mut ids = Vec::new();
     for row in rows {
-        let plan: Stored =
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("PR plan"))?;
+        let plan: Stored = row.json(0, "PR plan")?;
         ids.extend(plan.start_from);
     }
     Ok(ids)
@@ -716,9 +698,8 @@ fn current(
     rows.iter()
         .map(|row| {
             Ok((
-                EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?,
-                crate::id::ProjectId::parse(row.text(1)?)
-                    .map_err(|_| error::corrupt("Project ID"))?,
+                row.parse::<EnvironmentId>(0, "Environment ID")?,
+                row.parse::<crate::id::ProjectId>(1, "Project ID")?,
             ))
         })
         .collect()
@@ -738,10 +719,8 @@ fn open(
         &[who.organization.as_str().into(), event.repository_id.into()],
     )?;
     for row in rows {
-        let project =
-            crate::id::ProjectId::parse(row.text(0)?).map_err(|_| error::corrupt("Project ID"))?;
-        let plan: Stored =
-            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("PR plan"))?;
+        let project = row.parse::<crate::id::ProjectId>(0, "Project ID")?;
+        let plan: Stored = row.json(1, "PR plan")?;
         if !plan.enabled
             || (event.bot && !plan.include_bots)
             || current.iter().any(|(_, has)| *has == project)
@@ -1072,8 +1051,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     )?;
     let mut automated = Automated::default();
     for row in rows {
-        let id =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
         if row.int(2)? != 0 {
             settle(tx, who, &id, &mut automated)?;
             continue;
