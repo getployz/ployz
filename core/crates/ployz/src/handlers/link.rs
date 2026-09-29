@@ -321,6 +321,18 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
     Ok(linked)
 }
 
+/// Link this directory to `environment` unless it or an ancestor is already linked,
+/// so a one-off `--env` leaves the link alone. Returns the linked directory.
+pub(super) fn record_unless_linked(
+    config: &Path,
+    environment: EnvironmentSummary,
+) -> Result<String, Error> {
+    match find(config)? {
+        Some((directory, _)) => Ok(directory),
+        None => Ok(record(config, environment)?.directory),
+    }
+}
+
 /// Who commands act as.
 #[derive(Serialize)]
 pub(super) struct Identity {

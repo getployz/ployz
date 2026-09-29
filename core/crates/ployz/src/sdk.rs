@@ -412,7 +412,8 @@ impl Session {
             .await
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
-            let build_receipts = preparation::receipts(&captured.fingerprints, &captured.contents, &retained);
+            let build_receipts =
+                preparation::receipts(&captured.fingerprints, &captured.contents, &retained);
             let prune_targets = crate::image::prune_targets(&preview, &retained);
             Ok(PreparedDeploy {
                 preview,

@@ -754,7 +754,10 @@ fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
         let diff = ok(store, &["diff"]);
         let nginx = &diff["changes"][0];
         assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
-        assert_eq!(nginx["settings"][0]["path"], json!("nginx.preDeployCommand"));
+        assert_eq!(
+            nginx["settings"][0]["path"],
+            json!("nginx.preDeployCommand")
+        );
         ok(store, &["discard", "nginx.preDeployCommand"]);
         let diff = ok(store, &["diff"]);
         assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");
@@ -1386,7 +1389,7 @@ fn up_ships_a_directory_without_git() {
         let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let dir = first.path().canonicalize().unwrap().join("My Shop");
         std::fs::create_dir(&dir).unwrap();
-        std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\nEXPOSE 80\n").unwrap();
 
         // No Server answers, so the Deployment doesn't apply.
         let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
@@ -1405,12 +1408,14 @@ fn up_ships_a_directory_without_git() {
             }
             Target::Cloud { url, .. } => {
                 assert_eq!(up["urls"], json!(["https://my-shop.acme.ployz.app"]));
-                let namespace = deployment["namespace"].as_str().unwrap();
                 assert_eq!(
                     up["dashboard"],
-                    json!(format!("{url}/cloud/alice/my-shop/{namespace}"))
+                    json!(format!("{url}/cloud/alice/my-shop/production"))
                 );
                 assert!(UPLOADS.lock().unwrap().contains_key(id));
+                // The domain reaches the Dockerfile's EXPOSEd port.
+                let (_, domains) = in_dir(store, home.path(), &dir, &["domain", "ls"], &[]);
+                assert_eq!(domains["domains"][0]["port"], json!(80), "{domains}");
             }
         }
 
@@ -1425,6 +1430,34 @@ fn up_ships_a_directory_without_git() {
             services["services"].as_array().map(Vec::len),
             Some(1),
             "{services}"
+        );
+        // Its root Dockerfile builds it.
+        let (_, method) = in_dir(
+            store,
+            home.path(),
+            &dir,
+            &["get", "my-shop.buildMethod"],
+            &[],
+        );
+        assert_eq!(
+            method["settings"][0]["value"],
+            json!("dockerfile"),
+            "{method}"
+        );
+        // A one-off `--env` leaves the directory's link alone.
+        in_dir(store, home.path(), &dir, &["env", "new", "staging"], &[]);
+        let staging = [&args[..], &["--env", "staging"]].concat();
+        let (_, other_env) = in_dir(store, home.path(), &dir, &staging, &[]);
+        assert_eq!(
+            other_env["deployment"]["environment"]["name"],
+            json!("staging"),
+            "{other_env}"
+        );
+        let (_, status) = in_dir(store, home.path(), &dir, &["status"], &[]);
+        assert_eq!(
+            status.pointer("/environment/name"),
+            Some(&json!("production")),
+            "{status}"
         );
 
         let other = second.path().join("My Shop");

@@ -9,8 +9,9 @@ use std::path::Path;
 use clap::{ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    AddDomain, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
-    EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceId, ServicesQuery,
+    AddDomain, Change, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
+    Edit, EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceId, ServicesQuery,
+    SettingPath,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -71,13 +72,13 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
     let listed = store
         .services(&ServicesQuery { environment })
         .map_err(failed(matches, &["up"]))?;
-    let linked = super::link::record(&config, listed.environment.clone())?;
+    let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
         environment: Some(listed.environment.name.clone()),
     };
     if listed.services.is_empty() {
-        add_service(matches, &store, &environment, name)?;
+        add_service(matches, &store, &environment, name, &directory)?;
     }
     let identity = super::link::identity(&store)?;
     let shipped = upload_and_ship(
@@ -117,11 +118,11 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         .map(|(cloud, organization)| {
             format!(
                 "{cloud}/cloud/{}/{}/{}",
-                organization.slug, view.environment.project, view.namespace
+                organization.slug, view.environment.project, view.environment.name
             )
         });
     let up = Up {
-        directory: &linked.directory,
+        directory: &linked,
         server,
         deployment: view,
         urls,
@@ -198,12 +199,14 @@ fn found_project(
 }
 
 /// The Service the upload builds, named like the directory, and on Cloud a
-/// generated domain for it.
+/// generated domain for it. A root `Dockerfile` builds it, and its first `EXPOSE`d
+/// port is the domain's.
 fn add_service(
     matches: &ArgMatches,
     store: &super::store::Store,
     environment: &EnvironmentRef,
     name: ServiceName,
+    directory: &Path,
 ) -> Result<(), Error> {
     store
         .create_service(&CreateService {
@@ -214,6 +217,19 @@ fn add_service(
         })
         .map_err(failed(matches, &["up"]))?;
     say!("Added Service {name}.");
+    let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
+    if dockerfile.is_some() {
+        store
+            .edit(&Edit {
+                environment: environment.clone(),
+                expect: None,
+                changes: vec![Change::Set {
+                    path: SettingPath::parse(&format!("{name}.buildMethod"))?,
+                    value: json!("dockerfile"),
+                }],
+            })
+            .map_err(failed(matches, &["up"]))?;
+    }
     // The hidden local Store has no Cluster Domain to generate one under.
     if store.local().is_none() {
         store
@@ -221,11 +237,22 @@ fn add_service(
                 environment: environment.clone(),
                 service: name,
                 hostname: None,
-                port: None,
+                port: dockerfile.as_deref().and_then(exposed_port),
             })
             .map_err(failed(matches, &["up"]))?;
     }
     Ok(())
+}
+
+/// A Dockerfile's first `EXPOSE`d port.
+fn exposed_port(dockerfile: &str) -> Option<u16> {
+    dockerfile.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        if !words.next()?.eq_ignore_ascii_case("EXPOSE") {
+            return None;
+        }
+        words.find_map(|port| port.split('/').next()?.parse().ok())
+    })
 }
 
 /// The directory's name as a Project and Service name, else `app`.
@@ -249,6 +276,18 @@ fn directory_name(directory: &Path) -> ServiceName {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_exposed_port_is_the_domains() {
+        for (dockerfile, port) in [
+            ("FROM nginx\nEXPOSE 80\nEXPOSE 443", Some(80)),
+            ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
+            ("FROM x\nEXPOSE $PORT", None),
+            ("FROM x", None),
+        ] {
+            assert_eq!(exposed_port(dockerfile), port, "{dockerfile}");
+        }
+    }
 
     #[test]
     fn a_directory_names_its_project_or_falls_back_to_app() {
