@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { changeNameSources } from "#/collections/change-sources";
+import { changeNameSources, storeViewSources } from "#/collections/change-sources";
 import { collectionNames } from "#/collections/read.contract";
+import { storeAt } from "#/modules/config-store/config-store.server";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import {
   type PostgresTestHarness,
@@ -29,12 +30,16 @@ const notOrganizationOwned = {
   github_check_suite_projection: "Belongs to a GitHub installation, which several Organizations can share.",
   github_webhook_delivery: "Belongs to a GitHub installation, which several Organizations can share.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
+  config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
+  config_migration: "The Config Store's applied migrations.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
+  // The Config Store's tables live in Cloud's database once Cloud opens the Store.
+  await storeAt(harness.databaseUrl, harness.database);
 }, 60_000);
 
 afterAll(async () => {
@@ -89,7 +94,7 @@ it("keys every source feeding a collection by its key table's key", async () => 
   `);
   const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
   // A change to any source names the collection rows it affects only if it logs their key.
-  const required = collectionNames.map((name) => changeNameSources[name]).flatMap(([keyTable, ...others]) =>
+  const required = [...collectionNames.map((name) => changeNameSources[name]), ...Object.values(storeViewSources)].flatMap(([keyTable, ...others]) =>
     others.map((source) => `${source}(${changeSources[source].key.join(", ")}) -> ${keyTable}(${changeSources[keyTable].key.join(", ")})`));
   expect(required.length).toBeGreaterThan(0);
   expect(required.filter((reference) => !references.has(reference))).toEqual([]);
