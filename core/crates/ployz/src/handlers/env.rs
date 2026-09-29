@@ -430,12 +430,17 @@ pub(super) fn inventory(
 
 /// Every `--accept-volume-loss` name.
 pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
-    Ok(matches
+    matches
         .get_many::<String>("accept-volume-loss")
         .into_iter()
         .flatten()
-        .map(|name| VolumeName::parse(name.as_str()))
-        .collect::<Result<Vec<_>, _>>()?)
+        .map(|name| {
+            VolumeName::parse(name.as_str()).map_err(|_| {
+                Error::usage("Expected Volume names: lowercase letters, digits and -")
+                    .with_exit(USAGE_EXIT)
+            })
+        })
+        .collect()
 }
 
 /// Take Environment `at` off the Servers: admit a removal Deployment under the
