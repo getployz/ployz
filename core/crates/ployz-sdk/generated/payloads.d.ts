@@ -1761,19 +1761,7 @@ settings: Array<ServiceSettingChange>,
  */
 data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
-export type NodeOutcome = {
-/**
- * Whether it is a Service or a Volume.
- */
-type: EnvironmentNodeType,
-/**
- * The node's entity ID.
- */
-id: string,
-/**
- * The node's name when admitted.
- */
-name: string, outcome: NodeStatus, };
+export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 

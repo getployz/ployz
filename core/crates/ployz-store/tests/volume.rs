@@ -465,7 +465,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     let data = failed
         .nodes
         .iter()
-        .find(|node| node.name == "data")
+        .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
 
@@ -478,7 +478,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     let data = removed
         .nodes
         .iter()
-        .find(|node| node.name == "data")
+        .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Removed);
 }

@@ -270,8 +270,16 @@ impl BuildRow {
             service: stored
                 .nodes
                 .iter()
-                .find(|node| node.service.as_ref() == Some(&self.service))
-                .map_or_else(|| self.service.to_string(), |node| node.name.clone()),
+                .find_map(|node| match node {
+                    crate::deployment::TargetNode::Service { name, runtime, .. }
+                        if *runtime == self.service =>
+                    {
+                        Some(name.to_string())
+                    }
+                    crate::deployment::TargetNode::Service { .. }
+                    | crate::deployment::TargetNode::Volume { .. } => None,
+                })
+                .unwrap_or_else(|| self.service.to_string()),
             commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
             status: self.status,
             message: (!self.message.is_empty()).then(|| self.message.clone()),
@@ -317,7 +325,7 @@ pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<Service
     Ok(saved
         .services
         .iter()
-        .filter(|service| stored.nodes.iter().any(|node| node.id == service.id))
+        .filter(|service| stored.nodes.iter().any(|node| node.id() == service.id))
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
         .map(|service| service.config.private_dns.clone())
         .collect())
@@ -329,7 +337,7 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
     let organization = organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for service in &saved.services {
-        if !stored.nodes.iter().any(|node| node.id == service.id) {
+        if !stored.nodes.iter().any(|node| node.id() == service.id) {
             continue;
         }
         let row = rows

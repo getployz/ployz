@@ -153,19 +153,11 @@ pub(crate) fn insert_service(
     };
     environment.working.services.push(node.clone());
     scope::save_working(tx, &mut environment)?;
-    tx.execute(
-        "INSERT INTO config_node_introduction \
-         (environment_id, node_id, organization_id, node_type, node) \
-         VALUES (?1, ?2, ?3, 'service', ?4)",
-        &[
-            environment.summary.id.as_str().into(),
-            id.as_str().into(),
-            who.organization.as_str().into(),
-            serde_json::to_string(&node)
-                .expect("a Service node is JSON")
-                .as_str()
-                .into(),
-        ],
+    scope::introduce(
+        tx,
+        who,
+        &environment.summary.id,
+        scope::Node::Service(&node),
     )?;
     Ok(ServiceStaged {
         service: summary(&node)?,
