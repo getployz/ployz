@@ -10,7 +10,7 @@ mkdir -p "$TMP/bin" "$TMP/release" "$TMP/install"
 pack_release() {
     local version=$1
     # shellcheck disable=SC2016
-    printf '#!/bin/sh\nif [ "${1:-}" = version ]; then echo %s; else echo installed; fi\n' "$version" > "$TMP/ployz"
+    printf '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo %s; else echo installed; fi\n' "$version" > "$TMP/ployz"
     chmod 0755 "$TMP/ployz"
     for archive in ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz; do
         tar -czf "$TMP/release/$archive" -C "$TMP" ployz
@@ -43,7 +43,7 @@ for platform in Linux:x86_64 Linux:aarch64 Darwin:x86_64 Darwin:arm64; do
         INSTALL_BIN_DIR="$TMP/install" PLOYZ_GITHUB_URL=https://example.invalid \
         sh "$ROOT/install.sh"
     [ "$("$TMP/install/ployz")" = installed ]
-    [ "$("$TMP/install/ployz" version)" = 1.2.3 ]
+    [ "$("$TMP/install/ployz" --version)" = 1.2.3 ]
 done
 
 pack_release 9.9.9
@@ -107,7 +107,7 @@ for defect in missing wrong-version; do
         exit 1
     fi
     grep -Eq 'Release archive is incomplete|Release binary ployz has version' "$TMP/error"
-    [ "$("$TMP/install/ployz" version)" = 8.8.8-beta.1 ]
+    [ "$("$TMP/install/ployz" --version)" = 8.8.8-beta.1 ]
 done
 pack_release 1.2.3
 printf corrupt >> "$TMP/release/ployz_linux_amd64.tar.gz"
