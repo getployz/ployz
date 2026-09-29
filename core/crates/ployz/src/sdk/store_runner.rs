@@ -1,5 +1,5 @@
-//! Cloud's Deployment runner. One call claims a Deployment, builds its Git Services,
-//! prepares and confirms it on the Organization's Cluster and records each step's
+//! Cloud's Deployment runner. One call claims a Deployment, builds its Git and
+//! uploaded Services, prepares and confirms it on the Organization's Cluster and records each step's
 //! evidence, so the Deploy Intent with its unsealed secrets, the session and the raw
 //! SDK evidence never leave it: the caller gets only the Deployment's summary.
 
@@ -11,7 +11,7 @@ use std::time::Duration;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, BuildReport, BuildStatus, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
-    DeploymentSummary, GitSource, RunEvidence, RunnerId,
+    DeploymentSummary, RunEvidence, RunnerId,
 };
 use serde_json::Value;
 
@@ -27,16 +27,45 @@ const CANCEL_POLL: Duration = Duration::from_secs(2);
 /// How often a build's new log output is recorded.
 const LOG_FLUSH: Duration = Duration::from_secs(3);
 
-/// Each Git Service's checkout at its pinned commit, by runtime Service name, or why
-/// Cloud could not read them. Users read the reason: it holds no secret.
-pub type Checkouts = Result<BTreeMap<ServiceName, PathBuf>, String>;
+/// Each Git Service's checkout at its pinned commit, by runtime Service name, and the
+/// Deployment's upload, if Cloud still holds it; or why Cloud could not read them.
+/// Users read the reason: it holds no secret.
+pub type Checkouts = Result<Sources, String>;
+
+/// Where a Deployment's Services build from.
+#[derive(Debug, Default)]
+pub struct Sources {
+    /// Each Git Service's checkout, by runtime Service name.
+    pub checkouts: BTreeMap<ServiceName, PathBuf>,
+    /// The Deployment's uploaded directory. Without it, uploaded Services reuse
+    /// their latest usable image or need a new upload.
+    pub upload: Option<PathBuf>,
+}
+
+/// Why a Deployment's builds didn't all succeed.
+enum Unbuilt {
+    /// Users read it.
+    Failed(String),
+    /// These uploaded Services need a new upload.
+    UploadNeeded(Vec<ServiceName>),
+}
+
+/// One Service to build: a Git Service at its pin, or an uploaded one.
+struct Target {
+    service: ServiceName,
+    commit: Option<String>,
+    source: Option<PathBuf>,
+    /// The upload's digest, for an uploaded Service.
+    upload: Option<String>,
+}
 
 /// Run Deployment `deployment` of `who` as `runner` on one of `connections`, and
-/// return its summary once its outcome is recorded. Its Git Services build first,
-/// each from its checkout in `checkouts`, at once; then preparation reuses their
-/// images. A failed connection, build or preparation is recorded as not executed; a
-/// cancel stops it; losing the session mid-execution records that the outcome is
-/// unknown.
+/// return its summary once its outcome is recorded. Its Git and uploaded Services
+/// build first, at once, each from its checkout or the upload in `checkouts`; then
+/// preparation reuses their images. A failed connection, build or preparation is
+/// recorded as not executed; an uploaded Service with neither its upload nor a usable
+/// image records that it needs a new upload; a cancel stops it; losing the session
+/// mid-execution records that the outcome is unknown.
 ///
 /// # Errors
 /// Returns the Store's `conflict` when this runner has nothing to run (another runner
@@ -92,19 +121,28 @@ impl Run {
         &self,
         session: &Session,
         claimed: Claimed,
-        checkouts: BTreeMap<ServiceName, PathBuf>,
+        sources: Sources,
     ) -> Result<DeploymentSummary, RpcError> {
-        let prepared = if claimed.sources.is_empty() {
+        let prepared = if claimed.sources.is_empty() && claimed.uploads.is_empty() {
             session.preview(claimed.intent).await
         } else {
-            match self.build(session, &claimed, &checkouts).await? {
-                Ok(receipts) => self.prepare(session, claimed, checkouts, receipts).await,
-                Err(reason) => return self.not_executed(reason).await,
+            let targets = match targets(&claimed, sources) {
+                Ok(targets) => targets,
+                Err(unbuilt) => return self.unbuilt(unbuilt).await,
+            };
+            match self.build(session, &claimed, &targets).await? {
+                Ok(receipts) => self.prepare(session, claimed, targets, receipts).await,
+                Err(unbuilt) => return self.unbuilt(unbuilt).await,
             }
         };
         let prepared = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return self.not_executed(error.message).await,
+            Err(error) => {
+                return match upload_needed(&error) {
+                    Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
+                    None => self.not_executed(error.message).await,
+                };
+            }
         };
         let summary = self
             .record(RunEvidence::Prepared(prepared.preview().clone()))
@@ -140,46 +178,37 @@ impl Run {
         }
     }
 
-    /// Build every Git Service at once, each from its own checkout, and record each
-    /// build's progress, log and receipt. Returns every receipt, or why a build failed
-    /// once all of them ended: the ones that succeeded still count on a retry.
+    /// Build every target at once and record each build's progress, log and receipt.
+    /// Returns every receipt, or why they didn't all build once all of them ended: the
+    /// ones that succeeded still count on a retry.
     async fn build(
         &self,
         session: &Session,
         claimed: &Claimed,
-        checkouts: &BTreeMap<ServiceName, PathBuf>,
-    ) -> Result<Result<BTreeMap<ServiceName, BuildReceipt>, String>, RpcError> {
+        targets: &[Target],
+    ) -> Result<Result<BTreeMap<ServiceName, BuildReceipt>, Unbuilt>, RpcError> {
         let mut builds = Vec::new();
-        for (index, source) in claimed.sources.iter().enumerate() {
-            let (Some(commit), Some(checkout)) = (&source.commit, checkouts.get(&source.service))
-            else {
-                return Ok(Err(format!(
-                    "{} has no source at a pinned commit",
-                    source.service
-                )));
-            };
+        for (index, target) in targets.iter().enumerate() {
+            let service = &target.service;
             let hint = claimed
                 .receipts
-                .get(&source.service)
+                .get(service)
                 .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt.clone()).ok());
             let input = PreparationInput {
-                deployment: only(&claimed.input, &source.service),
-                sources: BTreeMap::from([(source.service.clone(), checkout.clone())]),
-                source_commits: BTreeMap::from([(source.service.clone(), commit.clone())]),
-                uploads: BTreeMap::new(),
-                build_receipts: hint
-                    .clone()
-                    .map(|hint| BTreeMap::from([(source.service.clone(), hint)]))
-                    .unwrap_or_default(),
+                deployment: only(&claimed.input, service),
+                sources: one(service, target.source.clone()),
+                source_commits: one(service, target.commit.clone()),
+                uploads: one(service, target.upload.clone()),
+                build_receipts: one(service, hint.clone()),
                 build_index: index,
                 preferred_machine: None,
             };
-            builds.push((source, hint, session.build(input, None)?));
+            builds.push((target, hint, session.build(input, None)?));
         }
         let all = futures_util::future::join_all(
             builds
                 .iter()
-                .map(|(source, hint, running)| self.follow(source, hint.as_ref(), running)),
+                .map(|(target, hint, running)| self.follow(target, hint.as_ref(), running)),
         );
         tokio::pin!(all);
         let mut poll = tokio::time::interval(CANCEL_POLL);
@@ -197,16 +226,27 @@ impl Run {
         };
         let mut receipts = BTreeMap::new();
         let mut failed = Vec::new();
-        for (ended, (source, _, _)) in ended.into_iter().zip(&builds) {
+        let mut uploads = Vec::new();
+        for (ended, (target, _, _)) in ended.into_iter().zip(&builds) {
             match ended? {
                 Ok(receipt) => {
-                    receipts.insert(source.service.clone(), receipt);
+                    receipts.insert(target.service.clone(), receipt);
                 }
-                Err(message) => failed.push(format!("{}: {message}", source.service)),
+                Err(error) => match upload_needed(&error) {
+                    Some(services) => uploads.extend(services),
+                    None => failed.push(format!("{}: {}", target.service, error.message)),
+                },
             }
         }
+        // A new upload is the one fix a user can act on first.
+        if !uploads.is_empty() {
+            return Ok(Err(Unbuilt::UploadNeeded(uploads)));
+        }
         if !failed.is_empty() {
-            return Ok(Err(format!("Build failed. {}", failed.join("; "))));
+            return Ok(Err(Unbuilt::Failed(format!(
+                "Build failed. {}",
+                failed.join("; ")
+            ))));
         }
         Ok(Ok(receipts))
     }
@@ -214,14 +254,20 @@ impl Run {
     /// Follow one build to its end, recording its progress and log as it goes.
     async fn follow(
         &self,
-        source: &GitSource,
+        target: &Target,
         hint: Option<&BuildReceipt>,
         running: &RunningBuild,
-    ) -> Result<Result<BuildReceipt, String>, RpcError> {
-        let service = &source.service;
+    ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
+        let service = &target.service;
         self.report(service, BuildStatus::Building, None, String::new())
             .await?;
-        let mut log = String::new();
+        // ponytail: uploaded builds only ever run on Servers; GitHub's Builder walk
+        // skips them with this reason once it exists here.
+        let mut log = if target.upload.is_some() {
+            "GitHub can't build uploaded source: it builds on your Servers\n".to_owned()
+        } else {
+            String::new()
+        };
         let mut flushed = tokio::time::Instant::now();
         while let Some(event) = running.next().await {
             log.push_str(&log_line(&event));
@@ -237,7 +283,7 @@ impl Run {
                 flushed = tokio::time::Instant::now();
             }
         }
-        let (status, message, receipt) = match running.finished().await {
+        let (status, message, ended) = match running.finished().await {
             Ok(BuildOutcome::Built { receipt }) => {
                 let reused = hint.is_some_and(|hint| {
                     hint.fingerprint == receipt.fingerprint
@@ -248,18 +294,18 @@ impl Run {
                 } else {
                     BuildStatus::Built
                 };
-                (status, None, Some(receipt))
+                (status, None, Ok(receipt))
             }
-            Ok(BuildOutcome::Queued) => (
-                BuildStatus::Failed,
-                Some("No Server started the build".to_owned()),
-                None,
-            ),
-            Err(error) => (BuildStatus::Failed, Some(error.message), None),
+            Ok(BuildOutcome::Queued) => {
+                let error = internal("No Server started the build");
+                (BuildStatus::Failed, Some(error.message.clone()), Err(error))
+            }
+            Err(error) => (BuildStatus::Failed, Some(error.message.clone()), Err(error)),
         };
-        self.report(service, status, message.clone(), log).await?;
-        let Some(receipt) = receipt else {
-            return Ok(Err(message.unwrap_or_default()));
+        self.report(service, status, message, log).await?;
+        let receipt = match ended {
+            Ok(receipt) => receipt,
+            Err(error) => return Ok(Err(error)),
         };
         let recorded = serde_json::to_value(&receipt).expect("a build receipt is JSON");
         self.record(RunEvidence::Built(BTreeMap::from([(
@@ -270,28 +316,30 @@ impl Run {
         Ok(Ok(receipt))
     }
 
-    /// Prepare the Deployment with its Git Services' fresh receipts, so preparation
+    /// Prepare the Deployment with its built Services' fresh receipts, so preparation
     /// reuses their images and only delivers them.
     async fn prepare(
         &self,
         session: &Session,
         claimed: Claimed,
-        checkouts: BTreeMap<ServiceName, PathBuf>,
+        targets: Vec<Target>,
         receipts: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<PreparedDeploy, RpcError> {
-        let input = PreparationInput {
+        let mut input = PreparationInput {
             deployment: claimed.input,
-            source_commits: claimed
-                .sources
-                .into_iter()
-                .filter_map(|source| Some((source.service, source.commit?)))
-                .collect(),
-            sources: checkouts,
+            source_commits: BTreeMap::new(),
+            sources: BTreeMap::new(),
             uploads: BTreeMap::new(),
             build_receipts: receipts,
             build_index: 0,
             preferred_machine: None,
         };
+        for target in targets {
+            let service = target.service;
+            input.source_commits.extend(one(&service, target.commit));
+            input.sources.extend(one(&service, target.source));
+            input.uploads.extend(one(&service, target.upload));
+        }
         session
             .prepare_with(input, claimed.intent.registry_auth)?
             .finished()
@@ -312,6 +360,15 @@ impl Run {
             log,
         }))
         .await
+    }
+
+    async fn unbuilt(&self, unbuilt: Unbuilt) -> Result<DeploymentSummary, RpcError> {
+        match unbuilt {
+            Unbuilt::Failed(reason) => self.not_executed(reason).await,
+            Unbuilt::UploadNeeded(services) => {
+                self.record(RunEvidence::UploadNeeded(services)).await
+            }
+        }
     }
 
     async fn not_executed(&self, reason: String) -> Result<DeploymentSummary, RpcError> {
@@ -341,6 +398,57 @@ impl Run {
             .await
             .map_err(|_| internal("A Config Store call stopped unexpectedly"))?
     }
+}
+
+/// What `claimed` builds: each Git Service from its checkout at its pin, and each
+/// uploaded Service from the upload, if Cloud still holds it.
+fn targets(claimed: &Claimed, sources: Sources) -> Result<Vec<Target>, Unbuilt> {
+    let mut targets = Vec::new();
+    for source in &claimed.sources {
+        let (Some(commit), Some(checkout)) =
+            (&source.commit, sources.checkouts.get(&source.service))
+        else {
+            return Err(Unbuilt::Failed(format!(
+                "{} has no source at a pinned commit",
+                source.service
+            )));
+        };
+        targets.push(Target {
+            service: source.service.clone(),
+            commit: Some(commit.clone()),
+            source: Some(checkout.clone()),
+            upload: None,
+        });
+    }
+    if claimed.uploads.is_empty() {
+        return Ok(targets);
+    }
+    let Some(upload) = &claimed.deployment.upload else {
+        return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
+    };
+    targets.extend(claimed.uploads.iter().map(|service| Target {
+        service: service.clone(),
+        commit: None,
+        source: sources.upload.clone(),
+        upload: Some(upload.digest.clone()),
+    }));
+    Ok(targets)
+}
+
+/// `value` as a one-entry map for `service`, or an empty one.
+fn one<T>(service: &ServiceName, value: Option<T>) -> BTreeMap<ServiceName, T> {
+    value
+        .map(|value| BTreeMap::from([(service.clone(), value)]))
+        .unwrap_or_default()
+}
+
+/// The uploaded Services `error` says need a new upload, if that's what it says.
+fn upload_needed(error: &RpcError) -> Option<Vec<ServiceName>> {
+    let preparation = error.details.get("preparation")?;
+    if preparation.get("kind")?.as_str()? != "upload_needed" {
+        return None;
+    }
+    serde_json::from_value(preparation.get("services")?.clone()).ok()
 }
 
 /// Lowering input `input` narrowed to Service `service`: what its own build takes.

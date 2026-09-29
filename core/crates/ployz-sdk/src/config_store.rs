@@ -125,8 +125,10 @@ impl ConfigStore {
     /// Run the Organization's queued Deployment `deployment` as `runner` on one of
     /// `connections` (`Connection[]`), and resolve to its summary once its outcome is
     /// recorded. Its Git Services build from `checkouts` (`{runtime Service name:
-    /// directory}`) at their pinned commits; `source_failure` says why Cloud could not
-    /// read them, and is recorded as the reason nothing ran. Only Cloud's worker calls
+    /// directory}`) at their pinned commits, and its uploaded Services from `upload`,
+    /// the directory Cloud extracted its upload to (without it, they reuse a usable
+    /// image or need a new upload); `source_failure` says why Cloud could not read
+    /// them, and is recorded as the reason nothing ran. Only Cloud's worker calls
     /// this. It takes as long as its builds and Deploy do.
     ///
     /// # Errors
@@ -140,6 +142,7 @@ impl ConfigStore {
         connections: serde_json::Value,
         checkouts: Option<serde_json::Value>,
         source_failure: Option<String>,
+        upload: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization)?;
         let (deployment, runner) = ids(deployment, runner)?;
@@ -147,11 +150,14 @@ impl ConfigStore {
             .map_err(|_| invalid_argument("invalid management connections"))?;
         let checkouts = match source_failure {
             Some(reason) => Err(reason),
-            None => Ok(checkouts
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| invalid_argument("Expected checkouts by Service name"))?
-                .unwrap_or_default()),
+            None => Ok(ployz::sdk::Sources {
+                checkouts: checkouts
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| invalid_argument("Expected checkouts by Service name"))?
+                    .unwrap_or_default(),
+                upload: upload.map(Into::into),
+            }),
         };
         let summary = ployz::sdk::run_deployment(
             Arc::clone(&self.store),

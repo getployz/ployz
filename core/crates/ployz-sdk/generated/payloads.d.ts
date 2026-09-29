@@ -167,7 +167,11 @@ export type BuildLogView = { deployment: DeploymentId, log: string,
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -181,7 +185,11 @@ export type BuildView = {
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -292,7 +300,11 @@ repositories: Array<AuthorizedRepository>,
 /**
  * What Cloud observed of the Organization's public domains and traffic.
  */
-domains: ConfigDomainEvidence, };
+domains: ConfigDomainEvidence,
+/**
+ * Who Cloud authenticated for this write: an admitted upload records them.
+ */
+uploader: string | null, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView;
 
@@ -1239,7 +1251,7 @@ status: OperationStatus, };
 
 export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
-export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>, } | { "type": "not_executed", reason: string, };
+export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
@@ -1920,7 +1932,12 @@ digest: string,
  * The commit the directory was checked out at, if it was a Git checkout.
  * Provenance only: it never identifies the build.
  */
-base: UploadBase | null, };
+base: UploadBase | null,
+/**
+ * Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
+ * caller sends. Provenance only.
+ */
+uploader: string | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 
