@@ -211,20 +211,19 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "new" => (new, Supported),
-        "ls" => (ls, Supported),
-        "default" => (default, Supported),
-        "rm" => (rm, Supported),
-        "branch" => (branch, Supported),
-        "save" => (save, Supported),
-        "update" => (update, Supported),
-        "copy" => (copy, Supported),
-        "keep" => (keep, Supported),
-        "shutdown" => (shutdown, Supported),
-        "pr" => (pr, Supported),
+        "new" => new,
+        "ls" => ls,
+        "default" => default,
+        "rm" => rm,
+        "branch" => branch,
+        "save" => save,
+        "update" => update,
+        "copy" => copy,
+        "keep" => keep,
+        "shutdown" => shutdown,
+        "pr" => pr,
         _ => return None,
     })
 }
@@ -719,18 +718,11 @@ fn pick(only: &str) -> Result<MovePick, Error> {
 
 /// A stale version names the read that shows the changes again.
 fn reviewed(error: StoreCallError, matches: &ArgMatches, verb: &str) -> StoreCallError {
-    let StoreCallError::Refused(mut error) = error else {
-        return error;
-    };
-    if let Some(details) = error.details.as_object_mut()
-        && details.contains_key("version")
-    {
-        details.insert(
-            "next".into(),
-            json!(store::next(matches, &["env", verb, "--plan"])),
-        );
-    }
-    StoreCallError::Refused(error)
+    store::with_next(
+        error,
+        |refusal| refusal.details.get("version").is_some(),
+        || store::next(matches, &["env", verb, "--plan"]),
+    )
 }
 
 fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> {

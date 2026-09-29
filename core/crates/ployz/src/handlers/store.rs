@@ -566,13 +566,26 @@ pub(crate) fn with_refresh_hint(
     matches: &ArgMatches,
     read: &str,
 ) -> StoreCallError {
+    with_next(
+        error,
+        |refusal| refusal.code == RpcErrorCode::Conflict,
+        || next(matches, &[read]),
+    )
+}
+
+/// A refusal `when` picks names `next` as the command to run next.
+pub(crate) fn with_next(
+    error: StoreCallError,
+    when: impl FnOnce(&ployz_core::RpcError) -> bool,
+    next: impl FnOnce() -> String,
+) -> StoreCallError {
     let StoreCallError::Refused(mut error) = error else {
         return error;
     };
-    if error.code == RpcErrorCode::Conflict
+    if when(&error)
         && let Some(details) = error.details.as_object_mut()
     {
-        details.insert("next".into(), json!(next(matches, &[read])));
+        details.insert("next".into(), json!(next()));
     }
     StoreCallError::Refused(error)
 }
@@ -585,16 +598,14 @@ pub(crate) fn failed<'matches>(
     words: &'matches [&'matches str],
 ) -> impl FnOnce(StoreCallError) -> Error + 'matches {
     move |error| {
-        let StoreCallError::Refused(mut error) = error else {
-            return error.into();
-        };
-        if error.code == RpcErrorCode::Ambiguous
-            && let Some(details) = error.details.as_object_mut()
-            && details.contains_key("projects")
-        {
-            details.insert("next".into(), json!(rerun(matches, words)));
-        }
-        error.into()
+        with_next(
+            error,
+            |refusal| {
+                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
+            },
+            || rerun(matches, words),
+        )
+        .into()
     }
 }
 

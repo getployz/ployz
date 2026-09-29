@@ -127,14 +127,13 @@ fn id() -> clap::Arg {
     positional("id", true).help("The Deployment's ID, or its number in the Environment")
 }
 
-pub(super) fn deployment_handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn deployment_handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "ls" => (ls, Supported),
-        "show" => (show, Supported),
-        "retry" => (retry, Supported),
-        "start" => (start, Supported),
-        "cancel" => (cancel, Supported),
+        "ls" => ls,
+        "show" => show,
+        "retry" => retry,
+        "start" => start,
+        "cancel" => cancel,
         _ => return None,
     })
 }
@@ -867,16 +866,12 @@ fn refused<'a>(
     id: &'a DeploymentId,
     words: &'a [&'a str],
 ) -> impl FnOnce(StoreCallError) -> Error + 'a {
-    move |mut error| {
-        if let StoreCallError::Refused(refusal) = &mut error
-            && refusal.code == RpcErrorCode::Conflict
-            && let Some(details) = refusal.details.as_object_mut()
-        {
-            details.insert(
-                "next".into(),
-                shell_words::join(["ployz", "deployment", "show", id.as_str()]).into(),
-            );
-        }
+    move |error| {
+        let error = super::store::with_next(
+            error,
+            |refusal| refusal.code == RpcErrorCode::Conflict,
+            || shell_words::join(["ployz", "deployment", "show", id.as_str()]),
+        );
         failed(matches, words)(error)
     }
 }

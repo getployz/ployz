@@ -492,17 +492,16 @@ pub(super) fn provisioning_flags(command: Command) -> Command {
         .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "add" => (enroll::add, Supported),
-        "build-cache-clear" => (clear_build_cache, Supported),
-        "inspect" => (inspect, Supported),
-        "logs" => (super::operator::machine_logs, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
-        "set" => (set, Supported),
-        "upgrade" => (upgrade, Supported),
+        "add" => enroll::add,
+        "build-cache-clear" => clear_build_cache,
+        "inspect" => inspect,
+        "logs" => super::operator::machine_logs,
+        "ls" => list,
+        "rm" => remove,
+        "set" => set,
+        "upgrade" => upgrade,
         _ => return None,
     })
 }

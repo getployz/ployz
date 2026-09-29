@@ -50,12 +50,11 @@ pub(crate) fn command() -> Command {
         ))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "new" => (new, Supported),
-        "ls" => (ls, Supported),
-        "rm" => (rm, Supported),
+        "new" => new,
+        "ls" => ls,
+        "rm" => rm,
         _ => return None,
     })
 }

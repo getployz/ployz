@@ -105,8 +105,7 @@ pub(crate) fn commands() -> Vec<CommandEntry> {
                 })
                 .collect();
             out.push(CommandEntry {
-                json: super::handler_for(&path)
-                    .is_some_and(|(_, json)| json == super::Json::Supported),
+                json: super::handler_for(&path).is_some() && !super::json_refused(&path),
                 about: child
                     .get_about()
                     .map(ToString::to_string)

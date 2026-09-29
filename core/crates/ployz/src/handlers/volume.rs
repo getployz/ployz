@@ -46,13 +46,12 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "add" => (add, Supported),
-        "inspect" => (inspect, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
+        "add" => add,
+        "inspect" => inspect,
+        "ls" => list,
+        "rm" => remove,
         _ => return None,
     })
 }
