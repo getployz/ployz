@@ -83,10 +83,8 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
         all: matches.get_flag("all"),
     };
     let path = query.path.as_ref().map(ToString::to_string);
-    let words = [Some("get"), path.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let mut words = vec!["get"];
+    words.extend(path.as_deref());
     let view = store.environment(&query).map_err(failed(matches, &words))?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
