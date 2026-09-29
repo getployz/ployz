@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemotePages, requireEnvironment } from "#/collections/route-data";
+import { prefetchRemotePages, prefetchStoreViews, requireEnvironment } from "#/collections/route-data";
 import { nodeDeploymentsQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
   CanvasInspectorError,
@@ -11,6 +11,7 @@ import { useServiceDrawerState } from "#/routes/_protected/cloud/$organizationSl
 import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
 import { StoreServiceDrawer } from "../../services/$serviceId/-components/StoreServiceDrawer";
 import { storeEnabled } from "#/modules/config-store/store.contract";
+import { domainsQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
@@ -19,8 +20,13 @@ export const Route = createFileRoute(
   // Switching tabs navigates, so the Deployments tab's first page starts as it opens. SSR renders it.
   loaderDeps: ({ search }) => ({ tab: search.tab }),
   loader: async ({ params, context, deps }) => {
-    if (deps.tab !== "deployments" || storeEnabled) return;
     const environment = await requireEnvironment(context, params);
+    if (storeEnabled) {
+      // TODO(#1267): route params become the Store names.
+      await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: environment.name }));
+      return;
+    }
+    if (deps.tab !== "deployments") return;
     await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));
   },
   pendingComponent: CanvasInspectorPending,

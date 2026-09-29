@@ -1,4 +1,5 @@
-import type { ConfigCommand, DiffView, EnvironmentRef, EnvironmentView, JsonValue, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
+import type { ConfigCommand, DiffView, DomainRow, EnvironmentRef, EnvironmentView, JsonValue, ServiceId, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
+import { Option, Schema } from "effect";
 import { adjectives, animals, uniqueNamesGenerator } from "unique-names-generator";
 import { slugifySegment } from "#/utils/slug";
 
@@ -52,4 +53,17 @@ export function serviceChanges(diff: DiffView, id: string): Map<string, ServiceS
 /** A scalar Setting's value as a field shows it: blank when it has none. */
 export function settingText(value: JsonValue | undefined) {
   return value === null || value === undefined ? "" : String(value);
+}
+
+/** A route row's value in a diff, as far as a domain needs it. */
+const decodeRoute = Schema.decodeUnknownOption(Schema.Struct({ hostname: Schema.String }));
+
+/**
+ * Whether the next Deploy changes a domain: a generated one with its Service's `managedHostnames`, a custom one with
+ * the route row whose value before or after has its hostname.
+ */
+export function domainChanged(changes: Map<string, ServiceSettingChange>, domain: DomainRow) {
+  if (domain.kind === "generated") return changes.has("managedHostnames");
+  const hasHostname = (route: JsonValue) => Option.exists(decodeRoute(route), ({ hostname }) => hostname === domain.hostname);
+  return [...changes].some(([setting, change]) => setting.startsWith("routes.") && (hasHostname(change.before) || hasHostname(change.after)));
 }

@@ -44,7 +44,6 @@ describe("CustomDomainDialog", () => {
     render(
       <CustomDomainDialog
         route={{
-          id: crypto.randomUUID(),
           hostname: "api.example.com",
           targetPort: 8080,
         }}
@@ -93,7 +92,6 @@ describe("CustomDomainDialog", () => {
     await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
-        id: expect.any(String),
         hostname: "api.example.com",
         targetPort: 3000,
       })

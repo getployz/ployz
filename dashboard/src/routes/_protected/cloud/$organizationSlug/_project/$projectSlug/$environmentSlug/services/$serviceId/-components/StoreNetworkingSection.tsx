@@ -1,0 +1,127 @@
+import { useState } from "react";
+import { NetworkIcon, PlusIcon, ZapIcon } from "lucide-react";
+import type { DomainRow, EnvironmentRef, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
+import { Button } from "#/components/ui/button";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { domainChanged } from "#/modules/config-store/store-services";
+import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { CustomDomainDialog } from "./CustomDomainDialog";
+import { DomainRowShell, DomainTitle, PublicDomainRow, storeStatusView } from "./domain-row";
+import { ManagedDomainDialog } from "./ManagedDomain";
+
+type Editor = { kind: "generate" } | { kind: "generated" } | { kind: "add" } | { kind: "custom"; hostname: string } | null;
+
+/** How a domain is addressed in commands: its hostname, or a generated one's prefix. */
+const nameOf = (domain: DomainRow) => domain.kind === "custom" ? domain.hostname : domain.prefix;
+
+const portLabel = (port: number | null) => port === null ? "Uses PORT" : `Port ${port}`;
+
+/**
+ * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
+ * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
+ */
+export function StoreNetworkingSection({ organizationSlug, environment, service, changes }: {
+  organizationSlug: string;
+  environment: EnvironmentRef;
+  service: ServiceListing;
+  changes: Map<string, ServiceSettingChange>;
+}) {
+  const all = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains;
+  const domains = all.filter((domain) => domain.service === service.name);
+  const writer = useStoreWriter(organizationSlug);
+  const [editor, setEditor] = useState<Editor>(null);
+  const generated = domains.find((domain) => domain.kind === "generated");
+  const edited = editor?.kind === "custom"
+    ? domains.find((domain) => domain.kind === "custom" && domain.hostname === editor.hostname)
+    : undefined;
+  const add = (hostname: string | null, port: number | null) =>
+    writer.commit({ command: "add_domain", environment, service: service.name, hostname, port });
+  const remove = (domain: string) => writer.commit({ command: "remove_domain", environment, domain });
+
+  return (
+    <FieldGroup>
+      <Field data-changed={domains.some((domain) => domainChanged(changes, domain)) || undefined}>
+        <FieldLabel>Public Networking</FieldLabel>
+        <FieldDescription>Access your application over HTTP with the following domains.</FieldDescription>
+        <div className="flex flex-col gap-2">
+          {domains.length === 0 ? (
+            <Empty>
+              <EmptyDescription>No public domains yet.</EmptyDescription>
+            </Empty>
+          ) : null}
+          {domains.map((domain) => {
+            const name = nameOf(domain);
+            const hostname = domain.hostname;
+            return (
+              <PublicDomainRow
+                key={`${domain.kind}:${name}`}
+                organizationSlug={organizationSlug}
+                title={hostname ? <DomainTitle hostname={hostname} live={domain.status === "ready"} /> : (
+                  <div className="truncate font-mono text-sm">
+                    {name}
+                    <span className="text-muted-foreground">.…</span>
+                  </div>
+                )}
+                label={hostname ?? name}
+                portLabel={portLabel(domain.port)}
+                view={storeStatusView(domain)}
+                dnsRecords={domain.action?.type === "dns" ? domain.action.records : []}
+                changed={domainChanged(changes, domain)}
+                onEdit={() => setEditor(domain.kind === "custom" ? { kind: "custom", hostname: domain.hostname } : { kind: "generated" })}
+                onDelete={() => remove(name)}
+              />
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {generated ? null : (
+            <Button type="button" variant="outline" onClick={() => setEditor({ kind: "generate" })}>
+              <ZapIcon data-icon="inline-start" />
+              Generate Domain
+            </Button>
+          )}
+          <Button type="button" variant="outline" onClick={() => setEditor({ kind: "add" })}>
+            <PlusIcon data-icon="inline-start" />
+            Custom Domain
+          </Button>
+        </div>
+        {editor?.kind === "generate" || (editor?.kind === "generated" && generated?.kind === "generated") ? (
+          <ManagedDomainDialog
+            mode={editor.kind === "generate" ? "generate" : "port"}
+            managed={{ prefix: generated?.kind === "generated" ? generated.prefix : service.private_dns, targetPort: generated?.port ?? null }}
+            clusterDomain={null}
+            takenPrefixes={[]}
+            defaultTargetPort={null}
+            onClose={() => setEditor(null)}
+            onSubmit={({ targetPort }) => {
+              // Adding the generated domain again changes its port, but can't clear one: that takes a fresh domain.
+              if (generated?.kind === "generated" && targetPort === null && generated.port !== null) remove(generated.prefix);
+              add(null, targetPort);
+            }}
+          />
+        ) : null}
+        {editor?.kind === "add" || (editor?.kind === "custom" && edited?.kind === "custom") ? (
+          <CustomDomainDialog
+            route={edited?.kind === "custom" ? { hostname: edited.hostname, targetPort: edited.port } : undefined}
+            hostnameFixed
+            defaultTargetPort={null}
+            onClose={() => setEditor(null)}
+            onSubmit={({ hostname, targetPort }) => add(hostname, targetPort)}
+          />
+        ) : null}
+      </Field>
+      <Field>
+        <FieldLabel>Private Networking</FieldLabel>
+        <FieldDescription>Communicate with this service from within the environment.</FieldDescription>
+        <DomainRowShell icon={<NetworkIcon />} actions={null}>
+          <DomainTitle hostname={`${service.private_dns}.internal`} copyLabel="Copy private hostname" />
+          <div className="truncate text-muted-foreground text-sm">
+            → or just <span className="font-mono">{service.private_dns}</span>
+          </div>
+        </DomainRowShell>
+      </Field>
+    </FieldGroup>
+  );
+}

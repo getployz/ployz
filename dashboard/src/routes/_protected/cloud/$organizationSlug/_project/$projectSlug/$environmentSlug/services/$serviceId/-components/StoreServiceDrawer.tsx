@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, Trash2Icon } from "lucide-react";
@@ -23,6 +23,7 @@ import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
+import { StoreNetworkingSection } from "./StoreNetworkingSection";
 import type { ServiceRouteParams } from "./useServiceDrawerState";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
@@ -87,8 +88,12 @@ export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
   const field = (name: ServiceSettingName) => <StoreSettingField key={name} state={state} name={name} />;
   const bodies = {
     source: <StoreSourceSection state={state} />,
-    // TODO(#1265): ports and domains.
-    networking: null,
+    // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
+    networking: (
+      <Suspense fallback={null}>
+        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} />
+      </Suspense>
+    ),
     scale: <FieldGroup>{field("replicas")}</FieldGroup>,
     build: service.source === "git"
       ? <FieldGroup>{field("buildMethod")}{buildMethod === "dockerfile" ? field("dockerfilePath") : field("buildCommand")}</FieldGroup>

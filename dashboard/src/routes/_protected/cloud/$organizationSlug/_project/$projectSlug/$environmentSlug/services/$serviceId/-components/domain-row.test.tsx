@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { DomainTitle, PublicDomainRow } from "./domain-row";
+import { DomainTitle, PublicDomainRow, statusView, storeStatusView } from "./domain-row";
 
 const row = (status: PublicDomainStatus) => (
   <PublicDomainRow
@@ -13,7 +13,7 @@ const row = (status: PublicDomainStatus) => (
     }
     label="www.acme.com"
     portLabel="Port 8080"
-    status={status}
+    view={statusView(status)}
     dnsRecords={[{ type: "CNAME", name: "www", value: "acme.ployz.app" }]}
     changed={false}
     onEdit={vi.fn()}
@@ -54,5 +54,17 @@ describe("PublicDomainRow", () => {
     expect(screen.getByText("acme.ployz.app")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy CNAME name" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Copy CNAME value" })).toBeTruthy();
+  });
+});
+
+describe("storeStatusView", () => {
+  it("shows the Store's reason and offers its DNS records, but no action to wait for a deploy", () => {
+    const records = [{ type: "CNAME", name: "www", value: "acme.ployz.app" }];
+    expect(storeStatusView({ status: "needs_attention", reason: "Waiting for DNS", action: { type: "dns", records } }))
+      .toMatchObject({ phrase: "Waiting for DNS", action: "dns" });
+    expect(storeStatusView({ status: "needs_attention", reason: "No Server receives traffic", action: { type: "add_server" } }).action)
+      .toBe("servers");
+    expect(storeStatusView({ status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" } }).action)
+      .toBeNull();
   });
 });

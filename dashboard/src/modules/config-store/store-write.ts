@@ -56,7 +56,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
    * Runs `work` in the Environment's queue, then waits for `refresh` so the committed state shows before the
    * pending edit's overlay goes. Failure toasts, refetches the Environment's views (the rollback), and rejects.
    */
-  function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>) {
+  function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>, expects: boolean) {
     const observer = new MutationObserver<T, Error, Change[]>(queryClient, {
       mutationKey,
       scope: { id: `store:${organizationSlug}:${key}` },
@@ -66,7 +66,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         return value;
       },
       onError: async (error) => {
-        toast.error(error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
+        // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
+        toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
         await refetchEnvironmentViews(queryClient, organizationSlug, key);
       },
     });
@@ -80,7 +81,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         const written = await send({ command: "edit", environment, expect: expected(key), changes });
         if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
-      }, () => refetchEnvironmentViews(queryClient, organizationSlug, key));
+      }, () => refetchEnvironmentViews(queryClient, organizationSlug, key), true);
       return observeFailure({ isPersisted: { promise } });
     },
     /**
@@ -92,7 +93,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     commit(command: ConfigCommand): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       const promise = queued(key, ["store-command", organizationSlug, key], [], () => send(command),
-        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }));
+        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false);
       return observeFailure({ isPersisted: { promise } });
     },
   };
