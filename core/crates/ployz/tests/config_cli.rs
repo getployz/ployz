@@ -429,6 +429,80 @@ fn an_agent_adds_checks_and_removes_domains() {
 }
 
 #[test]
+fn an_agent_branches_an_environment_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["service", "add", "db", "--image", "postgres:17"]);
+        ok(
+            store,
+            &["set", "web.env.DB_URL=${{ db.PLOYZ_PRIVATE_DOMAIN }}"],
+        );
+
+        // production never deployed, so nothing can lend db: the Branch copies it too.
+        let refused = error(
+            store,
+            &["env", "branch", "fix-web", "--copy", "web", "--live", "db"],
+        );
+        assert_eq!(refused["code"], json!("invalid_argument"));
+        failed(
+            store,
+            &[
+                "env", "branch", "fix-web", "--copy", "web", "--setup", "seed",
+            ],
+            2,
+        );
+        let made = ok(
+            store,
+            &[
+                "env",
+                "branch",
+                "fix-web",
+                "--from",
+                "production",
+                "--copy",
+                "web",
+                "--setup",
+                "web=pnpm db:seed",
+                "--keep",
+            ],
+        );
+        assert_eq!(made["staged"], json!(["db", "web"]));
+        assert_eq!(made["next"], json!("ployz deploy --env fix-web"));
+        assert_eq!(made["branch"]["parent"], json!("production"));
+        assert_eq!(made["branch"]["kept"], json!(true));
+        assert_eq!(
+            made["branch"]["setup"],
+            json!([{ "service": "web", "command": "pnpm db:seed" }])
+        );
+        assert_eq!(
+            ok(store, &["get", "web.env.DB_URL", "--env", "fix-web"])["settings"][0]["value"],
+            json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}")
+        );
+
+        // Update and Own Copy wait until the Branch runs its Working State.
+        let unsettled = error(store, &["env", "update", "--env", "fix-web"]);
+        assert_eq!(unsettled["code"], json!("conflict"));
+        assert_eq!(
+            unsettled["details"]["next"],
+            json!("ployz diff --project shop --env fix-web")
+        );
+        assert_eq!(
+            error(store, &["env", "copy", "db", "--env", "fix-web"])["code"],
+            json!("conflict")
+        );
+        assert_eq!(
+            error(store, &["env", "update"])["code"],
+            json!("invalid_argument")
+        );
+        let unkept = ok(store, &["env", "keep", "--env", "fix-web", "--off"]);
+        assert_eq!(unkept["immediate"], json!(["kept"]));
+        assert_eq!(unkept["branch"]["kept"], json!(false));
+        assert!(unkept.get("next").is_none());
+    }
+}
+
+#[test]
 fn an_agent_adds_mounts_detaches_and_removes_volumes() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

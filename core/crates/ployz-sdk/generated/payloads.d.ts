@@ -115,6 +115,12 @@ export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType,
 
 export type BranchPreset = "only" | "uses" | "all";
 
+export type BranchQuery = {
+/**
+ * The Branch.
+ */
+environment: EnvironmentRef, };
+
 export type BranchReason = "live" | "left_out" | "sizing" | "custom_domain" | "generated_address" | "git_branch" | "data";
 
 export type BranchRow = {
@@ -130,6 +136,46 @@ conflict: boolean,
  * Present only on variable rows.
  */
 choice?: BranchChoice, } | { "role": "differ", why: BranchReason, });
+
+export type BranchView = {
+/**
+ * The Branch.
+ */
+environment: EnvironmentSummary,
+/**
+ * The Environment it was made from, in the same Project.
+ */
+parent: EnvironmentName,
+/**
+ * Whether it outlives a Save and never closes for being idle.
+ */
+kept: boolean,
+/**
+ * What runs in each Own Copy before it first deploys.
+ */
+setup: Array<SetupCommand>,
+/**
+ * The nodes it uses live.
+ */
+live: Array<LiveNode>,
+/**
+ * The Parent's deployed changes Update would stage, as `NODE[.path]`.
+ */
+update: Array<string>, };
+
+export type Branched = {
+/**
+ * The Branch now.
+ */
+branch: BranchView,
+/**
+ * Nodes staged in its Working State: Services by name, Volumes as `volumes.NAME`.
+ */
+staged: Array<string>,
+/**
+ * What changed at once.
+ */
+immediate: Array<string>, };
 
 export type BridgeEndpointCapacity = { bridge_usable_endpoints: number, bridge_attached_endpoints: number, bridge_free_endpoints: number, };
 
@@ -254,7 +300,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch;
 
 export type ConfigDomainEvidence = {
 /**
@@ -285,7 +331,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -303,9 +349,9 @@ domains: ConfigDomainEvidence,
  */
 volumes?: VolumeObservation, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "branch" } & Branched;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -351,7 +397,59 @@ export type ContractDescription = { machine_id: MachineId, protocol_major: numbe
  */
 daemon_version: string, capabilities: Array<CapabilityName>, };
 
+export type CopyNode = {
+/**
+ * The Branch.
+ */
+environment: EnvironmentRef,
+/**
+ * The Live Node, by name.
+ */
+node: ServiceName,
+/**
+ * Refuse with `conflict` unless Working State is still at this revision.
+ */
+expect: Revision | null, };
+
 export type CpuNanos = number;
+
+export type CreateBranch = {
+/**
+ * The new Branch's ID.
+ */
+id: EnvironmentId,
+/**
+ * Its Parent; the Branch joins the Parent's Project.
+ */
+from: EnvironmentRef,
+/**
+ * Its name, unique in the Project.
+ */
+name: EnvironmentName,
+/**
+ * The Parent's Services and Volumes to copy, by name. With `fix` and none
+ * named, the Services the failed Deployment didn't apply.
+ */
+copy: Array<string>,
+/**
+ * Nodes the Branch must use live, by name: refused unless the plan agrees.
+ */
+live: Array<string>,
+/**
+ * Commands to run in an Own Copy before it first deploys, such as seeding the
+ * copy of a database.
+ */
+setup: Array<SetupCommand>,
+/**
+ * Keep it after a Save, and never close it for being idle.
+ */
+keep: boolean,
+/**
+ * Fix this failed Deployment of the Parent on the Branch: each copied Service
+ * it didn't apply starts from that Deployment's configuration, staged over
+ * what the Parent runs.
+ */
+fix?: DeploymentId | null, };
 
 export type CreateEnvironment = {
 /**
@@ -980,7 +1078,28 @@ accepts_ingress: boolean, };
 
 export type JsonValue = number | string | boolean | Array<JsonValue> | { [key in string]: JsonValue } | null;
 
+export type KeepBranch = {
+/**
+ * The Branch.
+ */
+environment: EnvironmentRef,
+/**
+ * Whether it is kept.
+ */
+kept: boolean, };
+
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
+
+export type LiveNode = {
+/**
+ * Its name where it runs.
+ */
+name: string,
+/**
+ * The nearest Environment the Branch comes from that runs it; none when
+ * nothing does, so what reads it deploys empty.
+ */
+owner: EnvironmentName | null, };
 
 export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
 
@@ -1899,6 +2018,16 @@ default: JsonValue,
  */
 apply: Apply, };
 
+export type SetupCommand = {
+/**
+ * The Service it runs in.
+ */
+service: ServiceName,
+/**
+ * A shell command.
+ */
+command: string, };
+
 export type SourceKind = "empty" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
@@ -1981,6 +2110,16 @@ export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: st
 export type TransportProtocol = "tcp" | "udp";
 
 export type Ulimit = { soft: number, hard: number, };
+
+export type UpdateBranch = {
+/**
+ * The Branch.
+ */
+environment: EnvironmentRef,
+/**
+ * Refuse with `conflict` unless Working State is still at this revision.
+ */
+expect: Revision | null, };
 
 export type UpdateConfig = {
 /**

@@ -269,7 +269,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     );
 
     // The Parent runs nothing, so web brings db and db its Volume, all under fresh ids.
-    assert_eq!(made.staged, ["web", "db", "volumes.data"]);
+    assert_eq!(made.staged, ["db", "volumes.data", "web"]);
     let copied = services(&store, &who, "fix-web");
     assert_eq!(
         copied
