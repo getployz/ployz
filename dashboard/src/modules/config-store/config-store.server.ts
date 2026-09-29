@@ -130,6 +130,36 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
 export const storeRefusal = (cause: unknown): StoreRefusal | null =>
   cause instanceof RpcError ? { code: cause.code, message: cause.message, details: cause.details } : null;
 
+/** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
+function statusFor(code: string) {
+  switch (code) {
+    case "invalid_argument":
+      return 422;
+    case "not_found":
+      return 404;
+    case "conflict":
+    case "ambiguous":
+    case "confirmation_required":
+      return 409;
+    case "unauthenticated":
+      return 401;
+    case "unsupported":
+      return 501;
+    case "unavailable":
+      return 503;
+    default:
+      return 500;
+  }
+}
+
+export function refusal(error: StoreRefusal) {
+  const { code, message, details } = error;
+  return Response.json({ error: { code, message, details } }, {
+    status: statusFor(code),
+    headers: { "cache-control": "no-store" },
+  });
+}
+
 /** Who admitted an upload, as the Deployment's provenance names them: the signed-in user's name, else email. */
 const uploaderFor = Effect.fn("ConfigStore.uploaderFor")(function* (call: StoreCall, userId: string) {
   if (call.operation !== "write" || call.command.command !== "admit" || !call.command.upload) return undefined;
