@@ -36,7 +36,7 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let query = DiffQuery {
         environment: environment(matches)?,
     };
-    let view = store.diff(&query).map_err(failed)?;
+    let view = store.diff(&query).map_err(failed(matches, &["diff"]))?;
     let hint = (!view.changes.is_empty() && !view.published)
         .then(|| next(matches, &["publish", "--version", &view.version]));
     crate::output::finish(&Next::new(&view, hint.clone()), || {
@@ -69,9 +69,9 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let store = store(root)?;
-    let published = store
-        .publish(&publish)
-        .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
+    let published = store.publish(&publish).map_err(|error| {
+        failed(matches, &["publish"])(with_refresh_hint(error, matches, "diff"))
+    })?;
     crate::output::finish(&published, || {
         let where_ = format!(
             "{}/{}",
@@ -96,10 +96,15 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
+    let path_word = path.as_ref().map(ToString::to_string);
+    let words = [Some("discard"), path_word.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
     let store = store(root)?;
     let discarded = store
         .discard(&discard)
-        .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
+        .map_err(|error| failed(matches, &words)(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["diff"]));
     crate::output::finish(&Next::new(&discarded, hint), || {
         say!(

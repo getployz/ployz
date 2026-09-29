@@ -16,7 +16,7 @@ use crate::error;
 use crate::id::Revision;
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{self, ServiceSetting, SettingPath};
+use crate::settings::{ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Put Working State in Saved State without deploying it.
@@ -140,7 +140,7 @@ fn restore(
         .flat_map(|intent| &intent.services)
         .find(|service| service.slug == path.service().as_str())
         .map(|service| service.id.clone())
-        .ok_or_else(|| settings::no_service(path.service(), &environment.summary.name, working))?;
+        .ok_or_else(|| scope::no_service(path.service(), &environment.summary.name, working))?;
     let config = |intent: Option<&SavedEnvironmentIntent>| {
         intent
             .and_then(|intent| intent.services.iter().find(|service| service.id == id))

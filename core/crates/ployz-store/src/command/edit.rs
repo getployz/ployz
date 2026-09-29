@@ -147,7 +147,7 @@ fn expand(
                 };
                 for (name, value) in object {
                     let setting = ServiceSetting::parse(name)?;
-                    let path = SettingPath::of(path.service().as_str(), setting)?;
+                    let path = SettingPath::of(path.service(), setting);
                     expanded.push((path, setting, Some(value.clone())));
                 }
             }
