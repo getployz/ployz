@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { StoreRefused } from "#/modules/config-store/store-write";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -50,6 +51,8 @@ export function VolumeCreatorDialog({
       onOpenChange(false);
       setName("data");
     } catch (error) {
+      // The Store writer already said why it refused.
+      if (error instanceof StoreRefused) return;
       toast.error(
         error instanceof Error
           ? error.message

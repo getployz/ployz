@@ -155,3 +155,14 @@ it("words a command's conflict as the Store does: a taken domain isn't a stale r
   await expect(added.isPersisted.promise).rejects.toMatchObject({ code: "conflict" });
   expect(error).toHaveBeenCalledWith("Another Service already has this domain");
 });
+
+it("leaves a Deploy's confirmation_required to its caller: a question for the user, not a failure to toast", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const details = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", deletes: [{ machine_id: "m1", name: "ns_vol-v" }] }], accept: ["pg-data"], version: "9:1:0.1" };
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
+  const writer = renderHook(() => useStoreWriter("acme")).result.current;
+  const admitted = writer.commit({ command: "admit", id: "d", environment: ref, services: [], version: null, accept_volume_loss: [] });
+  await expect(admitted.isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required", details });
+  expect(error).not.toHaveBeenCalled();
+});

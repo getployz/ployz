@@ -2,8 +2,15 @@ import { applyCreatedResource } from "#/modules/environment-design/apply-created
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
+import { useLoaderData } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { createVolumeResourceServerFn } from "#/modules/environment-design/resource-functions";
+import { getCanvasPositionsCollection } from "#/collections/collections";
+import { createVolumeResourceServerFn, updateEnvironmentResourceCanvasPositionServerFn } from "#/modules/environment-design/resource-functions";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { createVolumeCommand } from "#/modules/config-store/store-volumes";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { slugifySegment } from "#/utils/slug";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
 import type { CanvasResourceNode, FlowPosition } from "./types";
@@ -20,6 +27,9 @@ export function useVolumeCreator(
   const collectionScope = useCollectionScope();
   const flow = useReactFlow<CanvasResourceNode>();
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
+  const placeVolume = useServerFn(updateEnvironmentResourceCanvasPositionServerFn);
+  const writer = useStoreWriter(params.organizationSlug);
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorPosition, setCreatorPosition] = useState<FlowPosition>({
     x: 0,
@@ -64,6 +74,15 @@ export function useVolumeCreator(
     name: string;
     position: FlowPosition;
   }) {
+    if (storeEnabled) {
+      const id = crypto.randomUUID();
+      // Placed first, so it appears where it was put rather than jumping there.
+      const placed = await placeVolume({ data: { organizationSlug: params.organizationSlug, environmentId, resourceId: id,
+        x: Math.round(input.position.x), y: Math.round(input.position.y) } });
+      await getCanvasPositionsCollection(params.organizationSlug, collectionScope).writeCommitted(placed.data);
+      await writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data")).isPersisted.promise;
+      return;
+    }
     const result = await createVolumeResource({
       data: {
         organizationSlug: params.organizationSlug,

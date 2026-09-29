@@ -33,6 +33,8 @@ import { cn } from "#/lib/utils";
 import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import { LiveNodeCard } from "./LiveServiceNode";
 import { StoreServiceCard } from "./StoreServiceNode";
+import { StoreVolumeCard } from "./StoreVolumeNode";
+import type { VolumeListing } from "@ployz/sdk";
 import type { StoreCanvasService } from "./types";
 
 function ServiceListItem({
@@ -121,6 +123,7 @@ function ServiceListItem({
 export function CanvasNodeList({
   services,
   storeServices,
+  storeVolumes,
   liveNodes,
   selectedNodeId,
   servicesById,
@@ -129,6 +132,8 @@ export function CanvasNodeList({
   services: EnvironmentServiceViewRecord[];
   /** The Config Store's Services, listed instead of `services`; null while the Store is dark. */
   storeServices: StoreCanvasService[] | null;
+  /** The Config Store's Volumes, listed instead of the legacy ones; null while the Store is dark. */
+  storeVolumes: VolumeListing[] | null;
   /** A Branch's Live Nodes, after its own services. */
   liveNodes: LiveNode[];
   selectedNodeId: string | null;
@@ -156,7 +161,10 @@ export function CanvasNodeList({
           ) : null;
         })}
         {liveNodes.map((liveNode) => <LiveNodeCard key={liveNode.lineageId} liveNode={liveNode} className="block" />)}
-        {[...volumeResourcesById.values()].map(({ resource, diffRowCount }) => {
+        {storeVolumes?.map((volume) => (
+          <StoreVolumeCard key={volume.id} volume={volume} selected={volume.id === selectedNodeId} className="block" />
+        ))}
+        {storeVolumes ? null : [...volumeResourcesById.values()].map(({ resource, diffRowCount }) => {
           const removed = !resource.isAuthored;
           const summary = resource.attachments.map((attachment) => attachment.mountPath).join(", ") || "No mounts";
           const selected = resource.resource.id === selectedNodeId;
