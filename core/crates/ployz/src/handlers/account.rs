@@ -310,7 +310,7 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    if !super::env::confirmed(matches, slug, "Organization")? {
+    if !super::teardown::confirmed(matches, slug, "Organization")? {
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(

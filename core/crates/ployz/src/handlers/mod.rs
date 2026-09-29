@@ -27,6 +27,7 @@ pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod setup;
 pub(crate) mod store;
+mod teardown;
 pub(crate) mod up;
 pub(crate) mod volume;
 

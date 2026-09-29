@@ -160,7 +160,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    let accept = super::env::accepted(matches)?;
+    let accept = super::teardown::accepted(matches)?;
     let request = Request {
         environment: environment(matches)?,
         services,
