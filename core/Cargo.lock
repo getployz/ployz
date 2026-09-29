@@ -3293,6 +3293,7 @@ dependencies = [
  "oci-client",
  "ployz-build",
  "ployz-core",
+ "ployz-store",
  "ployz-testkit",
  "regex",
  "reqwest",
@@ -3376,6 +3377,18 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "ployz-store"
+version = "0.1.2-beta.50"
+dependencies = [
+ "ployz-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

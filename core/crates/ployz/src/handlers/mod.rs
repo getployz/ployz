@@ -9,12 +9,15 @@ use crate::failure::{Failure, USAGE_EXIT};
 pub(crate) mod account;
 pub(crate) mod build;
 pub(crate) mod cloud;
+pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
+pub(crate) mod env;
 pub(crate) mod ingress;
 pub(crate) mod login;
 pub(crate) mod machine;
 mod operator;
+pub(crate) mod project;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod volume;
@@ -235,14 +238,19 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("completion", "") => Some((completion, Json::Refused)),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
+        ("env", rest) => env::handler(rest),
+        ("get", "") => Some((config::get, Json::Supported)),
         ("ingress", rest) => ingress::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
         ("machine", rest) => machine::handler(rest),
         ("org", rest) => account::org_handler(rest),
+        ("project", rest) => project::handler(rest),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
+        ("set", "") => Some((config::set, Json::Supported)),
         ("token", rest) => account::token_handler(rest),
+        ("unset", "") => Some((config::unset, Json::Supported)),
         ("volume", rest) => volume::handler(rest),
         _ => None,
     }
