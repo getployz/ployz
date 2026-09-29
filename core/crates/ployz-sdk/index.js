@@ -332,6 +332,14 @@ async function openConfigStore(url, sealingSecret) {
     system: (organization, event) => withRpcError(store.system(organization, event)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),
+    githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
+    githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
+    githubBuild: (build) => withRpcError(store.githubBuild(build)),
+    githubSkip: (build, message) => withRpcError(store.githubSkip(build, message)),
+    githubCheckIn: (build, claims, connections) => withRpcError(store.githubCheckIn(build, claims, connections)),
+    githubReport: (build, claims, report) => withRpcError(store.githubReport(build, claims, report)),
+    githubFinish: (build, timedOut, connections) => withRpcError(store.githubFinish(build, timedOut, connections)),
+    githubCancel: (deployment, connections) => withRpcError(store.githubCancel(deployment, connections)),
   };
 }
 

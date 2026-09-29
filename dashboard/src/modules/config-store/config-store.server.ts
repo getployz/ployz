@@ -1,24 +1,25 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, ConfigView, ConfigWritten } from "@ployz/sdk";
+import type { ConfigQuery, ConfigStore, ConfigTrusted, ConfigView, ConfigWritten } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Data, Effect, Option, Redacted, Schema } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { AdmitCommand, gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
-import { resolveCaller } from "#/modules/identity/caller.server";
 import { user } from "#/modules/identity/tables";
-import { receiveUpload } from "#/modules/config-store/upload.server";
 import { followStoreEnvironments } from "#/modules/config-store/store-environments.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createConfigDeploymentAdmittedEvent, createConfigDeploymentStartedEvent } from "#/modules/inngest/events";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
-import { NotFound, Validation } from "#/server/public-error";
+import { NotFound } from "#/server/public-error";
+import { cancelGithubRun } from "#/modules/github/github-build.server";
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { StoreCall, StoreRefusal, StoreResult } from "./store.contract";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
@@ -74,10 +75,33 @@ export class ConfigStoreOpenFailure extends Data.TaggedError("ConfigStoreOpenFai
 export const cloudStore = Effect.gen(function* () {
   const config = yield* AppConfig;
   const database = yield* Database;
-  return yield* Effect.tryPromise({
-    try: () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret)),
-    catch: (cause) => new ConfigStoreOpenFailure({ cause }),
-  });
+  return yield* storeTry(() => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret))).pipe(
+    Effect.mapError((cause) => new ConfigStoreOpenFailure({ cause })),
+  );
+});
+
+/** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
+export const readStore = Effect.fn("ConfigStore.read")(function* (organizationId: string, query: ConfigQuery) {
+  const store = yield* cloudStore;
+  // A refusal (`not_found`) is the RpcError itself.
+  return yield* storeTry(() => store.read(organizationId, query));
+});
+
+/**
+ * Stop a Deployment's builds still on GitHub: end their Build Grants, fail them, cancel their runs. Idempotent. Its
+ * cancellation, and a worker that gave up on it, call it.
+ */
+export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (organizationId: string, deploymentId: string) {
+  const store = yield* cloudStore;
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  const connections = loaded.kind === "ready" ? loaded.connections : [];
+  const builds = yield* storeTry(() => store.githubCancel(deploymentId, connections)).pipe(
+    Effect.mapError((cause) => new ConfigStoreOpenFailure({ cause })),
+  );
+  yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
+    Effect.ignore,
+  ), { concurrency: 4, discard: true });
+  return builds.length;
 });
 
 /**
@@ -91,7 +115,7 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   started: boolean,
 ) {
   if (written.written !== "deployment") return undefined;
-  const view = yield* Effect.tryPromise({ try: () => read({ query: "deployment", id: written.id }), catch: (cause) => cause });
+  const view = yield* storeTry(() => read({ query: "deployment", id: written.id }));
   if (view.view !== "deployment") return yield* Effect.die(new Error("A deployment query answered another view"));
   const data = { organizationId, environmentId: view.environment.id, deploymentId: written.id };
   const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
@@ -102,6 +126,10 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
     })),
   );
 });
+
+/** The Store's refusal in `cause`, if it is one. */
+export const storeRefusal = (cause: unknown): StoreRefusal | null =>
+  cause instanceof RpcError ? { code: cause.code, message: cause.message, details: cause.details } : null;
 
 /** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
 function statusFor(code: string) {
@@ -125,7 +153,7 @@ function statusFor(code: string) {
   }
 }
 
-function refusal(error: StoreRefusal) {
+export function refusal(error: StoreRefusal) {
   const { code, message, details } = error;
   return Response.json({ error: { code, message, details } }, {
     status: statusFor(code),
@@ -171,66 +199,36 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
   const uploader = yield* uploaderFor(call, userId).pipe(Effect.orDie);
   const trusted: ConfigTrusted = { ...git, domains, uploader: uploader ?? null };
   if (volumes !== undefined) trusted.volumes = volumes;
-  return yield* Effect.tryPromise({
-    try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
-      const value = call.operation === "read"
-        ? await store.read(organizationId, call.query, trusted)
-        : await store.write(organizationId, call.command, trusted);
-      return { ok: true, value };
-    },
-    catch: (cause) => cause,
+  return yield* storeTry(async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
+    const value = call.operation === "read"
+      ? await store.read(organizationId, call.query, trusted)
+      : await store.write(organizationId, call.command, trusted);
+    return { ok: true, value };
   }).pipe(
     // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
     Effect.tap((result) => result.ok && call.operation === "write"
       // SAFETY: a write answers what it wrote.
       ? followStoreEnvironments(organizationId, result.value as ConfigWritten) : Effect.void),
-    Effect.flatMap((result) => {
-      if (!result.ok || call.operation !== "write") return Effect.succeed(result);
-      const { command } = call.command;
-      if (command !== "admit" && command !== "start") return Effect.succeed(result);
+    Effect.flatMap((result) => Effect.gen(function* () {
+      if (!result.ok || call.operation !== "write") return result;
+      const command = call.command;
+      if (command.command === "cancel") {
+        // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
+        yield* cancelStoreGithubBuilds(organizationId, command.deployment).pipe(
+          Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
+        );
+        return result;
+      }
+      if (command.command !== "admit" && command.command !== "start") return result;
       // SAFETY: a write answers what it wrote.
       const written = result.value as ConfigWritten;
-      return dispatchAdmitted(organizationId, written, read, command === "start").pipe(
-        Effect.map((refused): StoreResult<ConfigView | ConfigWritten> => refused === undefined ? result : { ok: false, refusal: refused }),
-      );
-    }),
+      const refused = yield* dispatchAdmitted(organizationId, written, read, command.command === "start");
+      return refused === undefined ? result : { ok: false, refusal: refused } satisfies StoreResult<never>;
+    })),
     Effect.catch((cause) => cause instanceof RpcError
       ? Effect.succeed<StoreResult<never>>({ ok: false, refusal: { code: cause.code, message: cause.message, details: cause.details } })
       : Effect.die(cause)),
   );
-});
-
-/**
- * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
- * Organization. `POST /api/config/upload/<Deployment ID>` keeps a gzipped tar of the source a Deployment the CLI
- * admits next builds from. Nothing else of the Store is reachable over HTTPS.
- */
-export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
-  const config = yield* AppConfig;
-  // TODO(#1275): dark in production until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
-  const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
-  const upload = /^upload\/([^/]+)$/.exec(operation)?.[1];
-  if (request.method !== "POST" || (operation !== "read" && operation !== "write" && upload === undefined)) {
-    return yield* new NotFound({ message: "Not found." });
-  }
-  // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
-  yield* Effect.annotateCurrentSpan("ployz.agent", request.headers.get("x-ployz-agent") ?? "none");
-  const caller = yield* resolveCaller(request.headers);
-  if (upload !== undefined) {
-    const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
-    return refused === undefined
-      ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
-      : refusal(refused);
-  }
-  const input: unknown = yield* Effect.tryPromise({
-    try: () => request.json(),
-    catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
-  });
-  // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
-  const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation: "write", command: input as ConfigCommand };
-  const result = yield* callStore(caller.organization.id, caller.userId, call);
-  return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
 });
 
 /**
