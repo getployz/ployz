@@ -105,6 +105,13 @@ jobs:
     permissions:
       contents: read
       actions: write
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 15
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-rust
@@ -131,6 +138,10 @@ jobs:
           EOF
           cargo nextest run --workspace --all-features --locked
           cargo test --doc --workspace --all-features --locked
+      - name: Config Store behaviour suite on Postgres
+        env:
+          PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
+        run: cargo nextest run --package ployz-store --test store --locked
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
