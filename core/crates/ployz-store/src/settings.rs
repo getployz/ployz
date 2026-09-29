@@ -401,7 +401,10 @@ impl ServiceSetting {
             .find(|setting| setting.name() == name)
             .ok_or_else(|| {
                 // `env` and `mounts` hold keyed children, so they are suggested too.
-                let names = Self::ALL.map(Self::name).into_iter().chain(["env", "mounts"]);
+                let names = Self::ALL
+                    .map(Self::name)
+                    .into_iter()
+                    .chain(["env", "mounts"]);
                 let first = name.split('.').next().unwrap_or(name);
                 error::invalid(
                     "Unknown Service Setting",
