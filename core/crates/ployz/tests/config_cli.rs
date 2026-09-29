@@ -136,6 +136,7 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, who: Actor, written: &Written) 
             id,
             RunnerId::parse("cloud-worker").unwrap(),
             vec![unreachable],
+            Ok(Default::default()),
         ));
     });
 }

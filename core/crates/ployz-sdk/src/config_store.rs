@@ -90,9 +90,44 @@ impl ConfigStore {
             .await
     }
 
+    /// The Git Services Deployment `deployment` builds (`GitSource[]`), each with its
+    /// pinned commit, if any. Only Cloud's worker calls this, to read their sources.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    #[napi]
+    pub async fn deployment_sources(&self, deployment: String) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.sources(&deployment)).await
+    }
+
+    /// Pin the commits Cloud resolved (`{runtime Service name: commit}`) for
+    /// Deployment `deployment`'s Git Services; a pinned commit never changes. Resolves
+    /// to every source with its pin. Only Cloud's worker calls this.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
+    /// `invalid_argument` for a bad pin, or a storage error.
+    #[napi]
+    pub async fn pin_sources(
+        &self,
+        deployment: String,
+        commits: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let commits = serde_json::from_value(commits)
+            .map_err(|_| invalid_argument("Expected commits by Service name"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.pin(&deployment, &commits)).await
+    }
+
     /// Run the Organization's queued Deployment `deployment` as `runner` on one of
     /// `connections` (`Connection[]`), and resolve to its summary once its outcome is
-    /// recorded. Only Cloud's worker calls this. It takes as long as the Deploy does.
+    /// recorded. Its Git Services build from `checkouts` (`{runtime Service name:
+    /// directory}`) at their pinned commits; `source_failure` says why Cloud could not
+    /// read them, and is recorded as the reason nothing ran. Only Cloud's worker calls
+    /// this. It takes as long as its builds and Deploy do.
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
@@ -103,17 +138,28 @@ impl ConfigStore {
         deployment: String,
         runner: String,
         connections: serde_json::Value,
+        checkouts: Option<serde_json::Value>,
+        source_failure: Option<String>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization)?;
         let (deployment, runner) = ids(deployment, runner)?;
         let connections = serde_json::from_value(connections)
             .map_err(|_| invalid_argument("invalid management connections"))?;
+        let checkouts = match source_failure {
+            Some(reason) => Err(reason),
+            None => Ok(checkouts
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| invalid_argument("Expected checkouts by Service name"))?
+                .unwrap_or_default()),
+        };
         let summary = ployz::sdk::run_deployment(
             Arc::clone(&self.store),
             who,
             deployment,
             runner,
             connections,
+            checkouts,
         )
         .await
         .map_err(rpc_to_napi)?;

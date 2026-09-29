@@ -20,6 +20,7 @@ const refreshedBy = {
   services: ["store_environment", "store_deployment"],
   deployments: ["store_deployment"],
   deployment: ["store_deployment"],
+  build_log: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
   // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, read afresh.

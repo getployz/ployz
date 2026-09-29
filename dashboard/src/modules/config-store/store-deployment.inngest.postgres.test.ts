@@ -1,12 +1,15 @@
 import { testConfigEnvironment } from "#/test/config-environment";
+import { gzipSync } from "node:zlib";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ServiceId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
+import type { ConfigCommand, ConfigTrusted, ServiceId } from "@ployz/sdk";
+import { ConfigProvider, Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
+import { Header } from "tar";
 import { expect } from "vitest";
 import { cloudStore } from "#/modules/config-store/config-store.server";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { GithubApi, GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
 import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
@@ -22,6 +25,8 @@ const DEPLOYED = "00000000-0000-4000-8000-00000000a101";
 const CANCELLED = "00000000-0000-4000-8000-00000000a102";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
+
+const noGithub: GithubApiService = { json: () => Effect.die("no Git in this test"), archive: () => Effect.die("no Git in this test") };
 
 const admitted = (deploymentId: string) => ({
   name: configDeploymentAdmittedEvent,
@@ -56,7 +61,8 @@ it.live(
 
       const worker = createRunStoreDeployment(
         new Inngest({ id: "store-deployment-test" }),
-        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
+        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
+          Effect.provide(services), Effect.provideService(GithubApi, noGithub)))),
       );
       const run = (deploymentId: string) =>
         Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
@@ -96,6 +102,91 @@ it.live(
       expect(serialized).not.toContain("hi-");
       expect(serialized).not.toContain("resolvedEnv");
       expect(serialized).not.toContain("ployz1:");
+    }),
+  60_000,
+);
+
+const HEAD = "a".repeat(40);
+const archive = (() => {
+  const header = new Header({ path: "root/package.json", size: 0, mode: 0o644, type: "File" });
+  header.encode();
+  return gzipSync(Buffer.concat([Buffer.from(header.block ?? Buffer.alloc(512)), Buffer.alloc(1024)]));
+})();
+
+/** GitHub with the public `acme/web`, whose `main` is at `HEAD` unless `branchGone`. */
+function github(state: { branchGone: boolean; heads: number; archives: string[] }): GithubApiService {
+  return {
+    json: (request) => {
+      if (request.url.includes("/git/ref/")) {
+        state.heads += 1;
+        if (state.branchGone) {
+          return Effect.fail(new GithubObservationError({ code: "not_found", operation: request.operation, retriable: false, message: "gone" }));
+        }
+        return Schema.decodeUnknownEffect(request.schema)({ ref: "refs/heads/main", object: { type: "commit", sha: HEAD } }).pipe(Effect.orDie);
+      }
+      return Schema.decodeUnknownEffect(request.schema)({ id: 42, full_name: "acme/web", private: false }).pipe(Effect.orDie);
+    },
+    archive: ({ sha }) => {
+      state.archives.push(sha);
+      return Effect.succeed(new Response(archive));
+    },
+  };
+}
+
+it.live(
+  "Cloud's worker pins a Git Service's commit once and checks it out for the runner; a source it can't read is why nothing ran",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* postgresTestDatabase;
+      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
+      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+      const services = yield* Layer.build(Layer.mergeAll(
+        configLayer,
+        DatabaseLive.pipe(Layer.provide(configLayer)),
+        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
+      ));
+      const store = yield* cloudStore.pipe(Effect.provide(services));
+      const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
+        Effect.promise(() => store.write(ORGANIZATION, command, trusted));
+      yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+      yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null }, {
+        repositories: [{ repository: "acme/web", repository_id: 42, access: { type: "public" }, default_branch: "main", branches: [] }],
+      });
+      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null });
+
+      const state = { branchGone: false, heads: 0, archives: [] as string[] };
+      const worker = createRunStoreDeployment(
+        new Inngest({ id: "store-deployment-git-test" }),
+        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
+          Effect.provide(services), Effect.provideService(GithubApi, github(state))))),
+      );
+      const run = (deploymentId: string) =>
+        Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
+      const view = (deploymentId: string) =>
+        Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: deploymentId }));
+
+      // The branch head is pinned and checked out; with no Server enrolled, nothing ran.
+      const first = yield* run(DEPLOYED);
+      expect(first.result).toMatchObject({ ran: { id: DEPLOYED, status: "failed" } });
+      expect(yield* view(DEPLOYED)).toMatchObject({
+        outcome: { type: "not_executed", reason: "No Server is enrolled in this Organization" },
+        builds: [{ service: "web", commit: HEAD, status: "pending", message: null }],
+      });
+      expect(state).toMatchObject({ heads: 1, archives: [HEAD] });
+
+      // Another delivery reads the pin; it never asks GitHub where the branch is now.
+      yield* run(DEPLOYED);
+      expect(state.heads).toBe(1);
+
+      // A branch GitHub no longer has is why the next Deployment ran nothing.
+      state.branchGone = true;
+      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null });
+      yield* run(CANCELLED);
+      expect(yield* view(CANCELLED)).toMatchObject({
+        status: "failed",
+        outcome: { type: "not_executed", reason: "The source branch no longer exists." },
+        builds: [],
+      });
     }),
   60_000,
 );
