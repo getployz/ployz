@@ -15,6 +15,11 @@ import {
   listCredentials,
   revokeCredential,
 } from "#/modules/identity/organization-token.server";
+import {
+  pendingServerRevocations,
+  provideServerAccess,
+  retireCredentialServerAccess,
+} from "#/modules/machines/server-access.server";
 import { AppConfig } from "#/server/config.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
@@ -46,7 +51,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
     case "GET tokens":
-      return yield* listCredentials(caller);
+      return {
+        ...(yield* listCredentials(caller)),
+        revoking: yield* pendingServerRevocations(caller.organization.id),
+      };
     case "POST tokens": {
       const input = yield* decodeBody(NewToken, request,
         "A token needs a name of 1 to 64 characters and an expiry of 1 to 365 days.");
@@ -54,8 +62,20 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "DELETE tokens/:id": {
       if (!Schema.is(Uuid)(id)) return yield* new NotFound({ message: "No such token or signed-in device." });
-      return { removed: yield* revokeCredential(caller, id) };
+      const removed = yield* revokeCredential(caller, id).pipe(
+        Effect.catchTag("NotFound", (missing) => pendingRevocation(caller, id, missing)),
+      );
+      return { removed, servers: yield* retireCredentialServerAccess(id) };
     }
+    case "POST logout": {
+      if (caller.credential.kind !== "session") {
+        return yield* new Validation({ message: "An Organization Token isn't signed in; revoke it with `ployz token rm`.", userFacing: true });
+      }
+      yield* revokeCredential(caller, caller.credential.id);
+      return { signed_out: { id: caller.credential.id }, servers: yield* retireCredentialServerAccess(caller.credential.id) };
+    }
+    case "POST server-access":
+      return yield* provideServerAccess(caller);
     case "GET billing":
       return { billing: yield* billingSummary(caller) };
     case "POST billing/:id":
@@ -68,6 +88,13 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     default:
       return yield* new NotFound({ message: "Not found." });
   }
+});
+
+/** Rerunning `token rm` on a credential already gone retries the Clears its Servers haven't confirmed. */
+const pendingRevocation = Effect.fn("Cli.pendingRevocation")(function* (caller: Caller, id: string, missing: NotFound) {
+  const pending = (yield* pendingServerRevocations(caller.organization.id)).find((entry) => entry.id === id);
+  if (pending === undefined) return yield* missing;
+  return { id, kind: pending.kind };
 });
 
 /** The Billing Plan and the capability it grants, from the cached subscription row. */

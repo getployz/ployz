@@ -114,12 +114,19 @@ const ManagementClientCleared = Schema.Struct({
   details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
 });
 
-/** Clear one Machine's `cloud` Management Client. Only a successful Clear or an authenticated cleared response confirms removal. */
+/**
+ * Clear one Machine's device holders (`cli-*`), then its `cloud` Management Client. Only a successful Clear or an
+ * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders.
+ */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
+      const { management_clients: labels } = yield* session.inspect();
+      for (const label of labels) {
+        if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
+      }
       yield* session.clearManagementClient("cloud");
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
