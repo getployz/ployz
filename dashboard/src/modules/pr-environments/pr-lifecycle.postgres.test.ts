@@ -915,11 +915,13 @@ describe("PR Environment lifecycle", () => {
           changed.set(sha, paths);
           await deliver("push", `push-${sha.slice(0, 1)}`, { ref: "refs/heads/main", before, after: sha, created: false, deleted: false, forced: false });
         }
+        /** A force-pushed commit outside `history` has its own check suite. */
+        const offHistorySuiteId = 99;
         /** CI passes on `sha`, and the sweep resumes waiting triggers. */
         async function ciPasses(sha: string) {
           const [delivery] = await harness.db.select().from(schema.githubWebhookDelivery);
           await harness.db.insert(schema.githubCheckSuiteProjection).values({
-            installationId, repositoryId, checkSuiteId: history.indexOf(sha) + 1 || 99, headSha: sha, status: "completed", conclusion: "success",
+            installationId, repositoryId, checkSuiteId: history.includes(sha) ? history.indexOf(sha) + 1 : offHistorySuiteId, headSha: sha, status: "completed", conclusion: "success",
             sourceUpdatedAt: new Date(), lastDeliveryId: delivery?.deliveryId ?? "", lastReceiptSequence: delivery?.receiptSequence ?? 0,
           });
           await runEffect(resumeGithubWaitingTriggers());
@@ -1070,14 +1072,15 @@ describe("PR Environment lifecycle", () => {
         });
 
         it("keeps them frozen when a force-push drops the merge commit while its trigger waits for CI", async () => {
+          const forcePushed = "f".repeat(40);
           await waitForCi();
           await approve((await prEnvironment(142))?.environmentId ?? "", tickAll);
           await pullRequest("merged", "closed", 142, merged);
           await push(mergeSha, ["api/main.ts"]);
-          await push("f".repeat(40), ["api/main.ts"], false);
-          await ciPasses("f".repeat(40));
+          await push(forcePushed, ["api/main.ts"], false);
+          await ciPasses(forcePushed);
           expect((await triggers()).find((row) => row.headSha === mergeSha)?.admissionState).toBe("superseded");
-          expect(variableIn((await attemptAt("f".repeat(40))).saved, "FLAG")).toBeUndefined();
+          expect(variableIn((await attemptAt(forcePushed)).saved, "FLAG")).toBeUndefined();
           expect(variableIn((await latestSaved())?.intent as Intent | undefined, "FLAG")).toBeUndefined();
           expect((await saves()).map((row) => row.state)).toEqual(["frozen"]);
         });

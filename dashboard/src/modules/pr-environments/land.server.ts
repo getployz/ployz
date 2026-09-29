@@ -30,6 +30,7 @@ import { prDestinations } from "./pr-environment.repository.server";
 import { conditionalSave, prEnvironment, prEnvironmentPlan, type SaveLanding, type SavedRow } from "./tables";
 
 type ConditionalSave = typeof conditionalSave.$inferSelect;
+type Trigger = typeof githubEnvironmentTrigger.$inferSelect;
 type Document = typeof environment.$inferSelect;
 
 const isNode = (pick: { key: string }) => pick.key.endsWith(":node");
@@ -302,6 +303,15 @@ const latestTriggerFor = Effect.fn("PrEnvironments.latestTriggerFor")(function* 
   return latest ?? null;
 });
 
+/** The processed head of `save`'s target Git branch, if any. */
+const processedHeadFor = Effect.fn("PrEnvironments.processedHeadFor")(function* (installationId: number, save: ConditionalSave) {
+  const { drizzle } = yield* Database;
+  const [branch] = yield* drizzle.select({ head: githubBranchProjection.evaluatedHeadSha }).from(githubBranchProjection).where(and(
+    eq(githubBranchProjection.installationId, installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
+    eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
+  return branch?.head ?? null;
+});
+
 /**
  * The merged pull request's frozen Conditional Saves the pushes so far already carry, once its target Git branch's
  * processed head has the merge commit (else the next push that has it carries them). One rides a trigger waiting for
@@ -315,15 +325,13 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
   const saves = yield* drizzle.select().from(conditionalSave).where(ofPullRequest(pullRequest));
   let repository: GithubResolvedRepository | undefined;
   for (const save of saves) {
-    const [branch] = yield* drizzle.select({ head: githubBranchProjection.evaluatedHeadSha }).from(githubBranchProjection).where(and(
-      eq(githubBranchProjection.installationId, pullRequest.installationId), eq(githubBranchProjection.repositoryId, save.repositoryId),
-      eq(githubBranchProjection.ref, `refs/heads/${save.targetBranch}`)));
-    if (!branch?.head) continue;
+    const head = yield* processedHeadFor(pullRequest.installationId, save);
+    if (!head) continue;
     repository ??= yield* resolveGithubRepository(pullRequest.installationId, pullRequest.repositoryId);
-    if (!(yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), branch.head))) continue;
+    if (!(yield* descendsFrom(pullRequest.installationId, repository, mergeCommitOf(save), head))) continue;
     // A trigger behind the head is superseded, and what it carries stays frozen: the pushes after it carry that.
-    const head = branch.head;
-    const waitsAtHead = <T extends { admissionState: string; headSha: string }>(trigger: T | null): trigger is T => trigger?.admissionState === "waiting" && trigger.headSha === head;
+    const waitsAtHead = (trigger: Trigger | null): trigger is Trigger =>
+      trigger?.admissionState === "waiting" && trigger.headSha === head;
     // ponytail: a few looks, as triggers are admitted or superseded meanwhile; past that the next push carries them.
     for (let look = 0; look < 3; look++) {
       const latest = yield* latestTriggerFor(save);
@@ -336,9 +344,10 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
         if (attached) break;
         continue;
       }
-      // Under the queue lock nothing may wait for CI at the head by now, or that trigger carries them instead.
-      if (yield* landNow(save.id, save.destinationEnvironmentId, () => latestTriggerFor(save).pipe(
-        Effect.map((now) => !waitsAtHead(now))))) break;
+      // Under the queue lock the head must still be the one that has the merge commit, else the push that moved it
+      // decides; and nothing may wait for CI at it, or that trigger carries them instead.
+      if (yield* landNow(save.id, save.destinationEnvironmentId, () => Effect.all([processedHeadFor(pullRequest.installationId, save), latestTriggerFor(save)])
+        .pipe(Effect.map(([now, latest]) => now === head && !waitsAtHead(latest))))) break;
     }
   }
 });
