@@ -1,14 +1,16 @@
 //! Admission, runner ownership, replay and partial Node Outcomes, through the Store's
 //! interface only, on SQLite and on Postgres (see `backend`).
 
+use ployz_core::config::ReviewLifecycleKind;
 use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Edit,
+    Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    Revision, RunEvidence, RunnerId, ServiceId, SettingPath, Written,
+    RemoveService, RenameService, Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery,
+    ServicesQuery, SettingPath, Written,
 };
 use serde_json::{Value, json};
 
@@ -42,7 +44,7 @@ fn shop() -> (ConfigStore, Actor) {
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
-                    image: "nginx:1".into(),
+                    image: Some("nginx:1".into()),
                 },
             )
             .unwrap();
@@ -423,4 +425,109 @@ fn deployments_page_newest_first_within_the_organization() {
         code(store.deployment(&stranger, &id(1))),
         RpcErrorCode::NotFound
     );
+}
+
+#[test]
+fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+
+    let remove = RemoveService {
+        environment: EnvironmentRef::default(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    store.remove_service(&who, &remove).unwrap();
+    // Nothing ran: `web` is still applied, and lists as removed by the next Deploy.
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Applied),
+            ("api".to_owned(), NodeStatus::Applied)
+        ]
+    );
+    let listed = store.services(&who, &ServicesQuery::default()).unwrap();
+    assert_eq!(
+        listed
+            .services
+            .iter()
+            .map(|listing| (listing.service.name.as_str(), listing.change))
+            .collect::<Vec<_>>(),
+        [("api", None), ("web", Some(ReviewLifecycleKind::Delete))]
+    );
+    assert_eq!(changed(&store, &who), ["web"]);
+    let removed = store
+        .service(
+            &who,
+            &ServiceQuery {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(removed.values["image"], json!("nginx:1"));
+
+    // The Deploy removes it; once confirmed, it is gone.
+    admit(&store, &who, 2, &[], None).unwrap();
+    let claimed = store.claim(&id(2), &a).unwrap();
+    assert_eq!(claimed.intent.target.len(), 1);
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&["web"])).unwrap();
+    let listed = store.services(&who, &ServicesQuery::default()).unwrap();
+    assert_eq!(listed.services.len(), 1);
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Command::RenameService(RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("front").unwrap(),
+            }),
+        )
+        .unwrap();
+    let change = diff(&store, &who).changes.remove(0);
+    assert_eq!(
+        (change.name.as_str(), change.settings[0].path.as_str()),
+        ("front", "front.name")
+    );
+    assert_eq!(
+        (&change.settings[0].before, &change.settings[0].after),
+        (&json!("web"), &json!("front"))
+    );
+
+    store
+        .discard(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(SettingPath::parse("front").unwrap()),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(changed(&store, &who).is_empty());
 }

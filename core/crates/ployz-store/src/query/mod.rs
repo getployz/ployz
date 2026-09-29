@@ -5,6 +5,7 @@
 pub(crate) mod deployment;
 mod diff;
 mod environment;
+mod service;
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,10 @@ pub use diff::DiffQuery;
 pub(crate) use diff::diff;
 pub(crate) use environment::environment;
 pub use environment::{EnvironmentQuery, EnvironmentView, SettingRow};
+pub use service::{
+    ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
+};
+pub(crate) use service::{service, services};
 
 use crate::Actor;
 use crate::storage::Tx;
@@ -34,6 +39,10 @@ pub enum Query {
     Deployments(DeploymentsQuery),
     /// One Deployment.
     Deployment(DeploymentQuery),
+    /// An Environment's Services.
+    Services(ServicesQuery),
+    /// One Service.
+    Service(ServiceQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -51,6 +60,10 @@ pub enum View {
     Deployments(DeploymentsView),
     /// One Deployment.
     Deployment(crate::DeploymentView),
+    /// An Environment's Services.
+    Services(ServicesView),
+    /// One Service.
+    Service(ServiceView),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, RpcError> {
@@ -62,5 +75,7 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         Query::Deployment(query) => {
             crate::deployment::view(tx, who, &query.id).map(View::Deployment)
         }
+        Query::Services(query) => services(tx, who, query).map(View::Services),
+        Query::Service(query) => service(tx, who, query).map(View::Service),
     }
 }
