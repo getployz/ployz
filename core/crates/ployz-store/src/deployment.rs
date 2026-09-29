@@ -7,13 +7,15 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, RuntimeOutcomeProjection, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, ServiceSource, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_runtime_preview, project_runtime_outcome,
+    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentInput, LowerDeploymentSnapshot,
+    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
-    RpcError, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    RpcError, ServiceAttempt, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -534,10 +536,10 @@ fn lower(
         crate::domain::expand(saved, cluster_domain),
     );
     // Live values order nothing: what provides them runs elsewhere.
-    let lineages: serde_json::Map<String, Value> = compiled
+    let lineages: BTreeMap<String, String> = compiled
         .variable_producers
         .iter()
-        .map(|producer| (producer.owner_lineage_id.clone(), json!(producer.owner_id)))
+        .map(|producer| (producer.owner_lineage_id.clone(), producer.owner_id.clone()))
         .collect();
     compiled
         .variable_producers
@@ -549,7 +551,7 @@ fn lower(
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
-    let snapshots: Vec<Value> = compiled
+    let snapshots: Vec<(ServiceConfig, LowerDeploymentSnapshot)> = compiled
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
@@ -561,73 +563,79 @@ fn lower(
             {
                 None
             }
-            CompiledNodeConfig::Service(config) => Some(json!({
-                "serviceId": node.node_id,
-                "resolvedEnv": resolved.remove(&node.node_id).unwrap_or_default(),
-                "setupCommands": branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
-                "config": config,
-            })),
+            CompiledNodeConfig::Service(config) => Some((
+                *config,
+                LowerDeploymentSnapshot {
+                    resolved_env: resolved.remove(&node.node_id).unwrap_or_default(),
+                    setup_commands: branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
+                    service_id: Some(node.node_id),
+                    config: Value::Null,
+                    replicas: None,
+                },
+            )),
             CompiledNodeConfig::Volume(_) => None,
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
-    let selected: Vec<Value> = saved
+    let selected = saved
         .services
         .iter()
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
-        .map(|service| json!({ "name": service.config.private_dns }))
-        .collect();
-    let volumes: Vec<Value> = saved
-        .volumes
-        .iter()
-        .map(|volume| json!({ "volumeResourceId": volume.resource_id }))
-        .collect();
-    let input = json!({
-        "namespace": namespace,
-        "snapshots": snapshots,
-        "volumes": volumes,
-        "lineages": lineages,
-        "selected": selected,
-    });
-    let intent = lower_deployment(
-        serde_json::from_value(built_later(input.clone())).expect("lowering input is valid"),
-    )
-    .map_err(|error| {
+        .map(|service| ServiceAttempt {
+            name: service.config.private_dns.clone(),
+        })
+        .collect::<Vec<_>>();
+    let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
+        namespace: namespace.clone(),
+        snapshots,
+        volumes: saved
+            .volumes
+            .iter()
+            .map(|volume| LowerDeploymentVolume {
+                volume_resource_id: volume.resource_id.clone(),
+            })
+            .collect(),
+        lineages: lineages.clone(),
+        selected: Some(selected.clone()),
+    };
+    let with = |built_later: bool| {
+        snapshots
+            .iter()
+            .map(|(config, snapshot)| LowerDeploymentSnapshot {
+                config: json_value(&if built_later {
+                    built(config)
+                } else {
+                    config.clone()
+                }),
+                ..snapshot.clone()
+            })
+            .collect()
+    };
+    let intent = lower_deployment(input(with(true))).map_err(|error| {
         error::invalid(
             format!("This Environment can't deploy: {}", error.message),
             json!({ "path": error.path }),
         )
     })?;
-    Ok((input, intent))
+    Ok((json_value(&input(with(false))), intent))
 }
 
-/// `input` with each Git Service's source replaced by the image its build will
-/// produce, as the SDK's preparation does once it built it.
-fn built_later(mut input: Value) -> Value {
-    let snapshots = input.get_mut("snapshots").and_then(Value::as_array_mut);
-    for config in snapshots
-        .into_iter()
-        .flatten()
-        .filter_map(|snapshot| snapshot.get_mut("config"))
-    {
-        if config.pointer("/source/type") != Some(&json!("git")) {
-            continue;
-        }
-        let name = config
-            .get("privateDns")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let image = json!({
-            "type": "image",
-            "version": 1,
-            "image": format!("ployz-build/{name}:pending"),
-            "credentials": { "type": "none" },
-        });
-        if let Some(source) = config.get_mut("source") {
-            *source = image;
-        }
+/// `config` with a Git source replaced by the image its build will produce, as the
+/// SDK's preparation does once it built it.
+fn built(config: &ServiceConfig) -> ServiceConfig {
+    let mut config = config.clone();
+    if matches!(config.settings.source, ServiceSource::Git { .. }) {
+        config.settings.source = ServiceSource::Image {
+            version: 1,
+            image: format!("ployz-build/{}:pending", config.settings.private_dns),
+            credentials: ServiceImageCredentials::None,
+        };
     }
-    input
+    config
+}
+
+fn json_value(value: &impl Serialize) -> Value {
+    serde_json::to_value(value).expect("lowering input is JSON")
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
@@ -34,38 +34,41 @@ fn target_port(
 }
 
 /// Captured node settings plus adapter-resolved runtime inputs for one Namespace.
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LowerDeploymentInput {
-    namespace: Namespace,
-    snapshots: Vec<LowerDeploymentSnapshot>,
+    pub namespace: Namespace,
+    pub snapshots: Vec<LowerDeploymentSnapshot>,
     #[serde(default)]
-    volumes: Vec<LowerDeploymentVolume>,
+    pub volumes: Vec<LowerDeploymentVolume>,
     /// Service ID by lineage, from the attempt's frozen variable producers. References
     /// resolved through it order the deploy.
     #[serde(default)]
-    lineages: BTreeMap<String, String>,
+    pub lineages: BTreeMap<String, String>,
     /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
-    selected: Option<Vec<ServiceAttempt>>,
+    pub selected: Option<Vec<ServiceAttempt>>,
 }
 
-#[derive(Deserialize)]
+/// One Service's captured settings and the runtime inputs resolved for it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LowerDeploymentSnapshot {
-    service_id: Option<String>,
-    config: Value,
-    replicas: Option<u8>,
+pub struct LowerDeploymentSnapshot {
+    pub service_id: Option<String>,
+    pub config: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u8>,
     #[serde(default)]
-    resolved_env: BTreeMap<String, String>,
+    pub resolved_env: BTreeMap<String, String>,
     /// Run in order after the service's own pre-deploy command, in the same hook.
     #[serde(default)]
-    setup_commands: Vec<String>,
+    pub setup_commands: Vec<String>,
 }
 
-#[derive(Deserialize)]
+/// One Volume the Namespace holds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LowerDeploymentVolume {
-    volume_resource_id: String,
+pub struct LowerDeploymentVolume {
+    pub volume_resource_id: String,
 }
 
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
