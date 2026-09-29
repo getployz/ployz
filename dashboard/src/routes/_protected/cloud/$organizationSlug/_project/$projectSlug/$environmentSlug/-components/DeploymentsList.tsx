@@ -1,4 +1,5 @@
 import { Suspense, type ReactNode } from "react";
+import type { ServiceListing } from "@ployz/sdk";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { RelativeTime } from "#/components/relative-time";
@@ -10,6 +11,9 @@ import { useNodeDeployments } from "#/modules/deployments/deployment-history.que
 import { useDeploymentAttempt, useDeploymentList } from "#/modules/deployments/deployment.collection";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { deploymentStatusLabel, nodeOutcomeLabels, shortDeploymentId, type DeploymentNodeView, type DeploymentViewStatus } from "#/modules/deployments/deployment-view";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
 import { useEnvironmentNavigationNodes } from "./environment-node-navigation";
@@ -20,9 +24,31 @@ import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
  * `service` narrows the list to the attempts that changed that service, each showing what happened to it.
  */
 export function DeploymentsList({ service }: { service: string | null }) {
+  return storeEnabled ? <StoreDeploymentsList service={service} /> : <LegacyDeploymentsList service={service} />;
+}
+
+// TODO(#1275): goes with the dark gate.
+export function LegacyDeploymentsList({ service }: { service: string | null }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const services = useEnvironmentNavigationNodes(params).nodes.filter((node) => node.type === "service");
+  return <ListFrame service={service} services={services}>{service ? <ServiceRows service={service} /> : <AllRows />}</ListFrame>;
+}
+
+/** The Config Store's Deployments of the Environment, the CLI's and this dashboard's alike. */
+export function StoreDeploymentsList({ service }: { service: string | null }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const services = requireView(useStoreView(params.organizationSlug, servicesQuery(store))).services;
+  return (
+    <ListFrame service={service} services={services}>
+      <StoreDeploymentRows service={services.find((candidate) => candidate.id === service) ?? null} />
+    </ListFrame>
+  );
+}
+
+function ListFrame({ service, services, children }: { service: string | null; services: { id: string; name: string }[]; children: ReactNode }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
-  const services = useEnvironmentNavigationNodes(params).nodes.filter((node) => node.type === "service");
   const items = [{ value: null, label: "All services" }, ...services.map((node) => ({ value: node.id, label: node.name }))];
 
   return (
@@ -38,14 +64,40 @@ export function DeploymentsList({ service }: { service: string | null }) {
         </Select>
         <nav aria-label="Deployments">
           <ItemGroup className="gap-1">
-            <Suspense fallback={<ListRowSkeletons />}>
-              {service ? <ServiceRows service={service} /> : <AllRows />}
-            </Suspense>
+            <Suspense fallback={<ListRowSkeletons />}>{children}</Suspense>
           </ItemGroup>
         </nav>
       </div>
     </div>
   );
+}
+
+/**
+ * Store Deployments newest first, a page at a time. Narrowed to a Service, the ones that deployed it: every full
+ * Deploy, and targeted ones that named it. Each opens its Deployment Page, focused on that Service.
+ */
+// ponytail: filters loaded pages by the name the Service had when admitted; a renamed Service loses older rows, and a
+// page can filter to nothing (Show more still loads the next). A Store query by Service when that matters.
+export function StoreDeploymentRows({ service, returnTo }: { service: ServiceListing | null; returnTo?: string }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { data, hasNextPage, isFetchingNextPage, fetchNextPage } = useStoreDeployments(params.organizationSlug, store);
+  const deployments = data.pages.flatMap((page) => page.deployments)
+    .filter((deployment) => !service || deployment.services.length === 0 || deployment.services.includes(service.name));
+  return <Rows hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()}>
+    {deployments.map((deployment) => (
+      <Item key={deployment.id} size="sm" render={<Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }}
+        search={{ service: service?.id, returnTo }} />}>
+        <ItemContent className="min-w-0">
+          <ItemTitle className="w-full"><span className="truncate">Deployment #{deployment.number}</span></ItemTitle>
+          <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
+            <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
+            {" · "}<span className="truncate">{deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}`}</span>
+          </ItemDescription>
+        </ItemContent>
+      </Item>
+    ))}
+  </Rows>;
 }
 
 function AllRows() {

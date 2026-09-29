@@ -26,7 +26,10 @@ import { useServiceCreator } from "./useServiceCreator";
 import { LIVE_EDGE_STYLE } from "./nodes";
 import { useBranchPicking } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
-import { useStoreDeploy } from "./useStoreDeploy";
+import { useStoreChangeActions } from "./useStoreChangeActions";
+import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { changeGroups, isInFlight } from "#/modules/config-store/store-deployments";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
 import { BranchButton } from "./BranchButton";
@@ -84,7 +87,6 @@ export function CanvasFlow({
   const [destructiveConfirmationOpen, setDestructiveConfirmationOpen] =
     useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const storeDeploy = useStoreDeploy(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, environmentId);
   const branch = useWorkspace(params.organizationSlug).branches.find((row) => row.environmentId === environmentId);
   const navigate = useNavigate();
   const locationKey = useLocation({ select: (location) => location.href });
@@ -241,17 +243,16 @@ export function CanvasFlow({
       </div>
       </div>
 
-      <BottomBar
+      {store ? <StoreBottomBar key={locationKey} environmentId={environmentId} store={store} /> : <BottomBar
           key={locationKey}
           environmentId={environmentId}
-          // TODO(#1273): the Store's review in Details, Discard and Save; only Deploy goes through the Store so far.
-          groups={store ? [] : diffGroups}
-          totalChanges={store ? store.totalChanges : totalChanges}
-          canDeploy={store ? true : canDeploy && !isSubmittingDeploymentSnapshot}
+          groups={diffGroups}
+          totalChanges={totalChanges}
+          canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}
           commitMessage={commitMessage}
-          canSaveWithoutDeploying={store ? false : canSave}
+          canSaveWithoutDeploying={canSave}
           onCommitMessageChange={setCommitMessage}
-          onDeploy={store ? storeDeploy.deploy : () => {
+          onDeploy={() => {
             requestDeploy();
           }}
           onSaveWithoutDeploying={() => {
@@ -264,7 +265,7 @@ export function CanvasFlow({
           onDiscardRow={(group, path) => {
             void discardRowChange(group, path);
           }}
-        />
+        />}
 
       <ServiceCreatorDialog
         open={creator.creatorOpen}
@@ -295,7 +296,6 @@ export function CanvasFlow({
           await volumeCreator.createVolume(input);
         }}
       />
-      {store ? storeDeploy.dialog : null}
       <DestructiveChangesDialog
         open={destructiveConfirmationOpen}
         onOpenChange={setDestructiveConfirmationOpen}
@@ -310,6 +310,39 @@ export function CanvasFlow({
         prepare={prepareDestructiveReview}
         confirm={confirmDestructiveAction}
       />
+    </>
+  );
+}
+
+/**
+ * The bottom bar over the Config Store: the Store's review in Details, Deploy, Save without deploying and Discard
+ * through its write queue, and the Environment's in-flight Deployment, whether the CLI or this tab admitted it.
+ */
+function StoreBottomBar({ environmentId, store }: { environmentId: string; store: StoreCanvas }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const navigate = useNavigate();
+  const ref = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store;
+  const actions = useStoreChangeActions(params.organizationSlug, ref, environmentId,
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
+  const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
+  const { diff } = store;
+  return (
+    <>
+      <BottomBar
+        environmentId={environmentId}
+        groups={changeGroups(diff, store.services.map(({ service }) => service))}
+        totalChanges={diff.total_count}
+        canDeploy
+        commitMessage=""
+        canSaveWithoutDeploying={diff.total_count > 0 && !diff.published}
+        onDeploy={actions.deploy}
+        onSaveWithoutDeploying={actions.publish}
+        onDiscardAll={() => actions.discard(null)}
+        onDiscardNode={(group) => void actions.discard(group.nodeName)}
+        onDiscardRow={(_, path) => void actions.discard(path)}
+        storeActive={deployments.filter((deployment) => isInFlight(deployment.status))}
+      />
+      {actions.dialog}
     </>
   );
 }

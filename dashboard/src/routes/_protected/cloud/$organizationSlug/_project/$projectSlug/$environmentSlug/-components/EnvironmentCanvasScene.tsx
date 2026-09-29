@@ -85,7 +85,7 @@ function StoreCanvasWithData() {
     subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
     changeCount: serviceChanges(diff, service.id).size,
   }));
-  return <CanvasWithData store={{ services: storeServices, volumes: volumes.volumes, totalChanges: diff.total_count }} />;
+  return <CanvasWithData store={{ services: storeServices, volumes: volumes.volumes, diff }} />;
 }
 
 // TODO(#1275): one canvas, over the Store, once the dark gate goes.

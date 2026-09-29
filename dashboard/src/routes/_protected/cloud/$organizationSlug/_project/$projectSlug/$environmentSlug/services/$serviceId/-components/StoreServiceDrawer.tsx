@@ -24,6 +24,11 @@ import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./serv
 import { useRemoveStoreService } from "./useDeleteService";
 import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import { StoreNetworkingSection } from "./StoreNetworkingSection";
+import { ContainerLogs } from "#/components/container-logs";
+import { Skeleton } from "#/components/ui/skeleton";
+import { ItemGroup } from "#/components/ui/item";
+import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
+import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
 import type { ServiceRouteParams } from "./useServiceDrawerState";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
@@ -124,14 +129,26 @@ export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
         />
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
-        {/* TODO(#1273): Deployments and Logs tabs. */}
-        <Tabs value={tab === "variables" ? "variables" : "settings"}
-          onValueChange={(value) => { void navigate({ search: (prev) => ({ ...prev, tab: value === "variables" ? "variables" : "settings" }), replace: true }); }}
+        <Tabs value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
+          onValueChange={(value) => {
+            if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
+          }}
           className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
-            <TabsTrigger value="settings">Settings</TabsTrigger>
-            <TabsTrigger value="variables">Variables</TabsTrigger>
+            {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
           </TabsList>
+          <TabsContent value="deployments" className="mt-4 min-h-0 flex-1 overflow-y-auto">
+            <nav aria-label="Deployments" className="mx-auto w-full max-w-2xl">
+              <ItemGroup className="gap-1">
+                <Suspense fallback={<Skeleton className="h-16 w-full" />}>
+                  <StoreDeploymentRows service={service} returnTo={service.id} />
+                </Suspense>
+              </ItemGroup>
+            </nav>
+          </TabsContent>
+          <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
+            <ContainerLogs selection={{ organizationSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
+          </TabsContent>
           <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">

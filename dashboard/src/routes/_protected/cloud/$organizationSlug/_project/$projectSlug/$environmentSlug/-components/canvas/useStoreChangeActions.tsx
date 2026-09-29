@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { toast } from "sonner";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { useStoreWriter, StoreRefused } from "#/modules/config-store/store-write";
@@ -10,13 +9,15 @@ import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug
 type Acceptance = Pick<VolumeLoss, "accept" | "version">;
 
 /**
- * Deploys an Environment's Working State through the Config Store. When the Deploy would delete Volume data the
- * Servers hold, the Store refuses with `confirmation_required`; the user reads every Volume that goes, types where,
- * and the Deploy is admitted again accepting exactly those. Any other refusal (Servers that can't be checked, a
- * newer version) is the writer's toast.
+ * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish) and Discard, each in the
+ * Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
+ *
+ * When a Deploy would delete Volume data the Servers hold, the Store refuses with `confirmation_required`; the user
+ * reads every Volume that goes, types where, and the Deploy is admitted again accepting exactly those. Any other
+ * refusal (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
-// TODO(#1273): the review, Discard and the Deployment Page move here too.
-export function useStoreDeploy(organizationSlug: string, environment: EnvironmentRef, environmentId: string) {
+export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef, environmentId: string,
+  onAdmitted: (deploymentId: string) => void) {
   const writer = useStoreWriter(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
   const place = useEnvironmentPlace(organizationSlug, environmentId);
@@ -34,11 +35,10 @@ export function useStoreDeploy(organizationSlug: string, environment: Environmen
 
   /** Admits the Deploy; resolves with what it would delete when the Store asks first, else null. */
   async function admit({ accept, version }: { accept: readonly string[]; version: string | null }) {
+    const id = crypto.randomUUID();
     try {
-      await writer.commit({
-        command: "admit", id: crypto.randomUUID(), environment, services: [], version, accept_volume_loss: [...accept],
-      }).isPersisted.promise;
-      toast("Deploy queued.");
+      await writer.commit({ command: "admit", id, environment, services: [], version, accept_volume_loss: [...accept] }).isPersisted.promise;
+      onAdmitted(id);
       return null;
     } catch (error) {
       const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
@@ -48,8 +48,21 @@ export function useStoreDeploy(organizationSlug: string, environment: Environmen
     }
   }
 
+  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything); resolves whether it did. */
+  async function discard(path: string | null) {
+    try {
+      await writer.commit({ command: "discard", environment, path, version: null }).isPersisted.promise;
+      return true;
+    } catch {
+      // The writer toasted it and refetched the review.
+      return false;
+    }
+  }
+
   return {
     deploy: () => void admit({ accept: [], version: null }).then(setLoss),
+    publish: () => { writer.commit({ command: "publish", environment, version: null }); },
+    discard,
     dialog: (
       <DeletionDialog
         open={loss !== null}
