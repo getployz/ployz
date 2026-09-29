@@ -220,7 +220,7 @@ pub fn compile_environment_intent(
             ),
             ("PORT", "3000".into()),
             ("PLOYZ_ENVIRONMENT_NAME", intent.environment_slug.clone()),
-            ("PLOYZ_SERVICE_NAME", service.config.private_dns.clone()),
+            ("PLOYZ_SERVICE_NAME", service.config.private_dns.to_string()),
             ("PLOYZ_ENVIRONMENT_ID", environment_id.into()),
             ("PLOYZ_SERVICE_ID", service.id.clone()),
         ] {
