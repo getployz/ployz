@@ -27,7 +27,7 @@ use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::deploy::ApplyError;
 use crate::failure::USAGE_EXIT;
-use crate::output::say;
+use crate::output::{say, say_inline};
 
 pub(crate) fn deploy_command() -> Command {
     following(
@@ -214,8 +214,7 @@ pub(super) fn upload_and_ship(
     };
     let id = DeploymentId::parse(mint())?;
     if let Some(dir) = source.as_deref().filter(|_| store.local().is_none()) {
-        let archive = crate::build::upload_archive(dir)
-            .map_err(|error| Error::usage(format!("Could not read {}: {error}", dir.display())))?;
+        let archive = crate::build::upload_archive(dir).map_err(unreadable(dir))?;
         store
             .upload(&id, archive)
             .map_err(failed(matches, &["deploy"]))?;
@@ -378,7 +377,7 @@ fn follow(
     mut events: Option<std::io::BufWriter<std::fs::File>>,
     words: &[&str],
 ) -> Result<DeploymentView, Error> {
-    eprintln!(
+    say!(
         "Following Deployment #{}; stopping this leaves it running.",
         admitted.number
     );
@@ -398,7 +397,7 @@ fn follow(
                 .iter()
                 .map(|node| format!("{} {}", node.name, json_word(&node.outcome)))
                 .collect();
-            eprintln!(
+            say!(
                 "{}: {}",
                 json_word(&view.deployment.status),
                 nodes.join(", ")
@@ -478,11 +477,23 @@ fn provenance(upload: &UploadedSource) -> String {
     }
 }
 
+/// Why `dir` couldn't be read: its ignore rules are the user's input; a missing
+/// directory is `not_found`; anything else is the CLI's own failure.
+fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
+    move |error| {
+        let message = format!("Could not read {}: {error}", dir.display());
+        match error {
+            crate::build::Error::Invalid(_) => Error::usage(message),
+            _ if !dir.exists() => Error::not_found(message),
+            _ => Error::coded(RpcErrorCode::Internal, message),
+        }
+    }
+}
+
 /// `dir` as an Uploaded Source: its content digest, and the commit it was checked out
 /// at, if any, with whether it holds changes that commit doesn't.
 fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
-    let digest = crate::build::content_digest(dir)
-        .map_err(|error| Error::usage(format!("Could not read {}: {error}", dir.display())))?;
+    let digest = crate::build::content_digest(dir).map_err(unreadable(dir))?;
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")
@@ -570,7 +581,7 @@ async fn build(
                 ..
             }) = &progress
             {
-                eprint!("{text}");
+                say_inline!("{text}");
             }
             tap(json!({ "Preparation": progress }));
         },
