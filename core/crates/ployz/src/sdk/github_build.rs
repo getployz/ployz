@@ -97,7 +97,9 @@ pub async fn github_start(
         GithubEnd::Skipped { message } => GithubStart::Skipped {
             message: message.clone(),
         },
-        GithubEnd::Built { .. } | GithubEnd::Failed { .. } => GithubStart::Reused,
+        GithubEnd::Built { .. } | GithubEnd::Failed { .. } | GithubEnd::Unstarted { .. } => {
+            GithubStart::Reused
+        }
     };
     call(&store, move |store| store.github_end(&id, None, &end)).await?;
     Ok(start)
@@ -332,13 +334,21 @@ pub async fn github_finish(
     }
     let run_id = build.run.run_id;
     let end = match &build.grant {
-        None => GithubEnd::Skipped {
-            message: if timed_out {
-                "no runner started the build in time".to_owned()
+        None => {
+            let message = if timed_out {
+                "no runner started the build in time"
             } else {
-                "the run ended before it started the build".to_owned()
-            },
-        },
+                "the run ended before it started the build"
+            };
+            let end = GithubEnd::Unstarted {
+                message: message.to_owned(),
+            };
+            // It checked in meanwhile: the next look finds it started.
+            return match settle(&store, id, run_id, end).await {
+                Err(error) if error.code == RpcErrorCode::Conflict => Ok(GithubFinish::Waiting),
+                finished => finished,
+            };
+        }
         Some(grant) => {
             let Some(pushed) = end_grant(grant, connections).await else {
                 if !timed_out {

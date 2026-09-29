@@ -1438,9 +1438,15 @@ fn an_agent_reads_and_sets_the_build_order_at_once() {
         assert_eq!(set["build_order"], "servers-only");
         assert_eq!(set["builders"], json!(["servers"]));
         assert_eq!(set["immediate"], true);
-        assert_eq!(ok(store, &["org", "build-order"])["build_order"], "servers-only");
+        assert_eq!(
+            ok(store, &["org", "build-order"])["build_order"],
+            "servers-only"
+        );
 
-        assert_eq!(ok(store, &["org", "build-order", "auto"])["build_order"], Value::Null);
+        assert_eq!(
+            ok(store, &["org", "build-order", "auto"])["build_order"],
+            Value::Null
+        );
         let (code, _) = ployz(Some(store), &["org", "build-order", "gitlab-first"]);
         assert_eq!(code, Some(2));
     }
