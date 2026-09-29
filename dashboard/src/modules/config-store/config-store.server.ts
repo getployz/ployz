@@ -11,6 +11,7 @@ import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { user } from "#/modules/identity/tables";
 import { receiveUpload } from "#/modules/config-store/upload.server";
+import { followStoreEnvironments } from "#/modules/config-store/store-environments.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createConfigDeploymentAdmittedEvent, createConfigDeploymentStartedEvent } from "#/modules/inngest/events";
@@ -180,6 +181,9 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     catch: (cause) => cause,
   }).pipe(
     // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
+    Effect.tap((result) => result.ok && call.operation === "write"
+      // SAFETY: a write answers what it wrote.
+      ? followStoreEnvironments(organizationId, result.value as ConfigWritten) : Effect.void),
     Effect.flatMap((result) => {
       if (!result.ok || call.operation !== "write") return Effect.succeed(result);
       const { command } = call.command;
