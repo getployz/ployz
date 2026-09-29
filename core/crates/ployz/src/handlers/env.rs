@@ -1,11 +1,11 @@
 //! `ployz env`: Environments in the Config Store.
 
 use clap::{ArgMatches, Command};
-use ployz_store::{CreateEnvironment, EnvironmentId, EnvironmentName, Written};
+use ployz_store::{CreateEnvironment, EnvironmentId, EnvironmentName};
 
-use super::config::{mint, project, store};
+use super::store::{failed, mint, project, project_arg, store};
 use super::{Error, leaf_matches, required};
-use crate::cli::{env, positional, value};
+use crate::cli::positional;
 use crate::output::say;
 
 pub(crate) fn command() -> Command {
@@ -16,11 +16,7 @@ pub(crate) fn command() -> Command {
             Command::new("new")
                 .about("Create an empty Environment")
                 .arg(positional("name", true))
-                .arg(
-                    value("project", None)
-                        .env(env::PROJECT)
-                        .help("Project [default: the only Project]"),
-                ),
+                .arg(project_arg()),
         )
 }
 
@@ -36,17 +32,12 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
     let (store, actor) = store()?;
-    let Written::Environment(created) = store.write(
-        &actor,
-        ployz_store::Command::CreateEnvironment(CreateEnvironment {
-            id: EnvironmentId::parse(mint())?,
-            project: project(matches)?,
-            name,
-        }),
-    )?
-    else {
-        unreachable!("an Environment create writes an Environment");
+    let create = CreateEnvironment {
+        id: EnvironmentId::parse(mint())?,
+        project: project(matches)?,
+        name,
     };
+    let created = store.create_environment(&actor, &create).map_err(failed)?;
     crate::output::finish(&created, || {
         say!(
             "Created Environment {} in Project {}.",
