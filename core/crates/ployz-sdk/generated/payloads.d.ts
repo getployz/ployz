@@ -9,7 +9,12 @@ services: Array<ServiceName>,
 /**
  * Refuse with `conflict` unless this is still the latest `diff` version.
  */
-version: string | null, };
+version: string | null,
+/**
+ * A new upload for Services without a source of their own; none keeps the
+ * Environment's latest.
+ */
+upload: UploadedSource | null, };
 
 export type AdvertisedEndpoint = string;
 
@@ -439,7 +444,11 @@ services: Array<ServiceName>,
 /**
  * The runner that claimed it.
  */
-runner: RunnerId | null, };
+runner: RunnerId | null,
+/**
+ * What its Services without a source of their own build from.
+ */
+upload: UploadedSource | null, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -469,7 +478,11 @@ services: Array<ServiceName>,
 /**
  * The runner that claimed it.
  */
-runner: RunnerId | null, };
+runner: RunnerId | null,
+/**
+ * What its Services without a source of their own build from.
+ */
+upload: UploadedSource | null, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -1693,6 +1706,23 @@ export type UpdateConfig = {
 order: UpdateOrder | null, monitor_millis: number | null, };
 
 export type UpdateOrder = "start_first" | "stop_first";
+
+export type UploadBase = { commit: string,
+/**
+ * Whether the directory held changes the commit doesn't.
+ */
+changed: boolean, };
+
+export type UploadedSource = {
+/**
+ * Lowercase hex sha256 of the uploaded paths, bytes, modes and links.
+ */
+digest: string,
+/**
+ * The commit the directory was checked out at, if it was a Git checkout.
+ * Provenance only: it never identifies the build.
+ */
+base: UploadBase | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 

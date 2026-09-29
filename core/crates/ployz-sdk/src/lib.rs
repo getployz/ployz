@@ -792,7 +792,8 @@ pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value>
     }
     let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
     to_json(
-        &sdk::expected_fingerprints(input.deployment, input.source_commits, input.uploads).map_err(rpc_to_napi)?,
+        &sdk::expected_fingerprints(input.deployment, input.source_commits, input.uploads)
+            .map_err(rpc_to_napi)?,
     )
 }
 
