@@ -11,8 +11,10 @@ mod id;
 mod query;
 mod review;
 mod scope;
+mod sealing;
 mod settings;
 mod storage;
+mod variables;
 
 use ployz_core::RpcError;
 
@@ -25,6 +27,7 @@ pub use id::*;
 pub use query::*;
 pub use review::{DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
+pub use sealing::SealingKey;
 pub use settings::{Apply, SettingPath};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
@@ -37,17 +40,19 @@ pub struct Actor {
 /// One Config Store over one database.
 pub struct ConfigStore {
     storage: storage::Storage,
+    sealing: SealingKey,
 }
 
 impl ConfigStore {
     /// Open the Store at `url` (`postgres://…` in Cloud; `sqlite:PATH`, or `sqlite::memory:` for tests),
-    /// creating and migrating its tables as needed.
+    /// creating and migrating its tables as needed. Secrets are sealed with `sealing`.
     ///
     /// # Errors
     /// Returns `invalid_argument` for an unsupported URL, or a storage error.
-    pub fn open(url: &str) -> Result<Self, RpcError> {
+    pub fn open(url: &str, sealing: SealingKey) -> Result<Self, RpcError> {
         Ok(Self {
             storage: storage::Storage::open(url)?,
+            sealing,
         })
     }
 
@@ -66,7 +71,8 @@ impl ConfigStore {
     /// Returns an RPC error: `invalid_argument`, `not_found`, `ambiguous` or `conflict`
     /// for what the command asks, or a storage error.
     pub fn write(&self, who: &Actor, command: &Command) -> Result<Written, RpcError> {
-        self.storage.write(|tx| command::run(tx, who, command))
+        self.storage
+            .write(|tx| command::run(tx, who, &self.sealing, command))
     }
 
     /// [`Query::Environment`]: an Environment's Settings.
@@ -125,7 +131,8 @@ impl ConfigStore {
     /// # Errors
     /// As [`write`](Self::write).
     pub fn edit(&self, who: &Actor, edit: &Edit) -> Result<Edited, RpcError> {
-        self.storage.write(|tx| command::edit(tx, who, edit))
+        self.storage
+            .write(|tx| command::edit(tx, who, &self.sealing, edit))
     }
 
     /// [`Query::Diff`]: an Environment's changes and the version to act on them by.
@@ -190,15 +197,16 @@ impl ConfigStore {
         self.storage.read(|tx| deployment::view(tx, who, id))
     }
 
-    /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent.
-    /// In-process only: never exposed over HTTPS.
+    /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
+    /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
+    /// never exposed over HTTPS.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
     /// owns it, a newer one replaced it, or it ended, or a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
-            .write(|tx| deployment::claim(tx, deployment, runner))
+            .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes

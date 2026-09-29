@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::variables::VariableKey;
 
 /// Whether a change waits for a Deploy or takes effect at once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -291,32 +292,64 @@ pub(crate) fn image_source(
     setting.decode(setting.validated("source", source)?)
 }
 
-/// What a request addresses in an Environment: `SERVICE` for a whole Service, or
-/// `SERVICE.SETTING` for one of its Settings.
+/// What a request addresses in an Environment: `SERVICE` for a whole Service,
+/// `SERVICE.SETTING` for one of its Settings, `SERVICE.env.KEY` for one of its
+/// variables, or `SERVICE.env.KEY.exported` for whether other Services see it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
 pub struct SettingPath {
     service: ServiceName,
-    setting: Option<ServiceSetting>,
+    target: Option<Target>,
+}
+
+/// What a path addresses inside its Service.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Target {
+    Setting(ServiceSetting),
+    /// A variable's value.
+    Variable(VariableKey),
+    /// Whether a variable is exported.
+    Exported(VariableKey),
 }
 
 impl SettingPath {
-    /// Parse `SERVICE` or `SERVICE.SETTING`.
+    /// Parse `SERVICE`, `SERVICE.SETTING`, `SERVICE.env.KEY` or `SERVICE.env.KEY.exported`.
     ///
     /// # Errors
     /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
     /// echoing the path.
     pub fn parse(path: &str) -> Result<Self, RpcError> {
-        let (service, setting) = path.split_once('.').unzip();
+        let (service, rest) = path.split_once('.').unzip();
         let service = ServiceName::parse(service.unwrap_or(path)).map_err(|_| {
             error::invalid(
                 "Expected a path like SERVICE.SETTING",
                 json!({ "example": "web.replicas" }),
             )
         })?;
-        let setting = setting.map(ServiceSetting::parse).transpose()?;
-        Ok(Self { service, setting })
+        let target = match rest {
+            None => None,
+            Some("env") => {
+                return Err(error::invalid(
+                    "Name a variable: SERVICE.env.KEY",
+                    json!({ "example": format!("{service}.env.DATABASE_URL") }),
+                ));
+            }
+            Some(rest) => Some(match rest.strip_prefix("env.") {
+                None => Target::Setting(ServiceSetting::parse(rest)?),
+                Some(variable) => match variable.split_once('.') {
+                    None => Target::Variable(VariableKey::parse(variable)?),
+                    Some((key, "exported")) => Target::Exported(VariableKey::parse(key)?),
+                    Some(_) => {
+                        return Err(error::invalid(
+                            "Unknown variable field",
+                            json!({ "valid_children": ["exported"] }),
+                        ));
+                    }
+                },
+            }),
+        };
+        Ok(Self { service, target })
     }
 
     /// The Service this path is in.
@@ -325,24 +358,40 @@ impl SettingPath {
         &self.service
     }
 
+    /// The Setting it names, if it names one.
     pub(crate) const fn setting(&self) -> Option<ServiceSetting> {
-        self.setting
+        match self.target {
+            Some(Target::Setting(setting)) => Some(setting),
+            Some(Target::Variable(_) | Target::Exported(_)) | None => None,
+        }
+    }
+
+    /// What it addresses inside the Service; none for the whole Service.
+    pub(crate) const fn target(&self) -> Option<&Target> {
+        self.target.as_ref()
     }
 
     /// The path of one Setting of `service`.
     pub(crate) fn of(service: &ServiceName, setting: ServiceSetting) -> Self {
+        Self::at(service, Target::Setting(setting))
+    }
+
+    pub(crate) fn at(service: &ServiceName, target: Target) -> Self {
         Self {
             service: service.clone(),
-            setting: Some(setting),
+            target: Some(target),
         }
     }
 }
 
 impl fmt::Display for SettingPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.setting {
-            Some(setting) => write!(formatter, "{}.{}", self.service, setting.name()),
-            None => write!(formatter, "{}", self.service),
+        let service = &self.service;
+        match &self.target {
+            Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
+            Some(Target::Variable(key)) => write!(formatter, "{service}.env.{key}"),
+            Some(Target::Exported(key)) => write!(formatter, "{service}.env.{key}.exported"),
+            None => write!(formatter, "{service}"),
         }
     }
 }
