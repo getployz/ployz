@@ -30,8 +30,9 @@ use ployz_core::RpcError;
 
 pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
 pub use branch::{
-    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, Move,
-    MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved, SetupCommand,
+    BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
+    KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved,
+    PlannedNode, PlannedRole, SetupCommand,
 };
 pub use build::{BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource};
 pub use command::*;
@@ -564,7 +565,7 @@ impl ConfigStore {
     /// the Branch doesn't run its Working State.
     pub fn move_changes(&self, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
         self.storage
-            .write(|tx| branch::move_changes(tx, who, request))
+            .write(|tx| branch::move_changes(tx, who, &self.sealing, request))
     }
 
     /// [`Query::Move`].
