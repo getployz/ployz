@@ -1,5 +1,9 @@
 //! `ployz get`, `set` and `unset`: read and edit Settings in the Config Store,
 //! and the Store access every authoring command shares.
+//!
+//! `get` narrows by depth: the whole Environment shows what differs from a default
+//! (`--all` adds the rest), `get SERVICE` shows every Setting plus the `values`
+//! object that `set SERVICE --patch` takes back.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use ployz_core::RpcErrorCode;
@@ -10,7 +14,7 @@ use ployz_store::{
 use serde_json::{Value, json};
 
 use super::{Error, leaf_matches};
-use crate::cli::{env, positional, value};
+use crate::cli::{env, positional, switch, value};
 use crate::output::say;
 
 /// The Organization of the hidden in-process Store.
@@ -18,7 +22,12 @@ const LOCAL_ORGANIZATION: &str = "local";
 
 pub(crate) fn get_command() -> Command {
     scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
-        .arg(positional("path", false).help("SERVICE or SERVICE.SETTING"))
+        .arg(
+            positional("path", false)
+                .help("SERVICE or SERVICE.SETTING")
+                .add(super::catalog::setting_paths()),
+        )
+        .arg(switch("all", None).help("Include Settings at their default across the Environment"))
 }
 
 pub(crate) fn set_command() -> Command {
@@ -27,7 +36,13 @@ pub(crate) fn set_command() -> Command {
             positional("assignment", true)
                 .action(ArgAction::Append)
                 .value_name("PATH=VALUE")
-                .help("For example web.replicas=3"),
+                .help("For example web.replicas=3, or the SERVICE a --patch applies to")
+                .add(super::catalog::setting_paths()),
+        )
+        .arg(
+            value("patch", None)
+                .value_name("JSON")
+                .help("Set a Service's Settings from an object shaped like `get SERVICE --json` values; omitted Settings stay; - reads stdin"),
         )
         .arg(expect())
 }
@@ -37,7 +52,8 @@ pub(crate) fn unset_command() -> Command {
         .arg(
             positional("path", true)
                 .action(ArgAction::Append)
-                .help("SERVICE.SETTING"),
+                .help("SERVICE.SETTING")
+                .add(super::catalog::setting_paths()),
         )
         .arg(expect())
 }
@@ -109,6 +125,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let query = Query::Environment(EnvironmentQuery {
         environment: environment(matches)?,
         path: matches.get_one::<String>("path").cloned(),
+        all: matches.get_flag("all"),
     });
     let View::Environment(view) = store.read(&actor, &query)?;
     crate::output::finish(&view, || {
@@ -132,6 +149,32 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
+    if let Some(patch) = matches.get_one::<String>("patch") {
+        let service = match matches.get_many::<String>("assignment") {
+            Some(mut paths) if paths.len() == 1 => paths.next().cloned(),
+            Some(_) | None => None,
+        }
+        .ok_or_else(|| {
+            Error::usage(
+                "--patch takes one SERVICE, for example set web --patch '{\"replicas\":3}'",
+            )
+        })?;
+        let patch = if patch == "-" {
+            std::io::read_to_string(std::io::stdin())?
+        } else {
+            patch.clone()
+        };
+        let value = serde_json::from_str(&patch).map_err(|_| {
+            Error::usage("--patch expects a JSON object, for example '{\"replicas\":3}'")
+        })?;
+        return edit(
+            matches,
+            vec![Change::Patch {
+                path: service,
+                value,
+            }],
+        );
+    }
     let changes = matches
         .get_many::<String>("assignment")
         .into_iter()
