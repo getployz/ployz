@@ -26,6 +26,12 @@ export function serviceSetting<S extends ServiceSettingName>(name: S): (typeof c
   return catalog.$defs.service.properties[name];
 }
 
+/** A Setting's title by name, for rows that name any Setting (a diff); none for names outside the catalog. */
+export function settingTitle(name: string): string | undefined {
+  const properties: Record<string, { title?: string }> = catalog.$defs.service.properties;
+  return properties[name]?.title;
+}
+
 function bounds({ minimum, exclusiveMinimum, maximum }: SettingSchema) {
   const low = minimum !== undefined ? `from ${minimum}` : exclusiveMinimum !== undefined ? `above ${exclusiveMinimum}` : null;
   const high = maximum === undefined ? null : minimum !== undefined ? `to ${maximum}` : `up to ${maximum}`;

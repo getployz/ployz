@@ -596,6 +596,63 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(unkept["immediate"], json!(["kept"]));
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
+
+        // Save: review, then move the picked change into production with its version.
+        ok(store, &["set", "web.image=web:2", "--env", "fix-web"]);
+        let plan = ok(store, &["env", "save", "--plan", "--env", "fix-web"]);
+        assert_eq!(plan["into"]["name"], json!("production"));
+        assert_eq!(
+            plan["rows"],
+            json!([{ "row": "web.image", "conflict": false, "choice": null, "from": "web:2", "into": "web:1" }])
+        );
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!("ployz env save --version {version} --env fix-web"))
+        );
+        let stale = error(
+            store,
+            &["env", "save", "--env", "fix-web", "--version", "0:0"],
+        );
+        assert_eq!(
+            stale["details"]["next"],
+            json!("ployz env save --plan --env fix-web")
+        );
+        failed(
+            store,
+            &[
+                "env",
+                "save",
+                "--env",
+                "fix-web",
+                "--only",
+                "web.image=maybe",
+            ],
+            2,
+        );
+        let saved = ok(
+            store,
+            &[
+                "env",
+                "save",
+                "--env",
+                "fix-web",
+                "--only",
+                "web.image",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(saved["staged"], json!(["web"]));
+        assert_eq!(saved["next"], json!("ployz deploy --env production"));
+        assert_eq!(
+            saved["close"],
+            json!("ployz env rm fix-web --confirm fix-web")
+        );
+        assert_eq!(
+            ok(store, &["get", "web.image"])["settings"][0]["value"],
+            json!("web:2")
+        );
     }
 }
 
@@ -1259,6 +1316,74 @@ fn in_dir(
     (output.status.code(), json)
 }
 
+/// `ployz up` in a directory without Git creates a Project named after it, links it,
+/// adds a Service (on Cloud with a generated domain), uploads it and deploys. Again,
+/// it reuses all of that; an unlinked directory of the same name is refused.
+#[test]
+fn up_ships_a_directory_without_git() {
+    // Adding a Server needs a signed-in device, and is checked before anything else.
+    let (code, unsigned) = ployz(None, &["up", "--server", "root@192.0.2.1"]);
+    assert_eq!(code, Some(1), "{unsigned}");
+    assert_eq!(unsigned["error"]["details"]["next"], json!("ployz login"));
+
+    let args = ["up", "--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let (first, second) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let dir = first.path().canonicalize().unwrap().join("My Shop");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("Dockerfile"), "FROM scratch\n").unwrap();
+
+        // No Server answers, so the Deployment doesn't apply.
+        let (code, up) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(3), "{up}");
+        assert_eq!(up["directory"], json!(dir.to_str().unwrap()));
+        let deployment = &up["deployment"];
+        assert_eq!(deployment["environment"]["project"], json!("my-shop"));
+        assert_eq!(deployment["environment"]["name"], json!("production"));
+        assert_eq!(deployment["upload"]["base"], json!(null), "{up}");
+        let id = deployment["id"].as_str().unwrap();
+        assert_eq!(up["next"], json!(format!("ployz deployment show {id}")));
+        match store {
+            Target::Local(_) => {
+                assert_eq!(up["urls"], json!([]));
+                assert_eq!(up.get("dashboard"), None);
+            }
+            Target::Cloud { url, .. } => {
+                assert_eq!(up["urls"], json!(["https://my-shop.acme.ployz.app"]));
+                let namespace = deployment["namespace"].as_str().unwrap();
+                assert_eq!(
+                    up["dashboard"],
+                    json!(format!("{url}/cloud/alice/my-shop/{namespace}"))
+                );
+                assert!(UPLOADS.lock().unwrap().contains_key(id));
+            }
+        }
+
+        let (code, again) = in_dir(store, home.path(), &dir, &args, &[]);
+        assert_eq!(code, Some(3), "{again}");
+        assert_eq!(
+            again["deployment"]["environment"]["project"],
+            json!("my-shop")
+        );
+        let (_, services) = in_dir(store, home.path(), &dir, &["service", "ls"], &[]);
+        assert_eq!(
+            services["services"].as_array().map(Vec::len),
+            Some(1),
+            "{services}"
+        );
+
+        let other = second.path().join("My Shop");
+        std::fs::create_dir(&other).unwrap();
+        let (code, taken) = in_dir(store, home.path(), &other, &args, &[]);
+        assert_eq!(code, Some(1), "{taken}");
+        assert_eq!(
+            taken["error"]["details"]["next"],
+            json!("ployz up --project my-shop")
+        );
+    }
+}
+
 #[test]
 fn two_linked_directories_act_on_their_own_environments() {
     for store in &targets() {
@@ -1669,7 +1794,10 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let (code, never) = ployz(Some(&cloud), &["deploy"]);
     assert_eq!(code, Some(3), "{never}");
     assert_eq!(never["outcome"]["needs_upload"], json!(["app"]), "{never}");
-    assert_eq!(never["next"], json!("ployz deploy --upload ."));
+    assert_eq!(
+        never["next"],
+        json!("ployz up --project shop --env production")
+    );
 
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();
@@ -1681,4 +1809,30 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let id = uploaded["id"].as_str().unwrap();
     let archive = UPLOADS.lock().unwrap().get(id).cloned().unwrap();
     assert_eq!(archive.get(..2), Some(&[0x1f, 0x8b][..]), "a gzip");
+}
+
+#[test]
+fn an_agent_reads_and_sets_the_build_order_at_once() {
+    for store in &targets() {
+        let auto = ok(store, &["org", "build-order"]);
+        assert_eq!(auto["build_order"], Value::Null);
+        assert_eq!(auto["builders"], json!(["github", "servers"]));
+        assert!(auto.get("immediate").is_none());
+
+        let set = ok(store, &["org", "build-order", "servers-only"]);
+        assert_eq!(set["build_order"], "servers-only");
+        assert_eq!(set["builders"], json!(["servers"]));
+        assert_eq!(set["immediate"], true);
+        assert_eq!(
+            ok(store, &["org", "build-order"])["build_order"],
+            "servers-only"
+        );
+
+        assert_eq!(
+            ok(store, &["org", "build-order", "auto"])["build_order"],
+            Value::Null
+        );
+        let (code, _) = ployz(Some(store), &["org", "build-order", "gitlab-first"]);
+        assert_eq!(code, Some(2));
+    }
 }

@@ -17,7 +17,8 @@ export type EnvironmentChangesReviewProps = {
   onDiscardAll: () => void;
   discarding: boolean;
   onClose: () => void;
-  onCommitMessageChange: (value: string) => void;
+  /** None when Deploys carry no message. */
+  onCommitMessageChange?: (value: string) => void;
   onDeploy: () => void;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
@@ -67,16 +68,18 @@ function StagedChanges({
 }: EnvironmentChangesReviewProps) {
   return (
     <>
-      <div className="shrink-0 border-b px-6 py-3">
-        <InputGroup>
-          <InputGroupInput
-            aria-label="Commit message"
-            placeholder="Commit message (optional)"
-            value={commitMessage}
-            onChange={(event) => onCommitMessageChange(event.target.value)}
-          />
-        </InputGroup>
-      </div>
+      {onCommitMessageChange ? (
+        <div className="shrink-0 border-b px-6 py-3">
+          <InputGroup>
+            <InputGroupInput
+              aria-label="Commit message"
+              placeholder="Commit message (optional)"
+              value={commitMessage}
+              onChange={(event) => onCommitMessageChange(event.target.value)}
+            />
+          </InputGroup>
+        </div>
+      ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <div className="flex flex-col gap-3">
             {groups.map((group) => (

@@ -5,6 +5,9 @@ import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { useNodeLighting } from "../deployment-page";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 import { ServiceContextMenu } from "./ServiceContextMenu";
@@ -29,6 +32,8 @@ export function StoreServiceCard({ service, subtitle, changeCount, selected, cla
   const remove = useRemoveStoreService(store, service.name);
   const status = storeServiceStatus(service, changeCount);
   const dot = getServiceStatusClasses(status.state);
+  // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
+  const light = useNodeLighting(service.id);
 
   return (
     <ServiceContextMenu serviceId={service.id} onDelete={remove}>
@@ -41,7 +46,8 @@ export function StoreServiceCard({ service, subtitle, changeCount, selected, cla
         draggable={false}
         className={className}
       >
-        <Card size="node" state={status.state} className="h-full justify-between" data-selected={selected}>
+        <Card size="node" state={light ? outcomeCardState(light.outcome) : status.state}
+          className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
           <CardHeader>
             <div className="flex items-start gap-3">
               <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>
@@ -49,7 +55,7 @@ export function StoreServiceCard({ service, subtitle, changeCount, selected, cla
                 <CardTitle className="truncate">{service.name}</CardTitle>
                 {subtitle ? <CardDescription className="truncate">{subtitle}</CardDescription> : null}
               </div>
-              {status.badge ? <Badge variant={status.badge === "New" ? "success" : "destructive"}>{status.badge}</Badge> : null}
+              {light ? <NodeOutcomeBadge light={light} /> : status.badge ? <Badge variant={status.badge === "New" ? "success" : "destructive"}>{status.badge}</Badge> : null}
             </div>
           </CardHeader>
           <CardContent>

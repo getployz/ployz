@@ -67,6 +67,10 @@ pub enum Query {
     Removals(RemovalsQuery),
     /// A Branch: its Parent, Live Nodes and pending Update.
     Branch(crate::BranchQuery),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderQuery),
+    /// What moving changes between a Branch and its Parent would stage.
+    Move(crate::MoveQuery),
     /// A Project's Environments.
     Environments(crate::EnvironmentsQuery),
     /// The Organization's Projects.
@@ -108,6 +112,10 @@ pub enum View {
     Removals(RemovalsView),
     /// A Branch.
     Branch(crate::BranchView),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderView),
+    /// A Move's changes.
+    Move(crate::MoveView),
     /// A Project's Environments.
     Environments(crate::EnvironmentsView),
     /// The Organization's Projects.
@@ -138,6 +146,8 @@ pub(crate) fn run(
         Query::Volume(query) => volume(tx, who, query).map(View::Volume),
         Query::Removals(query) => removals(tx, who, query).map(View::Removals),
         Query::Branch(query) => crate::branch::branch(tx, who, query).map(View::Branch),
+        Query::BuildOrder(_) => crate::builders::build_order(tx, who).map(View::BuildOrder),
+        Query::Move(query) => crate::branch::move_view(tx, who, query).map(View::Move),
         Query::Environments(query) => {
             crate::teardown::environments(tx, who, query).map(View::Environments)
         }

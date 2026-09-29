@@ -4,18 +4,19 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
-    CopyNode, CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService,
-    CreateVolume, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
-    DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentRemoved, EnvironmentView,
-    EnvironmentsQuery, EnvironmentsView, KeepBranch, NamespaceQuery, NamespaceView, OrganizationId,
-    PlanQuery, PlanView, ProjectCreated, ProjectName, ProjectRemoved, ProjectsQuery, ProjectsView,
-    Publish, Published, Query, RemovalsQuery, RemovalsView, RemoveDomain, RemoveEnvironment,
-    RemoveProject, RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery,
-    ServiceStaged, ServiceView, ServicesQuery, ServicesView, SetDefaultEnvironment, Start, Trusted,
-    UpdateBranch, VolumeQuery, VolumeStaged, VolumeView, VolumesQuery, VolumesView,
+    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, BuildOrderQuery,
+    BuildOrderView, Cancel, Command, ConfigStore, CopyNode, CreateBranch, CreateEnvironment,
+    CreateGitService, CreateProject, CreateService, CreateVolume, DeploymentId, DeploymentQuery,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView, DiffQuery, DiffView,
+    Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView, DomainsQuery,
+    DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
+    EnvironmentRemoved, EnvironmentView, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
+    MoveQuery, MoveView, Moved, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
+    ProjectCreated, ProjectName, ProjectRemoved, ProjectsQuery, ProjectsView, Publish, Published,
+    Query, RemovalsQuery, RemovalsView, RemoveDomain, RemoveEnvironment, RemoveProject,
+    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, ServicesView, SetBuildOrder, SetDefaultEnvironment, Start, Trusted,
+    VolumeQuery, VolumeStaged, VolumeView, VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -253,6 +254,21 @@ impl Store {
         self.call("write", &request, |store, who| store.cancel(who, cancel))
     }
 
+    pub(crate) fn build_order(&self) -> Result<BuildOrderView, StoreCallError> {
+        let request = Query::BuildOrder(BuildOrderQuery::default());
+        self.call("read", &request, |store, who| store.build_order(who))
+    }
+
+    pub(crate) fn set_build_order(
+        &self,
+        set: &SetBuildOrder,
+    ) -> Result<BuildOrderView, StoreCallError> {
+        let request = Command::SetBuildOrder(set.clone());
+        self.call("write", &request, |store, who| {
+            store.set_build_order(who, set)
+        })
+    }
+
     pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {
         let request = Query::Plan(query.clone());
         self.call("read", &request, |store, who| store.plan(who, query))
@@ -327,11 +343,16 @@ impl Store {
         })
     }
 
-    pub(crate) fn update_branch(&self, update: &UpdateBranch) -> Result<Branched, StoreCallError> {
-        let request = Command::UpdateBranch(update.clone());
-        self.call("write", &request, |store, who| {
-            store.update_branch(who, update)
+    pub(crate) fn move_changes(&self, request: &Move) -> Result<Moved, StoreCallError> {
+        let command = Command::Move(request.clone());
+        self.call("write", &command, |store, who| {
+            store.move_changes(who, request)
         })
+    }
+
+    pub(crate) fn move_view(&self, query: &MoveQuery) -> Result<MoveView, StoreCallError> {
+        let request = Query::Move(query.clone());
+        self.call("read", &request, |store, who| store.move_view(who, query))
     }
 
     pub(crate) fn copy_node(&self, copy: &CopyNode) -> Result<Branched, StoreCallError> {

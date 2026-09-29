@@ -8,7 +8,9 @@ import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
+import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
+import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
 import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
 import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
 import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
@@ -40,12 +42,15 @@ type BottomBarProps = {
   canDeploy: boolean;
   commitMessage: string;
   canSaveWithoutDeploying: boolean;
-  onCommitMessageChange: (value: string) => void;
+  /** None when Deploys carry no message (the Config Store's). */
+  onCommitMessageChange?: (value: string) => void;
   onDeploy: () => void;
   onSaveWithoutDeploying: () => void;
   onDiscardAll: () => Promise<boolean>;
   onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
+  /** Over the Config Store: its in-flight Deployments, newest first, whoever admitted them. Null reads the legacy attempts. */
+  storeActive?: DeploymentSummary[] | null;
 };
 
 /**
@@ -67,6 +72,7 @@ export function BottomBar({
   onDiscardAll,
   onDiscardNode,
   onDiscardRow,
+  storeActive = null,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -76,11 +82,13 @@ export function BottomBar({
   const workspaceRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
   // Newest first: the oldest active attempt holds, or is next for, the Environment execution slot.
-  const active = useEnvironmentDeployments(params.organizationSlug, environmentId)
-    .filter(({ deployment }) => isActiveDeployment(deployment.status)).reverse();
+  const legacyActive = useEnvironmentDeployments(params.organizationSlug, environmentId)
+    .filter(({ deployment }) => isActiveDeployment(deployment.status)).map(({ deployment }) => deployment).reverse();
+  const active = storeActive ? [...storeActive].reverse() : legacyActive;
   const hasChanges = totalChanges > 0 || canSaveWithoutDeploying;
   const deployable = hasChanges && canDeploy && totalChanges > 0;
-  const shown = hasChanges ? undefined : active.find(({ deployment }) => deployment.id !== viewedId);
+  const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
+  const shownStore = storeActive?.find((deployment) => deployment.id === shown?.id);
   // Saved to go live with a pull request, not changes to deploy here: the bar's last state.
   const waiting = useWaitingSaves(params.organizationSlug, environmentId);
   const landed = useLandedNotes(environmentId, groups);
@@ -153,7 +161,8 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.deployment.id} />
+  ) : shownStore ? <StoreAttemptState deployment={shownStore} />
+    : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.id} />
     : waiting.length ? <WaitingState saves={waiting} /> : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
@@ -231,6 +240,20 @@ function AttemptState({ environmentId, deploymentId }: { environmentId: string; 
         search={step?.nodeId ? { service: step.nodeId } : {}}
         className={buttonVariants({ variant: "outline" })}
       >
+        Logs
+      </Link>
+    </Row>
+  );
+}
+
+/** An in-flight Store Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
+function StoreAttemptState({ deployment }: { deployment: DeploymentSummary }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const detail = deployment.upload ? `${targetsLabel(deployment)} · ${uploadLabel(deployment.upload)}` : targetsLabel(deployment);
+  return (
+    <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
+      title={`${deploymentStatusLabels[deployment.status]} · Deployment #${deployment.number}`} detail={`Deploys ${detail}`}>
+      <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>
     </Row>

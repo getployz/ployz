@@ -60,6 +60,7 @@ pub fn command() -> Command {
         .subcommand(handlers::setup::command())
         .subcommand(handlers::link::status_command())
         .subcommand(handlers::config::unset_command())
+        .subcommand(handlers::up::command())
         .subcommand(handlers::volume::command())
         .subcommand(completion())
 }

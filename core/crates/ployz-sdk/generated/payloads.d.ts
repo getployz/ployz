@@ -269,6 +269,16 @@ message: string | null, };
 
 export type BuildMethod = "dockerfile" | "railpack";
 
+export type BuildOrder = "servers-only" | "github-then-servers" | "servers-then-github" | "github-only";
+
+export type BuildOrderQuery = Record<symbol, never>;
+
+export type BuildOrderView = {
+/**
+ * None while it is Auto.
+ */
+build_order: BuildOrder | null, builders: Array<Builder>, };
+
 export type BuildStatus = "pending" | "building" | "built" | "reused" | "failed";
 
 export type BuildView = {
@@ -284,6 +294,8 @@ commit: string | null, status: BuildStatus,
  * Why it failed.
  */
 message: string | null, };
+
+export type Builder = "github" | "servers";
 
 export type ByteQuantity = number;
 
@@ -366,7 +378,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "remove_organization" } & RemoveOrganization;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "remove_organization" } & RemoveOrganization;
 
 export type ConfigDomainEvidence = {
 /**
@@ -397,7 +409,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "move" } & MoveQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -419,9 +431,9 @@ volumes?: VolumeObservation,
  */
 uploader?: string | null, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "project_removed" } & ProjectRemoved | { "written": "organization_removed" } & OrganizationRemoved;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "project_removed" } & ProjectRemoved | { "written": "organization_removed" } & OrganizationRemoved;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -1130,7 +1142,70 @@ dockerfile_path: string | null,
 /**
  * The commit it builds; none until pinned.
  */
-commit: string | null, };
+commit: string | null,
+/**
+ * The Builders its build tries, in turn: its Preferred Builder, then the
+ * Organization's Build Order.
+ */
+builders: Array<Builder>,
+/**
+ * The Server the servers try first, when it prefers one.
+ */
+preferred_machine: MachineId | null,
+/**
+ * Where its build is; none until pinned.
+ */
+status: BuildStatus | null,
+/**
+ * Why its build failed, or why the last Builder skipped it.
+ */
+message: string | null, };
+
+export type GithubBuild = { id: GithubBuildId,
+/**
+ * The Organization whose Servers receive its image.
+ */
+organization: string, status: BuildStatus, run: GithubRun,
+/**
+ * Set once the run checked in.
+ */
+grant: GithubGrant | null,
+/**
+ * When it checked in, in Unix seconds.
+ */
+checked_in_at: number | null,
+/**
+ * The platforms it built, once its final report came; empty: it failed.
+ */
+platforms: Array<string> | null, };
+
+export type GithubBuildId = string;
+
+export type GithubClaims = { repository_id: string, job_workflow_ref: string, run_id: string, event_name: string, };
+
+export type GithubGrant = {
+/**
+ * Its handle; not secret.
+ */
+id: string,
+/**
+ * The Machine that minted it and receives the image.
+ */
+machine: MachineId,
+/**
+ * The build-input fingerprint the run builds against.
+ */
+fingerprint: string, };
+
+export type GithubRun = { run_id: number, run_url: string,
+/**
+ * The workflow and branch its OIDC token must name.
+ */
+workflow_ref: string,
+/**
+ * The repository, as `owner/name` when dispatched.
+ */
+repository: string, installation_id: number, };
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
@@ -1426,6 +1501,120 @@ service: ServiceName,
  * The absolute path in its containers.
  */
 path: string, };
+
+export type Move = {
+/**
+ * Where the changes come from; omitted, the Parent of `into` (Update).
+ */
+from?: EnvironmentRef | null,
+/**
+ * Where they land; omitted, the Parent of `from` (Save).
+ */
+into?: EnvironmentRef | null,
+/**
+ * The changes to move; omitted, every change, each variable its default way.
+ */
+picks?: Array<MovePick> | null,
+/**
+ * Refuse with `conflict` unless the Move view is still at this version.
+ */
+version?: string | null, };
+
+export type MoveChoice = {
+/**
+ * How it lands when not picked otherwise. `new` means a secret needs a fresh
+ * value: pick `leave_out` and set one, or `from` to move the Branch's own.
+ */
+default: BranchOption,
+/**
+ * Each way offered.
+ */
+options: Array<BranchOption>,
+/**
+ * Whether it is a secret.
+ */
+secret: boolean, };
+
+export type MovePick = {
+/**
+ * A change (`web.source.image`), or a prefix of changes: `web` is every change
+ * of web, `web.variables` every variable of it.
+ */
+row: string,
+/**
+ * How the variables picked land: `from` (the moving value, sealed secrets
+ * included), `parent` (the Parent's deployed value) or `leave_out`; omitted,
+ * each its default.
+ */
+choice?: BranchOption | null, };
+
+export type MoveQuery = {
+/**
+ * As [`Move::from`].
+ */
+from?: EnvironmentRef | null,
+/**
+ * As [`Move::into`].
+ */
+into?: EnvironmentRef | null, };
+
+export type MoveRow = {
+/**
+ * `NODE`, or `NODE.path` for one of its settings or variables.
+ */
+row: string,
+/**
+ * The receiver changed it too since the two last shared: moving it overwrites that.
+ */
+conflict: boolean,
+/**
+ * How a variable can land.
+ */
+choice?: MoveChoice | null,
+/**
+ * The value that moves; secrets read `{"secret": true}`.
+ */
+from: JsonValue,
+/**
+ * The receiver's value now.
+ */
+into: JsonValue, };
+
+export type MoveView = {
+/**
+ * Where the changes come from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they land.
+ */
+into: EnvironmentSummary,
+/**
+ * Pass to [`Move::version`] to move exactly these changes.
+ */
+version: string,
+/**
+ * Each change that moves.
+ */
+rows: Array<MoveRow>, };
+
+export type Moved = {
+/**
+ * Where the changes came from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they landed.
+ */
+into: EnvironmentSummary,
+/**
+ * Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
+ */
+staged: Array<string>,
+/**
+ * The Branch now.
+ */
+branch: BranchView, };
 
 export type Namespace = string;
 
@@ -2127,6 +2316,8 @@ environment: EnvironmentSummary,
  */
 services: Array<ServiceListing>, };
 
+export type SetBuildOrder = { build_order: BuildOrder | null, };
+
 export type SetDefaultEnvironment = { environment: EnvironmentRef, };
 
 export type SetManagementClientResponse = { capability: string | null, };
@@ -2251,16 +2442,6 @@ export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: st
 export type TransportProtocol = "tcp" | "udp";
 
 export type Ulimit = { soft: number, hard: number, };
-
-export type UpdateBranch = {
-/**
- * The Branch.
- */
-environment: EnvironmentRef,
-/**
- * Refuse with `conflict` unless Working State is still at this revision.
- */
-expect: Revision | null, };
 
 export type UpdateConfig = {
 /**
