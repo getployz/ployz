@@ -17,6 +17,7 @@ pub struct Trusted {
     pub repositories: Vec<AuthorizedRepository>,
     /// Which Servers hold the Docker Volumes a Deploy would delete, when it deletes any.
     #[serde(default)]
+    #[ts(optional)]
     pub volumes: Option<VolumeObservation>,
 }
 

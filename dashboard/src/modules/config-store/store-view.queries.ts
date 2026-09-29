@@ -22,6 +22,10 @@ const refreshedBy = {
   deployment: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
+  // Whether a Volume is deployed, and what a Deploy removes, come from Applied State.
+  volumes: ["store_environment", "store_deployment"],
+  volume: ["store_environment", "store_deployment"],
+  removals: ["store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 export const storeViewPrefix = (organizationSlug: string) => ["store-view", organizationSlug] as const;

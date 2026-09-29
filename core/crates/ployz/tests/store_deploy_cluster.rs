@@ -103,6 +103,41 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             == Some(&"hi-s3cr3t".to_owned())
     }));
 
+    // A Volume mounted into web is created by its Deploy; removing it deletes its
+    // Docker Volume only once the loss is accepted by name.
+    let added = ployz(&["volume", "add", "data", "--mount", "web:/data"]);
+    let docker = format!(
+        "shop-production_vol-{}",
+        added["volume"]["id"].as_str().unwrap()
+    );
+    assert_eq!(ployz(&["deploy"])["status"], json!("applied"));
+    assert!(
+        held(&mut client, &docker).await,
+        "the Deploy created the Volume"
+    );
+    ployz(&["volume", "rm", "data"]);
+    let refused = refused(address, &store, &["deploy"]);
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    assert_eq!(refused["details"]["accept"], json!(["data"]));
+    let version = refused["details"]["version"].as_str().unwrap();
+    assert!(
+        held(&mut client, &docker).await,
+        "a refusal deletes nothing"
+    );
+    let accepted = ployz(&[
+        "deploy",
+        "--expect-version",
+        version,
+        "--accept-volume-loss",
+        "data",
+    ]);
+    assert_eq!(accepted["status"], json!("applied"), "{accepted}");
+    assert!(
+        !held(&mut client, &docker).await,
+        "the accepted Docker Volume is gone"
+    );
+    assert_eq!(ployz(&["volume", "ls"])["volumes"], json!([]));
+
     // A staged removal leaves the running Service alone until a Deploy removes it.
     ployz(&["service", "rm", "web"]);
     let live = client
@@ -113,6 +148,22 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     let removed = ployz(&["deploy"]);
     assert_eq!(removed["status"], json!("applied"), "{removed}");
     wait_for_web(&mut client, &web_containers, 0).await;
+}
+
+/// Whether a Server holds Docker Volume `name`.
+async fn held(client: &mut ployz::connect::Client, name: &str) -> bool {
+    let machines = client
+        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
+    client
+        .list_volumes(&machines)
+        .await
+        .successes
+        .iter()
+        .flat_map(|success| &success.value.volumes)
+        .any(|volume| volume.id.name.as_str() == name)
 }
 
 /// Wait until the Cluster runs `count` containers of `web`.
@@ -135,6 +186,20 @@ async fn wait_for_web(
     })
     .await
     .unwrap();
+}
+
+/// Run `ployz --json ARGS` like [`ployz`]; it must fail, and this is its error.
+fn refused(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--json", "--connect", &format!("tcp://{address}")])
+        .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
+        .env_remove("PLOYZ_PROJECT")
+        .env_remove("PLOYZ_ENV")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{args:?} succeeded");
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()["error"].clone()
 }
 
 /// Run `ployz --json ARGS` against `store` and the Cluster at `address`; it must succeed.

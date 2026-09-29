@@ -514,6 +514,51 @@ impl Client {
         Ok(remove_volumes_on(self, &machines.machines, request).await)
     }
 
+    /// Which Machines hold each of the Docker Volumes `sought`: the evidence a
+    /// Deploy that deletes Volume data is reviewed against. Every Machine that did not
+    /// answer, or could not read one of them, is named in `unanswered`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn observe_volumes(
+        &mut self,
+        sought: Vec<DockerVolumeName>,
+    ) -> Result<ployz_store::VolumeObservation, RpcError> {
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map_err(RpcError::from)?;
+        let result = self.list_volumes(&machines.machines).await;
+        let mut unanswered: BTreeSet<MachineId> = result
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(result.omissions.iter().copied())
+            .collect();
+        let mut held = Vec::new();
+        for success in result.successes {
+            for failure in &success.value.failures {
+                if sought.contains(&failure.id.name) {
+                    unanswered.insert(failure.id.machine_id);
+                }
+            }
+            held.extend(
+                success
+                    .value
+                    .volumes
+                    .into_iter()
+                    .map(|volume| volume.id)
+                    .filter(|id| sought.contains(&id.name)),
+            );
+        }
+        Ok(ployz_store::VolumeObservation {
+            sought,
+            held,
+            unanswered: unanswered.into_iter().collect(),
+        })
+    }
+
     /// Live Observation of Data Loss that removing `machine` would cause.
     ///
     /// This is not a complete Cluster view. Mutates nothing: it is safe to

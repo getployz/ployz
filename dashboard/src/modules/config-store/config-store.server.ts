@@ -5,6 +5,7 @@ import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigView, ConfigWritten
 import { sql } from "drizzle-orm";
 import { Data, Effect, Option, Redacted, Schema } from "effect";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
+import { AdmitCommand, gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
@@ -128,7 +129,8 @@ function refusal(error: StoreRefusal) {
 
 /**
  * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. A write first gathers the
- * trusted GitHub evidence its repository Services need. Anything else (the Store failing to open, a broken binding)
+ * trusted GitHub evidence its repository Services need, and a Deploy that removes deployed Volumes what the Servers
+ * hold of them. Anything else (the Store failing to open, a broken binding)
  * is a defect.
  */
 export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
@@ -141,6 +143,10 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     : undefined;
   if (trusted === null) {
     return { ok: false, refusal: { code: "unavailable", message: "GitHub didn't answer; retry.", details: null } } satisfies StoreResult<never>;
+  }
+  if (trusted !== undefined && call.operation === "write") {
+    const volumes = yield* gatherVolumeEvidence(organizationId, Option.getOrUndefined(Schema.decodeUnknownOption(AdmitCommand)(call.command)), read);
+    if (volumes !== undefined) trusted.volumes = volumes;
   }
   return yield* Effect.tryPromise({
     try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
