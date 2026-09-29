@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { Effect } from "effect";
 import type { ChangeName } from "#/collections/read.contract";
 import { eventStreamResponse, sseEvent } from "#/server/event-stream";
-import { publicErrorResponse } from "#/server/public-error";
+import { isClientDisconnect, publicErrorResponse } from "#/server/public-error";
 
 export type OrgChangesHandlerDeps = {
   /** Refuses non-members. */
@@ -37,7 +37,9 @@ export async function handleOrgChangesRequest(request: Request, organizationSlug
 }
 
 function logReadFailure(cause: unknown) {
-  Effect.runFork(Effect.logError("Organization change log read failed.", cause));
+  // A client that disconnected mid-read is routine.
+  const log = isClientDisconnect(cause) ? Effect.logDebug : Effect.logError;
+  Effect.runFork(log("Organization change log read failed.", cause));
   return undefined;
 }
 
