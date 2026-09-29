@@ -1,14 +1,15 @@
-//! An Environment's Settings as `get` shows them: every Setting of every Service,
-//! with its value and default.
+//! An Environment's Settings as `get` shows them. Depth decides how much: the
+//! whole Environment lists only Settings that differ from their default (all of
+//! them with `all`); one Service lists every Setting and its `values` object; one
+//! Setting lists itself.
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Map, Value};
 
 use crate::Actor;
-use crate::error;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{Apply, ServiceSetting, SettingPath};
+use crate::settings::{self, Apply, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Read an Environment's Working State, narrowed to `SERVICE` or `SERVICE.SETTING`.
@@ -18,12 +19,19 @@ pub struct EnvironmentQuery {
     pub environment: EnvironmentRef,
     #[serde(default)]
     pub path: Option<String>,
+    /// Include Settings at their default across the whole Environment.
+    #[serde(default)]
+    pub all: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentView {
     pub environment: EnvironmentSummary,
     pub settings: Vec<SettingRow>,
+    /// For one Service: its Settings as one object, the shape `set --patch` takes.
+    /// Settings without a value are left out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub values: Option<Map<String, Value>>,
 }
 
 /// One Setting's current Working State value.
@@ -47,15 +55,25 @@ pub(super) fn run(
     if let Some(path) = &path {
         services.retain(|service| service.slug == path.service.as_str());
         if services.is_empty() {
-            return Err(error::not_found(
-                format!(
-                    "No Service named {} in Environment {}",
-                    path.service, environment.summary.name
-                ),
-                json!({ "services": environment.working.services.iter().map(|service| &service.slug).collect::<Vec<_>>() }),
+            return Err(settings::no_service(
+                &path.service,
+                &environment.summary.name,
+                &environment.working,
             ));
         }
     }
+    let values = path
+        .as_ref()
+        .filter(|path| path.setting.is_none())
+        .and_then(|_| services.first())
+        .map(|service| {
+            ServiceSetting::ALL
+                .into_iter()
+                .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
+                .filter(|(_, value)| !value.is_null())
+                .collect()
+        });
+    let whole = path.is_none() && !query.all;
     let settings = services
         .into_iter()
         .flat_map(|service| {
@@ -73,9 +91,11 @@ pub(super) fn run(
                     apply: setting.apply(),
                 })
         })
-        .collect();
+        .filter(|row| !whole || row.value != row.default)
+        .collect::<Vec<_>>();
     Ok(EnvironmentView {
         environment: environment.summary,
         settings,
+        values,
     })
 }
