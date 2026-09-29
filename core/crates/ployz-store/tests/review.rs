@@ -2,9 +2,9 @@
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, Command, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView,
-    Discard, Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId,
-    ProjectId, ProjectName, Publish, Published, Query, Revision, ServiceId, View, Written,
+    Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
+    Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
+    ProjectName, Publish, Published, Revision, ServiceId, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -18,26 +18,26 @@ fn shop() -> (ConfigStore, Actor) {
         organization: OrganizationId::parse("org").unwrap(),
     };
     store
-        .write(
+        .create_project(
             &who,
-            Command::CreateProject(CreateProject {
+            &CreateProject {
                 id: ProjectId::parse(PROJECT).unwrap(),
                 name: ProjectName::parse("shop").unwrap(),
                 default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
-            }),
+            },
         )
         .unwrap();
     for (n, name, image) in [(3, "web", "nginx:1"), (4, "api", "caddy:2")] {
         store
-            .write(
+            .create_service(
                 &who,
-                Command::CreateService(CreateService {
+                &CreateService {
                     id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: image.into(),
-                }),
+                },
             )
             .unwrap();
     }
@@ -46,44 +46,34 @@ fn shop() -> (ConfigStore, Actor) {
 
 fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) {
     store
-        .write(
+        .edit(
             who,
-            Command::Edit(Edit {
+            &Edit {
                 environment: EnvironmentRef::default(),
                 expect: None,
                 changes: vec![Change::Set {
-                    path: path.into(),
+                    path: SettingPath::parse(path).unwrap(),
                     value,
                 }],
-            }),
+            },
         )
         .unwrap();
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    let View::Diff(view) = store.read(who, &Query::Diff(DiffQuery::default())).unwrap() else {
-        unreachable!("a diff reads a diff")
-    };
-    view
+    store.diff(who, &DiffQuery::default()).unwrap()
 }
 
 /// Every Setting value in Working State, by path.
 fn working(store: &ConfigStore, who: &Actor) -> Vec<(String, Value)> {
-    let View::Environment(view) = store
-        .read(
-            who,
-            &Query::Environment(EnvironmentQuery {
-                all: true,
-                ..EnvironmentQuery::default()
-            }),
-        )
-        .unwrap()
-    else {
-        unreachable!("an Environment query reads an Environment")
+    let query = EnvironmentQuery {
+        all: true,
+        ..EnvironmentQuery::default()
     };
+    let view = store.environment(who, &query).unwrap();
     view.settings
         .into_iter()
-        .map(|row| (row.path, row.value))
+        .map(|row| (row.path.to_string(), row.value))
         .collect()
 }
 
@@ -95,20 +85,13 @@ fn value(store: &ConfigStore, who: &Actor, path: &str) -> Option<Value> {
 }
 
 fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Published, RpcError> {
-    store
-        .write(
-            who,
-            Command::Publish(Publish {
-                environment: EnvironmentRef::default(),
-                version: version.map(Into::into),
-            }),
-        )
-        .map(|written| {
-            let Written::Published(published) = written else {
-                unreachable!("publish wrote {written:?}")
-            };
-            published
-        })
+    store.publish(
+        who,
+        &Publish {
+            environment: EnvironmentRef::default(),
+            version: version.map(Into::into),
+        },
+    )
 }
 
 fn discard(
@@ -117,21 +100,14 @@ fn discard(
     path: Option<&str>,
     version: Option<&str>,
 ) -> Result<Discarded, RpcError> {
-    store
-        .write(
-            who,
-            Command::Discard(Discard {
-                environment: EnvironmentRef::default(),
-                path: path.map(Into::into),
-                version: version.map(Into::into),
-            }),
-        )
-        .map(|written| {
-            let Written::Discarded(discarded) = written else {
-                unreachable!("discard wrote {written:?}")
-            };
-            discarded
-        })
+    store.discard(
+        who,
+        &Discard {
+            environment: EnvironmentRef::default(),
+            path: path.map(|path| SettingPath::parse(path).unwrap()),
+            version: version.map(Into::into),
+        },
+    )
 }
 
 #[test]
@@ -274,7 +250,8 @@ fn discard_names_what_it_cannot_find() {
     let (store, who) = shop();
     let error = discard(&store, &who, Some("db"), None).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
-    assert_eq!(error.details, json!({ "services": ["web", "api"] }));
-    let error = discard(&store, &who, Some("web.nope"), None).unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        error.details,
+        json!({ "did_you_mean": "web", "valid_children": ["web", "api"] })
+    );
 }

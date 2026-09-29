@@ -2,9 +2,9 @@
 //! put them in Saved State, or undo them.
 
 use clap::{ArgMatches, Command};
-use ployz_store::{DiffQuery, Discard, Publish, Query, View, Written};
+use ployz_store::{DiffQuery, Discard, Publish, SettingPath};
 
-use super::config::{Next, environment, next, scoped, stale, store};
+use super::store::{Next, environment, failed, next, scoped, store, with_refresh_hint};
 use super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 use crate::output::say;
@@ -33,12 +33,10 @@ fn version() -> clap::Arg {
 pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let (store, actor) = store()?;
-    let query = Query::Diff(DiffQuery {
+    let query = DiffQuery {
         environment: environment(matches)?,
-    });
-    let View::Diff(view) = store.read(&actor, &query)? else {
-        unreachable!("a diff reads a diff");
     };
+    let view = store.diff(&actor, &query).map_err(failed)?;
     let hint = (!view.changes.is_empty() && !view.published)
         .then(|| next(matches, &["publish", "--version", &view.version]));
     crate::output::finish(&Next::new(&view, hint.clone()), || {
@@ -66,18 +64,14 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (store, actor) = store()?;
-    let written = store.write(
-        &actor,
-        ployz_store::Command::Publish(Publish {
-            environment: environment(matches)?,
-            version: matches.get_one::<String>("version").cloned(),
-        }),
-    );
-    let Written::Published(published) = written.map_err(|error| stale(error, matches, "diff"))?
-    else {
-        unreachable!("a publish writes a publish");
+    let publish = Publish {
+        environment: environment(matches)?,
+        version: matches.get_one::<String>("version").cloned(),
     };
+    let (store, actor) = store()?;
+    let published = store
+        .publish(&actor, &publish)
+        .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
     crate::output::finish(&published, || {
         let where_ = format!(
             "{}/{}",
@@ -93,25 +87,24 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
 
 pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (store, actor) = store()?;
-    let path = matches.get_one::<String>("path").cloned();
-    let written = store.write(
-        &actor,
-        ployz_store::Command::Discard(Discard {
-            environment: environment(matches)?,
-            path: path.clone(),
-            version: matches.get_one::<String>("version").cloned(),
-        }),
-    );
-    let Written::Discarded(discarded) = written.map_err(|error| stale(error, matches, "diff"))?
-    else {
-        unreachable!("a discard writes a discard");
+    let path = matches
+        .get_one::<String>("path")
+        .map(|path| SettingPath::parse(path))
+        .transpose()?;
+    let discard = Discard {
+        environment: environment(matches)?,
+        path: path.clone(),
+        version: matches.get_one::<String>("version").cloned(),
     };
+    let (store, actor) = store()?;
+    let discarded = store
+        .discard(&actor, &discard)
+        .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["diff"]));
     crate::output::finish(&Next::new(&discarded, hint), || {
         say!(
             "Discarded {} in {}/{} (revision {}).",
-            path.as_deref().unwrap_or("every staged change"),
+            path.map_or_else(|| "every staged change".to_owned(), |path| path.to_string()),
             discarded.environment.project,
             discarded.environment.name,
             discarded.environment.revision

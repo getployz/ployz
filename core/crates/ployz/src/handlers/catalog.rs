@@ -4,7 +4,7 @@
 use clap::{ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
 use ployz_store::catalog::{self, Explained};
-use ployz_store::{EnvironmentName, EnvironmentQuery, EnvironmentRef, ProjectName, Query, View};
+use ployz_store::{EnvironmentName, EnvironmentQuery, EnvironmentRef, ProjectName};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -97,7 +97,7 @@ pub(crate) fn setting_paths() -> ArgValueCompleter {
 /// Completion sees no flags, so scope comes from `PLOYZ_PROJECT` and `PLOYZ_ENV`.
 fn services() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
-        let (store, actor) = super::config::store().ok()?;
+        let (store, actor) = super::store::store().ok()?;
         let parse = |name: &str| std::env::var(name).ok();
         let environment = EnvironmentRef {
             project: parse(env::PROJECT)
@@ -109,22 +109,16 @@ fn services() -> Vec<String> {
                 .transpose()
                 .ok()?,
         };
-        let query = Query::Environment(EnvironmentQuery {
+        let query = EnvironmentQuery {
             environment,
             path: None,
             all: true,
-        });
-        let View::Environment(view) = store.read(&actor, &query).ok()? else {
-            return None;
         };
+        let view = store.environment(&actor, &query).ok()?;
         let mut services = view
             .settings
             .into_iter()
-            .filter_map(|row| {
-                row.path
-                    .split_once('.')
-                    .map(|(service, _)| service.to_owned())
-            })
+            .map(|row| row.path.service().to_string())
             .collect::<Vec<_>>();
         services.dedup();
         Some(services)

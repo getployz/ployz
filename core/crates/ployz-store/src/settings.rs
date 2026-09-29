@@ -3,8 +3,11 @@
 //! directly. Each Setting carries what `get`, `explain`, `schema`, validation and
 //! completion need; [`crate::catalog`] renders them as JSON Schema.
 
+use std::fmt;
+
 use ployz_core::config::{
-    AuthoredServiceConfig, SavedEnvironmentIntent, ServiceSource, parse_service_setting,
+    AuthoredServiceConfig, SavedEnvironmentIntent, ServiceImageCredentials, ServiceSource,
+    default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -17,7 +20,9 @@ use crate::id::EnvironmentName;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Apply {
+    /// Saved in Working State; running Services see it after the next Deploy.
     Staged,
+    /// Takes effect as soon as it is written.
     Immediate,
 }
 
@@ -125,8 +130,8 @@ impl ServiceSetting {
             | Self::MemLimit
             | Self::PreDeployCommand
             | Self::StartCommand => Value::Null,
-            Self::MaxRetries => json!(10),
-            Self::Replicas => json!(1),
+            Self::MaxRetries => json!(default_max_retries()),
+            Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
         }
     }
@@ -193,20 +198,14 @@ impl ServiceSetting {
             let ServiceSource::Image { credentials, .. } = &config.source else {
                 return Err(self.invalid("this Service does not run an image"));
             };
-            let source = json!({
-                "type": "image",
-                "version": 1,
-                "image": value,
-                "credentials": credentials,
-            });
-            config.source = self.decode(self.validated("source", source)?)?;
+            config.source = image_source(self.decode(value)?, credentials.clone())?;
             return Ok(());
         }
         let value = self.validated(self.name(), value)?;
         self.store(config, value)
     }
 
-    /// Return this Setting to its default.
+    /// Return this Setting to its [`default`](Self::default).
     pub(crate) fn unset(self, config: &mut AuthoredServiceConfig) -> Result<(), RpcError> {
         if self == Self::Image {
             return Err(self.invalid("an image Service needs an image; set another one"));
@@ -277,15 +276,37 @@ impl ServiceSetting {
     }
 }
 
-/// A parsed `SERVICE[.SETTING]` path.
-#[derive(Clone, Debug)]
-pub(crate) struct SettingPath {
-    pub(crate) service: ServiceName,
-    pub(crate) setting: Option<ServiceSetting>,
+/// An image Service's source, checked by core's field rules.
+pub(crate) fn image_source(
+    image: String,
+    credentials: ServiceImageCredentials,
+) -> Result<ServiceSource, RpcError> {
+    let setting = ServiceSetting::Image;
+    let source = ServiceSource::Image {
+        version: 1,
+        image,
+        credentials,
+    };
+    let source = serde_json::to_value(source).expect("a Service source is JSON");
+    setting.decode(setting.validated("source", source)?)
+}
+
+/// What a request addresses in an Environment: `SERVICE` for a whole Service, or
+/// `SERVICE.SETTING` for one of its Settings.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SettingPath {
+    service: ServiceName,
+    setting: Option<ServiceSetting>,
 }
 
 impl SettingPath {
-    pub(crate) fn parse(path: &str) -> Result<Self, RpcError> {
+    /// Parse `SERVICE` or `SERVICE.SETTING`.
+    ///
+    /// # Errors
+    /// Returns `invalid_argument` for a malformed path or an unknown Setting, never
+    /// echoing the path.
+    pub fn parse(path: &str) -> Result<Self, RpcError> {
         let (service, setting) = path.split_once('.').unzip();
         let service = ServiceName::parse(service.unwrap_or(path)).map_err(|_| {
             error::invalid(
@@ -297,9 +318,45 @@ impl SettingPath {
         Ok(Self { service, setting })
     }
 
-    /// The path of one Setting, as results name it.
-    pub(crate) fn of(service: &str, setting: ServiceSetting) -> String {
-        format!("{service}.{}", setting.name())
+    /// The Service this path is in.
+    #[must_use]
+    pub const fn service(&self) -> &ServiceName {
+        &self.service
+    }
+
+    pub(crate) const fn setting(&self) -> Option<ServiceSetting> {
+        self.setting
+    }
+
+    /// The path of one Setting of a stored Service.
+    pub(crate) fn of(service: &str, setting: ServiceSetting) -> Result<Self, RpcError> {
+        Ok(Self {
+            service: ServiceName::parse(service).map_err(|_| error::corrupt("Service name"))?,
+            setting: Some(setting),
+        })
+    }
+}
+
+impl fmt::Display for SettingPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.setting {
+            Some(setting) => write!(formatter, "{}.{}", self.service, setting.name()),
+            None => write!(formatter, "{}", self.service),
+        }
+    }
+}
+
+impl TryFrom<String> for SettingPath {
+    type Error = RpcError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(&value)
+    }
+}
+
+impl From<SettingPath> for String {
+    fn from(value: SettingPath) -> Self {
+        value.to_string()
     }
 }
 

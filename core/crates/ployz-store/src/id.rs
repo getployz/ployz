@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error;
 
+// Not core's `validated_string_newtype!`: that one derives `TS` and returns a
+// `ValueError` that quotes the rejected value, and the Store never echoes input.
 macro_rules! store_string {
     ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr) => {
         $(#[$doc])*
@@ -15,6 +17,8 @@ macro_rules! store_string {
         pub struct $name(String);
 
         impl $name {
+            /// Accept `value` if it is well formed.
+            ///
             /// # Errors
             /// Returns `invalid_argument` naming what was expected, never the value.
             pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
@@ -29,6 +33,7 @@ macro_rules! store_string {
                 }
             }
 
+            /// The value as text.
             #[must_use]
             pub fn as_str(&self) -> &str {
                 &self.0
@@ -84,7 +89,7 @@ store_string!(
 );
 store_string!(
     /// An Environment's durable identity, minted by the caller that creates it.
-    EnvironmentId, "an Environment ID of 1-64 letters, digits, - or _", is_id
+    EnvironmentId, "an Environment ID (a UUID)", is_uuid
 );
 store_string!(
     /// A Service's durable identity, minted by the caller that creates it. It is
@@ -104,6 +109,14 @@ store_string!(
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Revision(pub u64);
+
+impl Revision {
+    /// The revision a change to Working State at this one produces.
+    #[must_use]
+    pub const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
 
 impl fmt::Display for Revision {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

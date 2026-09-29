@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use ployz_core::RpcError;
 use rusqlite::types::{ToSqlOutput, ValueRef};
-use rusqlite::{Connection, ErrorCode, ToSql, TransactionBehavior};
+use rusqlite::{Connection, ErrorCode, ToSql, TransactionBehavior, ffi};
 
 use super::{Cell, Param, Row, Tx};
 use crate::error;
@@ -17,12 +17,7 @@ pub(crate) struct Sqlite(Mutex<Connection>);
 
 impl Sqlite {
     pub(super) fn open(path: &str) -> Result<Self, RpcError> {
-        let connection = if path == ":memory:" {
-            Connection::open_in_memory()
-        } else {
-            Connection::open(path)
-        }
-        .map_err(storage_error)?;
+        let connection = Connection::open(path).map_err(storage_error)?;
         connection
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(storage_error)?;
@@ -87,6 +82,10 @@ impl Tx for SqliteTx<'_> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(storage_error)
     }
+
+    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
+        self.0.execute_batch(sql).map_err(storage_error)
+    }
 }
 
 impl ToSql for Param<'_> {
@@ -100,7 +99,19 @@ impl ToSql for Param<'_> {
 
 /// Busy or locked means another writer held the database past the timeout; nothing
 /// was written, but the caller cannot tell that from outside, so it is `unavailable`.
+/// A taken key or unique name is `conflict`, whichever check first noticed it.
 fn storage_error(source: rusqlite::Error) -> RpcError {
+    if let rusqlite::Error::SqliteFailure(failure, _) = &source
+        && matches!(
+            failure.extended_code,
+            ffi::SQLITE_CONSTRAINT_PRIMARYKEY | ffi::SQLITE_CONSTRAINT_UNIQUE
+        )
+    {
+        return error::conflict(
+            "An ID or name in this request is already taken",
+            serde_json::Value::Null,
+        );
+    }
     match source.sqlite_error_code() {
         Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) => {
             error::unavailable("The Config Store is busy; retry the command")

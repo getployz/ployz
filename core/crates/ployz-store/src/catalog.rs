@@ -34,13 +34,15 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
         })));
     };
     let path = SettingPath::parse(path)?;
-    Ok(versioned(path.setting.map_or_else(service, setting)))
+    Ok(versioned(path.setting().map_or_else(service, setting)))
 }
 
 /// One Setting: its canonical path and its schema.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Explained {
-    pub path: String,
+    /// The Setting's canonical path.
+    pub path: SettingPath,
+    /// Its JSON Schema.
     pub schema: Value,
 }
 
@@ -51,19 +53,19 @@ pub struct Explained {
 /// `did_you_mean` and `valid_children`.
 pub fn explain(path: &str) -> Result<Explained, RpcError> {
     let parsed = SettingPath::parse(path)?;
-    let Some(one) = parsed.setting else {
+    let Some(one) = parsed.setting() else {
         let names = ServiceSetting::ALL.map(ServiceSetting::name);
         return Err(error::invalid(
             "Name a Setting: SERVICE.SETTING",
             json!({
                 "valid_children": names,
-                "example": format!("{}.replicas", parsed.service),
+                "example": format!("{}.replicas", parsed.service()),
             }),
         ));
     };
     Ok(Explained {
-        path: SettingPath::of(parsed.service.as_str(), one),
         schema: setting(one),
+        path: parsed,
     })
 }
 
@@ -77,7 +79,7 @@ pub fn complete(input: &str) -> Vec<String> {
     ServiceSetting::ALL
         .into_iter()
         .filter(|one| one.name().starts_with(prefix))
-        .map(|one| SettingPath::of(service, one))
+        .map(|one| format!("{service}.{}", one.name()))
         .collect()
 }
 
@@ -197,7 +199,10 @@ mod tests {
         let error = explain("web.zzzzzz").unwrap_err();
         assert_eq!(error.details["did_you_mean"], Value::Null);
         assert!(explain("web").is_err());
-        assert_eq!(explain("web.replicas").unwrap().path, "web.replicas");
+        assert_eq!(
+            explain("web.replicas").unwrap().path.to_string(),
+            "web.replicas"
+        );
     }
 
     #[test]
