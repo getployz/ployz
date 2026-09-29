@@ -5,6 +5,7 @@ pub mod build;
 mod cancellation;
 pub mod cli;
 mod cloud_enroll;
+mod cloud_login;
 mod cluster;
 mod cluster_teardown;
 pub mod connect;
