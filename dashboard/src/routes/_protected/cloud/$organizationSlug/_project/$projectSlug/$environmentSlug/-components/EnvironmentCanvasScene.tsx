@@ -20,7 +20,7 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreDeployments, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -62,12 +62,16 @@ function CanvasWithData() {
   const scope = useCollectionScope();
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId, organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(ref)));
-  const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(ref)));
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(ref)));
-  const volumes = requireView(useStoreView(organizationSlug, volumesQuery(ref)));
-  // Refused unless this is a Branch.
-  const branch = useStoreView(organizationSlug, branchQuery(ref));
+  // The branch view is refused unless this is a Branch.
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
+  const services = requireView(servicesResult);
+  const settings = requireView(settingsResult);
+  const diff = requireView(diffResult);
+  const volumes = requireView(volumesResult);
+  // An empty Service runs what the last deployed upload built: the newest applied Deployment says whether it had one.
+  const uploadedLast = useStoreDeployments(organizationSlug, ref).data.pages[0]?.deployments
+    .find((deployment) => deployment.status === "applied")?.upload != null;
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -82,9 +86,11 @@ function CanvasWithData() {
       subtitle: service.source === "uploaded" ? "Uploaded"
         : settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
       changeCount: serviceChanges(diff, service.id).size,
+      runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
+      uploaded: service.source === "empty" && uploadedLast,
     })),
     volumes: volumes.volumes,
-    live: branch.ok ? liveNodes(branch.value.live, settings, services.services) : [],
+    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId);

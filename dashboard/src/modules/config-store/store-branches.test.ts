@@ -1,4 +1,4 @@
-import type { EnvironmentView, MoveChoice } from "@ployz/sdk";
+import type { MoveChoice } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import { liveNodes, movePicks, presentMoveRow } from "./store-branches";
 
@@ -28,18 +28,14 @@ describe("Save sheet over the Store", () => {
       { row: "cache.env.A", choice: "leave_out" },
       { row: "cache.env.B", choice: "from" },
       { row: "web.image" },
-      { row: "web.env.TOKEN", choice: "new", value: "fresh" },
+      { row: "web.env.TOKEN", choice: { new: "fresh" } },
     ]);
   });
 });
 
 describe("Live Nodes over the Store", () => {
-  it("links each to the Services whose variables read it", () => {
-    const settings: EnvironmentView = { environment: { id: "e", project: "shop", name: "shop-fix", revision: 1 }, settings: [
-      { path: "web.env.DB_URL", value: "${{ db.PLOYZ_PRIVATE_DOMAIN }}", default: null, apply: "staged" },
-      { path: "api.env.NAME", value: "db", default: null, apply: "staged" },
-    ] };
-    expect(liveNodes([{ name: "db", owner: "shop-production", data: true }], settings, [{ id: "w", name: "web" }, { id: "a", name: "api" }]))
-      .toEqual([{ name: "db", owner: "shop-production", data: true, usedBy: ["w"] }]);
+  it("links each to the Services the Store says read it", () => {
+    const node = { name: "db", owner: "shop-production", data: true, used_by: ["web"] };
+    expect(liveNodes([node], [{ id: "w", name: "web" }, { id: "a", name: "api" }])).toEqual([{ ...node, usedBy: ["w"] }]);
   });
 });

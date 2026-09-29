@@ -38,10 +38,6 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   if (call === undefined) {
     return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
   }
-  // Only Cloud's own Organization removal forgets an Organization's configuration.
-  if (call.operation === "write" && call.command.command === "remove_organization") {
-    return refusal({ code: "unsupported", message: "Remove an Organization with `ployz org rm`.", details: null });
-  }
   const result = yield* callStore(caller.organization.id, caller.userId, call);
   return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
 });

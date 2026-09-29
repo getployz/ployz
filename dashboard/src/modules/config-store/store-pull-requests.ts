@@ -15,7 +15,7 @@ export function pullRequestQuery(pullRequest: PullRequestRef): { query: "pull_re
 
 /** What a PR Environment's Save would hold for one Destination, going live with the merge. */
 export function atMergeQuery(from: EnvironmentRef, into: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from, into, when: "at_merge" };
+  return { query: "move", move: "save", from, into, when: "at_merge" };
 }
 
 /** A plan in words: "On · from staging · db copied · then php artisan migrate". */
