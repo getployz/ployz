@@ -258,10 +258,13 @@ impl Client {
     ) -> Result<T::Response, ConnectError> {
         let mut delays = UNARY_RETRY_DELAYS.iter().copied();
         let mut redial = false;
+        // One budget across retries: fast failures retry inside it, and a vanished
+        // Machine costs the budget once instead of once per attempt.
+        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
         loop {
             let attempt = self.unary_attempt::<T>(payload.clone(), target, redial);
-            let outcome = match timeout {
-                Some(timeout) => match tokio::time::timeout(timeout, attempt).await {
+            let outcome = match deadline {
+                Some(deadline) => match tokio::time::timeout_at(deadline, attempt).await {
                     Ok(outcome) => outcome,
                     Err(_) => {
                         Err(tonic::Status::deadline_exceeded("target Machine RPC timed out").into())
@@ -275,6 +278,11 @@ impl Client {
                     let Some(delay) = delays.next() else {
                         return Err(error);
                     };
+                    if deadline
+                        .is_some_and(|deadline| tokio::time::Instant::now() + delay >= deadline)
+                    {
+                        return Err(error);
+                    }
                     tokio::time::sleep(delay).await;
                     redial = true;
                 }

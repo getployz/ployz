@@ -261,9 +261,11 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     let partial_inspect = ployz(address, ["volume", "inspect", "reachable"]);
     assert!(!partial_inspect.status.success());
 
+    // The reachable removal commits; the unanswered Machine fails the command.
     let partial_remove = ployz(address, ["volume", "rm", "reachable", "--yes"]);
     assert!(
-        partial_remove.status.success(),
+        !partial_remove.status.success()
+            && String::from_utf8_lossy(&partial_remove.stdout).contains("Deleted volume reachable"),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&partial_remove.stdout),
         String::from_utf8_lossy(&partial_remove.stderr)
@@ -297,7 +299,7 @@ fn mount_spec(index: usize, name: &DockerVolumeName) -> ResolvedServiceSpec {
         "container": { "image": "alpine:3.23.3", "command": ["sleep", "60"], "pull_policy": "missing" },
         "volumes": [
             {"reference":"host","source":{"kind":"bind","machine_path":"/tmp/ployz-bind"}},
-            {"reference":"alias","source":{"kind":"ordinary","name":name,"driver":{"name":"local","options":{}}}},
+            {"reference":"alias","source":{"kind":"external","name":name}},
             {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096}}
         ],
         "mounts": [

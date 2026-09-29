@@ -66,10 +66,13 @@ run_archive() {
     directory=$(mktemp -d)
     tar -xzf "$DIST/$archive" -C "$directory"
     install -m 0755 "$directory/$binary" "$directory/installed"
+    # The CLI prints its version with a flag; the daemon with a subcommand.
+    flag=version
+    [ "$binary" = ployz ] && flag=--version
     if [ -n "$runner" ]; then
-        output=$($runner "$directory/installed" version)
+        output=$($runner "$directory/installed" "$flag")
     else
-        output=$("$directory/installed" version)
+        output=$("$directory/installed" "$flag")
     fi
     rm -rf "$directory"
     [ "$output" = "$EXPECTED_VERSION" ] || fail "$archive returned version '$output'"
