@@ -31,18 +31,15 @@ type PullState = { state: "open" | "closed"; updated_at: string };
 function github(pull: PullState, posted: unknown[]): GithubApiService {
   return {
     json: (request) => {
-      let answer: unknown = { id: 42, full_name: "acme/web", private: true };
-      if (request.url.endsWith("/pulls/5")) {
-        answer = {
+      if (request.url.endsWith("/check-runs")) posted.push(request.body);
+      const answer = request.url.endsWith("/pulls/5")
+        ? {
           number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: HEAD },
           base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
-        };
-      } else if (request.url.includes("/check-runs?")) {
-        answer = { check_runs: [] };
-      } else if (request.url.endsWith("/check-runs")) {
-        posted.push(request.body);
-        answer = { id: 99 };
-      }
+        }
+        : request.url.includes("/check-runs?")
+          ? { check_runs: [] }
+          : request.url.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
       return Schema.decodeUnknownEffect(request.schema)(answer).pipe(Effect.orDie);
     },
     archive: () => Effect.die("no checkout in this test"),
@@ -106,8 +103,11 @@ it.live(
         (await new InngestTestEngine({
           function: createStorePullRequest(inngest, runner),
           events: [delivery(id)],
-          steps: [{ id: "dispatch", handler: () => dispatched.push(id) }],
-        }).execute()).result as { admitted: string[]; check: string });
+          steps: [
+            { id: "dispatch", handler: () => dispatched.push(id) },
+            { id: "dispatch-removals", handler: () => dispatched.push(`${id}-removal`) },
+          ],
+        }).execute()).result as { admitted: string[]; removals: string[]; check: string });
       const environments = () => Effect.promise(async () => {
         const view = await store.read(ORGANIZATION, { query: "environments", project: null });
         return view.view === "environments" ? view.environments.map((listing) => listing.name) : [];
@@ -130,6 +130,17 @@ it.live(
       Object.assign(pull, { state: "open", updated_at: "2026-09-29T10:30:00Z" });
       expect((yield* run("late")).admitted).toEqual([]);
       expect(yield* environments()).toEqual(["production"]);
+
+      // Reopened, it runs (and fails: its source can't be read); closed again, Cloud takes it off the Servers first.
+      Object.assign(pull, { state: "open", updated_at: "2026-09-29T12:00:00Z" });
+      const reopened = yield* run("reopen");
+      yield* Effect.promise(() => store.runDeployment(ORGANIZATION, reopened.admitted[0] ?? "", "cloud-test", [], { failure: "No source." }));
+      Object.assign(pull, { state: "closed", updated_at: "2026-09-29T13:00:00Z" });
+      const closed = yield* run("close-again");
+      expect(closed.removals).toHaveLength(1);
+      expect(dispatched).toContain("close-again-removal");
+      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: closed.removals[0] ?? "" })))
+        .toMatchObject({ remove: true, status: "queued" });
     }),
   60_000,
 );

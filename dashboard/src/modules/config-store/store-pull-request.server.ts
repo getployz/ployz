@@ -1,8 +1,9 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { callStore, cloudStore } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/config-store.server";
+import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import { StoreGithubFailure } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
@@ -82,25 +83,33 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
 
 /**
  * Take each Branch the Store is closing off the Servers: its removal Deployment accepts every Volume loss the Servers
- * report, since the system closes it, and goes to Cloud's worker like any admission. One that can't be admitted now
- * (a Deployment still running, Servers not answering) waits for the next sweep.
+ * report, since the system closes it. Resolves to the removals to dispatch. One that can't be admitted now (a
+ * Deployment still running, Servers not answering) waits for the next sweep.
  */
 export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(function* (closing: StoreOutcome["closing"]) {
   const store = yield* cloudStore;
-  let admitted = 0;
+  const admitted: ConfigDeploymentAdmittedEventData[] = [];
   for (const { organizationId, environment: summary } of closing) {
+    const read = (query: ConfigQuery) => store.read(organizationId, query);
     const environment = { project: summary.project, environment: summary.name };
-    const removals = yield* storeCall(() => store.read(organizationId, { query: "removals", environment, remove: true }));
-    const accept = removals.view === "removals" ? removals.volumes.map((volume) => volume.name) : [];
-    const result = yield* callStore(organizationId, "system", {
-      operation: "write",
-      command: {
-        command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: true,
-        accept_volume_loss: accept,
-      },
-    });
-    if (result.ok) admitted += 1;
-    else yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment, refusal: result.refusal });
+    const removals = yield* storeCall(() => read({ query: "removals", environment, remove: true }));
+    const volumes = yield* gatherVolumeEvidence(organizationId, { command: "admit", environment, remove: true }, read);
+    const command: ConfigCommand = {
+      command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: true,
+      accept_volume_loss: removals.view === "removals" ? removals.volumes.map((volume) => volume.name) : [],
+    };
+    // A removal expands no domain and reads no repository: the Servers' Volumes are all it needs observed.
+    const trusted: ConfigTrusted = {
+      repositories: [], uploader: null,
+      domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
+    };
+    if (volumes !== undefined) trusted.volumes = volumes;
+    const written = yield* storeCall(() => store.write(organizationId, command, trusted)).pipe(Effect.option);
+    if (written._tag === "Some" && written.value.written === "deployment") {
+      admitted.push({ organizationId, environmentId: summary.id, deploymentId: written.value.id });
+    } else {
+      yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment });
+    }
   }
   return admitted;
 });
