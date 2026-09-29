@@ -1,42 +1,12 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigCommand, ConfigQuery } from "@ployz/sdk";
 import { Effect } from "effect";
-import { callStore, cloudStore } from "#/modules/config-store/config-store.server";
-import type { StoreCall, StoreRefusal } from "#/modules/config-store/store.contract";
+import { callStore, cloudStore, refusal } from "#/modules/config-store/config-store.server";
+import type { StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { AppConfig } from "#/server/config.server";
 import { NotFound, Validation } from "#/server/public-error";
-
-/** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
-function statusFor(code: string) {
-  switch (code) {
-    case "invalid_argument":
-      return 422;
-    case "not_found":
-      return 404;
-    case "conflict":
-    case "ambiguous":
-    case "confirmation_required":
-      return 409;
-    case "unauthenticated":
-      return 401;
-    case "unsupported":
-      return 501;
-    case "unavailable":
-      return 503;
-    default:
-      return 500;
-  }
-}
-
-function refusal(error: StoreRefusal) {
-  const { code, message, details } = error;
-  return Response.json({ error: { code, message, details } }, {
-    status: statusFor(code),
-    headers: { "cache-control": "no-store" },
-  });
-}
 
 /**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
@@ -67,6 +37,10 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   });
   // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
   const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation: "write", command: input as ConfigCommand };
+  // Only Cloud's own Organization removal forgets an Organization's configuration.
+  if (call.operation === "write" && call.command.command === "remove_organization") {
+    return refusal({ code: "unsupported", message: "Remove an Organization with `ployz org rm`.", details: null });
+  }
   const result = yield* callStore(caller.organization.id, caller.userId, call);
   return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
 });

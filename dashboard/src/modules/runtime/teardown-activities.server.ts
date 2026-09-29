@@ -181,30 +181,34 @@ export const dropTeardownCloudRowsActivity = Effect.fn(
           .delete(schemaProject)
           .where(inArray(schemaProject.id, projectIds));
       }
-      if (attempt.scope === "organization") {
-        const [pending] = yield* transaction.drizzle.select({ organizationId: schemaOrganizationPairing.organizationId })
-          .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, attempt.organizationId));
-        if (pending) return yield* new PloyzProviderError({
-          operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
-        });
-        const [domain] = yield* transaction.drizzle.select().from(schemaOrganizationClusterDomain)
-          .where(eq(schemaOrganizationClusterDomain.organizationId, attempt.organizationId));
-        yield* transaction.drizzle
-          .delete(schemaOrganizationPairing)
-          .where(eq(schemaOrganizationPairing.organizationId, attempt.organizationId));
-        yield* transaction.drizzle
-          .delete(schemaMachineEnrollmentToken)
-          .where(eq(schemaMachineEnrollmentToken.organizationId, attempt.organizationId));
-        yield* transaction.drizzle
-          .delete(schemaOrganization)
-          .where(eq(schemaOrganization.id, attempt.organizationId));
-        return domain ?? null;
-      }
+      if (attempt.scope === "organization") return yield* dropOrganizationRows(attempt.organizationId);
       return null;
     }),
   );
   // Only once the Organization is gone: its Cluster Domain row cascaded with it, so a retry never releases twice.
   if (clusterDomain) yield* releaseClusterDomain(clusterDomain);
+});
+
+/**
+ * Delete an Organization's Cloud rows, inside the caller's transaction, once revoking its pairing is confirmed. Its
+ * Cluster Domain comes back for the caller to release after the commit.
+ */
+export const dropOrganizationRows = Effect.fn("Teardown.dropOrganizationRows")(function* (organizationId: string) {
+  const transaction = yield* Database;
+  const [pending] = yield* transaction.drizzle.select({ organizationId: schemaOrganizationPairing.organizationId })
+    .from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  if (pending) return yield* new PloyzProviderError({
+    operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
+  });
+  const [domain] = yield* transaction.drizzle.select().from(schemaOrganizationClusterDomain)
+    .where(eq(schemaOrganizationClusterDomain.organizationId, organizationId));
+  yield* transaction.drizzle
+    .delete(schemaMachineEnrollmentToken)
+    .where(eq(schemaMachineEnrollmentToken.organizationId, organizationId));
+  yield* transaction.drizzle
+    .delete(schemaOrganization)
+    .where(eq(schemaOrganization.id, organizationId));
+  return domain ?? null;
 });
 
 /** Once a shutdown's runtime half is done, its services count as never deployed, so their Setup Commands run again. */

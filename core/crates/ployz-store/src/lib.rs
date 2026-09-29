@@ -58,8 +58,9 @@ pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, SettingPath};
 pub use teardown::{
-    EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
-    SetDefaultEnvironment,
+    EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
+    OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
+    RemoveEnvironment, RemoveOrganization, RemoveProject, SetDefaultEnvironment,
 };
 pub use trusted::{Trusted, VolumeObservation};
 
@@ -634,6 +635,37 @@ impl ConfigStore {
         remove: &RemoveEnvironment,
     ) -> Result<EnvironmentRemoved, RpcError> {
         self.storage.write(|tx| teardown::remove(tx, who, remove))
+    }
+
+    /// [`Query::Projects`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn projects(&self, who: &Actor) -> Result<ProjectsView, RpcError> {
+        self.storage.read(|tx| teardown::projects(tx, who))
+    }
+
+    /// [`Command::RemoveProject`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` while any of its Environments may still
+    /// run on the Servers (`details.deployed`, `details.environment` the next to take off).
+    pub fn remove_project(
+        &self,
+        who: &Actor,
+        remove: &RemoveProject,
+    ) -> Result<ProjectRemoved, RpcError> {
+        self.storage
+            .write(|tx| teardown::remove_project(tx, who, remove))
+    }
+
+    /// [`Command::RemoveOrganization`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` while the Organization has a Project.
+    pub fn remove_organization(&self, who: &Actor) -> Result<OrganizationRemoved, RpcError> {
+        self.storage
+            .write(|tx| teardown::remove_organization(tx, who))
     }
 
     /// [`Query::Branch`].

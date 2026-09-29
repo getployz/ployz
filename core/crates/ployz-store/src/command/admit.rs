@@ -199,7 +199,7 @@ fn removal(
         ));
     }
     let environment = scope::lock(tx, who, &admit.environment)?;
-    crate::teardown::guard(tx, &environment)?;
+    crate::teardown::guard_removal(tx, &environment)?;
     let id = &environment.summary.id;
     let history = deployment::history(tx, id, i64::MAX)?;
     if let Some(running) = history.iter().find(|deployment| {
