@@ -13,6 +13,8 @@ import { diffQuery, requireView, servicesQuery, useStoreViews, volumesQuery } fr
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError } from "#/modules/config-store/store-volumes";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
@@ -58,7 +60,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
           </div>
         </section>
         <div className="py-8"><Separator /></div>
-        <StoreVolumeDanger state={state} params={params} />
+        <StoreVolumeDanger state={state} params={params} version={diff.version} />
       </div>
     </div>
   );
@@ -179,9 +181,12 @@ function StoreMountItem({ mount, onPath, onDetach }: { mount: Mount; onPath: (pa
   );
 }
 
-function StoreVolumeDanger({ state, params }: { state: StoreVolume; params: VolumeResourceRouteParams }) {
+function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; params: VolumeResourceRouteParams; version: string }) {
   const writer = useStoreWriter(state.organizationSlug);
   const navigate = useNavigate();
+  // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
+  const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const { volume } = state;
   const removing = volume.change === "delete";
   const mounts = volume.mounts.length;
@@ -197,20 +202,30 @@ function StoreVolumeDanger({ state, params }: { state: StoreVolume; params: Volu
       <h2 id="volume-danger-heading" className="text-lg font-semibold text-destructive">Danger</h2>
       <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-destructive">{removing ? "Deleted on your next deploy" : "Delete this volume"}</div>
+          <div className="text-sm font-semibold text-destructive">
+            {removing && volume.deployed ? "Delete its data" : removing ? "Deleted on your next deploy" : "Delete this volume"}
+          </div>
           <p className="mt-1 text-sm text-destructive/85">
-            {volume.deployed
+            {removing && volume.deployed
+              ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+              : volume.deployed
               ? "Its data on your servers goes with it. Deploy asks you to confirm first."
               : mounts > 0 ? `Deleted on your next deploy, with its ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Deleted on your next deploy."}
           </p>
         </div>
-        {removing ? null : (
+        {removing && volume.deployed ? (
+          <Button variant="destructive" className="shrink-0" onClick={actions.deploy}>
+            <Trash2Icon data-icon="inline-start" />
+            Delete data
+          </Button>
+        ) : removing ? null : (
           <Button variant="destructive" className="shrink-0" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />
             Delete volume
           </Button>
         )}
       </div>
+      {actions.dialog}
     </section>
   );
 }
