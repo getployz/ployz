@@ -477,9 +477,13 @@ fn wrong_paths_and_values_name_the_fix() {
             "autoDeploy",
             "waitForCi",
             "watchPaths",
-            "preferredBuilder"
+            "preferredBuilder",
+            "env",
+            "mounts"
         ])
     );
+    let error = SettingPath::parse("web.evn.DATABASE_URL").unwrap_err();
+    assert_eq!(error.details["did_you_mean"], "env");
     let error = SettingPath::parse("Web!.replicas").unwrap_err();
     assert!(!error.message.contains("Web!"), "{error:?}");
 

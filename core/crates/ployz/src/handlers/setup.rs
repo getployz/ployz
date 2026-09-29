@@ -239,6 +239,8 @@ metadata:
 - {SIGNPOST}
 - `ployz get SERVICE --json` shows every Setting of a Service, including unset ones with their defaults.
 - `ployz set SERVICE.SETTING=VALUE` stages an edit; `ployz diff` shows what is staged and `ployz publish` saves it.
+- `ployz diff --json` carries a `version`; `ployz deploy --expect-version VERSION` deploys exactly that review or refuses with `conflict`.
+- A destructive command without its confirmation fails with `confirmation_required`, naming what goes; `details.next` is the exact command that confirms it.
 - With `--json`, stdout carries one JSON object and nothing prompts. A failure is `{{\"error\": {{code, message, details}}}}`; `details.next`, when present, is the command that follows.
 - Exit codes: 0 success, 1 failure, 2 usage, 3 partial.
 - `PLOYZ_TOKEN` authenticates without `ployz login`.

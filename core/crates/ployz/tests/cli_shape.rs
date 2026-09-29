@@ -277,6 +277,7 @@ fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_js
         .env_remove("PLOYZ_CONNECT")
         .env_remove("PLOYZ_TOKEN")
         .env_remove("PLOYZ_CLOUD_URL")
+        .env_remove("PLOYZ_STORE")
         .envs(envs.iter().copied())
         .output()
         .unwrap();
@@ -352,6 +353,14 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
         &["org", "ls", "--json"],
         &["billing", "--json"],
         &["github", "ls", "--json"],
+        // Store and live commands fail the same way instead of naming a config file.
+        &["status", "--json"],
+        &["get", "--json"],
+        &["deploy", "--json"],
+        &["server", "ls", "--json"],
+        &["ps", "--json"],
+        &["logs", "--json"],
+        &["service", "restart", "web", "--json"],
     ] {
         let (code, json, _) = run_json(args);
         assert_eq!(code, Some(1), "{args:?}");
