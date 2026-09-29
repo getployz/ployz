@@ -24,7 +24,7 @@ pub use service::{
 };
 pub(crate) use service::{service, services};
 
-use crate::Actor;
+use crate::{Actor, Trusted};
 use crate::storage::Tx;
 
 /// One question about authored configuration, answered from one consistent state.
@@ -48,6 +48,10 @@ pub enum Query {
     Service(ServiceQuery),
     /// Where an Environment runs on the Servers.
     Namespace(NamespaceQuery),
+    /// An Environment's public domains.
+    Domains(crate::DomainsQuery),
+    /// One public domain, which Cloud observes afresh first.
+    Domain(crate::DomainQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -71,9 +75,18 @@ pub enum View {
     Service(ServiceView),
     /// An Environment's Namespace.
     Namespace(NamespaceView),
+    /// An Environment's public domains.
+    Domains(crate::DomainsView),
+    /// One public domain.
+    Domain(crate::DomainView),
 }
 
-pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, RpcError> {
+pub(crate) fn run(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &Query,
+    trusted: &Trusted,
+) -> Result<View, RpcError> {
     match query {
         Query::Environment(query) => environment(tx, who, query).map(View::Environment),
         Query::Diff(query) => diff(tx, who, query).map(View::Diff),
@@ -85,5 +98,7 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         Query::Services(query) => services(tx, who, query).map(View::Services),
         Query::Service(query) => service(tx, who, query).map(View::Service),
         Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
+        Query::Domains(query) => crate::domain::domains(tx, who, query, trusted).map(View::Domains),
+        Query::Domain(query) => crate::domain::domain(tx, who, query, trusted).map(View::Domain),
     }
 }

@@ -80,6 +80,11 @@ fn is_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+/// A public hostname: a lowercase DNS name of at least two labels.
+fn is_hostname(value: &str) -> bool {
+    value.contains('.') && ployz_core::IngressHost::parse(value).is_ok()
+}
+
 fn is_name(value: &str) -> bool {
     ployz_core::ServiceName::parse(value).is_ok()
 }
@@ -116,6 +121,11 @@ store_string!(
 store_string!(
     /// An Environment's name, unique in its Project: a lowercase DNS label.
     EnvironmentName, "an Environment name: lowercase letters, digits and -", is_name
+);
+
+store_string!(
+    /// A public hostname, like `app.example.com`: lowercase, at least two labels.
+    Hostname, "a hostname like app.example.com", is_hostname
 );
 
 /// Working State's revision: it advances by one with every write that changes it.

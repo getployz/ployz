@@ -2,12 +2,14 @@
 //! Working State first when Saved State doesn't hold it yet. Cancelling stops one.
 
 use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use serde_json::json;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{Command, replayable};
-use crate::Actor;
+use crate::domain;
+use crate::{Actor, Trusted};
 use crate::deployment::{self, DeploymentSummary};
 use crate::id::DeploymentId;
 use crate::review;
@@ -48,13 +50,34 @@ pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
     admit: &Admit,
+    trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let command = Command::Admit(admit.clone());
-    replayable(tx, who, &command, |tx| admitted(tx, who, admit))
+    replayable(tx, who, &command, |tx| admitted(tx, who, admit, trusted))
 }
 
-fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSummary, RpcError> {
+fn admitted(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    admit: &Admit,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
     let environment = scope::lock(tx, who, &admit.environment)?;
+    // Cloud reserves the Cluster Domain before admitting a generated domain.
+    let cluster_domain = trusted
+        .domains
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
+    if cluster_domain.is_none() && domain::has_generated(&environment.working) {
+        return Err(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "Generated domains deploy only through Ployz Cloud, which holds the \
+                      Cluster Domain"
+                .into(),
+            details: json!({}),
+        });
+    }
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
@@ -72,6 +95,7 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         &review.head.applied,
         &admit.services,
         namespace,
+        cluster_domain,
     )?;
     deployment::admit(tx, who, &admit.id, id, saved, &admit.services, &frozen)
 }
