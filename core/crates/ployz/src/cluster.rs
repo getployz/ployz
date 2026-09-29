@@ -841,6 +841,12 @@ impl Client {
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
+        let mut queued = HashMap::<MachineId, u32>::new();
+        for container in service.containers_for(action) {
+            *queued
+                .entry(container.as_observation().machine_id)
+                .or_default() += 1;
+        }
         for container in service.containers_for(action) {
             let observation = container.as_observation();
             let machine_id = observation.machine_id;
@@ -852,6 +858,7 @@ impl Client {
                 action,
                 signal.clone(),
                 grace_period_seconds,
+                queued.get(&machine_id).copied().unwrap_or(1),
             ));
             task_targets.insert(handle.id(), (machine_id, container_id));
         }
@@ -1256,6 +1263,7 @@ async fn change_on_machine(
     action: ContainerAction,
     signal: Option<String>,
     grace_period_seconds: Option<i32>,
+    queued: u32,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
         &client,
@@ -1264,6 +1272,7 @@ async fn change_on_machine(
         action,
         signal,
         grace_period_seconds,
+        queued,
     )
     .await
     {
@@ -1288,6 +1297,7 @@ async fn change_container_rpc(
     action: ContainerAction,
     signal: Option<String>,
     grace_period_seconds: Option<i32>,
+    queued: u32,
 ) -> Result<(), RpcError> {
     let target = MachineTarget::from(machine_id);
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
@@ -1301,7 +1311,7 @@ async fn change_container_rpc(
                         grace_period_seconds,
                     },
                     &target,
-                    stop_rpc_timeout(grace_period_seconds),
+                    stop_rpc_timeout(grace_period_seconds, queued),
                 )
                 .await
                 .map(|_| ()),

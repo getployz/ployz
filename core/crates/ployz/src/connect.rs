@@ -54,10 +54,14 @@ pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// what keeps a starting daemon from hanging the CLI.
 pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
+/// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
+/// Machine: a Machine stops its containers one at a time, each taking up to its grace.
+pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>, queued: u32) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
-        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
+        Some(seconds) => {
+            Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64) * queued.max(1))
+        }
         None => None,
     }
 }
