@@ -187,23 +187,27 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let named = string_values(leaf, "service-or-container");
     let options = log_options(leaf)?;
-    let deployment = leaf
+    let store = leaf
         .get_one::<String>("deployment")
         .is_some()
-        .then(|| super::deploy::deployment_id(leaf, "deployment"))
+        .then(|| super::store::store(root))
+        .transpose()?;
+    let deployment = store
+        .as_ref()
+        .map(|store| super::deploy::deployment_id(leaf, store, "deployment"))
         .transpose()?;
     if let Some(id) = deployment.as_ref().filter(|_| leaf.get_flag("build")) {
         return build_logs(root, id, &named);
     }
     // A Deployment names its Environment, whatever the scope says.
-    let namespace = match &deployment {
-        Some(id) => Some(
-            super::store::store(root)?
+    let namespace = match (&deployment, &store) {
+        (Some(id), Some(store)) => Some(
+            store
                 .deployment(id)
                 .map_err(super::store::failed(leaf, &["logs"]))?
                 .namespace,
         ),
-        None => scope(root, &["logs"])?,
+        _ => scope(root, &["logs"])?,
     };
     let args = parse_service_args(&named)?
         .into_iter()
