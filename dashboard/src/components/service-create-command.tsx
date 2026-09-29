@@ -243,7 +243,7 @@ function useServiceCreateActions({
     whileCreating(async () => {
       const stillHere = markHere();
       const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget();
-      const created = await createStoreService({
+      const created = createStoreService({
         store: { project: target.projectSlug, environment: target.environmentSlug },
         environmentId: target.environmentId,
         position: target.canvasPosition,
@@ -253,6 +253,8 @@ function useServiceCreateActions({
         await props.onCreated?.(created, stillHere());
         return;
       }
+      // A new Project's canvas has nothing cached to show the Service in before the Store has it.
+      await created.persisted;
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
         params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,

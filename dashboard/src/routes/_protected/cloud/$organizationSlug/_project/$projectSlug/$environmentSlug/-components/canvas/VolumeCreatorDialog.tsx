@@ -1,7 +1,4 @@
 import { useState } from "react";
-import { Loader2Icon } from "lucide-react";
-import { toast } from "sonner";
-import { StoreRefused } from "#/modules/config-store/store-write";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -30,43 +27,24 @@ export function VolumeCreatorDialog({
   onCreate: (input: {
     name: string;
     position: FlowPosition;
-  }) => Promise<void>;
+  }) => void;
 }) {
   const [name, setName] = useState("data");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const trimmedName = name.trim();
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+  // The Volume shows at once and saves in the background; a refused name comes back as a toast.
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!trimmedName || isSubmitting) {
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      await onCreate({
-        name: trimmedName,
-        position,
-      });
-      onOpenChange(false);
-      setName("data");
-    } catch (error) {
-      // The Store writer already said why it refused.
-      if (error instanceof StoreRefused) return;
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The volume couldn’t be created. Check the name and try again.",
-      );
-    } finally {
-      setIsSubmitting(false);
-    }
+    if (!trimmedName) return;
+    onCreate({ name: trimmedName, position });
+    onOpenChange(false);
+    setName("data");
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <form onSubmit={(event) => void handleSubmit(event)}>
+        <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create volume</DialogTitle>
           </DialogHeader>
@@ -87,14 +65,10 @@ export function VolumeCreatorDialog({
               type="button"
               variant="outline"
               onClick={() => onOpenChange(false)}
-              disabled={isSubmitting}
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!trimmedName || isSubmitting}>
-              {isSubmitting ? <Loader2Icon data-icon="inline-start" /> : null}
-              {isSubmitting ? "Creating…" : "Create volume"}
-            </Button>
+            <Button type="submit" disabled={!trimmedName}>Create volume</Button>
           </DialogFooter>
         </form>
       </DialogContent>

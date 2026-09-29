@@ -9,7 +9,7 @@ import { Input } from "#/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Separator } from "#/components/ui/separator";
-import { diffQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { diffQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError } from "#/modules/config-store/store-volumes";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
@@ -26,9 +26,10 @@ type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string
 export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
-  const volumes = requireView(useStoreView(organizationSlug, volumesQuery(store))).volumes;
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(store))).services;
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store)] as const);
+  const volumes = requireView(views[0]).volumes;
+  const services = requireView(views[1]).services;
+  const diff = requireView(views[2]);
   const volume = volumes.find((candidate) => candidate.id === params.resourceId);
   // Removed while open (a new Volume's removal, or from the CLI): back to the canvas.
   if (!volume) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
