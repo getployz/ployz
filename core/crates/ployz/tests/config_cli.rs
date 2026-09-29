@@ -816,9 +816,10 @@ fn mistakes_fail_with_their_codes() {
             &["set", "web.replicas=2", "--expect", "SECRET-CANARY"],
             2,
         );
-        let bad_name = error(
+        let bad_name = failed(
             store,
             &["service", "add", "SECRET-CANARY", "--image", "nginx:1"],
+            2,
         );
         for error in [bad_revision, bad_name] {
             assert_eq!(error.get("code"), Some(&json!("invalid_argument")));
