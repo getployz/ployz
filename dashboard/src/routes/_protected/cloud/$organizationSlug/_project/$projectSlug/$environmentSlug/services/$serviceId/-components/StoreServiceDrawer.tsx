@@ -1,24 +1,29 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { PackageIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
+import { Input } from "#/components/ui/input";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { DNS_LABEL_RULE, isDnsLabel, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
-import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
+import { ServiceCommandField } from "./ServiceCommandField";
+import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
+import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
@@ -69,9 +74,10 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
 export function StoreServiceDrawer({ params }: { params: { organizationSlug: string; projectSlug: string; environmentSlug: string; serviceId: string } }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(store))).services;
-  const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const views = useStoreViews(organizationSlug, [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store)] as const);
+  const services = requireView(views[0]).services;
+  const settings = requireView(views[1]);
+  const diff = requireView(views[2]);
   const writer = useStoreWriter(organizationSlug);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
@@ -98,10 +104,16 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} />
       </Suspense>
     ),
-    scale: <FieldGroup>{field("replicas")}</FieldGroup>,
-    build: service.source === "git"
-      ? <FieldGroup>{field("buildMethod")}{buildMethod === "dockerfile" ? field("dockerfilePath") : field("buildCommand")}</FieldGroup>
-      : null,
+    scale: <FieldGroup>{field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
+    build: service.source === "git" ? (
+      <FieldGroup>
+        {field("buildMethod")}
+        {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
+        <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
+          onSet={(builder) => writer.edit({ environment: store, changes: [builder === null
+            ? { op: "unset", path: `${service.name}.preferredBuilder` } : { op: "set", path: `${service.name}.preferredBuilder`, value: builder }] })} />
+      </FieldGroup>
+    ) : null,
     deploy: (
       <FieldGroup>
         {field("startCommand")}
@@ -170,6 +182,31 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   );
 }
 
+/**
+ * Optional Settings shown as a button until set: commands, and the root directory (whose `/` is the default). Pre-deploy
+ * and the root directory are ones most Services never need.
+ */
+const COMMANDS = new Map<ServiceSettingName, { placeholder: string; compact: boolean; addLabel?: string; unset?: string }>([
+  ["startCommand", { placeholder: "npm start", compact: false }],
+  ["preDeployCommand", { placeholder: "npm run migrate", compact: true }],
+  ["buildCommand", { placeholder: "pnpm run build", compact: false }],
+  ["rootDir", { placeholder: "/apps/api", compact: true, addLabel: "Add root directory", unset: "/" }],
+]);
+
+/** Suffixes after a number, as before the Store: "3 replicas". */
+const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
+
+/** What each restart policy does, shown under its choice. */
+const OPTION_HELP = new Map([
+  ["unless-stopped", "Restart unless you stop it."],
+  ["always", "Restart whenever it stops."],
+  ["on-failure", "Restart when it exits with an error, up to Max retries."],
+  ["no", "Never restart."],
+]);
+
+/** A Deployment Policy value as text; null when unset. */
+const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
+
 /** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
 function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
   const setting: SettingSchema = serviceSetting(name);
@@ -182,20 +219,48 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
   const current = settingText(row.value ?? row.default);
   const edit = (raw: string) => writer.edit({ environment: state.environment, changes: [settingChange(path, setting, raw)] });
 
+  if (setting.type === "boolean") {
+    const on = (row.value ?? row.default) === true;
+    return (
+      <SwitchField id={`setting-${name}`} label={setting.title} description={setting.description} checked={on}
+        onChange={(next) => writer.edit({ environment: state.environment, changes: [{ op: "set", path, value: next }] })} />
+    );
+  }
+  if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
+  const command = COMMANDS.get(name);
+  if (command) {
+    return (
+      <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={setting.description} placeholder={command.placeholder}
+        compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
+        isChanged={change !== undefined} baselineValue={change ? settingText(change.before) : undefined}
+        validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
+    );
+  }
+
   return (
     <Field>
       <FieldLabel>{setting.title}</FieldLabel>
       <FieldDescription>{setting.description}</FieldDescription>
       {setting.enum ? (
         <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) edit(next); }}>
-          <SelectTrigger aria-label={setting.title} className="w-full" data-changed={change ? true : undefined}
+          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "h-auto w-full py-1.5" : "w-full"} data-changed={change ? true : undefined}
             title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
-            <SelectValue>{OPTION_LABELS.get(current) ?? current}</SelectValue>
+            <SelectValue>
+              <span className="flex flex-col items-start">
+                <span>{OPTION_LABELS.get(current) ?? current}</span>
+                {OPTION_HELP.has(current) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(current)}</span> : null}
+              </span>
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
               {setting.enum.map((option) => (
-                <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>{OPTION_LABELS.get(option) ?? option}</SelectItem>
+                <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
+                  <span className="flex flex-col">
+                    <span>{OPTION_LABELS.get(option) ?? option}</span>
+                    {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
+                  </span>
+                </SelectItem>
               ))}
             </SelectGroup>
           </SelectContent>
@@ -208,6 +273,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
           min={setting.minimum}
           max={setting.maximum}
           step={setting.type === "integer" ? 1 : "any"}
+          suffix={SUFFIXES.get(name)}
           placeholder={settingText(setting.default) || undefined}
           value={settingText(row.value)}
           isChanged={change !== undefined}
@@ -220,17 +286,72 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
   );
 }
 
+/** A Git Service's Dockerfile, with the repository's Dockerfiles as suggestions. */
+function StoreDockerfile({ state }: { state: StoreService }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const repository = settingText(state.rows.get("repository")?.value);
+  const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
+  const path = `${state.service.name}.dockerfilePath`;
+  return (
+    <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
+      value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
+      onCommit={(raw) => writer.edit({ environment: state.environment, changes: [settingChange(path, serviceSetting("dockerfilePath"), raw)] })} />
+  );
+}
+
+/** A list Setting, like watch paths: each entry a removable badge, one added at a time. */
+function StoreListField({ state, name, setting, row }: { state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const [adding, setAdding] = useState("");
+  const list = Schema.is(Schema.Array(Schema.String))(row.value) ? row.value : [];
+  const change = state.changes.get(name);
+  const save = (next: readonly string[]) => writer.edit({ environment: state.environment,
+    changes: [next.length ? { op: "set", path: `${state.service.name}.${name}`, value: [...next] } : { op: "unset", path: `${state.service.name}.${name}` }] });
+  const add = () => {
+    const next = adding.trim();
+    if (next && !list.includes(next)) save([...list, next]);
+    setAdding("");
+  };
+  return (
+    <Field>
+      <FieldLabel>{setting.title}</FieldLabel>
+      <FieldDescription>{setting.description}</FieldDescription>
+      {list.length ? (
+        <div className="flex flex-wrap gap-2">
+          {list.map((entry) => (
+            <Badge key={entry} variant="secondary">
+              {entry}
+              <button type="button" aria-label={`Remove ${entry}`} className="-mr-0.5 ml-1 rounded-sm opacity-70 hover:opacity-100"
+                onClick={() => save(list.filter((other) => other !== entry))}>
+                <XIcon className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Input aria-label={`New ${setting.title.toLowerCase()}`} placeholder="/src/**" className="flex-1" value={adding}
+          data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}
+          onChange={(event) => setAdding(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(); } }} />
+        <Button type="button" variant="outline" onClick={add}><PlusIcon data-icon="inline-start" />Add</Button>
+      </div>
+    </Field>
+  );
+}
+
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
 function StoreSourceSection({ state }: { state: StoreService }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
-  const set = (name: "image" | "repository", value: string) =>
+  const set = (name: "image" | "repository" | "branch", value: string) =>
     writer.edit({ environment: state.environment, changes: [{ op: "set", path: `${state.service.name}.${name}`, value }] });
   const close = (open: boolean) => { if (!open) setPicking(null); };
   const kind = state.service.source === "git" ? "repository" : "image";
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
+  const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
   if (state.service.source === "empty") {
     return (
@@ -263,7 +384,17 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           </ItemActions>
         </Item>
       </Field>
-      {kind === "repository" ? <><StoreSettingField state={state} name="branch" /><StoreSettingField state={state} name="rootDir" /></> : <StoreRegistryCredentials state={state} image={value} />}
+      {kind === "repository" ? (
+        <>
+          <StoreBranchField repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+            change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
+          <StoreSettingField state={state} name="rootDir" />
+          {/* Its Deployment Policy: when a push to the branch deploys. */}
+          <StoreSettingField state={state} name="autoDeploy" />
+          <StoreSettingField state={state} name="waitForCi" />
+          <StoreSettingField state={state} name="watchPaths" />
+        </>
+      ) : <StoreRegistryCredentials state={state} image={value} />}
       <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
       <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
         onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />

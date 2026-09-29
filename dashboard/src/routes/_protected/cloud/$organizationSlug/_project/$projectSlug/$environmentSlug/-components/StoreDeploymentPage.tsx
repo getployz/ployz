@@ -8,6 +8,8 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
+import { RelativeTime } from "#/components/relative-time";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -16,7 +18,8 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
+  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
+  targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -53,6 +56,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
   const skipped = notExecuted(deployment.outcome);
   const preview = previewLines(deployment.preview);
+  const admitted = admission(deployment);
   const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
 
   return (
@@ -66,7 +70,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
         <header className="flex flex-col gap-1">
           <p className="text-xs text-muted-foreground">
-            Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : null}
+            Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : admitted.by ? ` · by ${admitted.by}` : null}
+            {admitted.at ? <> · admitted <RelativeTime date={admitted.at} /></> : null}
+            {admitted.started ? <> · started <RelativeTime date={admitted.started} /></> : null}
+            {admitted.ended ? <> · ended <RelativeTime date={admitted.ended} /></> : null}
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <h2 className="min-w-0 text-base font-medium break-words">Deploys {targetsLabel(deployment)}</h2>
@@ -178,6 +185,8 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
   const [cancelOpen, setCancelOpen] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const actions = deploymentActions(deployment.status);
+  // With no Server, nothing can run it: the way on is adding one.
+  const { noServers } = useRuntimeLens(params.organizationSlug);
 
   async function retry() {
     const id = crypto.randomUUID();
@@ -206,8 +215,11 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
           <GitBranchPlusIcon data-icon="inline-start" />Fix it on a branch
         </Button>
       ) : null}
-      {actions.retry ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
-      {actions.start ? (
+      {noServers && (actions.retry || actions.start) ? (
+        <Button size="sm" nativeButton={false} render={<Link to="/cloud/$organizationSlug/~/servers" params={params} />}>Add a server</Button>
+      ) : null}
+      {actions.retry && !noServers ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
+      {actions.start && !noServers ? (
         <Button size="sm" variant="outline" onClick={() => { writer.commit({ command: "start", deployment: deployment.id }); }}>Deploy now</Button>
       ) : null}
       {actions.cancel ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}

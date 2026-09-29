@@ -1,7 +1,6 @@
-import type { BranchOption, BranchPlanView, EnvironmentView, JsonValue, LiveNode, MoveChoice, MovePick, MoveRow } from "@ployz/sdk";
-import type { BranchPlan } from "@ployz/sdk/config";
-import catalog from "@ployz/sdk/catalog.json";
-import { asRecord, asString } from "#/lib/json";
+import type { BranchOption, JsonValue, LiveNode, MoveChoice, MovePick, MoveRow } from "@ployz/sdk";
+import { asRecord } from "#/lib/json";
+import { settingTitle } from "./catalog";
 
 /** One changed setting of one node as a sheet or news row words it: `before` is the receiver's, `after` what would land. */
 export type PresentedRow = { key: string; lineageId: string; node: string; label: string; before: string; after: string };
@@ -19,11 +18,6 @@ function moveText(value: JsonValue): string {
   return String(value);
 }
 
-function settingTitle(path: string) {
-  const properties: Record<string, { title: string } | undefined> = catalog.$defs.service.properties;
-  return path === "name" ? "Name" : properties[path]?.title ?? path;
-}
-
 /** A Move row in words: which setting of which node, the receiver's value (`before`) and the one that lands. */
 export function presentMoveRow(row: MoveRow): PresentedRow {
   const node = moveRowNode(row.row);
@@ -31,7 +25,7 @@ export function presentMoveRow(row: MoveRow): PresentedRow {
   const label = isNodeRow(row.row) ? "New"
     : path.startsWith("env.") ? path.slice("env.".length)
     : path.startsWith("mounts.") ? `Mount of ${path.slice("mounts.".length)}`
-    : settingTitle(path);
+    : path === "name" ? "Name" : settingTitle(path) ?? path;
   return {
     key: row.row, lineageId: node, node, label,
     before: isNodeRow(row.row) ? "" : moveText(row.into),
@@ -67,24 +61,7 @@ export function movePicks(entries: readonly SheetPick[]): MovePick[] {
 const choicePick = (row: string, choice: BranchOption, value: string): MovePick =>
   choice === "new" ? { row, choice: { new: value } } : { row, choice };
 
-/** The Store's plan in the shape the pick rows read, with each node's name standing in for its lineage. */
-export function planOf(view: BranchPlanView): BranchPlan {
-  return {
-    preset: view.preset,
-    nodes: view.nodes.map((node) => node.role === "own"
-      ? { lineageId: node.name, nodeType: node.kind, role: "own", because: node.because ?? "picked" }
-      : { lineageId: node.name, nodeType: node.kind, role: node.role }),
-  };
-}
-
-/**
- * A Branch's Live Nodes as the canvas draws them, each with the Services here that read it: their variables reference
- * it by name (`${{ db.URL }}`).
- */
-export function liveNodes(live: readonly LiveNode[], settings: EnvironmentView, services: ReadonlyArray<{ id: string; name: string }>) {
-  return live.map((node) => ({
-    ...node,
-    usedBy: services.filter((service) => settings.settings.some((row) => row.path.startsWith(`${service.name}.env.`)
-      && asString(row.value)?.includes(`\${{ ${node.name}.`))).map((service) => service.id),
-  }));
+/** A Branch's Live Nodes as the canvas draws them, each with the ids of the Services here the Store says read it. */
+export function liveNodes(live: readonly LiveNode[], services: ReadonlyArray<{ id: string; name: string }>) {
+  return live.map((node) => ({ ...node, usedBy: services.filter((service) => node.used_by.includes(service.name)).map((service) => service.id) }));
 }

@@ -1,6 +1,6 @@
 //! Authored document admission and compilation contracts.
 
-use ployz_core::config::config_request;
+use ployz_core::config::{compile_environment_intent, parse_environment_intent};
 use serde_json::json;
 
 fn intent() -> serde_json::Value {
@@ -14,7 +14,11 @@ fn intent() -> serde_json::Value {
 
 #[test]
 fn authored_service_variables_compile_with_volume_mounts() {
-    let compiled = config_request(json!({"operation":"compile_environment","environment_id":"00000000-0000-4000-8000-000000000001","value":intent()})).unwrap();
+    let compiled = serde_json::to_value(compile_environment_intent(
+        "00000000-0000-4000-8000-000000000001",
+        parse_environment_intent(intent()).unwrap(),
+    ))
+    .unwrap();
     assert_eq!(
         compiled
             .pointer("/nodeSnapshots")
@@ -47,5 +51,5 @@ fn authored_documents_reject_derived_service_fields() {
         .as_object_mut()
         .unwrap()
         .insert("env".to_owned(), json!({}));
-    assert!(config_request(json!({"operation":"parse_environment","value":value})).is_err());
+    assert!(parse_environment_intent(value).is_err());
 }

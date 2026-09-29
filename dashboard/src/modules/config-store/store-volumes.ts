@@ -22,7 +22,7 @@ export function mountPathError(path: string) {
 }
 
 /** The command that creates a Volume with the id the caller minted, mounted nowhere yet. */
-export function createVolumeCommand(id: string, environment: EnvironmentRef, name: string): ConfigCommand {
+export function createVolumeCommand(id: string, environment: EnvironmentRef, name: string): ConfigCommand & { command: "create_volume" } {
   // The Store checks the id is a UUID.
   return { command: "create_volume", id, environment, name, mounts: [] };
 }
