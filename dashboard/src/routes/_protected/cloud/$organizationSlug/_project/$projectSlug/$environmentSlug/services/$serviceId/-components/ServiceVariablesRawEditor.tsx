@@ -9,7 +9,6 @@ import {
 } from "#/components/ui/dialog";
 import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
 import type { VariableRecord } from "#/modules/environment-design/variables";
-import { useApplyRawVariablesAction } from "#/modules/environment-design/variable-mutation-actions";
 import {
   diffVariables,
   findSealedVariableNameCollisions,
@@ -18,6 +17,7 @@ import {
   getSealedVariableCollisionMessage,
   parseEnv,
   parseJson,
+  type RawEditorDiff,
   type RawEditorParseError,
   serializeEntriesToEnv,
   serializeEntriesToJson,
@@ -78,17 +78,14 @@ function parseForMode(
 export function ServiceVariablesRawEditor({
   open,
   onOpenChange,
-  organizationSlug,
-  environmentId,
-  serviceId,
+  onApply,
   variables,
   valueTargets = EMPTY_REFERENCE_TARGETS,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  organizationSlug: string;
-  environmentId: string;
-  serviceId: string;
+  /** Saves the editor's creates, updates and deletes: optimistic, rolled back and toasted on failure. */
+  onApply: (diff: RawEditorDiff) => void;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
 }) {
@@ -99,12 +96,6 @@ export function ServiceVariablesRawEditor({
     (variable) => variable.value.type === "plain",
   );
   const sealedCount = sealedVariables.length;
-
-  const applyRawVariables = useApplyRawVariablesAction({
-    organizationSlug,
-    environmentId,
-    serviceId,
-  });
 
   const [editor, dispatchEditor] = useReducer(
     rawEditorReducer,
@@ -218,8 +209,7 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    // Optimistic: the action rolls back and toasts if saving fails.
-    applyRawVariables(diff);
+    onApply(diff);
     onOpenChange(false);
   }
 

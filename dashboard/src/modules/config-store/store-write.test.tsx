@@ -50,7 +50,11 @@ function setup(initial: EnvironmentView) {
     const result = shown.result.current;
     return result.ok ? result.value.settings.find((row) => row.path === "web.replicas")?.value : undefined;
   };
-  return { scope, store, write, replicas };
+  const value = (path: string) => {
+    const result = shown.result.current;
+    return result.ok ? result.value.settings.find((row) => row.path === path)?.value : undefined;
+  };
+  return { scope, store, write, replicas, value };
 }
 
 const edited = (revision: number): StoreResult<ConfigWritten> =>
@@ -99,6 +103,23 @@ it("undoes an edit the Store refuses as a conflict and shows what changed elsewh
   await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "conflict", details: { revision: 3 } });
   await waitFor(() => expect(test.replicas()).toBe(7));
   expect(error).toHaveBeenCalledWith("Changed elsewhere, so this edit was undone. You're seeing the latest now.");
+});
+
+it("seals a variable at once, and a refused seal leaves it as it was", async () => {
+  const plain = view(2, 1);
+  plain.settings.push({ path: "web.env.TOKEN", value: "abc", default: null, apply: "staged" });
+  const test = setup(plain);
+  vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const refused = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => refused.promise);
+
+  let edit!: ReturnType<typeof editStoreEnvironment>;
+  const seal = [{ op: "set" as const, path: "web.env.TOKEN", value: { secret: "abc" } }];
+  act(() => { edit = editStoreEnvironment("acme", test.scope, { environment: ref, changes: seal }); });
+  await waitFor(() => expect(test.value("web.env.TOKEN")).toEqual({ secret: true }));
+  refused.resolve({ ok: false, refusal: { code: "invalid_argument", message: "Could not seal", details: null } });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "invalid_argument" });
+  await waitFor(() => expect(test.value("web.env.TOKEN")).toBe("abc"));
 });
 
 it("applies pending set, unset and patch changes over a view, and its one-Service values", () => {
