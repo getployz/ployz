@@ -2,7 +2,7 @@ import { MutationObserver } from "@tanstack/react-query";
 import type { Change, ConfigCommand, ConfigWritten, EnvironmentRef } from "@ployz/sdk";
 import { toast } from "sonner";
 import { observeFailure, type Persistable } from "#/collections/query-collection";
-import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
+import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import type { StoreRefusal } from "./store.contract";
@@ -25,6 +25,9 @@ export type StoreEdit = {
   changes: Change[];
 };
 
+/** Commands that read or write an Environment besides the one they name. */
+const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
+
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 
 /**
@@ -39,6 +42,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   const { queryClient } = scope;
   // The revision each Environment's own last save produced, which views may not show yet.
   const committed = new Map<string, number>();
+  // Edits not yet settled, in any Environment: a command naming several Environments waits for all of them.
+  const unsettled = new Set<Promise<unknown>>();
 
   async function send(command: ConfigCommand) {
     const result = await writeStoreServerFn({ data: { organizationSlug, command } });
@@ -88,27 +93,28 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         if (written.written === "edited") committed.set(key, written.environment.revision);
         return written;
       }, () => refetchEnvironmentViews(queryClient, organizationSlug, key), true);
+      const settled = promise.then(() => undefined, () => undefined).finally(() => unsettled.delete(settled));
+      unsettled.add(settled);
       return observeFailure({ isPersisted: { promise } });
     },
     /**
      * A command whose outcome matters before the page moves on (publish, discard, deploy). One naming an Environment
-     * runs after that Environment's pending edits, and it persists once every Store view of the Organization has
-     * refetched. A refusal toasts here, unless its code is one the caller `handles`, and rejects with `StoreRefused`.
+     * runs after that Environment's pending edits; one that reads or writes another Environment too (a Move, a new
+     * Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once every Store
+     * view of the Organization has refetched. A refusal toasts here, unless its code is one the caller `handles`, and
+     * rejects with `StoreRefused`.
      * UI that awaits it is a listed command in the boundary test; creates need not wait, because the caller mints the new id.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
-      const promise = queued(key, ["store-command", organizationSlug, key], [], () => send(command),
+      // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
+      const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return send(command); } : () => send(command);
+      const promise = queued(key, ["store-command", organizationSlug, key], [], work,
         () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false, handles);
       return observeFailure({ isPersisted: { promise } });
     },
   };
 });
-
-/** Edit an Environment's Settings: shown at once, saved in the background, undone and toasted on failure. */
-export function editStoreEnvironment(organizationSlug: string, scope: CollectionScope, edit: StoreEdit) {
-  return getStoreWriter(organizationSlug, scope).edit(edit);
-}
 
 export function useStoreWriter(organizationSlug: string) {
   return getStoreWriter(organizationSlug, useCollectionScope());

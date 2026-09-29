@@ -16,7 +16,8 @@ type Acceptance = Pick<VolumeLoss, "accept" | "version">;
  * refusal (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
-  onAdmitted: (deploymentId: string) => void) {
+  /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
+  version: string, onAdmitted: (deploymentId: string) => void) {
   const writer = useStoreWriter(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
   // What the user types to confirm: where the data goes from.
@@ -34,7 +35,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   /** Admits the Deploy; resolves with what it would delete when the Store asks first, else null. */
-  async function admit({ accept, version }: { accept: readonly string[]; version: string | null }) {
+  async function admit({ accept, version }: { accept: readonly string[]; version: string }) {
     const id = crypto.randomUUID();
     try {
       await writer.commit({
@@ -53,7 +54,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything); resolves whether it did. */
   async function discard(path: string | null) {
     try {
-      await writer.commit({ command: "discard", environment, path, version: null }).isPersisted.promise;
+      await writer.commit({ command: "discard", environment, path, version }).isPersisted.promise;
       return true;
     } catch {
       // The writer toasted it and refetched the review.
@@ -62,8 +63,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   return {
-    deploy: () => void admit({ accept: [], version: null }).then(setLoss),
-    publish: () => { writer.commit({ command: "publish", environment, version: null }); },
+    deploy: () => void admit({ accept: [], version }).then(setLoss),
+    publish: () => { writer.commit({ command: "publish", environment, version }); },
     discard,
     dialog: (
       <DeletionDialog

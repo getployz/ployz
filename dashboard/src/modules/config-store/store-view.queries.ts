@@ -1,10 +1,9 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, JsonValue, MoveQuery,
+  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
 } from "@ployz/sdk";
-import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
@@ -129,54 +128,24 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
 /** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
 export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
 
-/** A patch's value: Settings by name. The Store refuses any other shape. */
-const decodePatch = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.MutableJson));
-
-const isObject = (value: JsonValue): value is { [key: string]: JsonValue } =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** A value as reads show it: a secret (a variable's, a registry credential) is `{"secret": true}`, never its plaintext. */
-function shown(value: JsonValue): JsonValue {
-  return isObject(value) && "secret" in value ? { secret: true } : value;
-}
-
-/** A variable's path, `SERVICE.env.KEY`: a set may add it, and `{"value", "exported"}` writes both of its rows. */
-const VARIABLE_PATH = /^[^.]+\.env\.[^.]+$/u;
-
-/** Applies edits not yet committed over an Environment view, in order: what the user sees while saves run. */
+/**
+ * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
+ * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
+ * its row), so a pending edit shows as its value, or the row's default once unset. A secret shows as reads show it,
+ * `{"secret": true}`. What the Store makes of an edit arrives with the committed view.
+ */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
   const settings = view.settings.map((row) => ({ ...row }));
-  const values = view.values ? { ...view.values } : view.values;
-  const assign = (path: string, value: (row: EnvironmentView["settings"][number]) => JsonValue) => {
-    const row = settings.find((candidate) => candidate.path === path);
-    if (!row) return;
-    row.value = shown(value(row));
-    // `values` exists only on a one-Service view, so the row found is that Service's.
-    const setting = path.split(".")[1];
-    if (values && setting && setting !== "env") {
-      if (row.value === null) delete values[setting];
-      else values[setting] = row.value;
-    }
-  };
-  const setVariable = (path: string, value: JsonValue) => {
-    const write = isObject(value) && !("secret" in value) ? value : { value };
-    for (const [at, next, fallback] of [[path, write["value"], null], [`${path}.exported`, write["exported"], false]] as const) {
-      if (next === undefined) continue;
-      if (!settings.some((row) => row.path === at)) settings.push({ path: at, value: fallback, default: fallback, apply: "staged" });
-      assign(at, () => next);
-    }
-  };
   for (const change of changes) {
-    if (change.op === "set" && VARIABLE_PATH.test(change.path)) setVariable(change.path, change.value);
-    else if (change.op === "set") assign(change.path, () => change.value);
-    else if (change.op === "unset") assign(change.path, (row) => row.default);
-    else {
-      const patch = decodePatch(change.value);
-      for (const [setting, value] of Option.isSome(patch) ? Object.entries(patch.value) : []) assign(`${change.path}.${setting}`, () => value);
-    }
+    if (change.op === "patch") continue;
+    let row = settings.find((candidate) => candidate.path === change.path);
+    if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
+    if (!row) continue;
+    const value = change.op === "set" ? change.value : row.default;
+    row.value = typeof value === "object" && value !== null && !Array.isArray(value) && "secret" in value ? { secret: true } : value;
   }
-  return { ...view, settings, values };
+  return { ...view, settings };
 }
 
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */
