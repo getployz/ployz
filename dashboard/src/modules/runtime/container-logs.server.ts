@@ -10,7 +10,7 @@ import { NotFound, Validation } from "#/server/public-error";
 import { environment } from "#/modules/project/tables";
 import { environmentDeployment } from "#/modules/deployments/tables";
 import { organizationSlugSchema } from "#/modules/organization/tables";
-import { cloudStore } from "#/modules/config-store/config-store.server";
+import { readStore } from "#/modules/config-store/config-store.server";
 
 export const logSearchSchema = Schema.Struct({
   organizationSlug: organizationSlugSchema,
@@ -48,8 +48,7 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
 const storeDeploymentFilter = Effect.fn("Runtime.storeDeploymentFilter")(function* (organizationId: string, search: LogSearch, missing: NotFound) {
   if (!search.deploymentId) return yield* missing;
   const deploymentId = search.deploymentId;
-  const store = yield* cloudStore.pipe(Effect.mapError(() => missing));
-  const view = yield* Effect.tryPromise({ try: () => store.read(organizationId, { query: "deployment", id: deploymentId }), catch: () => missing });
+  const view = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(Effect.mapError(() => missing));
   if (view.view !== "deployment") return yield* missing;
   return { namespace: view.namespace, serviceId: search.serviceId, deploymentId } satisfies LogFilter;
 });

@@ -81,6 +81,13 @@ export const cloudStore = Effect.gen(function* () {
   });
 });
 
+/** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
+export const readStore = Effect.fn("ConfigStore.read")(function* (organizationId: string, query: ConfigQuery) {
+  const store = yield* cloudStore;
+  // A refusal (`not_found`) is the RpcError itself.
+  return yield* Effect.tryPromise({ try: () => store.read(organizationId, query), catch: (cause) => cause });
+});
+
 /**
  * Stop a Deployment's builds still on GitHub: end their Build Grants, fail them, cancel their runs. Idempotent. Its
  * cancellation, and a worker that gave up on it, call it.
