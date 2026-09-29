@@ -378,7 +378,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment;
 
 export type ConfigDomainEvidence = {
 /**
@@ -409,7 +409,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "environments" } & EnvironmentsQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "move" } & MoveQuery | { "query": "environments" } & EnvironmentsQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -431,9 +431,9 @@ volumes?: VolumeObservation,
  */
 uploader?: string | null, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "environments" } & EnvironmentsView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -1502,6 +1502,120 @@ service: ServiceName,
  */
 path: string, };
 
+export type Move = {
+/**
+ * Where the changes come from; omitted, the Parent of `into` (Update).
+ */
+from?: EnvironmentRef | null,
+/**
+ * Where they land; omitted, the Parent of `from` (Save).
+ */
+into?: EnvironmentRef | null,
+/**
+ * The changes to move; omitted, every change, each variable its default way.
+ */
+picks?: Array<MovePick> | null,
+/**
+ * Refuse with `conflict` unless the Move view is still at this version.
+ */
+version?: string | null, };
+
+export type MoveChoice = {
+/**
+ * How it lands when not picked otherwise. `new` means a secret needs a fresh
+ * value: pick `leave_out` and set one, or `from` to move the Branch's own.
+ */
+default: BranchOption,
+/**
+ * Each way offered.
+ */
+options: Array<BranchOption>,
+/**
+ * Whether it is a secret.
+ */
+secret: boolean, };
+
+export type MovePick = {
+/**
+ * A change (`web.source.image`), or a prefix of changes: `web` is every change
+ * of web, `web.variables` every variable of it.
+ */
+row: string,
+/**
+ * How the variables picked land: `from` (the moving value, sealed secrets
+ * included), `parent` (the Parent's deployed value) or `leave_out`; omitted,
+ * each its default.
+ */
+choice?: BranchOption | null, };
+
+export type MoveQuery = {
+/**
+ * As [`Move::from`].
+ */
+from?: EnvironmentRef | null,
+/**
+ * As [`Move::into`].
+ */
+into?: EnvironmentRef | null, };
+
+export type MoveRow = {
+/**
+ * `NODE`, or `NODE.path` for one of its settings or variables.
+ */
+row: string,
+/**
+ * The receiver changed it too since the two last shared: moving it overwrites that.
+ */
+conflict: boolean,
+/**
+ * How a variable can land.
+ */
+choice?: MoveChoice | null,
+/**
+ * The value that moves; secrets read `{"secret": true}`.
+ */
+from: JsonValue,
+/**
+ * The receiver's value now.
+ */
+into: JsonValue, };
+
+export type MoveView = {
+/**
+ * Where the changes come from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they land.
+ */
+into: EnvironmentSummary,
+/**
+ * Pass to [`Move::version`] to move exactly these changes.
+ */
+version: string,
+/**
+ * Each change that moves.
+ */
+rows: Array<MoveRow>, };
+
+export type Moved = {
+/**
+ * Where the changes came from.
+ */
+from: EnvironmentSummary,
+/**
+ * Where they landed.
+ */
+into: EnvironmentSummary,
+/**
+ * Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
+ */
+staged: Array<string>,
+/**
+ * The Branch now.
+ */
+branch: BranchView, };
+
 export type Namespace = string;
 
 export type NamespaceQuery = { environment: EnvironmentRef, };
@@ -2308,16 +2422,6 @@ export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: st
 export type TransportProtocol = "tcp" | "udp";
 
 export type Ulimit = { soft: number, hard: number, };
-
-export type UpdateBranch = {
-/**
- * The Branch.
- */
-environment: EnvironmentRef,
-/**
- * Refuse with `conflict` unless Working State is still at this revision.
- */
-expect: Revision | null, };
 
 export type UpdateConfig = {
 /**

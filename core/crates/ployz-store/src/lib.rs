@@ -31,8 +31,8 @@ use ployz_core::RpcError;
 
 pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
 pub use branch::{
-    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, SetupCommand,
-    UpdateBranch,
+    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, Move,
+    MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved, SetupCommand,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -560,20 +560,32 @@ impl ConfigStore {
             .write(|tx| branch::create_branch(tx, who, create))
     }
 
-    /// [`Command::UpdateBranch`].
+    /// [`Command::Move`].
     ///
     /// # Errors
-    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
-    /// Working State, or when its Parent deployed nothing new.
-    pub fn update_branch(&self, who: &Actor, update: &UpdateBranch) -> Result<Branched, RpcError> {
+    /// As [`write`](Self::write); `invalid_argument` unless the sides are a Branch
+    /// and its Parent, or for a secret that wants a fresh value; `conflict` for a
+    /// stale version, nothing to move, a Branch being removed, or an Update while
+    /// the Branch doesn't run its Working State.
+    pub fn move_changes(&self, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
         self.storage
-            .write(|tx| branch::update_branch(tx, who, update))
+            .write(|tx| branch::move_changes(tx, who, request))
+    }
+
+    /// [`Query::Move`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read); `invalid_argument` unless the sides are a Branch
+    /// and its Parent.
+    pub fn move_view(&self, who: &Actor, query: &MoveQuery) -> Result<MoveView, RpcError> {
+        self.storage.read(|tx| branch::move_view(tx, who, query))
     }
 
     /// [`Command::CopyNode`].
     ///
     /// # Errors
-    /// As [`update_branch`](Self::update_branch).
+    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
+    /// Working State.
     pub fn copy_node(&self, who: &Actor, copy: &CopyNode) -> Result<Branched, RpcError> {
         self.storage.write(|tx| branch::copy_node(tx, who, copy))
     }

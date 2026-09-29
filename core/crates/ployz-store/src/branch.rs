@@ -8,16 +8,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BranchChanges, BranchChangesInput, BranchHostnames, BranchNodeRole, BranchPick,
-    BranchPickChoice, BranchPicks, BranchRole, ConfigError, LiveLineageUse, LiveValuesInput,
-    LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent, SavedVariableProducer,
-    ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner, branch_changes,
-    canonicalize_environment_intent, compile_environment_intent, live_values,
+    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNodeRole, BranchOption,
+    BranchPick, BranchPickChoice, BranchPicks, BranchRole, BranchRow, ConfigError, LiveLineageUse,
+    LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableProducer, ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner,
+    branch_changes, canonicalize_environment_intent, compile_environment_intent, live_values,
     parse_environment_intent, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::command::{Command, insert_environment, replayable};
@@ -25,6 +25,7 @@ use crate::deployment::{self, DeploymentStatus, NodeStatus};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, EnvironmentName, Revision};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::ServiceSetting;
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
 
@@ -75,17 +76,114 @@ pub struct SetupCommand {
     pub command: String,
 }
 
-/// Stage the Parent's changes deployed since the Branch's base in its Working
-/// State. Refused unless the Branch runs its Working State.
+/// Move changes between a Branch and its Parent, staging them in the other's
+/// Working State; nothing is published or deployed. Save moves the Branch's
+/// Working State into its Parent's and deletes nothing there. Update moves what
+/// the Parent deployed since the two last shared into the Branch, and is refused
+/// unless the Branch runs its Working State.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Move {
+    /// Where the changes come from; omitted, the Parent of `into` (Update).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub from: Option<EnvironmentRef>,
+    /// Where they land; omitted, the Parent of `from` (Save).
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub into: Option<EnvironmentRef>,
+    /// The changes to move; omitted, every change, each variable its default way.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub picks: Option<Vec<MovePick>>,
+    /// Refuse with `conflict` unless the Move view is still at this version.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub version: Option<String>,
+}
+
+/// Changes to move, by the name the Move view gives them.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct UpdateBranch {
-    /// The Branch.
+pub struct MovePick {
+    /// A change (`web.source.image`), or a prefix of changes: `web` is every change
+    /// of web, `web.variables` every variable of it.
+    pub row: String,
+    /// How the variables picked land: `from` (the moving value, sealed secrets
+    /// included), `parent` (the Parent's deployed value) or `leave_out`; omitted,
+    /// each its default.
     #[serde(default)]
-    pub environment: EnvironmentRef,
-    /// Refuse with `conflict` unless Working State is still at this revision.
+    #[ts(optional = nullable)]
+    pub choice: Option<BranchOption>,
+}
+
+/// Read what a [`Move`] between a Branch and its Parent would stage.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct MoveQuery {
+    /// As [`Move::from`].
     #[serde(default)]
-    pub expect: Option<Revision>,
+    #[ts(optional = nullable)]
+    pub from: Option<EnvironmentRef>,
+    /// As [`Move::into`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub into: Option<EnvironmentRef>,
+}
+
+/// The changes a Move would stage, and the version that guards it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MoveView {
+    /// Where the changes come from.
+    pub from: EnvironmentSummary,
+    /// Where they land.
+    pub into: EnvironmentSummary,
+    /// Pass to [`Move::version`] to move exactly these changes.
+    pub version: String,
+    /// Each change that moves.
+    pub rows: Vec<MoveRow>,
+}
+
+/// One change a Move carries.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MoveRow {
+    /// `NODE`, or `NODE.path` for one of its settings or variables.
+    pub row: String,
+    /// The receiver changed it too since the two last shared: moving it overwrites that.
+    pub conflict: bool,
+    /// How a variable can land.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub choice: Option<MoveChoice>,
+    /// The value that moves; secrets read `{"secret": true}`.
+    pub from: Value,
+    /// The receiver's value now.
+    pub into: Value,
+}
+
+/// The ways a moving variable can land.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct MoveChoice {
+    /// How it lands when not picked otherwise. `new` means a secret needs a fresh
+    /// value: pick `leave_out` and set one, or `from` to move the Branch's own.
+    pub default: BranchOption,
+    /// Each way offered.
+    pub options: Vec<BranchOption>,
+    /// Whether it is a secret.
+    pub secret: bool,
+}
+
+/// What a Move staged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Moved {
+    /// Where the changes came from.
+    pub from: EnvironmentSummary,
+    /// Where they landed.
+    pub into: EnvironmentSummary,
+    /// Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
+    pub staged: Vec<String>,
+    /// The Branch now.
+    pub branch: BranchView,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume
@@ -330,10 +428,22 @@ fn insert_branch(
             choice: None,
         })
         .collect();
-    let changes = compare(None, &from, &into, &live, &hostnames, Some(node_picks))?;
+    let creating = |from, picks| {
+        compare(Comparing {
+            base: None,
+            from,
+            into: &into,
+            parent: None,
+            provided: &live,
+            hostnames: &hostnames,
+            from_kept: false,
+            picks: Some(picks),
+        })
+    };
+    let changes = creating(&from, node_picks)?;
     // A fix's base is what the Parent runs, so the failed change shows as staged.
     let base = match create.fix {
-        Some(_) => compare(None, &applied, &into, &live, &hostnames, Some(Vec::new()))?.base,
+        Some(_) => creating(&applied, Vec::new())?.base,
         None => changes.base,
     }
     .ok_or_else(|| error::internal("Core returned no base for a new Branch"))?;
@@ -376,38 +486,331 @@ fn insert_branch(
     })
 }
 
-pub(crate) fn update_branch(
+pub(crate) fn move_changes(
     tx: &mut dyn Tx,
     who: &Actor,
-    update: &UpdateBranch,
-) -> Result<Branched, RpcError> {
-    let mut branch = scope::lock(tx, who, &update.environment)?;
-    branch.expect(update.expect)?;
-    let row = branch_row(tx, &branch)?;
-    settled(tx, &branch)?;
-    let parent = chain(tx, &row.parent)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| error::corrupt("Branch"))?;
-    let nothing = format!("Nothing new in {}", parent.environment.summary.name);
-    if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
-        return Err(error::conflict(nothing, json!({})));
+    request: &Move,
+) -> Result<Moved, RpcError> {
+    let mut sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
+    if let Some(removal) = crate::teardown::removing(tx, &sides.branch().summary.id)? {
+        return Err(crate::teardown::being_removed(sides.branch(), &removal));
     }
-    let provided = used_live(&branch.working).into_keys().collect();
-    let from = parent.applied.clone();
-    stage_from(
-        tx,
-        who,
-        &mut branch,
-        &parent.environment,
-        Move {
-            from,
-            base: row.base,
-            provided,
-            take: &|_| true,
-            nothing,
+    if sides.update {
+        settled(tx, &sides.into)?;
+    }
+    let moving = moving(tx, &sides)?;
+    let changes = moving.compare(&sides.into.working, None)?;
+    let version = version(&sides.into, &changes.review);
+    if request
+        .version
+        .as_ref()
+        .is_some_and(|asked| *asked != version)
+    {
+        return Err(error::conflict(
+            "Changed since you reviewed: review the move again",
+            json!({ "version": version }),
+        ));
+    }
+    let picks = picks(&moving, &sides, &changes.rows, request.picks.as_deref())?;
+    let staged = moving.apply(tx, who, &mut sides.into, picks)?;
+    Ok(Moved {
+        branch: view(tx, sides.branch())?,
+        from: sides.from.summary,
+        into: sides.into.summary,
+        staged,
+    })
+}
+
+pub(crate) fn move_view(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &MoveQuery,
+) -> Result<MoveView, RpcError> {
+    let sides = sides(tx, who, query.from.as_ref(), query.into.as_ref(), false)?;
+    let moving = moving(tx, &sides)?;
+    let changes = moving.compare(&sides.into.working, None)?;
+    let rows = changes
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let BranchRole::Move { conflict, choice } = &row.role else {
+                return None;
+            };
+            let key = row.key.to_string();
+            let (lineage, path) = split(&key);
+            let variable = |intent: &SavedEnvironmentIntent, names| {
+                let key = path.strip_prefix("variables.")?;
+                let service = intent.services.iter().find(|s| s.lineage_id == lineage)?;
+                let found = service.variables.iter().find(|v| v.key == key)?;
+                Some(crate::variables::shown(found, names))
+            };
+            let names = sides.from.names();
+            let from = variable(&moving.from, &names).unwrap_or_else(|| shown(path, &row.from));
+            let names = sides.into.names();
+            let into =
+                variable(&sides.into.working, &names).unwrap_or_else(|| shown(path, &row.into));
+            Some(MoveRow {
+                row: moving.name(&sides.into.working, &key),
+                conflict: *conflict,
+                choice: choice.as_ref().map(|choice| MoveChoice {
+                    default: moving.default(choice),
+                    options: choice.options.clone(),
+                    secret: choice.secret,
+                }),
+                from,
+                into,
+            })
+        })
+        .collect();
+    Ok(MoveView {
+        version: version(&sides.into, &changes.review),
+        from: sides.from.summary,
+        into: sides.into.summary,
+        rows,
+    })
+}
+
+/// A Branch and its Parent, as one Move addresses them.
+struct Sides {
+    from: Environment,
+    into: Environment,
+    /// The Parent's changes move into the Branch (Update), rather than the
+    /// Branch's into the Parent (Save).
+    update: bool,
+    row: Row,
+}
+
+impl Sides {
+    fn branch(&self) -> &Environment {
+        if self.update { &self.into } else { &self.from }
+    }
+}
+
+/// Resolve a Move's sides; `lock` locks both, in ID order.
+fn sides(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: Option<&EnvironmentRef>,
+    into: Option<&EnvironmentRef>,
+    lock: bool,
+) -> Result<Sides, RpcError> {
+    let mut id = |at: Option<&EnvironmentRef>| -> Result<Option<Environment>, RpcError> {
+        at.map(|at| scope::environment(tx, who, at)).transpose()
+    };
+    let (from, into) = (id(from)?, id(into)?);
+    let (branch, parent_named, update) = match (from, into) {
+        (Some(from), None) => (from, None, false),
+        (None, Some(into)) => (into, None, true),
+        (Some(from), Some(into)) => match row(tx, &into.summary.id)? {
+            Some(row) if row.parent == from.summary.id => (into, Some(from), true),
+            _ => (from, Some(into), false),
         },
+        (None, None) => {
+            return Err(error::invalid(
+                "Name the Branch changes move from or into",
+                json!({}),
+            ));
+        }
+    };
+    let parent = branch_row(tx, &branch)?.parent;
+    if let Some(named) = parent_named
+        && named.summary.id != parent
+    {
+        return Err(error::invalid(
+            format!(
+                "Changes move only between a Branch and its Parent: {} is not the Parent of {}",
+                named.summary.name, branch.summary.name
+            ),
+            json!({}),
+        ));
+    }
+    let mut ids = [branch.summary.id.clone(), parent];
+    ids.sort();
+    let mut loaded = Vec::new();
+    for id in &ids {
+        loaded.push(match lock {
+            true => scope::lock_id(tx, who, id)?,
+            false => scope::load_by_id(tx, id)?,
+        });
+    }
+    let first = loaded.remove(0);
+    let second = loaded.remove(0);
+    let (branch, parent) = match first.summary.id == branch.summary.id {
+        true => (first, second),
+        false => (second, first),
+    };
+    // Read again under the locks: the base may have moved meanwhile.
+    let row = branch_row(tx, &branch)?;
+    Ok(match update {
+        true => Sides {
+            from: parent,
+            into: branch,
+            update,
+            row,
+        },
+        false => Sides {
+            from: branch,
+            into: parent,
+            update,
+            row,
+        },
+    })
+}
+
+/// A Move's comparison: Update from the Parent's Applied State, Save from the
+/// Branch's Working State with the Parent's deployed values on offer.
+fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
+    let parent = if sides.update {
+        &sides.from
+    } else {
+        &sides.into
+    };
+    let applied = deployment::head(tx, parent)?.applied;
+    let branch = sides.branch().summary.id.clone();
+    let hostnames = BranchHostnames {
+        from: suffix(tx, &sides.from)?,
+        into: suffix(tx, &sides.into)?,
+    };
+    let deployed = !(applied.services.is_empty() && applied.volumes.is_empty());
+    Ok(match sides.update {
+        true => Moving {
+            source: sides.from.summary.id.clone(),
+            branch,
+            nothing: format!("Nothing new in {}", sides.from.summary.name),
+            from: applied,
+            base: sides.row.base.clone(),
+            parent: None,
+            provided: used_live(&sides.into.working).into_keys().collect(),
+            from_kept: false,
+            hostnames,
+            update: true,
+        },
+        false => Moving {
+            source: sides.from.summary.id.clone(),
+            branch,
+            nothing: format!("Nothing to save into {}", sides.into.summary.name),
+            from: sides.from.working.clone(),
+            base: sides.row.base.clone(),
+            parent: deployed.then_some(applied),
+            provided: used_live(&sides.into.working).into_keys().collect(),
+            from_kept: sides.row.kept,
+            hostnames,
+            update: false,
+        },
+    })
+}
+
+/// A Move's guard: the receiver's revision and core's review of the changes.
+fn version(into: &Environment, review: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, review.as_bytes());
+    format!(
+        "{}:{}",
+        into.summary.revision,
+        hex::encode(digest.as_ref().get(..8).unwrap_or_default())
     )
+}
+
+/// Core's picks for `asked`: every change named or under a name, each variable
+/// the way asked or its default. A secret wanting a fresh value is refused: the
+/// Store never makes one up, and a Branch's own secret moves only when asked.
+fn picks(
+    moving: &Moving,
+    sides: &Sides,
+    rows: &[BranchRow],
+    asked: Option<&[MovePick]>,
+) -> Result<Vec<BranchPick>, RpcError> {
+    let named: Vec<(String, &BranchRow, Option<&BranchChoice>)> = rows
+        .iter()
+        .filter_map(|row| match &row.role {
+            BranchRole::Move { choice, .. } => Some((
+                moving.name(&sides.into.working, &row.key.to_string()),
+                row,
+                choice.as_ref(),
+            )),
+            BranchRole::Differ { .. } => None,
+        })
+        .collect();
+    let mut chosen: BTreeMap<String, Option<BranchOption>> = BTreeMap::new();
+    match asked {
+        None => {
+            for (_, row, _) in &named {
+                chosen.insert(row.key.to_string(), None);
+            }
+        }
+        Some(asked) => {
+            for pick in asked {
+                let under = |name: &str| {
+                    name == pick.row
+                        || name
+                            .strip_prefix(pick.row.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                };
+                let found: Vec<_> = named.iter().filter(|(name, ..)| under(name)).collect();
+                if found.is_empty() {
+                    let names = named.iter().map(|(name, ..)| name.as_str());
+                    return Err(error::not_found(
+                        format!("No change named {} moves", pick.row),
+                        json!({
+                            "did_you_mean": error::did_you_mean(&pick.row, names.clone()),
+                            "valid_children": names.collect::<Vec<_>>(),
+                        }),
+                    ));
+                }
+                if pick.choice.is_some() && found.iter().all(|(.., choice)| choice.is_none()) {
+                    return Err(error::invalid(
+                        format!("{}: only a variable takes a choice", pick.row),
+                        json!({ "row": pick.row }),
+                    ));
+                }
+                for (_, row, _) in found {
+                    chosen.insert(row.key.to_string(), pick.choice);
+                }
+            }
+        }
+    }
+    let mut fresh = Vec::new();
+    let mut picks = Vec::new();
+    for (name, row, offered) in &named {
+        let key = row.key.to_string();
+        let Some(asked) = chosen.get(&key) else {
+            continue;
+        };
+        let choice = match offered {
+            None => None,
+            Some(offered) => {
+                let option = asked.unwrap_or_else(|| moving.default(offered));
+                if !offered.options.contains(&option) {
+                    return Err(error::invalid(
+                        format!("{name}: a variable lands as one of {:?}", offered.options),
+                        json!({ "row": name }),
+                    ));
+                }
+                Some(match option {
+                    BranchOption::From => BranchPickChoice::From,
+                    BranchOption::Parent => BranchPickChoice::Parent,
+                    BranchOption::LeaveOut => BranchPickChoice::LeaveOut,
+                    BranchOption::New => {
+                        fresh.push(name.clone());
+                        continue;
+                    }
+                })
+            }
+        };
+        picks.push(BranchPick { key, choice });
+    }
+    if !fresh.is_empty() {
+        return Err(error::invalid(
+            format!(
+                "{}: a secret set in the Branch moves only when picked `from`; or pick `leave_out` and set a new one after",
+                fresh.join(", ")
+            ),
+            json!({ "rows": fresh }),
+        ));
+    }
+    if picks.is_empty() {
+        return Err(error::conflict(moving.nothing.clone(), json!({})));
+    }
+    Ok(picks)
 }
 
 pub(crate) fn copy_node(
@@ -480,20 +883,46 @@ pub(crate) fn copy_node(
         .into_keys()
         .filter(|lineage| !copied.contains(lineage))
         .collect();
-    let nothing = format!("Nothing to copy from {}", owner.environment.summary.name);
-    stage_from(
-        tx,
-        who,
-        &mut branch,
-        &owner.environment,
-        Move {
-            from: owner.applied,
-            base,
-            provided,
-            take: &|lineage| copied.contains(lineage),
-            nothing,
+    let moving = Moving {
+        source: owner.environment.summary.id.clone(),
+        branch: branch.summary.id.clone(),
+        nothing: format!("Nothing to copy from {}", owner.environment.summary.name),
+        from: owner.applied,
+        base,
+        parent: None,
+        provided,
+        from_kept: false,
+        hostnames: BranchHostnames {
+            from: suffix(tx, &owner.environment)?,
+            into: suffix(tx, &branch)?,
         },
-    )
+        update: true,
+    };
+    // Every change of the copy, variables with the owner's values.
+    let picks: Vec<BranchPick> = moving
+        .compare(&branch.working, None)?
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let BranchRole::Move { choice, .. } = &row.role else {
+                return None;
+            };
+            let key = row.key.to_string();
+            copied.contains(split(&key).0).then(|| BranchPick {
+                choice: choice.as_ref().map(|_| BranchPickChoice::From),
+                key,
+            })
+        })
+        .collect();
+    if picks.is_empty() {
+        return Err(error::conflict(moving.nothing, json!({})));
+    }
+    let staged = moving.apply(tx, who, &mut branch, picks)?;
+    Ok(Branched {
+        branch: view(tx, &branch)?,
+        staged,
+        immediate: Vec::new(),
+    })
 }
 
 pub(crate) fn keep_branch(
@@ -633,35 +1062,20 @@ fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
         Vec::new()
     } else {
-        let hostnames = BranchHostnames {
-            from: suffix(tx, &parent.environment)?,
-            into: format!("-{}", branch.summary.name),
-        };
-        let provided: Vec<String> = uses.into_keys().collect();
-        compare(
-            Some(&row.base),
-            &parent.applied,
-            &branch.working,
-            &provided,
-            &hostnames,
-            None,
-        )?
-        .rows
-        .iter()
-        .filter(|row| matches!(row.role, BranchRole::Move { .. }))
-        .map(|row| {
-            let key = row.key.to_string();
-            let (lineage, path) = key.split_once(':').unwrap_or((key.as_str(), ""));
-            let name = name_of(&branch.working, lineage)
-                .or_else(|| name_of(&parent.applied, lineage))
-                .unwrap_or_else(|| lineage.to_owned());
-            if path == "node" {
-                name
-            } else {
-                format!("{name}.{path}")
-            }
-        })
-        .collect()
+        let moving = Moving::update(
+            tx,
+            &parent.environment,
+            parent.applied.clone(),
+            branch,
+            row.base.clone(),
+        )?;
+        moving
+            .compare(&branch.working, None)?
+            .rows
+            .iter()
+            .filter(|row| matches!(row.role, BranchRole::Move { .. }))
+            .map(|row| moving.name(&branch.working, &row.key.to_string()))
+            .collect()
     };
     let setup = row
         .setup
@@ -688,89 +1102,156 @@ fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     })
 }
 
-/// One move into a Branch: `from`'s rows over `base` that `take` keeps, by lineage.
-struct Move<'take> {
+/// One move between a Branch and an Environment it comes from: `from`'s changes
+/// over `base`, into the other side.
+struct Moving {
+    /// The Environment `from` belongs to: where arriving nodes' credentials are.
+    source: EnvironmentId,
+    /// The Branch whose base advances by what lands.
+    branch: EnvironmentId,
+    /// Why nothing moves.
+    nothing: String,
     from: SavedEnvironmentIntent,
     base: SavedEnvironmentIntent,
+    /// The Parent's deployed values, offered for a variable.
+    parent: Option<SavedEnvironmentIntent>,
+    /// Lineages the receiver uses live.
     provided: Vec<String>,
-    take: &'take dyn Fn(&str) -> bool,
-    nothing: String,
+    /// Whether `from` is a kept Branch: its secrets then stay by default.
+    from_kept: bool,
+    hostnames: BranchHostnames,
+    /// Into a Branch, where every variable lands with `from`'s value by default.
+    update: bool,
 }
 
-/// Stage the move rows `take` keeps from `source`'s `from` in the Branch, and
-/// advance its base by exactly what landed.
-fn stage_from(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    branch: &mut Environment,
-    source: &Environment,
-    moving: Move<'_>,
-) -> Result<Branched, RpcError> {
-    let hostnames = BranchHostnames {
-        from: suffix(tx, source)?,
-        into: format!("-{}", branch.summary.name),
-    };
-    let rows = compare(
-        Some(&moving.base),
-        &moving.from,
-        &branch.working,
-        &moving.provided,
-        &hostnames,
-        None,
-    )?
-    .rows;
-    // Every move row; a variable lands with the source's value.
-    let picks: Vec<BranchPick> = rows
-        .iter()
-        .filter_map(|row| {
-            let BranchRole::Move { choice, .. } = &row.role else {
-                return None;
-            };
-            let key = row.key.to_string();
-            let lineage = key
-                .split_once(':')
-                .map_or(key.as_str(), |(lineage, _)| lineage);
-            (moving.take)(lineage).then(|| BranchPick {
-                choice: choice.as_ref().map(|_| BranchPickChoice::From),
-                key,
-            })
+impl Moving {
+    /// What `parent` deployed, into `branch`.
+    fn update(
+        tx: &mut dyn Tx,
+        parent: &Environment,
+        applied: SavedEnvironmentIntent,
+        branch: &Environment,
+        base: SavedEnvironmentIntent,
+    ) -> Result<Self, RpcError> {
+        Ok(Self {
+            source: parent.summary.id.clone(),
+            branch: branch.summary.id.clone(),
+            nothing: format!("Nothing new in {}", parent.summary.name),
+            from: applied,
+            base,
+            parent: None,
+            provided: used_live(&branch.working).into_keys().collect(),
+            from_kept: false,
+            hostnames: BranchHostnames {
+                from: suffix(tx, parent)?,
+                into: suffix(tx, branch)?,
+            },
+            update: true,
         })
-        .collect();
-    if picks.is_empty() {
-        return Err(error::conflict(moving.nothing, json!({})));
     }
-    let moved = compare(
-        Some(&moving.base),
-        &moving.from,
-        &branch.working,
-        &moving.provided,
-        &hostnames,
-        Some(picks.clone()),
-    )?;
-    let base = moved
-        .base
-        .ok_or_else(|| error::internal("Core returned no base for a move"))?;
-    let staged = land(
-        tx,
-        who,
-        branch,
-        &source.summary.id,
-        &moving.from,
-        moved.next,
-        &picks,
-    )?;
-    tx.execute(
-        "UPDATE config_environment_branch SET base = ?1 WHERE environment_id = ?2",
-        &[
-            document(&base).as_str().into(),
-            branch.summary.id.as_str().into(),
-        ],
-    )?;
-    Ok(Branched {
-        branch: view(tx, branch)?,
-        staged,
-        immediate: Vec::new(),
-    })
+
+    fn compare(
+        &self,
+        into: &SavedEnvironmentIntent,
+        picks: Option<Vec<BranchPick>>,
+    ) -> Result<BranchChanges, RpcError> {
+        compare(Comparing {
+            base: Some(&self.base),
+            from: &self.from,
+            into,
+            parent: self.parent.as_ref(),
+            provided: &self.provided,
+            hostnames: &self.hostnames,
+            from_kept: self.from_kept,
+            picks,
+        })
+    }
+
+    /// How a variable lands unless picked otherwise.
+    fn default(&self, offered: &BranchChoice) -> BranchOption {
+        match self.update {
+            true => BranchOption::From,
+            false => offered.default,
+        }
+    }
+
+    /// Row `key` as `NODE[.path]` in the catalog's words (`web.image`,
+    /// `web.env.KEY`), by the node's name where it comes from, else in `into`.
+    fn name(&self, into: &SavedEnvironmentIntent, key: &str) -> String {
+        let (lineage, path) = split(key);
+        let name_in = |lineage: &str| {
+            name_of(&self.from, lineage)
+                .or_else(|| name_of(into, lineage))
+                .unwrap_or_else(|| lineage.to_owned())
+        };
+        let node = name_in(lineage);
+        if path == "node" {
+            return node;
+        }
+        let path = match (
+            path.strip_prefix("variables."),
+            path.strip_prefix("mounts."),
+        ) {
+            (Some(key), _) => format!("env.{key}"),
+            (_, Some(volume)) => format!("mounts.{}", name_in(volume)),
+            _ => setting(path).map_or_else(|| path.to_owned(), |setting| setting.name().to_owned()),
+        };
+        format!("{node}.{path}")
+    }
+
+    /// Land `picks` in `into` and advance the Branch's base by exactly what landed.
+    /// Into a Parent, nothing there is deleted.
+    fn apply(
+        &self,
+        tx: &mut dyn Tx,
+        who: &Actor,
+        into: &mut Environment,
+        picks: Vec<BranchPick>,
+    ) -> Result<Vec<String>, RpcError> {
+        let moved = self.compare(&into.working, Some(picks.clone()))?;
+        let base = moved
+            .base
+            .ok_or_else(|| error::internal("Core returned no base for a move"))?;
+        let ids = |intent: &SavedEnvironmentIntent| -> BTreeSet<String> {
+            let services = intent.services.iter().map(|service| service.id.clone());
+            let volumes = intent
+                .volumes
+                .iter()
+                .map(|volume| volume.resource_id.clone());
+            services.chain(volumes).collect()
+        };
+        if !self.update && !ids(&into.working).is_subset(&ids(&moved.next)) {
+            return Err(error::internal("A Save would delete from the Parent"));
+        }
+        let staged = land(tx, who, into, &self.source, &self.from, moved.next, &picks)?;
+        tx.execute(
+            "UPDATE config_environment_branch SET base = ?1 WHERE environment_id = ?2",
+            &[document(&base).as_str().into(), self.branch.as_str().into()],
+        )?;
+        Ok(staged)
+    }
+}
+
+/// The Setting a row's core path writes.
+fn setting(path: &str) -> Option<ServiceSetting> {
+    ServiceSetting::ALL
+        .into_iter()
+        .find(|setting| setting.field() == path)
+}
+
+/// A row's value as `get` shows it: never a credential or a repository ID.
+fn shown(path: &str, value: &Value) -> Value {
+    match path {
+        "source.credentials" if *value == Value::Bool(true) => json!({ "secret": true }),
+        "source.credentials" => Value::Null,
+        "source.repository" => value.get("repository").cloned().unwrap_or(Value::Null),
+        path => setting(path).map_or_else(|| value.clone(), |setting| setting.shown(value.clone())),
+    }
+}
+
+/// A row key's lineage and path.
+fn split(key: &str) -> (&str, &str) {
+    key.split_once(':').unwrap_or((key, ""))
 }
 
 /// Land core's `next` as `branch`'s Working State: the nodes arriving from
@@ -1085,27 +1566,31 @@ fn suffix(tx: &mut dyn Tx, environment: &Environment) -> Result<String, RpcError
     })
 }
 
-/// Core's comparison of `from` and `into` over `base`, moving `picks` when given.
-fn compare(
-    base: Option<&SavedEnvironmentIntent>,
-    from: &SavedEnvironmentIntent,
-    into: &SavedEnvironmentIntent,
-    provided: &[String],
-    hostnames: &BranchHostnames,
+/// The sides of core's comparison: `from` and `into` over `base`, moving `picks` when given.
+struct Comparing<'a> {
+    base: Option<&'a SavedEnvironmentIntent>,
+    from: &'a SavedEnvironmentIntent,
+    into: &'a SavedEnvironmentIntent,
+    parent: Option<&'a SavedEnvironmentIntent>,
+    provided: &'a [String],
+    hostnames: &'a BranchHostnames,
+    from_kept: bool,
     picks: Option<Vec<BranchPick>>,
-) -> Result<BranchChanges, RpcError> {
+}
+
+fn compare(sides: Comparing<'_>) -> Result<BranchChanges, RpcError> {
     let value = |intent: &SavedEnvironmentIntent| {
         serde_json::to_value(intent).expect("Working State is JSON")
     };
     branch_changes(BranchChangesInput {
-        base: base.map(value),
-        from: value(from),
-        into: value(into),
-        parent: None,
-        provided: provided.to_vec(),
-        hostnames: hostnames.clone(),
-        from_kept: false,
-        picks,
+        base: sides.base.map(value),
+        from: value(sides.from),
+        into: value(sides.into),
+        parent: sides.parent.map(value),
+        provided: sides.provided.to_vec(),
+        hostnames: sides.hostnames.clone(),
+        from_kept: sides.from_kept,
+        picks: sides.picks,
     })
     .map_err(config)
 }
