@@ -283,6 +283,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                     .collect(),
                 version: None,
                 upload: None,
+                retry: None,
             },
         )
         .unwrap();
@@ -439,7 +440,24 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         RpcErrorCode::Conflict
     );
 
-    // A retry is a new Deployment: it pins afresh and gets the receipt as a hint.
+    // Retrying it builds the commit it pinned, wherever the branch is now.
+    let again = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
+    store
+        .admit(
+            &who,
+            &Admit {
+                id: again.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: Some(first.clone()),
+            },
+        )
+        .unwrap();
+    assert_eq!(store.sources(&again).unwrap()[0].commit, Some(a.clone()));
+
+    // A new Deployment pins afresh and gets the receipt as a hint.
     let retry = admit(&store, &who, 2, &[]);
     assert_eq!(store.sources(&retry).unwrap()[0].commit, None);
     store.pin(&retry, &pins(&b)).unwrap();

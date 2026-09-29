@@ -151,6 +151,7 @@ it.live(
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
       yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null }, {
         repositories: [{ repository: "acme/web", repository_id: 42, access: { type: "public" }, default_branch: "main", branches: [] }],
+        domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       });
       yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null });
 

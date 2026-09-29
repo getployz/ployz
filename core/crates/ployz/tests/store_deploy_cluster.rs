@@ -249,6 +249,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 branches: Vec::new(),
             })
             .collect(),
+        ..Trusted::default()
     };
     let mut checkouts = BTreeMap::new();
     let sources = tempfile::tempdir().unwrap();
@@ -313,6 +314,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         services: Vec::new(),
                         version: None,
                         upload: None,
+                        retry: None,
                     },
                 )
                 .unwrap();

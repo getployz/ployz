@@ -4,14 +4,15 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, Cancel, Command, ConfigStore, CreateEnvironment, CreateGitService,
-    CreateProject, CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
-    DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, NamespaceQuery,
-    NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated, ProjectName, Publish,
-    Published, Query, RemoveDomain, RemoveService, RenameService, SealingKey, ServiceQuery,
-    ServiceStaged, ServiceView, ServicesQuery, ServicesView, Start, Trusted,
+    Actor, AddDomain, Admit, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
+    CreateEnvironment, CreateGitService, CreateProject, CreateService, DeploymentId,
+    DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView,
+    DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView,
+    DomainsQuery, DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
+    EnvironmentView, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
+    ProjectCreated, ProjectName, Publish, Published, Query, RemoveDomain, RemoveService,
+    RenameService, SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
+    ServicesView, Start, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -194,6 +195,11 @@ impl Store {
     ) -> Result<NamespaceView, StoreCallError> {
         let request = Query::Namespace(query.clone());
         self.call("read", &request, |store, who| store.namespace(who, query))
+    }
+
+    pub(crate) fn build_log(&self, query: &BuildLogQuery) -> Result<BuildLogView, StoreCallError> {
+        let request = Query::BuildLog(query.clone());
+        self.call("read", &request, |store, who| store.build_log(who, query))
     }
 
     pub(crate) fn deployments(
