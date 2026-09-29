@@ -3,7 +3,7 @@ import { createTransaction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
 import { expect, it, vi } from "vitest";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
-import type { environmentCanvasNodePosition } from "#/modules/environment-design/tables";
+import type { environmentCanvasNodePosition } from "#/modules/canvas/tables";
 import { persistCanvasPositionBatch } from "./useCanvasPositionMutation";
 
 it.each([false, true])("applies committed sibling writes and preserves the batch failure (refresh fails: %s)", async (refreshFails) => {

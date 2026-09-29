@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Button } from "#/components/ui/button";
-import { SERVICE_DEPLOYMENT_DIFF_PATHS } from "#/modules/services/service-deployment-diff/fields";
 import {
   Field,
   FieldDescription,
@@ -22,12 +21,8 @@ import {
   getRegistryCredentialProviderHelp,
   getRegistryCredentialProviderLabel,
   registryCredentialSecretSchema,
-} from "#/modules/environment-design/services";
-import {
-  useServiceRegistryCredentialActions,
-} from "#/modules/services/services.mutation-actions";
+} from "#/modules/config-store/registry-credentials";
 import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialForm";
-import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
 import { InfoIcon, KeyRoundIcon, PencilIcon } from "lucide-react";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
@@ -106,34 +101,6 @@ function RegistryCredentialEmptyState({
         </Button>
       </ItemActions>
     </Item>
-  );
-}
-
-export function ServiceRegistryCredentialsSection({
-  state,
-}: {
-  state: ServiceDrawerState;
-}) {
-  const { organizationSlug, service, diff } = state;
-  const { clearCredentialAction, setCredentialAction } =
-    useServiceRegistryCredentialActions({
-      organizationSlug,
-      environmentId: service.environmentId,
-      serviceId: service.id,
-    });
-  if (service.source.type !== "image") return null;
-  const credentialsDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceCredentials);
-  return (
-    <RegistryCredentialsField
-      image={service.source.image}
-      configured={service.source.credentials.type === "configured"}
-      username={service.registryCredentialUsername}
-      changed={credentialsDiff.changed}
-      baselineLabel={credentialsDiff.baselineLabel}
-      baselineValue={credentialsDiff.baselineValue}
-      onSet={setCredentialAction}
-      onClear={clearCredentialAction}
-    />
   );
 }
 

@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import type { EnvironmentRef, PullRequestRef, PullRequestView } from "@ployz/sdk";
 import { ArrowUpIcon, CircleCheckIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
-import { plural } from "#/modules/branches/branch-plan";
+import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
 import { atMergeQuery, destinationNews, goLiveWhen, pullRequestQuery, type DestinationNews } from "#/modules/config-store/store-pull-requests";
 import { useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";

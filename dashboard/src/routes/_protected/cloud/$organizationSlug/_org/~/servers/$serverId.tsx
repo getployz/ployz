@@ -9,12 +9,10 @@ import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { Input } from "#/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Skeleton } from "#/components/ui/skeleton";
 import { needsAttention } from "#/modules/machines/server-status";
 import { useServers, type Server } from "#/modules/machines/use-servers";
-import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
@@ -82,7 +80,7 @@ function RouteComponent() {
           <AlertDescription>Check that it’s powered on and online.</AlertDescription>
         </Alert>
       ) : null}
-      <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
+      <RunningHere server={server} servers={servers} stale={stale} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
       <RemoveServerSection machine={machine} organizationSlug={organizationSlug} />
     </DashboardPage>
@@ -108,8 +106,7 @@ function ServerPageSkeleton() {
  * How many Services run on this Server; the list itself opens in a sheet. While the Server is offline, the row says
  * how many run nowhere else, since that is what the outage takes down.
  */
-function RunningHere({ organizationSlug, server, servers, stale }: {
-  organizationSlug: string;
+function RunningHere({ server, servers, stale }: {
   server: Server;
   servers: readonly Server[];
   stale: boolean;
@@ -155,7 +152,7 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
           <SheetHeader>
             <SheetTitle>Running on {server.name}</SheetTitle>
           </SheetHeader>
-          <ServiceList organizationSlug={organizationSlug} server={server} up={up} stale={stale} />
+          <ServiceList server={server} up={up} stale={stale} />
         </SheetContent>
       </Sheet>
     </section>
@@ -163,23 +160,13 @@ function RunningHere({ organizationSlug, server, servers, stale }: {
 }
 
 /** The Services with a container on this Server. While it is offline, each says whether it still runs elsewhere. */
-function ServiceList({ organizationSlug, server, up, stale }: {
-  organizationSlug: string;
+function ServiceList({ server, up, stale }: {
   server: Server;
   up: readonly Server[];
   stale: boolean;
 }) {
-  const { projects, environments } = useWorkspace(organizationSlug);
   const [filter, setFilter] = useState("");
-  const rows = server.services.map((service) => {
-    const { cloud } = service;
-    const project = cloud ? projects.find((candidate) => candidate.slug === cloud.projectSlug) : undefined;
-    const environment = cloud
-      ? findEnvironment(projects, environments, { projectSlug: cloud.projectSlug, environmentSlug: cloud.environmentSlug })
-      : undefined;
-    const where = cloud ? `${project?.name ?? cloud.projectSlug} · ${environment?.name ?? cloud.environmentSlug}` : null;
-    return { service, where };
-  });
+  const rows = server.services.map((service) => ({ service, where: service.namespace }));
   const needle = filter.trim().toLowerCase();
   const shown = needle
     ? rows.filter(({ service, where }) => `${service.name} ${where ?? ""}`.toLowerCase().includes(needle))
@@ -200,29 +187,20 @@ function ServiceList({ organizationSlug, server, up, stale }: {
         {shown.length === 0 ? (
           <ItemDescription>No services match “{filter.trim()}”</ItemDescription>
         ) : shown.map(({ service, where }) => {
-          const { cloud } = service;
           const elsewhere = up.find((other) => service.machineIds.has(other.machine.id));
           return (
             <Item
               key={service.identity}
               variant="outline"
               size="sm"
-              render={cloud ? (
-                <Link
-                  to="/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId"
-                  params={{ organizationSlug, projectSlug: cloud.projectSlug, environmentSlug: cloud.environmentSlug, serviceId: cloud.id }}
-                />
-              ) : undefined}
             >
-              <ItemMedia variant="icon">{cloud ? getServiceIcon(cloud) : <BoxIcon />}</ItemMedia>
+              <ItemMedia variant="icon"><BoxIcon /></ItemMedia>
               <ItemContent className="min-w-0">
                 <ItemTitle>{service.name}</ItemTitle>
                 {where ? <ItemDescription className="line-clamp-1">{where}</ItemDescription> : null}
               </ItemContent>
               <ItemActions>
-                {server.status !== "offline" ? (
-                  cloud ? <ChevronRightIcon className="size-4 text-muted-foreground" /> : null
-                ) : elsewhere ? (
+                {server.status !== "offline" ? null : elsewhere ? (
                   <ItemDescription>Still on {elsewhere.name}</ItemDescription>
                 ) : (
                   <ServerStatusLabel status="offline" stale={stale}>Down</ServerStatusLabel>

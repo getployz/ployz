@@ -29,7 +29,6 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
-import type { ServiceRouteParams } from "./useServiceDrawerState";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 type StoreService = {
@@ -67,7 +66,7 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
  * A Service's drawer over the Config Store: its name, source and scalar Settings, labelled by the catalog. Edits save
  * through the Environment's queue; a rename or removal is staged like any other change.
  */
-export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
+export function StoreServiceDrawer({ params }: { params: { organizationSlug: string; projectSlug: string; environmentSlug: string; serviceId: string } }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
   const services = requireView(useStoreView(organizationSlug, servicesQuery(store))).services;

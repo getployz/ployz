@@ -2,8 +2,8 @@ import { useRef, useState } from "react";
 import {
   filterReferenceTargets,
   type ReferenceTarget,
-} from "#/modules/environment-design/variable-autocomplete";
-import { buildRefToken, caretToken } from "#/modules/environment-design/variable-template";
+} from "#/modules/variables/variable-autocomplete";
+import { buildRefToken, caretToken } from "#/modules/variables/variable-template";
 
 type EditableElement = HTMLInputElement | HTMLTextAreaElement;
 

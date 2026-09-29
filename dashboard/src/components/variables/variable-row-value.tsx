@@ -8,7 +8,7 @@ import {
   TooltipTrigger,
 } from "#/components/ui/tooltip";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 
 const MASK = "*******";
 

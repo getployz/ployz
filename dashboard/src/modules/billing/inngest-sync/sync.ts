@@ -9,7 +9,7 @@ import {
   getActiveManagedSubscriptionSnapshot,
   persistOrganizationBillingStateSnapshot,
 } from "#/modules/billing/billing.server";
-import { listOrganizationIds } from "#/modules/environment-design/workspace-repository.server";
+import { listOrganizationIds } from "#/modules/organization/organization-state.server";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { Database } from "#/server/database.server";
 import type { PolarConfiguration } from "#/server/config.server";

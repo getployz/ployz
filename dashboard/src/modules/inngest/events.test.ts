@@ -1,14 +1,9 @@
 import { Option, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
-  createEnvironmentDeployRequestedEvent,
   createMachineRemoveRequestedEvent,
   createGithubCheckSuiteReceivedEvent,
-  createGithubCheckSuiteTransitionEvent,
-  createGithubEnvironmentTriggerPersistedEvent,
   createGithubPushReceivedEvent,
-  createVolumeRemoveRequestedEvent,
-  createTeardownRequestedEvent,
   createOrganizationBillingSyncEventsFromCustomerStatePayload,
   createOrganizationBillingSyncEventsFromSubscriptionPayload,
   inngestEventEnvelopeFields,
@@ -59,16 +54,6 @@ describe("Inngest events", () => {
     ).toBe(true);
   });
 
-  it("creates deterministic volume remove events from attempt id", () => {
-    expect(
-      createVolumeRemoveRequestedEvent({ attemptId: "attempt-1" }),
-    ).toEqual({
-      id: "volume-remove-attempt-1",
-      name: "cloud/volume-remove.requested",
-      data: { attemptId: "attempt-1" },
-    });
-  });
-
   it("creates deterministic machine remove attempts from the durable row id", () => {
     expect(
       createMachineRemoveRequestedEvent({
@@ -79,95 +64,6 @@ describe("Inngest events", () => {
       name: "machine/remove.requested",
       data: { attemptId: "11111111-1111-4111-8111-111111111111" },
     });
-  });
-
-  it("creates deterministic teardown events from attempt id", () => {
-    expect(
-      createTeardownRequestedEvent({ attemptId: "attempt-1" }),
-    ).toEqual({
-      id: "teardown-attempt-1",
-      name: "cloud/teardown.requested",
-      data: { attemptId: "attempt-1" },
-    });
-  });
-
-  it("creates deterministic environment deploy requested events", () => {
-    expect(
-      createEnvironmentDeployRequestedEvent({
-        environmentDeploymentId: "deployment-1",
-        environmentId: "env-1",
-      }),
-    ).toEqual({
-      id: "environment-deploy-requested-deployment-1",
-      name: "environment/deploy.requested",
-      data: {
-        environmentDeploymentId: "deployment-1",
-        environmentId: "env-1",
-      },
-    });
-  });
-
-  it("creates deterministic persisted GitHub environment-trigger events", () => {
-    expect(
-      createGithubEnvironmentTriggerPersistedEvent({
-        triggerId: "trigger-1",
-        triggerRevision: 3,
-        installationId: 17,
-        repositoryId: 42,
-        ref: "refs/heads/main",
-        headSha: "a".repeat(40),
-        environmentId: "env-1",
-        serviceIds: ["svc-z", "svc-a", "svc-a"],
-        selection: { mode: "paths", reason: "changed_paths" },
-        sourceDeliveryId: "delivery-1",
-        sourceReceiptSequence: 9,
-      }),
-    ).toEqual({
-      id: "github-environment-trigger-trigger-1-revision-3",
-      name: "github/environment-trigger.persisted",
-      data: {
-        triggerId: "trigger-1",
-        triggerRevision: 3,
-        installationId: 17,
-        repositoryId: 42,
-        ref: "refs/heads/main",
-        headSha: "a".repeat(40),
-        environmentId: "env-1",
-        serviceIds: ["svc-a", "svc-z"],
-        selection: { mode: "paths", reason: "changed_paths" },
-        sourceDeliveryId: "delivery-1",
-        sourceReceiptSequence: 9,
-      },
-    });
-  });
-
-  it("creates exact-SHA check-suite transition identities from durable revisions", () => {
-    const transition = {
-      installationId: 17,
-      repositoryId: 42,
-      headSha: "b".repeat(40),
-      checkSuiteId: 9001,
-      status: "completed" as const,
-      conclusion: "success" as const,
-      sourceUpdatedAt: "2026-07-16T07:00:00.000Z",
-      transitionRevision: 4,
-      sourceDeliveryId: "delivery-2",
-      sourceReceiptSequence: 10,
-    };
-
-    const event = createGithubCheckSuiteTransitionEvent(transition);
-    expect(event).toEqual({
-      id: `github-check-suite-17-42-${"b".repeat(40)}-9001-revision-4`,
-      name: "github/check-suite.transitioned",
-      data: transition,
-    });
-    expect(createGithubCheckSuiteTransitionEvent(transition)).toEqual(event);
-    expect(
-      createGithubCheckSuiteTransitionEvent({
-        ...transition,
-        transitionRevision: 5,
-      }).id,
-    ).not.toBe(event.id);
   });
 
   it("creates delivery-deduplicated GitHub ingestion events with authority keys", () => {

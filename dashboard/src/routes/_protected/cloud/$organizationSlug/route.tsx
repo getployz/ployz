@@ -4,7 +4,7 @@ import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
 import { DashboardShell } from "#/components/dashboard-shell";
 import type { DashboardScope } from "#/components/dashboard-navigation-model";
-import { rememberSelectedOrganization } from "#/modules/environment-design/workspace.queries";
+import { rememberSelectedOrganization } from "#/modules/organization/organization-state.queries";
 import { RuntimeProvider } from "#/providers/runtime-provider";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({

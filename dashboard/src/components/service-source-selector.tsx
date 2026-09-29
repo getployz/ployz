@@ -4,58 +4,21 @@ import type { ServiceGitAccess } from "@ployz/sdk";
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
-import {
-  type ReactNode,
-  Suspense,
-  useDeferredValue,
-  useEffect,
-  useState,
-} from "react";
-import {
-  ChevronRightIcon,
-  InfoIcon,
-  TriangleAlertIcon,
-  RefreshCwIcon,
-  Settings2Icon,
-} from "lucide-react";
+import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
+import { ChevronRightIcon, InfoIcon, TriangleAlertIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import {
-  useMutation,
-  useQueryClient,
-  useSuspenseQueries,
-  useSuspenseQuery,
-} from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "#/components/ui/empty";
-import {
-  Command,
-  CommandDialog,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from "#/components/ui/command";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
+import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import {
-  githubBranchesQueryOptions,
-  githubInstallUrlQueryOptions,
-  githubRepoAccessQueryOptions,
-  githubKeys,
-} from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubInstallUrlQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
 import { getGithubReposCollection, getRawGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -110,15 +73,6 @@ type GitBranchSelectorProps = {
   query: string;
   defaultBranch?: string;
   disabled?: boolean;
-  onSelectBranch: (branchName: string) => void | Promise<void>;
-};
-
-type GitBranchSelectorDialogProps = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  repositoryFullName: string;
-  repositoryId: number;
-  installationId: number | null;
   onSelectBranch: (branchName: string) => void | Promise<void>;
 };
 
@@ -494,75 +448,6 @@ export function GitBranchSelector(props: GitBranchSelectorProps) {
     <Suspense fallback={<SelectorLoading />}>
       <GitBranchSelectorResults {...props} />
     </Suspense>
-  );
-}
-
-export function GitBranchSelectorDialog({
-  open,
-  onOpenChange,
-  repositoryFullName,
-  repositoryId,
-  installationId,
-  onSelectBranch,
-}: GitBranchSelectorDialogProps) {
-  if (!open) {
-    return null;
-  }
-
-  return (
-    <OpenGitBranchSelectorDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      repositoryFullName={repositoryFullName}
-      repositoryId={repositoryId}
-      installationId={installationId}
-      onSelectBranch={onSelectBranch}
-    />
-  );
-}
-
-function OpenGitBranchSelectorDialog({
-  open,
-  onOpenChange,
-  repositoryFullName,
-  repositoryId,
-  installationId,
-  onSelectBranch,
-}: GitBranchSelectorDialogProps) {
-  const dialog = useSelectorDialogState<string>({
-    onOpenChange,
-    onSelect: onSelectBranch,
-    errorFallback: "Refresh the repository data and try again.",
-  });
-
-  return (
-    <SelectorCommandDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title="Select branch"
-      description={`Choose a branch in ${repositoryFullName}`}
-      errorTitle="Couldn’t select branch"
-      error={dialog.error}
-    >
-      <SourcePickerLayout title="GitHub Branch">
-      <Command shouldFilter={false} className="gap-3 p-0">
-        <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
-          <CommandPrimitive.Input asChild value={dialog.query} onValueChange={dialog.setQuery}>
-            <InputGroupInput autoFocus aria-label="Search branches" placeholder="Search branches…" disabled={dialog.isPending} />
-          </CommandPrimitive.Input>
-        </SourcePickerInput>
-        <CommandList>
-          <GitBranchSelector
-            repositoryId={repositoryId}
-            installationId={installationId}
-            query={dialog.query}
-            disabled={dialog.isPending}
-            onSelectBranch={dialog.runSelect}
-          />
-        </CommandList>
-      </Command>
-      </SourcePickerLayout>
-    </SelectorCommandDialog>
   );
 }
 

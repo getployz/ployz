@@ -8,7 +8,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import * as lens from "#/modules/runtime/use-runtime-lens";
-import * as places from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
@@ -27,7 +26,7 @@ const admitted = { ok: true, value: { written: "deployment", id: "d" } } as neve
 const admittedIds: string[] = [];
 
 function Deploy() {
-  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "env", (id) => admittedIds.push(id));
+  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={deploy}>Deploy now</button>
     <button type="button" onClick={() => void discard("web.replicas")}>Discard replicas</button>
@@ -41,7 +40,6 @@ function setup() {
   vi.spyOn(toast, "error").mockImplementation(() => "toast");
   // SAFETY: the hook reads only the Servers' ids and names.
   vi.spyOn(lens, "useRuntimeLens").mockReturnValue({ machines: [{ id: "m1", name: "hetzner-1" }] } as never);
-  vi.spyOn(places, "useEnvironmentPlace").mockReturnValue("shop/production");
   // SAFETY: after a write the writer refetches views these tests never read.
   vi.spyOn(functions, "readStoreViewServerFn").mockResolvedValue({ ok: true, value: {} } as never);
   const write = vi.spyOn(functions, "writeStoreServerFn");

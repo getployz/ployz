@@ -1,24 +1,9 @@
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { createContext, use, useEffect } from "react";
-import { eq, useLiveQuery } from "@tanstack/react-db";
+import { useLiveQuery } from "@tanstack/react-db";
 import { Option, Schema } from "effect";
-import {
-  applyRuntimeSnapshot,
-  CLUSTER_UNREACHABLE_ERROR,
-  getCachedRuntimeSnapshot,
-  getRuntimeCollections,
-  noConnectionRuntimeSnapshot,
-  projectRuntimeServiceRecord,
-  unavailableRuntimeSnapshot,
-  unreachableRuntimeSnapshot,
-  EMPTY_RUNTIME_INCOMPLETE_IDS,
-  type RuntimeCollections,
-} from "#/modules/runtime/runtime.collection";
-import {
-  runtimeConnectionStatusEventSchema,
-  runtimeSnapshotFromWatchFrame,
-  runtimeWatchFrameSchema,
-} from "#/modules/runtime/runtime-watch-frame";
+import { applyRuntimeSnapshot, CLUSTER_UNREACHABLE_ERROR, getCachedRuntimeSnapshot, getRuntimeCollections, noConnectionRuntimeSnapshot, unavailableRuntimeSnapshot, unreachableRuntimeSnapshot, EMPTY_RUNTIME_INCOMPLETE_IDS, type RuntimeCollections } from "#/modules/runtime/runtime.collection";
+import { runtimeConnectionStatusEventSchema, runtimeSnapshotFromWatchFrame, runtimeWatchFrameSchema } from "#/modules/runtime/runtime-watch-frame";
 import { buildRuntimeEventsUrl } from "#/providers/runtime-events-url";
 
 type RuntimeContextValue = { collections: RuntimeCollections };
@@ -140,22 +125,5 @@ export function useRuntimeStatus() {
     // DNS publication, route binding, certificate use, or service health.
     certificates: row?.certificates ?? [],
     incompleteIds: row?.incompleteIds ?? EMPTY_RUNTIME_INCOMPLETE_IDS,
-  };
-}
-
-/** Read a direct Engine Service grouping by its exact `project/name` identity. */
-export function useRuntimeService(identity: string) {
-  const { collections } = useRuntimeContext();
-  const { data: rows = [] } = useLiveQuery({
-    queryKey: ['runtime-service', collections.services.id, identity],
-    query: (q) =>
-      q
-        .from({ service: collections.services })
-        .where(({ service }) => eq(service.identity, identity))
-        .select(({ service }) => service),
-  });
-
-  return {
-    runtime: rows[0] ? projectRuntimeServiceRecord(rows[0]) : null,
   };
 }

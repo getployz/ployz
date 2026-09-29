@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { orgStoreOptions } from "#/collections/org-store";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
-import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { Fragment } from "react";
 import { getDbClient } from "#/collections/scope";
@@ -14,7 +13,7 @@ import { ThemeProvider } from "./theme-provider";
 import { authClient } from "#/auth/auth-client";
 import type { AuthSession } from "#/auth/auth";
 import { Route as RootRoute } from "#/routes/__root";
-import { organizationKeys } from "#/modules/environment-design/workspace.queries";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
 
 // Better Auth captures fetch when the client is created.
 const transport = vi.hoisted(() => {
@@ -64,19 +63,13 @@ async function show({ orgStore = "ready", scope = "environment", billingEnabled 
 } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false, staleTime: Infinity } } });
   clients.push(client);
-  const environmentData = { intent: { version: 1, environmentSlug: "production", services: [], volumes: [] }, createdAt: new Date(0), id: "production", projectId: "project", namespace: "production", name: "Production" };
   client.setQueryData(organizationKeys.state("acme"), {
     activeOrganization: { id: "org", slug: "acme", name: "Acme" },
     organizations: [{ id: "org", slug: "acme", name: "Acme" }, { id: "other", slug: "other", name: "Other" }],
     billingEnabled,
   });
-  client.setQueryData(["collections", "test-session", "test-user", "acme", "project"], orgStoreSeed([{ id: "project", slug: "store", name: "Store", defaultEnvironmentId: "production" }]));
-  client.setQueryData(["collections", "test-session", "test-user", "acme", "environment_summary"], orgStoreSeed([environmentData]));
-  for (const table of orgStoreTableNames.filter((name) => !["project", "environment_summary"].includes(name))) {
-    client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed(table === "environment" ? [environmentData] : []));
-  }
+  for (const table of orgStoreTableNames) client.setQueryData(["collections", "test-session", "test-user", "acme", table], orgStoreSeed([]));
   const storeScope = { queryClient: client, sessionId: "test-session", userId: "test-user" };
-  client.setQueryData(environmentChangeStateOptions("acme", storeScope).queryKey, []);
   const store = orgStoreOptions("acme", storeScope);
   let resolveOrgStore = (_ready: boolean) => {};
   if (orgStore === "ready") client.setQueryData(store.queryKey, true);

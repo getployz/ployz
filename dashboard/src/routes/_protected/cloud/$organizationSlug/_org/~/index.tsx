@@ -1,15 +1,10 @@
 import { useDeferredValue, useState } from "react";
-import { useLiveQuery } from "@tanstack/react-db";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { prefetchStoreViews, requireStoreProjects, requireWorkspace } from "#/collections/route-data";
-import { storeEnabled } from "#/modules/config-store/store.contract";
-import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { getEnvironmentsCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
+import { prefetchStoreViews, requireStoreProjects } from "#/collections/route-data";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
@@ -22,25 +17,14 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
 import { ProjectCard } from "../-components/project-card";
-import { useRuntimeServices } from "../../-components/services-online";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    if (storeEnabled) {
-      const projects = await requireStoreProjects(context, params.organizationSlug);
-      if (projects.length === 0) throw redirect({ to: NewProjectRoute.to, params: { organizationSlug: params.organizationSlug } });
-      // Each card draws its Default Environment's Services.
-      await prefetchStoreViews(context, params.organizationSlug, ...projects.map((project) =>
-        servicesQuery({ project: project.name, environment: project.default_environment })));
-      return;
-    }
-    const projects = await requireWorkspace(context, params.organizationSlug);
-    if (projects.length === 0) {
-      throw redirect({
-        to: NewProjectRoute.to,
-        params: { organizationSlug: params.organizationSlug },
-      });
-    }
+    const projects = await requireStoreProjects(context, params.organizationSlug);
+    if (projects.length === 0) throw redirect({ to: NewProjectRoute.to, params: { organizationSlug: params.organizationSlug } });
+    // Each card draws its Default Environment's Services.
+    await prefetchStoreViews(context, params.organizationSlug, ...projects.map((project) =>
+      servicesQuery({ project: project.name, environment: project.default_environment })));
   },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
@@ -123,9 +107,7 @@ function RouteComponent() {
           onSearchValueChange={setQuery}
         />
       </div>
-      {storeEnabled
-        ? <StoreProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
-        : <ProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />}
+      <StoreProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
     </DashboardPage>
   );
 }
@@ -157,61 +139,6 @@ function StoreProjectCard({ organizationSlug, project, environment }: { organiza
     name: environment, namespace: "",
     services: services.map((service) => ({ id: service.id, slug: service.name, config: { source: { type: service.source } } })),
   }} />;
-}
-
-// TODO(#1275): goes with the dark gate.
-function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
-  const scope = useCollectionScope();
-  const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
-  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
-  const { projects } = useWorkspace(organizationSlug);
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredProjects = normalizedQuery
-    ? projects.filter((project) => {
-        const haystack = `${project.name} ${project.slug}`.toLowerCase();
-        return haystack.includes(normalizedQuery);
-      })
-    : projects;
-
-  return filteredProjects.length === 0 ? <NoMatchingProjects query={query} /> : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filteredProjects.map((project) => {
-            const resolvedEnvironment = project.resolvedEnvironment;
-            const document = environments.find(environment => environment.id === resolvedEnvironment?.id);
-            const card = (
-              <ProjectCard
-                name={project.name}
-                environment={document ? { name: document.name, namespace: document.namespace, services: document.intent.services } : null}
-                runtimeServices={runtimeServices}
-                runtimeStatus={runtimeStatus}
-              />
-            );
-
-            if (!resolvedEnvironment) {
-              return (
-                <div key={project.id}>
-                  {card}
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={project.id}
-                to={EnvironmentOverviewRoute.to}
-                params={{
-                  organizationSlug,
-                  projectSlug: project.slug,
-                  environmentSlug: resolvedEnvironment.namespace,
-                }}
-                className="group/project block min-w-0 rounded-xl outline-none focus-visible:ring-3 focus-visible:ring-ring"
-              >
-                {card}
-              </Link>
-            );
-          })}
-        </div>
-      );
 }
 
 function NoMatchingProjects({ query }: { query: string }) {

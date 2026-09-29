@@ -1,9 +1,6 @@
 export const ENVIRONMENT_ROUTE_FROM =
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug";
 
-export const ENVIRONMENT_INDEX_ROUTE_FROM =
-  "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/";
-
 export const ENVIRONMENT_INDEX_ROUTE_TO =
   "/cloud/$organizationSlug/$projectSlug/$environmentSlug";
 

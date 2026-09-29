@@ -1,7 +1,5 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { useServiceWriter } from "#/modules/services/services.collection";
-import { deleteService } from "#/modules/services/delete-service";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
@@ -14,16 +12,6 @@ function useCloseService() {
   return {
     params,
     close: () => void navigate({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true, search: (prev) => prev }),
-  };
-}
-
-export function useDeleteService(serviceId: string) {
-  const { params, close } = useCloseService();
-  const collection = useServiceWriter(params.organizationSlug);
-
-  return function removeService() {
-    deleteService(collection, serviceId);
-    close();
   };
 }
 

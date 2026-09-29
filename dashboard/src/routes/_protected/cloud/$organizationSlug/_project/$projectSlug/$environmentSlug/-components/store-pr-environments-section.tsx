@@ -3,9 +3,8 @@ import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { planSummary, prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { planSummary, prPlansQuery, useMissingStorePrGrant } from "#/modules/config-store/store-pull-requests";
 import { useStoreView } from "#/modules/config-store/store-view.queries";
-import { useMissingStorePrGrant } from "#/modules/pr-environments/plan.queries";
 import { ENVIRONMENT_PR_PLAN_ROUTE_TO } from "./environment-route-paths";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };

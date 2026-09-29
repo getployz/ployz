@@ -17,11 +17,7 @@ import {
   TableRow,
 } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
-import {
-  getCanvasNodeChangeKind,
-  getCanvasNodeDiffGroupCanDiscard,
-} from "#/modules/environment-design/canvas-node-diff";
-import type { CanvasNodeDiffGroup } from "#/modules/environment-design/canvas-node-diff";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { ApplyChangeRow } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeRow";
 import {
   getCanvasNodeIcon,
@@ -29,8 +25,6 @@ import {
   getServiceChangeAction,
   getSettingsLabel,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/apply-changes-display";
-
-type DisplayCanvasNodeDiffGroup = CanvasNodeDiffGroup;
 
 export function ApplyChangeGroupCard({
   group,
@@ -41,22 +35,22 @@ export function ApplyChangeGroupCard({
   onDiscardRow,
   noteFor,
 }: {
-  group: DisplayCanvasNodeDiffGroup;
+  group: ChangeGroup;
   totalChanges: number;
   visibleGroupCount: number;
   onCloseDialog: () => void;
-  onDiscardNode: (group: CanvasNodeDiffGroup) => void;
-  onDiscardRow: (group: CanvasNodeDiffGroup, path: string) => void;
+  onDiscardNode: (group: ChangeGroup) => void;
+  onDiscardRow: (group: ChangeGroup, path: string) => void;
   noteFor?: (path: string) => ReactNode;
 }) {
   const [isExpanded, setIsExpanded] = useState(true);
-  const nodeKind = getCanvasNodeChangeKind(group);
+  const nodeKind = group.lifecycle === "create" ? "add" : group.lifecycle === "delete" ? "remove" : "update";
   const nodeAction = getServiceChangeAction(nodeKind);
   const showCurrentValue = nodeKind !== "add";
   const showNewValue = nodeKind !== "remove";
   const hasSettings = group.rows.length > 0;
   const canDiscard =
-    getCanvasNodeDiffGroupCanDiscard(group) &&
+    group.canDiscard &&
     (hasSettings ||
       group.lifecycle === "create" ||
       group.lifecycle === "delete");

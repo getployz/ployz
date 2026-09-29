@@ -12,13 +12,12 @@ import {
 } from "#/components/ui/dropdown-menu";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { ItemGroup } from "#/components/ui/item";
-import { plural } from "#/modules/branches/branch-plan";
+import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
 import { branchQuery, environmentsQuery, saveQuery, updateQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
 import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { actionVariant, NewsRow } from "./BranchNews";
@@ -205,10 +204,9 @@ type Acceptance = Pick<VolumeLoss, "accept" | "version">;
 function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: BranchView) {
   const writer = useStoreWriter(params.organizationSlug);
   const navigate = useNavigate();
-  const { environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const deployments = useStoreDeployments(params.organizationSlug, store).data.pages[0]?.deployments ?? [];
   const { machines } = useRuntimeLens(params.organizationSlug);
-  const place = useEnvironmentPlace(params.organizationSlug, environmentId);
+  const place = `${store.project ?? ""}/${store.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
   const name = branch.environment.name;
   const latest = deployments[0];

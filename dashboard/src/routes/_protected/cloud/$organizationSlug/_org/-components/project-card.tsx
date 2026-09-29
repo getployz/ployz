@@ -2,7 +2,6 @@ import { useId } from "react";
 import { Background, BackgroundVariant, ReactFlowProvider } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
-import type { ServiceSource } from "#/modules/environment-design/services";
 import type { RuntimeLensStatus, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/service-node-helpers";
 import { cn } from "#/lib/utils";
@@ -15,7 +14,7 @@ export function ProjectCard({
   runtimeStatus,
 }: {
   name: string;
-  environment: { name: string; namespace: string; services: { id: string; slug: string; config: { source: Pick<ServiceSource, "type"> } }[] } | null;
+  environment: { name: string; namespace: string; services: { id: string; slug: string; config: { source: { type: "empty" | "git" | "image" } } }[] } | null;
   runtimeServices: readonly RuntimeServiceRecord[];
   runtimeStatus: RuntimeLensStatus;
 }) {

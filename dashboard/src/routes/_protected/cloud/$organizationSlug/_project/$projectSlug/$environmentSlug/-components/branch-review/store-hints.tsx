@@ -7,7 +7,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle }
 import { presentMoveRow } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
@@ -15,10 +15,10 @@ import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
  * path ("PR #142" once staged; "PR #142: {value} · Use" where this Environment's own edit stayed), and the ones no change
  * shows after the changes.
  */
-export function storeHintNotes(diff: DiffView, groups: readonly CanvasEnvironmentChangeGroup[]) {
+export function storeHintNotes(diff: DiffView, groups: readonly ChangeGroup[]) {
   const notes = hintNotes(diff.hints, new Set(groups.flatMap((group) => group.rows.map((row) => row.path))));
   return {
-    noteFor: (_: CanvasEnvironmentChangeGroup, path: string) => {
+    noteFor: (_: ChangeGroup, path: string) => {
       const at = notes.at(path);
       return at.length ? <>{at.map((hint) => <HintNote key={`${hint.save}:${hint.row}`} hint={hint} />)}</> : null;
     },

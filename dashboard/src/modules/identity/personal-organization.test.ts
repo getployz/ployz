@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   personalOrganizationBaseSlug,
   personalOrganizationName,
-} from "#/modules/environment-design/workspace-schemas";
+} from "#/modules/organization/organization-state";
 
 describe("personalOrganizationName", () => {
   it("uses the trimmed display name", () => {
