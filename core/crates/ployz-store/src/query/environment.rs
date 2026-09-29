@@ -6,6 +6,7 @@
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -13,7 +14,7 @@ use crate::settings::{Apply, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Read an Environment's Working State, narrowed to `SERVICE` or `SERVICE.SETTING`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentQuery {
     /// The Environment to read.
@@ -28,7 +29,7 @@ pub struct EnvironmentQuery {
 }
 
 /// An Environment's Settings in Working State.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentView {
     /// The Environment, at the revision read.
     pub environment: EnvironmentSummary,
@@ -41,7 +42,7 @@ pub struct EnvironmentView {
 }
 
 /// One Setting's current Working State value.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct SettingRow {
     /// The Setting.
     pub path: SettingPath,

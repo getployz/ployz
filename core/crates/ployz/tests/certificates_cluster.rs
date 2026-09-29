@@ -6,9 +6,9 @@ use std::{
 
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, CertificateHost, CertificateMaterialChange,
-    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate,
-    Namespace, PublicIpUpdate, PublishCertificateMaterialRequest, RemoveContainerRequest,
-    ResolvedServiceSpec, ServiceId, StartContainerRequest, op,
+    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate, Namespace,
+    PublicIpUpdate, PublishCertificateMaterialRequest, RemoveContainerRequest, ResolvedServiceSpec,
+    ServiceId, StartContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 

@@ -9,6 +9,7 @@ use ployz_core::config::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
@@ -19,7 +20,7 @@ use crate::settings::{self, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Put Working State in Saved State without deploying it.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Publish {
     /// The Environment to publish.
@@ -31,7 +32,7 @@ pub struct Publish {
 }
 
 /// The Saved revision Working State is now in.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Published {
     /// The Environment.
     pub environment: EnvironmentSummary,
@@ -42,7 +43,7 @@ pub struct Published {
 }
 
 /// Undo staged changes: all of them, one Service's, or one Setting's.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Discard {
     /// The Environment to discard in.
@@ -57,7 +58,7 @@ pub struct Discard {
 }
 
 /// The Environment after a discard.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Discarded {
     /// The Environment.
     pub environment: EnvironmentSummary,

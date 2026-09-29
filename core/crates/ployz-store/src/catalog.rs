@@ -5,6 +5,7 @@
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use ts_rs::TS;
 
 use crate::error;
 use crate::settings::{ServiceSetting, SettingPath};
@@ -38,7 +39,7 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
 }
 
 /// One Setting: its canonical path and its schema.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Explained {
     /// The Setting's canonical path.
     pub path: SettingPath,

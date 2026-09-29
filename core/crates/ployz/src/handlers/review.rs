@@ -32,11 +32,11 @@ fn version() -> clap::Arg {
 
 pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let query = DiffQuery {
         environment: environment(matches)?,
     };
-    let view = store.diff(&actor, &query).map_err(failed)?;
+    let view = store.diff(&query).map_err(failed)?;
     let hint = (!view.changes.is_empty() && !view.published)
         .then(|| next(matches, &["publish", "--version", &view.version]));
     crate::output::finish(&Next::new(&view, hint.clone()), || {
@@ -68,9 +68,9 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
         environment: environment(matches)?,
         version: matches.get_one::<String>("version").cloned(),
     };
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let published = store
-        .publish(&actor, &publish)
+        .publish(&publish)
         .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
     crate::output::finish(&published, || {
         let where_ = format!(
@@ -96,9 +96,9 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let discarded = store
-        .discard(&actor, &discard)
+        .discard(&discard)
         .map_err(|error| failed(with_refresh_hint(error, matches, "diff")))?;
     let hint = Some(next(matches, &["diff"]));
     crate::output::finish(&Next::new(&discarded, hint), || {

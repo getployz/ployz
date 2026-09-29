@@ -778,9 +778,9 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         name,
         image: required(matches, "image")?,
     };
-    let (store, actor) = super::store::store()?;
+    let store = super::store::store(root)?;
     let created = store
-        .create_service(&actor, &create)
+        .create_service(&create)
         .map_err(super::store::failed)?;
     let hint = Some(super::store::next(matches, &["diff"]));
     output::finish(&super::store::Next::new(&created, hint), || {

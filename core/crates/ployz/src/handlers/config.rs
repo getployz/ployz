@@ -73,7 +73,7 @@ fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> {
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let query = EnvironmentQuery {
         environment: environment(matches)?,
         path: matches
@@ -82,7 +82,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             .transpose()?,
         all: matches.get_flag("all"),
     };
-    let view = store.environment(&actor, &query).map_err(failed)?;
+    let view = store.environment(&query).map_err(failed)?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -145,7 +145,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    edit(matches, changes)
+    edit(root, changes)
 }
 
 pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
@@ -160,18 +160,19 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    edit(matches, changes)
+    edit(root, changes)
 }
 
-fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+    let matches = leaf_matches(root);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
         changes,
     };
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let edited = store
-        .edit(&actor, &edit)
+        .edit(&edit)
         .map_err(|error| failed(with_refresh_hint(error, matches, "get")))?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
     crate::output::finish(&Next::new(&edited, hint), || {

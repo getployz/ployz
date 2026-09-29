@@ -97,7 +97,11 @@ pub(crate) fn setting_paths() -> ArgValueCompleter {
 /// Completion sees no flags, so scope comes from `PLOYZ_PROJECT` and `PLOYZ_ENV`.
 fn services() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
-        let (store, actor) = super::store::store().ok()?;
+        let config = std::env::var(crate::cli::env::CONFIG)
+            .unwrap_or_else(|_| "~/.config/ployz/config.yaml".to_owned());
+        let store =
+            super::store::store_at(&crate::context::expand_home(std::path::Path::new(&config)))
+                .ok()?;
         let parse = |name: &str| std::env::var(name).ok();
         let environment = EnvironmentRef {
             project: parse(env::PROJECT)
@@ -114,7 +118,7 @@ fn services() -> Vec<String> {
             path: None,
             all: true,
         };
-        let view = store.environment(&actor, &query).ok()?;
+        let view = store.environment(&query).ok()?;
         let mut services = view
             .settings
             .into_iter()

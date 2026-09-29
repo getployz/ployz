@@ -3,7 +3,8 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 //! The Config Store's behaviour suite, through its public interface only. It runs on
-//! in-memory SQLite here and joins the Postgres suite once that adapter exists.
+//! SQLite, and on Postgres when `PLOYZ_STORE_TEST_POSTGRES` names a server as
+//! `postgres://USER:PASSWORD@HOST:PORT` (each test gets its own new database).
 
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
@@ -12,6 +13,9 @@ use ployz_store::{
     OrganizationId, ProjectId, ProjectName, Query, Revision, ServiceId, SettingPath, View, Written,
 };
 use serde_json::{Value, json};
+
+mod backend;
+use backend::{fresh_url, open};
 
 fn actor(organization: &str) -> Actor {
     Actor {
@@ -87,7 +91,7 @@ fn paths(paths: &[SettingPath]) -> Vec<String> {
 
 /// A store with Project `shop` and Service `web` running nginx.
 fn shop() -> (ConfigStore, Actor) {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = open();
     let who = actor("org");
     store.create_project(&who, &create_project("shop")).unwrap();
     store
@@ -98,7 +102,7 @@ fn shop() -> (ConfigStore, Actor) {
 
 #[test]
 fn a_new_project_opens_an_empty_default_environment() {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = open();
     let who = actor("org");
     let created = store.create_project(&who, &create_project("shop")).unwrap();
     assert_eq!(created.environment.name.as_str(), "production");
@@ -109,7 +113,7 @@ fn a_new_project_opens_an_empty_default_environment() {
 
 #[test]
 fn an_image_service_shows_every_setting_with_its_default() {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = open();
     let who = actor("org");
     store.create_project(&who, &create_project("shop")).unwrap();
     let created = store
@@ -373,7 +377,7 @@ fn an_expected_revision_refuses_when_working_state_moved() {
 #[test]
 fn concurrent_blind_edits_to_different_settings_all_survive() {
     let dir = tempfile::tempdir().unwrap();
-    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let url = fresh_url(&dir);
     let who = actor("org");
     let first = ConfigStore::open(&url).unwrap();
     first.create_project(&who, &create_project("shop")).unwrap();
@@ -586,7 +590,7 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
 
 #[test]
 fn project_and_environment_names_never_clash_across_projects() {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = open();
     let who = actor("org");
     store.create_project(&who, &create_project("a-b")).unwrap();
     store.create_project(&who, &create_project("a")).unwrap();
@@ -600,7 +604,7 @@ fn project_and_environment_names_never_clash_across_projects() {
 
 #[test]
 fn the_wire_and_typed_forms_agree() {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = open();
     let who = actor("org");
     let Written::Project(created) = store
         .write(&who, &Command::CreateProject(create_project("shop")))
@@ -623,9 +627,7 @@ fn the_wire_and_typed_forms_agree() {
 }
 
 #[test]
-fn only_sqlite_urls_open() {
-    let error = ConfigStore::open("postgres://localhost/store")
-        .err()
-        .unwrap();
+fn only_postgres_and_sqlite_urls_open() {
+    let error = ConfigStore::open("mysql://localhost/store").err().unwrap();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 }

@@ -4,6 +4,7 @@ use std::fmt;
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::error;
 
@@ -11,9 +12,13 @@ use crate::error;
 // `ValueError` that quotes the rejected value, and the Store never echoes input.
 macro_rules! store_string {
     ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr) => {
+        store_string!($(#[$doc])* $name, $what, $valid, "String");
+    };
+    ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr, $ts:literal) => {
         $(#[$doc])*
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
+        #[ts(as = $ts)]
         pub struct $name(String);
 
         impl $name {
@@ -94,7 +99,7 @@ store_string!(
 store_string!(
     /// A Service's durable identity, minted by the caller that creates it. It is
     /// also the lineage of the Service it creates.
-    ServiceId, "a Service ID (a UUID)", is_uuid
+    ServiceId, "a Service ID (a UUID)", is_uuid, "ployz_core::ServiceId"
 );
 store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
@@ -106,7 +111,7 @@ store_string!(
 );
 
 /// Working State's revision: it advances by one with every write that changes it.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct Revision(pub u64);
 

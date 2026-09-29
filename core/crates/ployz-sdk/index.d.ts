@@ -1,6 +1,10 @@
 import type {
   BuildGrantEnded,
   BuildGrantMinted,
+  ConfigCommand,
+  ConfigQuery,
+  ConfigView,
+  ConfigWritten,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -247,3 +251,14 @@ export declare class Client {
 }
 
 export declare function allocateEnrollment(request: RegisterRequest, snapshot: EnrollmentSnapshot, saved: EnrollmentAssignment[]): EnrollmentAssignment;
+
+/** One Config Store; every call acts in one Organization and rejects with RpcError. */
+export interface ConfigStore {
+  read(organization: string, query: ConfigQuery): Promise<ConfigView>;
+  write(organization: string, command: ConfigCommand): Promise<ConfigWritten>;
+}
+/**
+ * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.
+ * Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`.
+ */
+export declare function openConfigStore(url: string): Promise<ConfigStore>;

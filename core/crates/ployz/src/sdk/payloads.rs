@@ -117,6 +117,10 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::config::BranchPlan>();
     declarations.add::<ployz_core::config::BranchChangesInput>();
     declarations.add::<ployz_core::config::BranchChanges>();
+    declarations.add::<ployz_store::Query>();
+    declarations.add::<ployz_store::View>();
+    declarations.add::<ployz_store::Command>();
+    declarations.add::<ployz_store::Written>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {
