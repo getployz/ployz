@@ -107,19 +107,15 @@ const AuthSchema = {
 /** The `ployz` CLI's device-authorization client id. */
 export const CLI_CLIENT_ID = "ployz-cli";
 
-// Dark until the Config Store cutover: production keeps CLI sign-in off.
 // better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
 // so another signed-in user can neither approve nor deny it.
-function cliSignInPlugins(nodeEnv: string) {
-  if (nodeEnv === "production") return [];
-  return [
-    deviceAuthorization({
-      verificationUri: "/device",
-      validateClient: (clientId) => clientId === CLI_CLIENT_ID,
-    }),
-    bearer(),
-  ];
-}
+const cliSignInPlugins = [
+  deviceAuthorization({
+    verificationUri: "/device",
+    validateClient: (clientId) => clientId === CLI_CLIENT_ID,
+  }),
+  bearer(),
+];
 
 function hostedPolarPlugin(
   config: Effect.Success<typeof AppConfig.make>,
@@ -244,7 +240,7 @@ const makeAuth = Effect.gen(function* () {
     },
     plugins: [
       organizationPlugin(),
-      ...cliSignInPlugins(config.nodeEnv),
+      ...cliSignInPlugins,
       ...(polarPlugin === null ? [] : [polarPlugin]),
       tanstackStartCookies(),
     ],
