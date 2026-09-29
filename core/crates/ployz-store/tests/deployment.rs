@@ -7,8 +7,9 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Edit,
-    EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    Revision, RunEvidence, RunnerId, ServiceId, SettingPath, Written,
+    EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
+    ProjectId, ProjectName, Query, Revision, RunEvidence, RunnerId, ServiceId, SettingPath, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -421,6 +422,26 @@ fn deployments_page_newest_first_within_the_organization() {
     };
     assert_eq!(
         code(store.deployment(&stranger, &id(1))),
+        RpcErrorCode::NotFound
+    );
+}
+
+#[test]
+fn an_environments_namespace_is_the_one_its_deployments_use() {
+    let (store, who) = shop();
+    let query: Query = serde_json::from_value(json!({"query": "namespace"})).unwrap();
+    let View::Namespace(before) = store.read(&who, &query).unwrap() else {
+        panic!("a namespace query answers a namespace view");
+    };
+    assert_eq!(before.namespace.as_str(), "shop-production");
+    admit(&store, &who, 1, &[], None).unwrap();
+    let after = store.namespace(&who, &NamespaceQuery::default()).unwrap();
+    assert_eq!(after, before);
+    let stranger = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    assert_eq!(
+        code(store.namespace(&stranger, &NamespaceQuery::default())),
         RpcErrorCode::NotFound
     );
 }

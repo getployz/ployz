@@ -370,7 +370,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
             "alpine:3.23.3",
         ),
         (
-            &["service", "ps", "--json"],
+            &["ps", "--json"],
             "/containers/0/resolved_spec/container/image",
             "alpine:3.23.3",
         ),
@@ -408,7 +408,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let human_cases = [
         (&["service", "ls"][..], services),
         (
-            &["service", "ps"][..],
+            &["ps"][..],
             format!(
                 "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
                 "0".repeat(64),

@@ -10,7 +10,10 @@ use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use deployment::{DeploymentQuery, DeploymentsQuery, DeploymentsView, PlanQuery, PlanView};
+pub use deployment::{
+    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView, PlanQuery,
+    PlanView,
+};
 pub use diff::DiffQuery;
 pub(crate) use diff::diff;
 pub(crate) use environment::environment;
@@ -34,6 +37,8 @@ pub enum Query {
     Deployments(DeploymentsQuery),
     /// One Deployment.
     Deployment(DeploymentQuery),
+    /// Where an Environment runs on the Servers.
+    Namespace(NamespaceQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -51,6 +56,8 @@ pub enum View {
     Deployments(DeploymentsView),
     /// One Deployment.
     Deployment(crate::DeploymentView),
+    /// An Environment's Namespace.
+    Namespace(NamespaceView),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, RpcError> {
@@ -62,5 +69,6 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         Query::Deployment(query) => {
             crate::deployment::view(tx, who, &query.id).map(View::Deployment)
         }
+        Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
     }
 }
