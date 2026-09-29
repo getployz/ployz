@@ -5,6 +5,10 @@ import type { VolumeListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { outcomeCardState } from "#/components/deployment-outcome-badges";
+import { cn } from "#/lib/utils";
+import { useNodeLighting } from "../deployment-page";
+import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /** A Config Store Volume on the canvas and in its phone list: its mount paths, and what the next Deploy does to it. */
@@ -13,6 +17,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
   const paths = volume.mounts.map((mount) => mount.path);
   const summary = paths.length === 0 ? "No mounts" : paths.length > 2 ? `${paths.slice(0, 2).join(", ")}, +${paths.length - 2}` : paths.join(", ");
   const removing = volume.change === "delete";
+  const light = useNodeLighting(volume.id);
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
@@ -23,8 +28,8 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
       draggable={false}
       className={className}
     >
-      <Card size="node" state={removing ? "destructive" : volume.change === "create" ? "success" : undefined}
-        className="h-full justify-between" data-selected={selected}>
+      <Card size="node" state={light ? outcomeCardState(light.outcome) : removing ? "destructive" : volume.change === "create" ? "success" : undefined}
+        className={cn("h-full justify-between", light === null && "opacity-40")} data-selected={selected}>
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
@@ -32,7 +37,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
               <CardTitle className="truncate">{volume.name}</CardTitle>
               <CardDescription>Volume</CardDescription>
             </div>
-            {removing ? <Badge variant="destructive">Removing</Badge> : volume.change === "create" ? <Badge variant="success">New</Badge> : null}
+            {light ? <NodeOutcomeBadge light={light} /> : removing ? <Badge variant="destructive">Removing</Badge> : volume.change === "create" ? <Badge variant="success">New</Badge> : null}
           </div>
         </CardHeader>
         <CardContent>
