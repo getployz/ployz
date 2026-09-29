@@ -9,9 +9,10 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "#/modules/config-store/store.functions";
 import * as lens from "#/modules/runtime/use-runtime-lens";
 import * as places from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
-import { useStoreDeploy } from "./useStoreDeploy";
+import { useStoreChangeActions } from "./useStoreChangeActions";
 
 afterEach(() => {
+  admittedIds.length = 0;
   cleanup();
   vi.restoreAllMocks();
   document.body.replaceChildren();
@@ -23,9 +24,15 @@ const loss = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", 
 // SAFETY: the hook reads nothing of an admitted Deployment but that it was.
 const admitted = { ok: true, value: { written: "deployment", id: "d" } } as never;
 
+const admittedIds: string[] = [];
+
 function Deploy() {
-  const { deploy, dialog } = useStoreDeploy("acme", ref, "env");
-  return <><button type="button" onClick={deploy}>Deploy now</button>{dialog}</>;
+  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "env", (id) => admittedIds.push(id));
+  return <>
+    <button type="button" onClick={deploy}>Deploy now</button>
+    <button type="button" onClick={() => void discard("web.replicas")}>Discard replicas</button>
+    {dialog}
+  </>;
 }
 
 function setup() {
@@ -59,6 +66,18 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   expect(test.admits()).toMatchObject([{ accept_volume_loss: [], version: null }, { accept_volume_loss: ["pg-data"], version: "9:1:0.1" }]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
+  // The admitted Deploy, the second admission's own id, opens.
+  expect(admittedIds).toHaveLength(1);
+  expect(test.admits()[1]).toMatchObject({ id: admittedIds[0] });
+});
+
+it("discards a Setting by its Store path, through the Environment's queue", async () => {
+  const test = setup();
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "discarded" } } as never);
+
+  act(() => { fireEvent.click(screen.getByText("Discard replicas")); });
+  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
+  expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: null }]);
 });
 
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {
@@ -69,4 +88,5 @@ it("fails closed when the Servers can't be checked: nothing to accept, and the S
   await waitFor(() => expect(toast.error).toHaveBeenCalledWith("refused: unavailable"));
   expect(screen.queryByPlaceholderText("shop/production")).toBeNull();
   expect(test.write).toHaveBeenCalledTimes(1);
+  expect(admittedIds).toEqual([]);
 });

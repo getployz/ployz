@@ -10,6 +10,7 @@ import { NotFound, Validation } from "#/server/public-error";
 import { environment } from "#/modules/project/tables";
 import { environmentDeployment } from "#/modules/deployments/tables";
 import { organizationSlugSchema } from "#/modules/organization/tables";
+import { readStore } from "#/modules/config-store/config-store.server";
 
 export const logSearchSchema = Schema.Struct({
   organizationSlug: organizationSlugSchema,
@@ -39,10 +40,25 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
   return { namespace, serviceId: search.serviceId, deploymentId: search.deploymentId } satisfies LogFilter;
 });
 
+/**
+ * A Config Store Deployment's logs: its Namespace, then the containers labelled with its ID. The Store answers for
+ * the Organization only, so another's Deployment stays not found.
+ */
+// TODO(#1275): the only filter for a Deployment, once the Store is the only backend.
+const storeDeploymentFilter = Effect.fn("Runtime.storeDeploymentFilter")(function* (organizationId: string, search: LogSearch, missing: NotFound) {
+  if (!search.deploymentId) return yield* missing;
+  const deploymentId = search.deploymentId;
+  const view = yield* readStore(organizationId, { query: "deployment", id: deploymentId }).pipe(Effect.mapError(() => missing));
+  if (view.view !== "deployment") return yield* missing;
+  return { namespace: view.namespace, serviceId: search.serviceId, deploymentId } satisfies LogFilter;
+});
+
 /** The response owns this scope until its consumer disconnects. */
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch) {
   const { organizationId } = yield* authorizeRuntimeOrganization({ headers: request.headers, organizationSlug: search.organizationSlug });
-  const filter = yield* resolveLogFilter(organizationId, search);
+  const filter = yield* resolveLogFilter(organizationId, search).pipe(
+    Effect.catchTag("NotFound", (missing) => storeDeploymentFilter(organizationId, search, missing)),
+  );
   const scope = yield* Scope.make();
   const close = Scope.close(scope, Exit.void);
   const runtime = yield* OrganizationRuntime;

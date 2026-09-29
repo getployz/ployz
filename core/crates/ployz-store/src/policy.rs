@@ -25,6 +25,10 @@ pub(crate) struct Policy {
     pub(crate) auto_deploy: bool,
     pub(crate) wait_for_ci: bool,
     pub(crate) watch_paths: Vec<String>,
+    /// Who builds it first: `github`, or a Server's Machine ID. None follows the
+    /// Organization's Build Order; see [`crate::builders`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) preferred_builder: Option<String>,
 }
 
 impl Default for Policy {
@@ -33,6 +37,7 @@ impl Default for Policy {
             auto_deploy: true,
             wait_for_ci: false,
             watch_paths: Vec::new(),
+            preferred_builder: None,
         }
     }
 }
@@ -68,6 +73,7 @@ pub(crate) enum PolicySetting {
     AutoDeploy,
     WaitForCi,
     WatchPaths,
+    PreferredBuilder,
 }
 
 impl PolicySetting {
@@ -76,6 +82,7 @@ impl PolicySetting {
             Self::AutoDeploy => "autoDeploy",
             Self::WaitForCi => "waitForCi",
             Self::WatchPaths => "watchPaths",
+            Self::PreferredBuilder => "preferredBuilder",
         }
     }
 
@@ -84,6 +91,7 @@ impl PolicySetting {
             Self::AutoDeploy => "Auto-deploy",
             Self::WaitForCi => "Wait for CI",
             Self::WatchPaths => "Watch paths",
+            Self::PreferredBuilder => "Preferred Builder",
         }
     }
 
@@ -98,6 +106,9 @@ impl PolicySetting {
             Self::WatchPaths => {
                 "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once."
             }
+            Self::PreferredBuilder => {
+                "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID; then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build."
+            }
         }
     }
 
@@ -106,6 +117,7 @@ impl PolicySetting {
             Self::AutoDeploy => json!(true),
             Self::WaitForCi => json!(false),
             Self::WatchPaths => json!([]),
+            Self::PreferredBuilder => Value::Null,
         }
     }
 
@@ -117,6 +129,10 @@ impl PolicySetting {
                 "items": { "type": "string", "minLength": 1, "maxLength": 255 },
                 "maxItems": WATCH_PATHS,
             }),
+            Self::PreferredBuilder => json!({
+                "type": "string",
+                "anyOf": [{ "const": "github" }, { "pattern": "^[0-9a-f]{32}$" }],
+            }),
         }
     }
 
@@ -125,6 +141,7 @@ impl PolicySetting {
             Self::AutoDeploy => json!([false]),
             Self::WaitForCi => json!([true]),
             Self::WatchPaths => json!([["apps/web/**", "!**/*.md"]]),
+            Self::PreferredBuilder => json!(["github"]),
         }
     }
 
@@ -138,6 +155,7 @@ impl PolicySetting {
             Self::AutoDeploy => json!(policy.auto_deploy),
             Self::WaitForCi => json!(policy.wait_for_ci),
             Self::WatchPaths => json!(policy.watch_paths),
+            Self::PreferredBuilder => json!(policy.preferred_builder),
         }
     }
 
@@ -145,6 +163,12 @@ impl PolicySetting {
     /// `set PATH=VALUE` sends it: `true`/`false`, or one watch path.
     fn write(self, policy: &mut Policy, value: Option<Value>) -> Result<(), RpcError> {
         let setting = ServiceSetting::Policy(self);
+        if self == Self::PreferredBuilder {
+            policy.preferred_builder = value
+                .map(|value| crate::builders::Preferred::parse(&value).map(|p| p.text()))
+                .transpose()?;
+            return Ok(());
+        }
         let value = value.unwrap_or_else(|| self.default());
         match self {
             Self::AutoDeploy | Self::WaitForCi => {
@@ -187,6 +211,8 @@ impl PolicySetting {
                 }
                 policy.watch_paths = paths;
             }
+            // Written above.
+            Self::PreferredBuilder => {}
         }
         Ok(())
     }

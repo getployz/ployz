@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { publicErrorResponse } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 

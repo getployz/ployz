@@ -267,8 +267,8 @@ fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(),
 }
 
 #[derive(Serialize)]
-struct Linked {
-    directory: String,
+pub(super) struct Linked {
+    pub(super) directory: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     organization: Option<Organization>,
     project: ProjectName,
@@ -288,22 +288,7 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     let view = store
         .environment(&query)
         .map_err(failed(matches, &["link"]))?;
-    let linked = Linked {
-        directory: here()?,
-        organization: acting_organization(&config)?,
-        project: view.environment.project,
-        environment: view.environment.name,
-    };
-    let mut links = load(&config)?;
-    links.insert(
-        linked.directory.clone(),
-        Link {
-            organization: linked.organization.clone(),
-            project: linked.project.clone(),
-            environment: linked.environment.clone(),
-        },
-    );
-    save(&config, &links)?;
+    let linked = record(&config, view.environment)?;
     let hint = Some("ployz status".to_owned());
     crate::output::finish(&Next::new(&linked, hint), || {
         say!(
@@ -315,19 +300,40 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Link this directory to `environment`, which the Store just resolved.
+pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<Linked, Error> {
+    let linked = Linked {
+        directory: here()?,
+        organization: acting_organization(config)?,
+        project: environment.project,
+        environment: environment.name,
+    };
+    let mut links = load(config)?;
+    links.insert(
+        linked.directory.clone(),
+        Link {
+            organization: linked.organization.clone(),
+            project: linked.project.clone(),
+            environment: linked.environment.clone(),
+        },
+    );
+    save(config, &links)?;
+    Ok(linked)
+}
+
 /// Who commands act as.
 #[derive(Serialize)]
-struct Identity {
+pub(super) struct Identity {
     /// `device` (a signed-in device), `token` (`PLOYZ_TOKEN`), or `local` (hidden test mode).
     credential: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cloud: Option<String>,
+    pub(super) cloud: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<Account>,
-    organization: Option<Organization>,
+    pub(super) organization: Option<Organization>,
 }
 
-fn identity(store: &Store) -> Result<Identity, Error> {
+pub(super) fn identity(store: &Store) -> Result<Identity, Error> {
     Ok(match store {
         Store::Local(..) => Identity {
             credential: "local",

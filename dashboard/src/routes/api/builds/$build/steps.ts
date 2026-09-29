@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Effect } from "effect";
 import { recordGithubBuildSteps } from "#/modules/deployments/github-image-builds.server";
+import { recordStoreGithubBuildSteps, isStoreGithubBuild } from "#/modules/config-store/store-github-builds.server";
 import { publicErrorResponse } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
@@ -8,10 +9,17 @@ import { runAppEffect } from "#/server/run.server";
 export const Route = createFileRoute("/api/builds/$build/steps")({
   server: {
     handlers: {
-      POST: async ({ request, params }) =>
-        runAppEffect(recordGithubBuildSteps(request, params.build, await request.text()).pipe(Effect.map((body) => Response.json(body))), {
-          signal: request.signal,
-        }).catch(publicErrorResponse),
+      POST: async ({ request, params }) => {
+        const text = await request.text();
+        const options = { signal: request.signal };
+        // A Config Store build's id is DEPLOYMENT.SERVICE.
+        if (isStoreGithubBuild(params.build)) {
+          return runAppEffect(recordStoreGithubBuildSteps(request, params.build, text).pipe(Effect.map((body) => Response.json(body))), options)
+            .catch(publicErrorResponse);
+        }
+        return runAppEffect(recordGithubBuildSteps(request, params.build, text).pipe(Effect.map((body) => Response.json(body))), options)
+          .catch(publicErrorResponse);
+      },
     },
   },
 });

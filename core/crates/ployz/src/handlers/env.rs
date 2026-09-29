@@ -1,8 +1,9 @@
 //! `ployz env`: Environments in the Config Store, and Branches of them. `ls`,
 //! `default` and `rm` manage them; `rm` is the one teardown path. A Branch
 //! copies the Services and Volumes picked (and what they use that its Parent
-//! doesn't run) and uses the rest live; `update` stages what its Parent deployed
-//! since, `copy` turns a Live Node into its own copy, and `keep` keeps it after a Save.
+//! doesn't run) and uses the rest live; `save` stages its changes in its Parent,
+//! `update` stages what its Parent deployed since, `copy` turns a Live Node into
+//! its own copy, and `keep` keeps it after a Save.
 
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
@@ -10,9 +11,9 @@ use ployz_core::ServiceName;
 use ployz_store::{
     Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch,
-    RemoveEnvironment, ServicesQuery, SetDefaultEnvironment, SetupCommand, UpdateBranch,
-    VolumeName, VolumesQuery,
+    EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
+    MovePick, MoveQuery, MoveView, Moved, RemoveEnvironment, ServicesQuery, SetDefaultEnvironment,
+    SetupCommand, VolumeName, VolumesQuery,
 };
 use serde_json::json;
 
@@ -24,6 +25,7 @@ use crate::cli::{base, positional, repeated, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
+use ployz_core::config::BranchOption;
 
 pub(crate) fn command() -> Command {
     Command::new("env")
@@ -97,13 +99,19 @@ pub(crate) fn command() -> Command {
                     "Fix this failed Deployment of the Parent: copies what it failed to apply",
                 )),
         )
-        .subcommand(
-            store::scoped(
-                Command::new("update")
-                    .about("Stage what the Branch's Parent deployed since, in the Branch"),
-            )
-            .arg(expect()),
-        )
+        .subcommand(moving(
+            Command::new("save")
+                .about("Stage the Branch's changes in its Parent")
+                .long_about(
+                    "Stage the Branch's changes in its Parent's Working State; nothing is \
+                     published or deployed, and nothing in the Parent is deleted. --plan \
+                     lists them and the version to pass back. A secret the Branch added \
+                     moves only when picked `=from`.",
+                ),
+        ))
+        .subcommand(moving(Command::new("update").about(
+            "Stage what the Branch's Parent deployed since, in the Branch",
+        )))
         .subcommand(
             store::scoped(
                 Command::new("copy").about(
@@ -127,6 +135,7 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
         "default" => (default, Supported),
         "rm" => (rm, Supported),
         "branch" => (branch, Supported),
+        "save" => (save, Supported),
         "update" => (update, Supported),
         "copy" => (copy, Supported),
         "keep" => (keep, Supported),
@@ -378,7 +387,8 @@ pub(super) fn take_off(
             volumes,
         )
         .map_err(|error| failed(matches, words)(deploy::accepting(error, matches, again)))?;
-    let (view, ran, _) = deploy::execute(matches, store, &admitted, None, events, words)?;
+    let deploy::Shipped { view, ran, .. } =
+        deploy::execute(matches, store, &admitted, None, events, words)?;
     Ok((view, ran))
 }
 
@@ -488,21 +498,163 @@ fn branch(root: &ArgMatches) -> Result<(), Error> {
     finish(&made, Some(deploy), "Made Branch")
 }
 
+/// `env save` and `env update`: the Branch in scope, the changes picked, the guard.
+fn moving(command: Command) -> Command {
+    store::scoped(command)
+        .arg(
+            repeated("only")
+                .value_name("ROW[=CHOICE]")
+                .help("Move only this change, or every change under it (web, web.env); a variable may say how it lands: from, parent or leave_out"),
+        )
+        .arg(value("version", None).help("Refuse unless this is still the version --plan showed"))
+        .arg(switch("plan", None).help("List the changes and the version; move nothing"))
+}
+
+fn save(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let from = Some(store::environment(matches)?);
+    shift(root, "save", MoveQuery { from, into: None })
+}
+
 fn update(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let update = UpdateBranch {
-        environment: store::environment(matches)?,
-        expect: expected(matches)?,
+    let into = Some(store::environment(matches)?);
+    shift(root, "update", MoveQuery { from: None, into })
+}
+
+/// A Save or an Update: with `--plan` its changes, else the Move itself.
+fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = store(root)?;
+    let words = ["env", verb];
+    if matches.get_flag("plan") {
+        let view = store.move_view(&sides).map_err(failed(matches, &words))?;
+        return plan(matches, verb, &view);
+    }
+    let picks = matches
+        .get_many::<String>("only")
+        .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+    let request = Move {
+        from: sides.from,
+        into: sides.into,
+        picks,
+        version: matches.get_one::<String>("version").cloned(),
     };
-    let updated = store(root)?
-        .update_branch(&update)
-        .map_err(|error| stale(error, matches))
-        .map_err(failed(matches, &["env", "update"]))?;
-    finish(
-        &updated,
-        Some(store::next(matches, &["deploy"])),
-        "Updated Branch",
-    )
+    let moved = store
+        .move_changes(&request)
+        .map_err(|error| failed(matches, &words)(reviewed(error, matches, verb)))?;
+    moved_out(matches, verb, &moved)
+}
+
+/// `--only ROW[=CHOICE]`.
+fn pick(only: &str) -> Result<MovePick, Error> {
+    let (row, choice) = match only.split_once('=') {
+        Some((row, choice)) => {
+            let choice: BranchOption = serde_json::from_value(json!(choice)).map_err(|_| {
+                Error::usage(format!(
+                    "Expected --only {row}=CHOICE with from, parent or leave_out"
+                ))
+                .with_exit(USAGE_EXIT)
+            })?;
+            (row, Some(choice))
+        }
+        None => (only, None),
+    };
+    Ok(MovePick {
+        row: row.to_owned(),
+        choice,
+    })
+}
+
+/// A stale version names the read that shows the changes again.
+fn reviewed(error: StoreCallError, matches: &ArgMatches, verb: &str) -> StoreCallError {
+    let StoreCallError::Refused(mut error) = error else {
+        return error;
+    };
+    if let Some(details) = error.details.as_object_mut()
+        && details.contains_key("version")
+    {
+        details.insert(
+            "next".into(),
+            json!(store::next(matches, &["env", verb, "--plan"])),
+        );
+    }
+    StoreCallError::Refused(error)
+}
+
+fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> {
+    let next = (!view.rows.is_empty())
+        .then(|| store::next(matches, &["env", verb, "--version", view.version.as_str()]));
+    crate::output::finish(&Next::new(view, next), || {
+        say!(
+            "{} → {} (version {}):",
+            view.from.name,
+            view.into.name,
+            view.version
+        );
+        if view.rows.is_empty() {
+            say!("  nothing to move");
+        }
+        for row in &view.rows {
+            let mut notes = Vec::new();
+            if row.conflict {
+                notes.push(format!("{} changed it too", view.into.name));
+            }
+            if let Some(choice) = &row.choice {
+                let default = serde_json::to_value(choice.default).unwrap_or_default();
+                notes.push(format!("lands as {}", default.as_str().unwrap_or_default()));
+            }
+            let notes = match notes.is_empty() {
+                true => String::new(),
+                false => format!(" ({})", notes.join(", ")),
+            };
+            say!("  {}: {} → {}{notes}", row.row, row.into, row.from);
+        }
+    })
+}
+
+/// What a Move did: `deploy` of where it landed, and after a Save of a Branch not
+/// kept, the command that closes it.
+fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Error> {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        #[serde(flatten)]
+        moved: &'a Moved,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        next: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        close: Option<String>,
+    }
+    let scoped = |words: &[&str]| {
+        let mut words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+        if let Ok(Some(project)) = matches.try_get_one::<String>("project") {
+            words.extend(["--project".to_owned(), project.clone()]);
+        }
+        shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
+    };
+    let into: &EnvironmentSummary = &moved.into;
+    let branch = moved.branch.environment.name.as_str();
+    let out = Out {
+        moved,
+        next: (!moved.staged.is_empty()).then(|| scoped(&["deploy", "--env", into.name.as_str()])),
+        close: (verb == "save" && !moved.branch.kept)
+            .then(|| scoped(&["env", "rm", branch, "--confirm", branch])),
+    };
+    crate::output::finish(&out, || {
+        say!(
+            "Moved {} → {}/{}.",
+            moved.from.name,
+            into.project,
+            into.name
+        );
+        if !moved.staged.is_empty() {
+            say!("Staged: {}", moved.staged.join(", "));
+        }
+        if let Some(close) = &out.close {
+            say!("Close the Branch when done: {close}");
+        }
+    })
 }
 
 fn copy(root: &ArgMatches) -> Result<(), Error> {

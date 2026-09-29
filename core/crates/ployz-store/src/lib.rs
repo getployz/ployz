@@ -6,6 +6,7 @@
 mod automation;
 mod branch;
 mod build;
+mod builders;
 pub mod catalog;
 mod command;
 mod deployment;
@@ -30,10 +31,14 @@ use ployz_core::RpcError;
 
 pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
 pub use branch::{
-    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, SetupCommand,
-    UpdateBranch,
+    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, Move,
+    MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved, SetupCommand,
 };
-pub use build::{BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource};
+pub use build::{
+    BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
+    GithubBuildId, GithubClaims, GithubEnd, GithubGrant, GithubReport, GithubRun,
+};
+pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
@@ -556,20 +561,32 @@ impl ConfigStore {
             .write(|tx| branch::create_branch(tx, who, create))
     }
 
-    /// [`Command::UpdateBranch`].
+    /// [`Command::Move`].
     ///
     /// # Errors
-    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
-    /// Working State, or when its Parent deployed nothing new.
-    pub fn update_branch(&self, who: &Actor, update: &UpdateBranch) -> Result<Branched, RpcError> {
+    /// As [`write`](Self::write); `invalid_argument` unless the sides are a Branch
+    /// and its Parent, or for a secret that wants a fresh value; `conflict` for a
+    /// stale version, nothing to move, a Branch being removed, or an Update while
+    /// the Branch doesn't run its Working State.
+    pub fn move_changes(&self, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
         self.storage
-            .write(|tx| branch::update_branch(tx, who, update))
+            .write(|tx| branch::move_changes(tx, who, request))
+    }
+
+    /// [`Query::Move`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read); `invalid_argument` unless the sides are a Branch
+    /// and its Parent.
+    pub fn move_view(&self, who: &Actor, query: &MoveQuery) -> Result<MoveView, RpcError> {
+        self.storage.read(|tx| branch::move_view(tx, who, query))
     }
 
     /// [`Command::CopyNode`].
     ///
     /// # Errors
-    /// As [`update_branch`](Self::update_branch).
+    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
+    /// Working State.
     pub fn copy_node(&self, who: &Actor, copy: &CopyNode) -> Result<Branched, RpcError> {
         self.storage.write(|tx| branch::copy_node(tx, who, copy))
     }
@@ -657,6 +674,135 @@ impl ConfigStore {
     /// As [`read`](Self::read); `invalid_argument` for an Environment that isn't a Branch.
     pub fn branch(&self, who: &Actor, query: &BranchQuery) -> Result<BranchView, RpcError> {
         self.storage.read(|tx| branch::branch(tx, who, query))
+    }
+
+    /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the Deployment no longer wants it or it went to
+    /// another run or Builder, `not_found` for an unknown build, or a storage error.
+    pub fn github_dispatched(
+        &self,
+        id: &GithubBuildId,
+        github: &GithubRun,
+    ) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| build::github_dispatched(tx, id, github))
+    }
+
+    /// A Git build handed to GitHub. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` unless GitHub holds or held it, or a storage error.
+    pub fn github_build(&self, id: &GithubBuildId) -> Result<GithubBuild, RpcError> {
+        self.storage.read(|tx| build::github_build(tx, id))
+    }
+
+    /// Check a runner's verified OIDC `claims` against GitHub build `id`.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns `unauthenticated` for a token of another repository, workflow, branch
+    /// or run, or one GitHub didn't dispatch; `not_found` for an unknown build.
+    pub fn github_authorize(
+        &self,
+        id: &GithubBuildId,
+        claims: &GithubClaims,
+    ) -> Result<GithubBuild, RpcError> {
+        self.storage
+            .read(|tx| build::github_authorize(tx, id, claims))
+    }
+
+    /// What GitHub build `id` builds: the Deployment's lowering input with its
+    /// secrets unsealed, the pinned commit, and the Service's latest receipt.
+    /// In-process only: only the authorized runner receives it.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown build, or a storage error.
+    pub fn github_input(
+        &self,
+        id: &GithubBuildId,
+    ) -> Result<(serde_json::Value, String, Option<serde_json::Value>), RpcError> {
+        self.storage
+            .read(|tx| build::github_input(tx, id, &self.sealing))
+    }
+
+    /// Run `run_id` of GitHub build `id` checked in with `grant`. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` when it already checked in or is no longer wanted.
+    pub fn github_check_in(
+        &self,
+        id: &GithubBuildId,
+        run_id: u64,
+        grant: &GithubGrant,
+    ) -> Result<(), RpcError> {
+        self.storage
+            .write(|tx| build::github_check_in(tx, id, run_id, grant))
+    }
+
+    /// Take a batch of run `run_id`'s log; returns how many lines it took so far.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` before check-in, after the final report or the build
+    /// ended, or when lines before the batch are missing.
+    pub fn github_report(
+        &self,
+        id: &GithubBuildId,
+        run_id: u64,
+        report: &GithubReport,
+    ) -> Result<u64, RpcError> {
+        self.storage
+            .write(|tx| build::github_report(tx, id, run_id, report))
+    }
+
+    /// End GitHub build `id`, held by run `run_id`, or before any run with none.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build ended or another run or Builder holds it.
+    pub fn github_end(
+        &self,
+        id: &GithubBuildId,
+        run_id: Option<u64>,
+        end: &GithubEnd,
+    ) -> Result<BuildStatus, RpcError> {
+        self.storage
+            .write(|tx| build::github_end(tx, id, run_id, end))
+    }
+
+    /// Deployment `deployment`'s builds still on GitHub. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn github_outstanding(
+        &self,
+        deployment: &DeploymentId,
+    ) -> Result<Vec<GithubBuild>, RpcError> {
+        self.storage
+            .read(|tx| build::github_outstanding(tx, deployment))
+    }
+
+    /// The Organization's Build Order.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn build_order(&self, who: &Actor) -> Result<BuildOrderView, RpcError> {
+        self.storage.read(|tx| builders::build_order(tx, who))
+    }
+
+    /// [`Command::SetBuildOrder`].
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn set_build_order(
+        &self,
+        who: &Actor,
+        set: &SetBuildOrder,
+    ) -> Result<BuildOrderView, RpcError> {
+        self.storage
+            .write(|tx| builders::set_build_order(tx, who, set))
     }
 
     /// One Git build of a Deployment, with its log.
