@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "service": {
+      "additionalProperties": false,
+      "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
+      "properties": {
+        "cpuLimit": {
+          "description": "Most vCPUs each replica may use. Unset means no limit.",
+          "examples": [
+            0.5,
+            2
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 64,
+          "title": "CPU limit",
+          "type": "number",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "image": {
+          "description": "The container image each replica runs.",
+          "examples": [
+            "nginx:1.27",
+            "ghcr.io/acme/web:1.4.0"
+          ],
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Container image",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "maxRetries": {
+          "default": 10,
+          "description": "How often an on-failure restart policy restarts a replica.",
+          "examples": [
+            3
+          ],
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Max retries",
+          "type": "integer",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "memLimit": {
+          "description": "Most memory each replica may use, in GB. Unset means no limit.",
+          "examples": [
+            0.5,
+            4
+          ],
+          "exclusiveMinimum": 0,
+          "maximum": 1024,
+          "title": "Memory limit",
+          "type": "number",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "preDeployCommand": {
+          "description": "Runs once in a new replica before a Deploy starts the Service.",
+          "examples": [
+            "npm run migrate"
+          ],
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Pre-deploy command",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "replicas": {
+          "default": 1,
+          "description": "How many copies of the Service run.",
+          "examples": [
+            3
+          ],
+          "maximum": 50,
+          "minimum": 0,
+          "title": "Replicas",
+          "type": "integer",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "restartPolicy": {
+          "default": "unless-stopped",
+          "description": "When a stopped replica restarts.",
+          "enum": [
+            "always",
+            "no",
+            "on-failure",
+            "unless-stopped"
+          ],
+          "examples": [
+            "on-failure"
+          ],
+          "title": "Restart policy",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "startCommand": {
+          "description": "Overrides the image's command. Unset runs the image's own.",
+          "examples": [
+            "npm start"
+          ],
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Start command",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        }
+      },
+      "title": "Service",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An Environment's Settings by Service name. A path is SERVICE.SETTING, for example web.replicas.",
+  "patternProperties": {
+    "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+      "$ref": "#/$defs/service"
+    }
+  },
+  "title": "Ployz Environment Settings",
+  "type": "object",
+  "x-ployz-version": 1
+}

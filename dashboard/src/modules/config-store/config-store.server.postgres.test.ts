@@ -5,12 +5,13 @@ import { sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import { handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember, handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { resolveCaller } from "#/modules/identity/caller.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
-import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { encodePublicError, NotFound, statusForPublicError } from "#/server/public-error";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
@@ -77,6 +78,7 @@ const shop: ConfigCommand = { command: "create_project", id: PROJECT, name: "sho
 const web: ConfigCommand = {
   command: "create_service", id: SERVICE as ServiceId, environment: here, name: "web", image: "nginx:1",
 };
+const write = (command: ConfigCommand) => ({ operation: "write" as const, command });
 const get = (path: string | null): ConfigQuery => ({ query: "environment", environment: here, path, all: false });
 
 it.live(
@@ -133,6 +135,37 @@ it.live(
 );
 
 it.live(
+  "the dashboard reaches the Store as a member of the Organization it names, refusals intact",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* resolveCaller(new Headers({ cookie: yield* signUp("alice") }));
+        const bob = yield* resolveCaller(new Headers({ cookie: yield* signUp("bob") }));
+        const slug = alice.organization.slug;
+
+        assert.isTrue((yield* callStoreAsMember(alice, slug, write(shop))).ok);
+        assert.isTrue((yield* callStoreAsMember(alice, slug, write(web))).ok);
+        const stale = yield* callStoreAsMember(alice, slug, write({
+          command: "edit", environment: here, expect: 1, changes: [{ op: "set", path: "web.replicas", value: 3 }],
+        }));
+        assert.isFalse(stale.ok);
+        if (!stale.ok) {
+          assert.strictEqual(stale.refusal.code, "conflict");
+          assert.deepStrictEqual(stale.refusal.details, { revision: 2 });
+        }
+        const view = yield* callStoreAsMember(alice, slug, { operation: "read", query: get("web.replicas") });
+        assert.deepInclude(view, { ok: true });
+
+        // Naming an Organization you're not a member of is refused before the Store is asked.
+        const foreign = yield* Effect.exit(callStoreAsMember(bob, slug, { operation: "read", query: get(null) }));
+        assert.isTrue(Exit.isFailure(foreign) && Cause.squash(foreign.cause) instanceof NotFound);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
   "Store writes reach Cloud's change log once committed, and a refused write logs nothing",
   () =>
     Effect.gen(function* () {
@@ -182,6 +215,8 @@ it.live(
       yield* Effect.gen(function* () {
         // Not found before any credential is looked at.
         assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
+        const dashboard = yield* Effect.exit(callStoreAsMember({ userId: "anyone" }, "ada", { operation: "read", query: get(null) }));
+        assert.isTrue(Exit.isFailure(dashboard) && Cause.squash(dashboard.cause) instanceof NotFound);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
