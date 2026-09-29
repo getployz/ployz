@@ -70,7 +70,13 @@ fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
 /// Every Setting value in Working State, by path.
 fn working(store: &ConfigStore, who: &Actor) -> Vec<(String, Value)> {
     let View::Environment(view) = store
-        .read(who, &Query::Environment(EnvironmentQuery::default()))
+        .read(
+            who,
+            &Query::Environment(EnvironmentQuery {
+                all: true,
+                ..EnvironmentQuery::default()
+            }),
+        )
         .unwrap()
     else {
         unreachable!("an Environment query reads an Environment")
@@ -97,9 +103,11 @@ fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Pu
                 version: version.map(Into::into),
             }),
         )
-        .map(|written| match written {
-            Written::Published(published) => published,
-            other => unreachable!("publish wrote {other:?}"),
+        .map(|written| {
+            let Written::Published(published) = written else {
+                unreachable!("publish wrote {written:?}")
+            };
+            published
         })
 }
 
@@ -118,9 +126,11 @@ fn discard(
                 version: version.map(Into::into),
             }),
         )
-        .map(|written| match written {
-            Written::Discarded(discarded) => discarded,
-            other => unreachable!("discard wrote {other:?}"),
+        .map(|written| {
+            let Written::Discarded(discarded) = written else {
+                unreachable!("discard wrote {written:?}")
+            };
+            discarded
         })
 }
 
@@ -205,7 +215,9 @@ fn resetting_a_new_nodes_setting_uses_its_introduction_and_publishes_nothing() {
     let view = diff(&store, &who);
     assert_eq!(view.saved, None);
     assert_eq!(
-        view.changes[0]
+        view.changes
+            .first()
+            .unwrap()
             .settings
             .iter()
             .map(|row| row.path.as_str())

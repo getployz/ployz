@@ -35,6 +35,45 @@ pub(crate) fn internal(message: impl Into<String>) -> RpcError {
     error(RpcErrorCode::Internal, message, Value::Null)
 }
 
+/// The closest of `options` to a mistyped `input`, if any is close: same letters
+/// ignoring case and `-`/`_`, or a small edit distance. Never applied, only suggested.
+pub(crate) fn did_you_mean<'a>(
+    input: &str,
+    options: impl IntoIterator<Item = &'a str>,
+) -> Option<&'a str> {
+    let squash = |text: &str| {
+        text.chars()
+            .filter(|c| !matches!(c, '-' | '_'))
+            .flat_map(char::to_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let input = squash(input);
+    options
+        .into_iter()
+        .map(|option| (distance(&input, &squash(option)), option))
+        .filter(|(distance, _)| *distance <= (input.len() / 3).max(2))
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, option)| option)
+}
+
+/// Levenshtein distance.
+fn distance(a: &[char], b: &[char]) -> usize {
+    let mut previous = (0..=b.len()).collect::<Vec<_>>();
+    for (i, x) in a.iter().enumerate() {
+        let mut current = vec![i + 1];
+        for ((y, above_left), above) in b.iter().zip(&previous).zip(previous.iter().skip(1)) {
+            let left = current.last().copied().unwrap_or_default();
+            current.push(
+                (above_left + usize::from(x != y))
+                    .min(above + 1)
+                    .min(left + 1),
+            );
+        }
+        previous = current;
+    }
+    previous.last().copied().unwrap_or_default()
+}
+
 /// Stored data the Store cannot read back: a bug or a hand edit, never user input.
 pub(crate) fn corrupt(what: &str) -> RpcError {
     internal(format!("The Config Store holds an unreadable {what}"))
