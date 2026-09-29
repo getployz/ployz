@@ -1,5 +1,6 @@
 import { Handle, Position } from "@xyflow/react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
+import { useDeleteService } from "../../services/$serviceId/-components/useDeleteService";
 import { Link, useParams } from "@tanstack/react-router";
 import {
   Avatar,
@@ -70,6 +71,7 @@ export function ServiceNode({
   const { runtime } = useRuntimeService(runtimeIdentity);
   const light = useNodeLighting(data.serviceId);
   const pick = useNodePick(serviceState?.serviceView.service.lineageId);
+  const deleteService = useDeleteService(data.serviceId);
 
   if (!serviceState) {
     return <LoadingNode />;
@@ -150,7 +152,7 @@ export function ServiceNode({
   }
 
   return (
-    <ServiceContextMenu serviceId={service.id}>
+    <ServiceContextMenu serviceId={service.id} onDelete={deleteService}>
       <Link
         to={ENVIRONMENT_SERVICE_ROUTE_TO}
         params={{

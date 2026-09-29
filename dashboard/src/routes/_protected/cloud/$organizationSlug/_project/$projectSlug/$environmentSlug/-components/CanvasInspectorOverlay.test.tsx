@@ -53,6 +53,7 @@ function Architecture() {
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
       <CanvasNodeList
         services={[]}
+        storeServices={null}
         liveNodes={[]}
         servicesById={new Map()}
         selectedNodeId={nodeId}

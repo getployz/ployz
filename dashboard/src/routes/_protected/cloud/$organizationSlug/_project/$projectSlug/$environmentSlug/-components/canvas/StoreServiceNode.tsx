@@ -1,0 +1,77 @@
+import { Handle, Position } from "@xyflow/react";
+import { Link, useLoaderData, useParams } from "@tanstack/react-router";
+import type { ServiceListing } from "@ployz/sdk";
+import { Avatar, AvatarFallback } from "#/components/ui/avatar";
+import { Badge } from "#/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "#/components/ui/card";
+import { cn } from "#/lib/utils";
+import { useRemoveStoreService } from "../../services/$serviceId/-components/useDeleteService";
+import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+import { ServiceContextMenu } from "./ServiceContextMenu";
+import { getServiceIcon, getServiceStatusClasses } from "./service-node-helpers";
+import type { StoreCanvasService } from "./types";
+
+/** What a Service's card says, from what the next Deploy does to it. */
+export function storeServiceStatus(service: ServiceListing, changeCount: number) {
+  if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
+  if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
+  if (service.change === "update") return { state: "changed", text: `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
+  return { state: undefined, text: service.source === "empty" ? "Empty" : "Deployed", badge: null } as const;
+}
+
+/** A Config Store Service on the canvas and in its phone list: opens its drawer, right-click removes it. */
+export function StoreServiceCard({ service, subtitle, changeCount, selected, className }: StoreCanvasService & {
+  selected: boolean;
+  className: string;
+}) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const remove = useRemoveStoreService(store, service.name);
+  const status = storeServiceStatus(service, changeCount);
+  const dot = getServiceStatusClasses(status.state);
+
+  return (
+    <ServiceContextMenu serviceId={service.id} onDelete={remove}>
+      <Link
+        to={ENVIRONMENT_SERVICE_ROUTE_TO}
+        params={{ ...params, serviceId: service.id }}
+        search={(prev) => ({ ...prev, tab: selected ? prev.tab : undefined })}
+        data-canvas-node={service.id}
+        aria-current={selected ? "page" : undefined}
+        draggable={false}
+        className={className}
+      >
+        <Card size="node" state={status.state} className="h-full justify-between" data-selected={selected}>
+          <CardHeader>
+            <div className="flex items-start gap-3">
+              <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>
+              <div className="min-w-0 flex-1 overflow-hidden">
+                <CardTitle className="truncate">{service.name}</CardTitle>
+                {subtitle ? <CardDescription className="truncate">{subtitle}</CardDescription> : null}
+              </div>
+              {status.badge ? <Badge variant={status.badge === "New" ? "success" : "destructive"}>{status.badge}</Badge> : null}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-3">
+              <span className={cn("flex size-3 items-center justify-center rounded-full", dot.dot)}>
+                <span className={cn("size-1.5 rounded-full", dot.innerDot)} />
+              </span>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">{status.text}</span>
+            </div>
+          </CardContent>
+        </Card>
+      </Link>
+    </ServiceContextMenu>
+  );
+}
+
+export function StoreServiceNode({ data, selected }: { data: StoreCanvasService; selected?: boolean }) {
+  return (
+    <>
+      <Handle type="target" position={Position.Bottom} isConnectable={false} className="opacity-0" />
+      <Handle type="source" position={Position.Top} isConnectable={false} className="opacity-0" />
+      <StoreServiceCard {...data} selected={selected ?? false} className="block h-36 w-72" />
+    </>
+  );
+}
