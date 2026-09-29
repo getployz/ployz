@@ -145,15 +145,12 @@ pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure>
 
 /// Print the `--json` error object on one stdout line.
 pub(crate) fn error(error: &RpcError) {
-    #[derive(Serialize)]
-    struct Report<'a> {
-        error: &'a RpcError,
-    }
-    let mut stdout = io::stdout().lock();
     // Nothing is left to report a failed write to.
-    let _ = serde_json::to_writer(&mut stdout, &Report { error })
-        .map_err(io::Error::from)
-        .and_then(|()| writeln!(stdout));
+    let _ = writeln!(
+        io::stdout().lock(),
+        "{}",
+        serde_json::json!({ "error": error })
+    );
 }
 
 /// Whether the command already produced its result, so a later failure is partial.
@@ -161,9 +158,9 @@ pub(crate) fn emitted() -> bool {
     EMITTED.get()
 }
 
-/// Per-Machine gaps in a fan-out result: `failures` answered with an error,
-/// `omitted` never answered, `unavailable_volumes` listed but not inspected.
-/// Any gap makes the command exit [`Failure::partial`].
+/// Gaps in a fan-out result: Machines whose answer was an error (`failures`) or
+/// never came (`omitted`), and Volumes a Machine answered for but could not
+/// inspect (`unavailable_volumes`). Any gap makes the command exit [`Failure::partial`].
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct Gaps {
     pub failures: Vec<MachineFailure<RpcError>>,
@@ -209,7 +206,7 @@ impl Gaps {
 }
 
 /// Finish a fan-out: `{key: value, failures, omitted[, unavailable_volumes]}`, or
-/// `human`; then the partial exit if any Machine left a gap.
+/// `human`; then the partial exit if any gap.
 ///
 /// # Errors
 ///
@@ -217,20 +214,36 @@ impl Gaps {
 pub(crate) fn finish_fanout(
     key: &str,
     value: &impl Serialize,
-    gaps: Gaps,
+    gaps: &Gaps,
     human: impl FnOnce(),
 ) -> Result<(), Failure> {
-    #[derive(Serialize)]
-    struct Fanout<'a, T> {
-        #[serde(flatten)]
-        value: std::collections::BTreeMap<&'a str, &'a T>,
-        #[serde(flatten)]
-        gaps: &'a Gaps,
-    }
-    let result = Fanout {
-        value: std::collections::BTreeMap::from([(key, value)]),
-        gaps: &gaps,
-    };
-    finish(&result, human)?;
+    finish(&Fanout::new(key, value, gaps), human)?;
     gaps.outcome()
+}
+
+/// [`finish_fanout`] for inspect-style commands: the object is pretty JSON in both modes.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error, or [`Failure::partial`].
+pub(crate) fn show_fanout(key: &str, value: &impl Serialize, gaps: &Gaps) -> Result<(), Failure> {
+    show(&Fanout::new(key, value, gaps))?;
+    gaps.outcome()
+}
+
+#[derive(Serialize)]
+struct Fanout<'a, T> {
+    #[serde(flatten)]
+    value: std::collections::BTreeMap<&'a str, &'a T>,
+    #[serde(flatten)]
+    gaps: &'a Gaps,
+}
+
+impl<'a, T> Fanout<'a, T> {
+    fn new(key: &'a str, value: &'a T, gaps: &'a Gaps) -> Self {
+        Self {
+            value: std::collections::BTreeMap::from([(key, value)]),
+            gaps,
+        }
+    }
 }

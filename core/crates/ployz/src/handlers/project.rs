@@ -30,7 +30,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             let volumes = &snapshot.volume_snapshot;
             gaps.extend(volumes.machine_failures(), volumes.omissions());
             gaps.unavailable_volumes = volumes.named_failures().to_vec();
-            output::finish_fanout("projects", &projects, gaps, || {
+            output::finish_fanout("projects", &projects, &gaps, || {
                 say!("PROJECT\tSERVICES\tVOLUMES");
                 for project in &projects {
                     say!(

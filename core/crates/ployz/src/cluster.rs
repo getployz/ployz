@@ -689,13 +689,7 @@ impl Client {
             };
             let machine_id = machine.machine.id;
             match observed {
-                Some(Ok(storage)) => {
-                    machine.storage = storage;
-                    result.successes.push(MachineSuccess {
-                        machine_id,
-                        value: (),
-                    });
-                }
+                Some(Ok(storage)) => machine.storage = storage,
                 Some(Err(error)) => result.failures.push(MachineFailure { machine_id, error }),
                 None => result.omissions.push(machine_id),
             }

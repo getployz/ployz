@@ -784,3 +784,45 @@ fn global_ingress_summary_uses_ingress_acceptance() {
     target.machine.accepts_ingress = false;
     assert_eq!(service_counts(&service, &[target]).expected, 0);
 }
+
+#[test]
+fn action_result_keeps_machine_failures_apart_from_container_failures() {
+    let failed_id = MachineId::parse("2".repeat(32)).unwrap();
+    let error = RpcError {
+        code: RpcErrorCode::Unavailable,
+        message: "offline".into(),
+        details: serde_json::Value::Null,
+    };
+    let live = derive_live_services(PartialResult::<Vec<ployz_core::ContainerObservation>, _> {
+        successes: Vec::new(),
+        failures: vec![MachineFailure {
+            machine_id: failed_id,
+            error: error.clone(),
+        }],
+        omissions: Vec::new(),
+    });
+    let container_id = ContainerId::parse("c".repeat(64)).unwrap();
+    let outcome = ServiceActionOutcome {
+        affected: HashSet::new(),
+        changed: Vec::new(),
+        failures: vec![ContainerFailure {
+            machine_id: failed_id,
+            container_id,
+            error: error.clone(),
+        }],
+        partial: true,
+    };
+    assert_eq!(
+        serde_json::to_value(outcome.result(&live)).unwrap(),
+        json!({
+            "changed": [],
+            "container_failures": [{
+                "machine_id": failed_id,
+                "container_id": container_id,
+                "error": error,
+            }],
+            "failures": [{ "machine_id": failed_id, "error": error }],
+            "omitted": [],
+        })
+    );
+}

@@ -28,7 +28,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     observation,
                 })
                 .collect::<Vec<_>>();
-            let finished = output::finish_fanout("machines", &listed, Gaps::of(&storage), || {
+            let finished = output::finish_fanout("machines", &listed, &Gaps::of(&storage), || {
                 say!(
                     "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
                 );

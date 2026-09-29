@@ -29,10 +29,6 @@ pub fn run() -> Result<(), Error> {
     dispatch(&matches, &mut command)
 }
 
-/// Commands whose output is a terminal session, a tunnel, shell code, or the Cloud
-/// runner's own fixed JSON, not a `--json` result.
-const WITHOUT_JSON: [&str; 4] = ["service exec", "service proxy", "completion", "build"];
-
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
 fn usage_failure(error: clap::Error) -> Error {
     use clap::error::ErrorKind;
@@ -60,28 +56,34 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let Some((name, child)) = matches.subcommand() else {
+    if matches.subcommand().is_none() {
         command.print_help()?;
         println!();
         return Ok(());
-    };
+    }
     let path = command_path(matches);
-    if matches.get_flag("json") && WITHOUT_JSON.contains(&path.as_str()) {
+    let (handler, json) = handler_for(&path)
+        .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
+    if json == Json::Refused && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"
         )));
     }
-    if name == "completion" {
-        let shell = child
-            .get_one::<Shell>("shell")
-            .copied()
-            .ok_or_else(|| Error::usage("completion shell is required"))?;
-        generate(shell, command, "ployz", &mut std::io::stdout());
-        return Ok(());
-    }
-    let handler = handler_for(&path)
-        .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
     handler(matches)
+}
+
+fn completion(root: &ArgMatches) -> Result<(), Error> {
+    let shell = leaf_matches(root)
+        .get_one::<Shell>("shell")
+        .copied()
+        .ok_or_else(|| Error::usage("completion shell is required"))?;
+    generate(
+        shell,
+        &mut crate::cli::command(),
+        "ployz",
+        &mut std::io::stdout(),
+    );
+    Ok(())
 }
 
 fn command_path(mut matches: &ArgMatches) -> String {
@@ -208,42 +210,59 @@ where
 
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-fn handler_for(path: &str) -> Option<Handler> {
-    let handler: Handler = match path {
-        "ingress deploy" => ingress::deploy,
-        "ctx ls" => context::list,
-        "ctx rm" => context::remove,
-        "ctx use" => context::select,
-        "build" => build::build,
-        "cloud enroll" => cloud::enroll,
-        "machine add" => machine::add,
-        "machine init" => machine::init,
-        "machine build-cache-clear" => machine::clear_build_cache,
-        "machine inspect" => machine::inspect,
-        "machine logs" => operator::machine_logs,
-        "machine ls" => machine::list,
-        "machine rm" => machine::remove,
-        "machine update" => machine::update,
-        "machine upgrade" => machine::upgrade,
-        "project ls" => project::list,
-        "project rm" => project::remove,
-        "service exec" => operator::exec,
-        "service inspect" => service::inspect,
-        "service logs" => operator::service_logs,
-        "service ls" => service::list,
-        "service proxy" => operator::proxy,
-        "service ps" => service::processes,
-        "service rm" => service::remove,
-        "service scale" => service::scale,
-        "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
-        "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
-        "volume create" => volume::create,
-        "volume inspect" => volume::inspect,
-        "volume ls" => volume::list,
-        "volume rm" => volume::remove,
+/// Whether a command prints a `--json` result. Refused: a terminal session, a
+/// tunnel, shell code, or the Cloud runner's own fixed JSON.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Json {
+    Supported,
+    Refused,
+}
+
+/// Each command's handler and its `--json` support, declared together.
+fn handler_for(path: &str) -> Option<(Handler, Json)> {
+    use Json::{Refused, Supported};
+    let entry: (Handler, Json) = match path {
+        "completion" => (completion, Refused),
+        "ingress deploy" => (ingress::deploy, Supported),
+        "ctx ls" => (context::list, Supported),
+        "ctx rm" => (context::remove, Supported),
+        "ctx use" => (context::select, Supported),
+        "build" => (build::build, Refused),
+        "cloud enroll" => (cloud::enroll, Supported),
+        "machine add" => (machine::add, Supported),
+        "machine init" => (machine::init, Supported),
+        "machine build-cache-clear" => (machine::clear_build_cache, Supported),
+        "machine inspect" => (machine::inspect, Supported),
+        "machine logs" => (operator::machine_logs, Supported),
+        "machine ls" => (machine::list, Supported),
+        "machine rm" => (machine::remove, Supported),
+        "machine update" => (machine::update, Supported),
+        "machine upgrade" => (machine::upgrade, Supported),
+        "project ls" => (project::list, Supported),
+        "project rm" => (project::remove, Supported),
+        "service exec" => (operator::exec, Refused),
+        "service inspect" => (service::inspect, Supported),
+        "service logs" => (operator::service_logs, Supported),
+        "service ls" => (service::list, Supported),
+        "service proxy" => (operator::proxy, Refused),
+        "service ps" => (service::processes, Supported),
+        "service rm" => (service::remove, Supported),
+        "service scale" => (service::scale, Supported),
+        "service start" => (
+            |root| service::change(root, ployz_core::ContainerAction::Start),
+            Supported,
+        ),
+        "service stop" => (
+            |root| service::change(root, ployz_core::ContainerAction::Stop),
+            Supported,
+        ),
+        "volume create" => (volume::create, Supported),
+        "volume inspect" => (volume::inspect, Supported),
+        "volume ls" => (volume::list, Supported),
+        "volume rm" => (volume::remove, Supported),
         _ => return None,
     };
-    Some(handler)
+    Some(entry)
 }
 
 #[cfg(test)]
@@ -708,7 +727,6 @@ mod tests {
         command.build();
         let mut paths = BTreeSet::new();
         collect_actionable_paths(&command, "", &mut paths);
-        paths.remove("completion");
         for path in paths {
             assert!(handler_for(&path).is_some(), "no handler for {path}");
         }

@@ -82,10 +82,9 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
-            let unavailable = volume_failures(&result).cloned().collect::<Vec<_>>();
             let mut gaps = Gaps::of(&result);
-            gaps.unavailable_volumes.clone_from(&unavailable);
-            let finished = output::finish_fanout("volumes", &volumes, gaps, || {
+            gaps.unavailable_volumes = volume_failures(&result).cloned().collect();
+            let finished = output::finish_fanout("volumes", &volumes, &gaps, || {
                 say!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
                 for volume in &volumes {
                     let (kind, bound, used) = format_storage(&volume.volume.storage);
@@ -99,7 +98,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                         volume.volume.driver()
                     );
                 }
-                for failure in &unavailable {
+                for failure in &gaps.unavailable_volumes {
                     say!(
                         "{}\t{}\tUNAVAILABLE\t-\t-\t-",
                         failure.id.machine_id,

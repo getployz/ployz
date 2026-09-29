@@ -15,7 +15,6 @@ use crate::{
     output::{self, Gaps, say},
 };
 use ployz_core::EnvironmentValues;
-use serde_json::json;
 
 use super::{
     Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
@@ -31,13 +30,15 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
-            client.observe_machine_storage(&mut machines).await;
+            let storage = client.observe_machine_storage(&mut machines).await;
             let live = client
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await?;
             print_observation_warning(&live);
             let services = live.services();
-            output::finish_fanout("services", &services, Gaps::of(&live.containers), || {
+            let mut gaps = Gaps::of(&live.containers);
+            gaps.extend(&storage.failures, &storage.omissions);
+            output::finish_fanout("services", &services, &gaps, || {
                 say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
                 for service in &services {
                     let counts = service_counts(service, &machines);
@@ -150,7 +151,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             output::finish_fanout(
                 "containers",
                 &observations,
-                Gaps::of(&live.containers),
+                &Gaps::of(&live.containers),
                 || {
                     say!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
                     for container in &containers {
@@ -253,13 +254,7 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
             print_observation_warning(&live);
             let services = live.services();
             let service = select_service(&services, &selector)?;
-            output::finish_fanout("service", &service, Gaps::of(&live.containers), || {
-                say!(
-                    "{}",
-                    serde_json::to_string_pretty(&json!({ "service": service }))
-                        .expect("a JSON value serializes")
-                );
-            })
+            output::show_fanout("service", &service, &Gaps::of(&live.containers))
         })
     })
 }
@@ -522,9 +517,10 @@ struct ContainerFailure {
 #[derive(Serialize)]
 struct ServiceActionResult<'a> {
     changed: &'a [ChangedContainer],
-    failures: &'a [ContainerFailure],
+    /// Containers the action failed on.
+    container_failures: &'a [ContainerFailure],
     /// Machines whose Live Observation failed before the action.
-    machine_failures: &'a [MachineFailure<RpcError>],
+    failures: &'a [MachineFailure<RpcError>],
     omitted: &'a [MachineId],
     #[serde(skip_serializing_if = "Option::is_none")]
     volumes: Option<&'a [VolumeRemoval]>,
@@ -536,8 +532,8 @@ impl ServiceActionOutcome {
     fn result<'a>(&'a self, live: &'a LiveServices<RpcError>) -> ServiceActionResult<'a> {
         ServiceActionResult {
             changed: &self.changed,
-            failures: &self.failures,
-            machine_failures: &live.containers.failures,
+            container_failures: &self.failures,
+            failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             volumes: None,
             volumes_not_attempted: None,
