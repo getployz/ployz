@@ -145,5 +145,10 @@ fn admitted(
         cluster_domain,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
-    deployment::admit(tx, who, admit, id, saved, &frozen)
+    // Only Cloud's authentication names an uploader, never the caller.
+    let mut admit = admit.clone();
+    if let Some(upload) = &mut admit.upload {
+        upload.uploader.clone_from(&trusted.uploader);
+    }
+    deployment::admit(tx, who, &admit, id, saved, &frozen)
 }
