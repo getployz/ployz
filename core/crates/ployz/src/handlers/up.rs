@@ -35,6 +35,11 @@ pub(crate) fn command() -> Command {
             .value_hint(ValueHint::Hostname)
             .help("First add this Server over SSH, as `ployz server add` does; the first founds the Cluster"),
     )
+    .arg(
+        crate::cli::switch("reset", None)
+            .requires("server")
+            .help("Reset the --server if it already runs Ployz, before adding it"),
+    )
     .arg(crate::cli::volume_acceptance())
 }
 
@@ -150,7 +155,7 @@ fn add_server(
 ) -> Result<Option<Value>, Error> {
     let config = config.to_string_lossy();
     let timeout = crate::cli::ssh_timeout(matches).as_secs().to_string();
-    let args = [
+    let mut args = vec![
         "ployz",
         "--ployz-config",
         &config,
@@ -158,9 +163,12 @@ fn add_server(
         &timeout,
         "server",
         "add",
-        "--",
-        destination,
     ];
+    // `up --reset` is its confirmation: `up` never prompts for one it can't take.
+    if matches.get_flag("reset") {
+        args.extend(["--reset", "--yes"]);
+    }
+    args.extend(["--", destination]);
     let add = crate::cli::command()
         .try_get_matches_from(args)
         .map_err(|error| Error::usage(error.render().to_string()).with_exit(USAGE_EXIT))?;
