@@ -69,6 +69,8 @@ pub enum Query {
     Branch(crate::BranchQuery),
     /// A Project's Environments.
     Environments(crate::EnvironmentsQuery),
+    /// The Organization's Projects.
+    Projects(crate::ProjectsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -108,6 +110,8 @@ pub enum View {
     Branch(crate::BranchView),
     /// A Project's Environments.
     Environments(crate::EnvironmentsView),
+    /// The Organization's Projects.
+    Projects(crate::ProjectsView),
 }
 
 pub(crate) fn run(
@@ -137,5 +141,6 @@ pub(crate) fn run(
         Query::Environments(query) => {
             crate::teardown::environments(tx, who, query).map(View::Environments)
         }
+        Query::Projects(_) => crate::teardown::projects(tx, who).map(View::Projects),
     }
 }
