@@ -89,6 +89,13 @@ export async function prefetchActiveBuildTails(context: RouteDataContext, input:
   else void ready.catch(() => {});
 }
 
+/** `prefetchStoreViews` and the page's other Remote Reads, all started together. Nothing while the Store is dark. */
+export async function prefetchRemoteWithStoreViews(context: RouteDataContext, organizationSlug: string, queries: ConfigQuery[],
+  ...reads: Array<Pick<FetchQueryOptions, "queryKey">>) {
+  if (!storeEnabled) return;
+  await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)), ...reads);
+}
+
 /** `prefetchRemote` for Config Store views, started together. Nothing while the Store is dark. */
 export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
   if (!storeEnabled) return;

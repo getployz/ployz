@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { prefetchRemote, prefetchStoreViews } from "#/collections/route-data";
+import { prefetchRemote, prefetchRemoteWithStoreViews } from "#/collections/route-data";
 import { storeEnabled } from "#/modules/config-store/store.contract";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { environmentsQuery } from "#/modules/config-store/store-view.queries";
 import { missingPrEnvironmentGrantsQueryOptions, missingStorePrGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
 import { CanvasInspectorError, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
 import { PrPlanPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/PrPlanPanel";
-import { projectEnvironmentsQuery, StorePrPlanPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel";
+import { StorePrPlanPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel";
 
 /** A repository's PR Environments plan: a panel over its start-from Environment's canvas. */
 export const Route = createFileRoute(
@@ -15,10 +16,8 @@ export const Route = createFileRoute(
     const { organizationSlug, projectSlug } = params;
     if (!storeEnabled) return prefetchRemote(context, missingPrEnvironmentGrantsQueryOptions(organizationSlug));
     // The start-from's Services, Volumes and Settings come with the Environment's own loader.
-    await Promise.all([
-      prefetchStoreViews(context, organizationSlug, prPlansQuery(projectSlug), projectEnvironmentsQuery(projectSlug)),
-      prefetchRemote(context, missingStorePrGrantsQueryOptions(organizationSlug, projectSlug)),
-    ]);
+    await prefetchRemoteWithStoreViews(context, organizationSlug, [prPlansQuery(projectSlug), environmentsQuery(projectSlug)],
+      missingStorePrGrantsQueryOptions(organizationSlug, projectSlug));
   },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="PR environments" />,

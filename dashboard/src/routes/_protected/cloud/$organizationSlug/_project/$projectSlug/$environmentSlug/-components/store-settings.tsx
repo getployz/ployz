@@ -13,6 +13,7 @@ import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-st
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { CreateEnvironmentDialog } from "./create-environment-dialog";
 import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO } from "./environment-route-paths";
+import { StorePrEnvironmentsSection } from "./store-pr-environments-section";
 
 type Place = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -111,6 +112,7 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
           })}
         </ItemGroup>
       </section>
+      <StorePrEnvironmentsSection organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug} />
       <StoreTeardownSection
         organizationSlug={organizationSlug}
         target={{ project: projectSlug, environment: null }}
