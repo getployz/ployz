@@ -6,6 +6,8 @@ pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
     pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
     pub const CLOUD_URL: &str = "PLOYZ_CLOUD_URL";
+    /// Set by the shell hook `ployz completion SHELL` prints, to ask for completions.
+    pub const COMPLETE: &str = "PLOYZ_COMPLETE";
     pub const CONFIG: &str = "PLOYZ_CONFIG";
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
@@ -31,6 +33,7 @@ pub fn command() -> Command {
         .subcommand(handlers::cloud::command())
         .subcommand(handlers::context::command())
         .subcommand(handlers::env::command())
+        .subcommand(handlers::catalog::explain_command())
         .subcommand(handlers::config::get_command())
         .subcommand(handlers::ingress::command())
         .subcommand(handlers::login::login_command())
@@ -41,6 +44,7 @@ pub fn command() -> Command {
         .subcommand(handlers::service::command())
         .subcommand(handlers::account::token_command())
         .subcommand(handlers::project::command())
+        .subcommand(handlers::catalog::schema_command())
         .subcommand(handlers::config::set_command())
         .subcommand(handlers::config::unset_command())
         .subcommand(handlers::volume::command())
