@@ -108,13 +108,17 @@ export const deploymentStatusIcons = {
 } satisfies Record<DeploymentStatus, DeploymentLight>;
 
 export const nodeStatusLabels = {
-  pending: "Pending", applied: "Applied", not_applied: "Not applied", unknown: "Unknown",
+  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
+  unchanged: "Unchanged", unknown: "Unknown",
 } satisfies Record<NodeStatus, string>;
+
+/** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
+export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
 export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
-  if (outcome === "applied") return "deployed";
-  if (outcome === "unknown") return "failed";
+  if (nodeApplied(outcome)) return "deployed";
+  if (outcome === "failed" || outcome === "unknown") return "failed";
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
   return "not_applied";

@@ -65,7 +65,7 @@ export function movePicks(entries: readonly SheetPick[]): MovePick[] {
 }
 
 const choicePick = (row: string, choice: BranchOption, value: string): MovePick =>
-  choice === "new" ? { row, choice, value } : { row, choice };
+  choice === "new" ? { row, choice: { new: value } } : { row, choice };
 
 /** The Store's plan in the shape the pick rows read, with each node's name standing in for its lineage. */
 export function planOf(view: BranchPlanView): BranchPlan {

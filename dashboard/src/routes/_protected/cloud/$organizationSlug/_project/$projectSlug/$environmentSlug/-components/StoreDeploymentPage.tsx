@@ -16,7 +16,7 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
+  deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -47,7 +47,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const buildOf = (node: NodeOutcome | undefined) => deployment.builds.find((build) => build.service === node?.name);
   const focused = services.find((node) => node.id === search.service)
-    ?? services.find((node) => node.outcome !== "applied") ?? services[0];
+    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
   const build = buildOf(focused);
   // A build still going or failed is where to look; else how it deployed.
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
@@ -196,7 +196,7 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
   }
 
   // A failed Deployment's focused Service it didn't apply can be fixed on a Branch, with the change that failed.
-  const fixing = deployment.status === "failed" && focused && focused.outcome !== "applied" ? focused.name : null;
+  const fixing = deployment.status === "failed" && focused && !nodeApplied(focused.outcome) ? focused.name : null;
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">

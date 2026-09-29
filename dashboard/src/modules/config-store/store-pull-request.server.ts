@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { gatherTrusted } from "#/modules/config-store/config-store.server";
+import { gatherTrusted, organizationServers } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
 import type { StoreCall, StoreRead } from "./store.contract";
@@ -62,7 +62,8 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
       if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
     }
     const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
-    yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event)), done);
+    const servers = yield* organizationServers(organizationId);
+    yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event, { servers })), done);
   }
   return done;
 });
@@ -81,7 +82,8 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
   // Before the Stores admit anything new, so only admissions whose hand-off was lost are handed over again.
   done.deployments.push(...yield* unclaimedStoreDeployments(now));
   for (const { id } of organizations) {
-    yield* storeTry(() => store.system(id, event)).pipe(
+    yield* organizationServers(id).pipe(
+      Effect.flatMap((servers) => storeTry(() => store.system(id, event, { servers }))),
       Effect.flatMap((written) => collect(id, written, done)),
       // One Organization's Store failing never holds back the others; the next sweep retries it.
       Effect.catch((error) => Effect.logWarning("A Config Store sweep failed.", { organizationId: id, error })),
@@ -109,7 +111,7 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
           accept_volume_loss: losses.volumes.map((volume) => volume.name),
         },
       } satisfies StoreCall;
-      const trusted = yield* gatherTrusted(organizationId, null, call, read);
+      const trusted = yield* gatherTrusted(organizationId, call, read);
       return yield* storeTry(() => store.write(organizationId, call.command, trusted));
     }).pipe(Effect.option);
     if (written._tag === "Some" && written.value.written === "deployment") {

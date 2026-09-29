@@ -9,7 +9,7 @@ import { createStoreGithubPush } from "#/modules/config-store/store-github.innge
 import { githubPushReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
 const PROJECT = "00000000-0000-4000-8000-00000000d002";
@@ -38,7 +38,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const services = yield* Layer.build(yield* storeTestCloud({ github }));
-      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -50,7 +50,7 @@ it.live(
         }],
         domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       });
-      yield* write({ command: "publish", environment: here, version: null });
+      yield* write({ command: "publish", environment: here, version: null, accept_volume_loss: [] });
       yield* write({
         command: "set_pr_plan", project: null, repository: "acme/web", enabled: true, start_from: "production",
         copy: null, setup: null, remove_on_close: null, include_bots: null,
@@ -65,7 +65,7 @@ it.live(
       // PR #5 changes a variable and saves it for its merge; its check is named for Cloud to publish.
       const pr = { project: null, environment: "pr-5" };
       yield* write({ command: "edit", environment: pr, expect: null, changes: [{ op: "set", path: "web.env.MODE", value: "fast" }] });
-      const saved = yield* write({ command: "move", from: pr });
+      const saved = yield* write({ command: "move", move: "save", from: pr });
       expect(saved).toMatchObject({
         written: "moved", staged: [], conditional_save: { state: "standing", rows: ["web.env.MODE"] },
         checks: [{ repository_id: 42, number: 5 }],
