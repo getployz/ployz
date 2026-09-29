@@ -82,7 +82,9 @@ pub struct DeploymentView {
     #[serde(flatten)]
     pub deployment: DeploymentSummary,
     pub environment: EnvironmentSummary,
+    /// The runtime Namespace it deploys into.
     pub namespace: Namespace,
+    /// Every node it targets.
     pub nodes: Vec<NodeOutcome>,
     /// The Deploy Preview its runner prepared, with environment values removed.
     pub preview: Option<Value>,
@@ -92,11 +94,14 @@ pub struct DeploymentView {
 /// What a Deployment did to one of its target nodes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeOutcome {
+    /// The node's entity ID.
     pub id: String,
+    /// The node's name when admitted.
     pub name: String,
     pub outcome: NodeStatus,
 }
 
+/// A Node Outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {

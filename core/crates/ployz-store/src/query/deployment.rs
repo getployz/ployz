@@ -51,6 +51,7 @@ pub struct DeploymentsQuery {
     pub cursor: Option<String>,
 }
 
+/// One page of Deployments.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentsView {
     pub environment: EnvironmentSummary,
