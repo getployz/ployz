@@ -200,7 +200,17 @@ fn token_remove(root: &ArgMatches) -> Result<(), Error> {
             _ => say!("Revoked token {}.", removed.id),
         }
         say_clears(&servers, next.as_deref());
-    })
+    })?;
+    unconfirmed(&servers)
+}
+
+/// Exit 3 while a Server hasn't confirmed its Clear: the result printed is partial.
+pub(super) fn unconfirmed(servers: &ServerClears) -> Result<(), Error> {
+    if servers.unconfirmed.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::partial())
+    }
 }
 
 #[derive(Serialize)]
