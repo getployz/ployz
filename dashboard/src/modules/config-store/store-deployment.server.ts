@@ -1,6 +1,9 @@
 import "@tanstack/react-start/server-only";
+import type { ConfigStore, GitSource } from "@ployz/sdk";
 import { Data, Effect } from "effect";
 import { cloudStore } from "#/modules/config-store/config-store.server";
+import type { GithubApi } from "#/modules/github/github-observation.api";
+import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { AppConfig } from "#/server/config.server";
@@ -8,9 +11,52 @@ import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** What running a Store Deployment needs from Cloud. */
-export type StoreDeploymentServices = AppConfig | Database | SecretEncryption;
+export type StoreDeploymentServices = AppConfig | Database | SecretEncryption | GithubApi;
 
 export class StoreDeploymentRunFailure extends Data.TaggedError("StoreDeploymentRunFailure")<{ readonly cause: unknown }> {}
+
+/** Cloud could not read a Git Service's source; users read the message. */
+class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
+
+const storeCall = <A>(call: () => Promise<A>) =>
+  Effect.tryPromise({ try: call, catch: (cause) => new StoreDeploymentRunFailure({ cause }) });
+
+const fromGithub = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError((error) => new SourceUnreadable({
+  message: error instanceof GithubSourceError ? error.message : "GitHub didn't answer while reading the source. Deploy again.",
+})));
+
+const identity = (organizationId: string, source: GitSource) => ({
+  organizationId,
+  installationId: source.access.type === "public" ? null : source.access.installationId,
+  repositoryId: source.repository_id,
+});
+
+/**
+ * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
+ * retried run reads the same commit), then check out every pin for the runner until the scope closes.
+ */
+const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
+  store: ConfigStore, organizationId: string, deploymentId: string,
+) {
+  let sources = yield* storeCall(() => store.deploymentSources(deploymentId));
+  const heads: Record<string, string> = {};
+  for (const source of sources) {
+    if (source.commit !== null) continue;
+    if (source.branch === null) {
+      return yield* new SourceUnreadable({ message: `Reconnect ${source.service}'s branch before deploying.` });
+    }
+    heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
+  }
+  if (Object.keys(heads).length > 0) sources = yield* storeCall(() => store.pinSources(deploymentId, heads));
+  const checkouts: Record<string, string> = {};
+  for (const source of sources) {
+    if (source.commit === null) return yield* new SourceUnreadable({ message: `${source.service} has no pinned commit.` });
+    const capture: Parameters<typeof materializeGithubSource>[0] = { ...identity(organizationId, source), sha: source.commit, rootDir: source.root_dir };
+    if (source.dockerfile_path !== null) capture.dockerfilePath = source.dockerfile_path;
+    checkouts[source.service] = (yield* fromGithub(materializeGithubSource(capture))).repositoryDirectory;
+  }
+  return checkouts;
+});
 
 /** The Store's refusal when this runner has nothing to run: its Deployment was replaced, cancelled or ended, another
  * runner owns it, or this one lost track of it after preparing it. */
@@ -19,8 +65,9 @@ function isConflict(cause: unknown): cause is { readonly message: string } {
 }
 
 /**
- * Run an admitted Deployment as `runner` on the Organization's Servers, all inside the Rust SDK. Resolves to the
- * Deployment's summary, or to what the Store said when there is nothing to run; any other failure is retried.
+ * Run an admitted Deployment as `runner` on the Organization's Servers, all inside the Rust SDK, with its Git Services
+ * checked out at their pinned commits. Resolves to the Deployment's summary, or to what the Store said when there is
+ * nothing to run; a source Cloud can't read is recorded as why nothing ran; any other failure is retried.
  */
 export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   data: ConfigDeploymentAdmittedEventData,
@@ -29,13 +76,19 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   const store = yield* cloudStore;
   const loaded = yield* loadOrganizationConnections(data.organizationId);
   const connections = loaded.kind === "ready" ? loaded.connections : [];
-  return yield* Effect.tryPromise({
-    try: async () => ({ ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections) }),
-    catch: (cause) => cause,
+  return yield* Effect.gen(function* () {
+    const sources = yield* checkoutSources(store, data.organizationId, data.deploymentId).pipe(
+      Effect.map((checkouts) => ({ checkouts, failure: undefined })),
+      Effect.catchTag("SourceUnreadable", (error) => Effect.succeed({ checkouts: {}, failure: error.message })),
+    );
+    return yield* storeCall(async () => ({
+      ran: await store.runDeployment(data.organizationId, data.deploymentId, runner, connections, sources.checkouts, sources.failure),
+    }));
   }).pipe(
-    Effect.catch((cause) => isConflict(cause)
-      ? Effect.succeed({ nothingToRun: cause.message })
-      : Effect.fail(new StoreDeploymentRunFailure({ cause }))),
+    Effect.scoped,
+    Effect.catchTag("StoreDeploymentRunFailure", (error) => isConflict(error.cause)
+      ? Effect.succeed({ nothingToRun: error.cause.message })
+      : Effect.fail(error)),
   );
 });
 

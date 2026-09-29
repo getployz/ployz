@@ -10,6 +10,7 @@ export const storeChangeSources = {
   config_saved: { key: ["environment_id"] },
   config_namespace: { key: ["environment_id"] },
   config_deployment: { key: ["id"] },
+  config_build: { key: ["deployment_id"] },
   config_applied: { key: ["environment_id"] },
   config_registry_credential: { key: ["environment_id"] },
 } satisfies Record<string, { key: readonly string[] }>;
