@@ -1,19 +1,25 @@
-//! `ployz env`: Environments in the Config Store, and Branches of them. A Branch
+//! `ployz env`: Environments in the Config Store, and Branches of them. `ls`,
+//! `default` and `rm` manage them; `rm` is the one teardown path. A Branch
 //! copies the Services and Volumes picked (and what they use that its Parent
 //! doesn't run) and uses the rest live; `update` stages what its Parent deployed
 //! since, `copy` turns a Live Node into its own copy, and `keep` keeps it after a Save.
 
 use clap::{ArgMatches, Command};
+use ployz_core::RpcErrorCode;
 use ployz_core::ServiceName;
 use ployz_store::{
-    Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, EnvironmentId,
-    EnvironmentName, EnvironmentRef, KeepBranch, SetupCommand, UpdateBranch,
+    Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
+    DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentRemoved,
+    EnvironmentsQuery, EnvironmentsView, KeepBranch, RemoveEnvironment, ServicesQuery,
+    SetDefaultEnvironment, SetupCommand, UpdateBranch, VolumeName, VolumesQuery,
 };
+use serde_json::json;
 
 use super::config::{expect, expected};
-use super::store::{self, Next, failed, mint, project, project_arg, store};
+use super::deploy;
+use super::store::{self, Next, Store, failed, mint, project, project_arg, store};
 use super::{Error, leaf_matches, required};
-use crate::cli::{positional, repeated, switch, value};
+use crate::cli::{base, positional, repeated, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
@@ -28,6 +34,38 @@ pub(crate) fn command() -> Command {
                 .arg(positional("name", true))
                 .arg(project_arg()),
         )
+        .subcommand(
+            Command::new("ls")
+                .about("List the Project's Environments")
+                .arg(project_arg()),
+        )
+        .subcommand(
+            Command::new("default")
+                .about("Make an Environment the Project's Default Environment")
+                .arg(positional("name", true))
+                .arg(project_arg()),
+        )
+        .subcommand(deploy::following(
+            base(
+                "rm",
+                "Remove an Environment: from the Servers first, then from Ployz",
+            )
+            .long_about(
+                "Remove an Environment. If anything of it ran, a removal Deployment \
+                         takes it off the Servers first, deleting its deployed Volumes once \
+                         each is accepted by name; then its configuration and history go. \
+                         Type its name with --confirm; without it the command fails with \
+                         confirmation_required, naming what goes and the exact retry.",
+            )
+            .arg(positional("name", true))
+            .arg(project_arg())
+            .arg(
+                value("confirm", None)
+                    .value_name("ENV")
+                    .help("The Environment's name, typed to confirm its removal"),
+            )
+            .arg(crate::cli::volume_acceptance()),
+        ))
         .subcommand(
             Command::new("branch")
                 .about("Make a Branch: copies of the nodes picked, the rest used live")
@@ -84,6 +122,9 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::Supported;
     Some(match path {
         "new" => (new, Supported),
+        "ls" => (ls, Supported),
+        "default" => (default, Supported),
+        "rm" => (rm, Supported),
         "branch" => (branch, Supported),
         "update" => (update, Supported),
         "copy" => (copy, Supported),
@@ -110,6 +151,210 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
             "Created Environment {} in Project {}.",
             created.environment.name,
             created.environment.project
+        );
+    })
+}
+
+fn ls(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let listed = store(root)?
+        .environments(&EnvironmentsQuery {
+            project: project(matches)?,
+        })
+        .map_err(failed(matches, &["env", "ls"]))?;
+    crate::output::finish(&listed, || print_environments(&listed))
+}
+
+fn default(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let set = SetDefaultEnvironment {
+        environment: EnvironmentRef {
+            project: project(matches)?,
+            environment: Some(name),
+        },
+    };
+    let listed = store(root)?
+        .set_default_environment(&set)
+        .map_err(failed(matches, &["env", "default"]))?;
+    crate::output::finish(&listed, || print_environments(&listed))
+}
+
+fn print_environments(listed: &EnvironmentsView) {
+    say!("Environments of Project {}:", listed.project.name);
+    for environment in &listed.environments {
+        let mut notes = Vec::new();
+        if environment.default {
+            notes.push("default".to_owned());
+        }
+        if let Some(parent) = &environment.parent {
+            notes.push(format!("branch of {parent}"));
+        }
+        if let Some(removal) = &environment.removal {
+            let status = serde_json::to_value(removal.status).unwrap_or_default();
+            notes.push(format!(
+                "removal #{} {}",
+                removal.number,
+                status.as_str().unwrap_or_default()
+            ));
+        }
+        match notes.is_empty() {
+            true => say!("  {}", environment.name),
+            false => say!("  {} ({})", environment.name, notes.join(", ")),
+        }
+    }
+}
+
+/// What `env rm` removed, and the Deployment that took it off the Servers.
+#[derive(serde::Serialize)]
+struct Removal<'a> {
+    #[serde(flatten)]
+    removed: &'a EnvironmentRemoved,
+    deployment: Option<&'a DeploymentSummary>,
+}
+
+/// Remove an Environment in one path: if anything of it ran, a removal Deployment
+/// takes it off the Servers (under the destructive review), then the Store deletes
+/// it. A removal that didn't apply leaves the Environment, and running this again
+/// retries it.
+fn rm(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let at = EnvironmentRef {
+        project: project(matches)?,
+        environment: Some(name.clone()),
+    };
+    let store = store(root)?;
+    let words = ["env", "rm", name.as_str()];
+    let mut again = vec!["env", "rm", name.as_str(), "--confirm", name.as_str()];
+    match matches.get_one::<String>("confirm") {
+        Some(typed) if typed == name.as_str() => {}
+        Some(typed) => {
+            return Err(Error::usage(format!(
+                "--confirm {} does not match Environment {name}. No changes made.",
+                typed.escape_debug()
+            ))
+            .with_exit(USAGE_EXIT));
+        }
+        None => return Err(unconfirmed(matches, &store, &at, &again)?),
+    }
+    let events = deploy::open_events(matches)?;
+    let remove = RemoveEnvironment {
+        environment: at.clone(),
+    };
+    match store.remove_environment(&remove) {
+        Ok(removed) => return finish_removal(&removed, None),
+        Err(StoreCallError::Refused(error))
+            if error.details.get("deployed") == Some(&serde_json::Value::Bool(true)) => {}
+        Err(error) => return Err(failed(matches, &words)(error)),
+    }
+    let accept = matches
+        .get_many::<String>("accept-volume-loss")
+        .into_iter()
+        .flatten()
+        .map(|name| VolumeName::parse(name.as_str()))
+        .collect::<Result<Vec<_>, _>>()?;
+    // The in-process Store trusts this CLI to observe the Servers; Cloud observes them itself.
+    let volumes = match store.local() {
+        Some(_) => deploy::observe(matches, &store, &at, true)?,
+        None => None,
+    };
+    let admitted = store
+        .admit(
+            &Admit {
+                id: DeploymentId::parse(mint())?,
+                environment: at,
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: None,
+                remove: true,
+                accept_volume_loss: accept.clone(),
+            },
+            volumes,
+        )
+        .map_err(|error| failed(matches, &words)(deploy::accepting(error, matches, &again)))?;
+    let (view, ran, _) = deploy::execute(matches, &store, &admitted, None, events, &words)?;
+    if view.deployment.status != DeploymentStatus::Applied {
+        // Not removed yet: queued, failed, cancelled, or its outcome is unknown. This
+        // same command finishes it once the removal applied, or queues it again.
+        again.extend(
+            accept
+                .iter()
+                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+        );
+        deploy::finish_view(&view, Some(store::next(matches, &again)))?;
+        return ran.and_then(|()| match matches.get_flag("detach") {
+            true => Ok(()),
+            false => Err(Error::partial()),
+        });
+    }
+    let removed = store
+        .remove_environment(&remove)
+        .map_err(failed(matches, &words))?;
+    finish_removal(&removed, Some(&view.deployment))
+}
+
+/// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
+fn unconfirmed(
+    matches: &ArgMatches,
+    store: &Store,
+    at: &EnvironmentRef,
+    again: &[&str],
+) -> Result<Error, Error> {
+    let words = ["env", "rm"];
+    let services = store
+        .services(&ServicesQuery {
+            environment: at.clone(),
+        })
+        .map_err(failed(matches, &words))?;
+    let volumes = store
+        .volumes(&VolumesQuery {
+            environment: at.clone(),
+        })
+        .map_err(failed(matches, &words))?;
+    let retry = store::next(matches, again);
+    let name = &services.environment.name;
+    Ok(Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        format!(
+            "Removing Environment {name} deletes its configuration, history and every Service \
+             and Volume in it; this can't be undone. No changes made.\nRetry: {retry}"
+        ),
+        json!({
+            "environment": services.environment,
+            "services": services.services.iter().map(|listing| &listing.service.name).collect::<Vec<_>>(),
+            "volumes": volumes.volumes.iter().map(|listing| json!({
+                "name": listing.volume.name,
+                "deployed": listing.deployed,
+            })).collect::<Vec<_>>(),
+            "next": retry,
+        }),
+    ))
+}
+
+fn finish_removal(
+    removed: &EnvironmentRemoved,
+    deployment: Option<&DeploymentSummary>,
+) -> Result<(), Error> {
+    let removal = Removal {
+        removed,
+        deployment,
+    };
+    crate::output::finish(&removal, || {
+        let environment = &removed.environment;
+        if let Some(deployment) = deployment {
+            say!(
+                "Removed {}/{} from the Servers (Deployment #{}).",
+                environment.project,
+                environment.name,
+                deployment.number
+            );
+        }
+        say!(
+            "Removed Environment {}/{}.",
+            environment.project,
+            environment.name
         );
     })
 }

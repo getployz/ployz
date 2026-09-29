@@ -80,7 +80,7 @@ it.live(
       }));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
       yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null });
-      yield* write({ command: "admit", id: DEPLOYMENT, environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: DEPLOYMENT, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
       const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
 
       // Auto tries GitHub first: GitHub gets the pinned build.
@@ -101,7 +101,7 @@ it.live(
       expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
 
       // A build GitHub holds: only its dispatched run's token checks in.
-      yield* write({ command: "admit", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
       const next = `00000000-0000-4000-8000-00000000b102.web`;
       yield* Effect.promise(() => store.pinSources("00000000-0000-4000-8000-00000000b102", { web: HEAD }));
       yield* Effect.promise(() => store.githubDispatched(next, {

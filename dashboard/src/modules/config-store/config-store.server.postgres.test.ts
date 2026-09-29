@@ -271,7 +271,7 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null, accept_volume_loss: [],
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         // A retried request replays the admission and sends the same event, which Inngest drops.
@@ -428,7 +428,7 @@ it.live(
 
         const admit: ConfigCommand = {
           command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
-          accept_volume_loss: [],
+          remove: false, accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);
@@ -495,7 +495,7 @@ it.live(
 
         // Cloud, not the caller, names who uploaded it.
         const admitted = yield* request("write", alice, {
-          command: "admit", id: first, environment: here, services: [], version: null, retry: null, accept_volume_loss: [],
+          command: "admit", id: first, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [],
           upload: { digest: "d".repeat(64), base: null, uploader: "mallory" },
         });
         assert.strictEqual(admitted.status, 200);

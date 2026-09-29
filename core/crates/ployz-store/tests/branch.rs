@@ -174,6 +174,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
                 version: None,
                 upload: None,
                 retry: None,
+                remove: false,
                 accept_volume_loss: Vec::new(),
             },
             &Trusted::default(),

@@ -84,6 +84,7 @@ fn admit(
             version,
             upload: None,
             retry: None,
+            remove: false,
             accept_volume_loss: Vec::new(),
         },
         &Trusted::default(),
@@ -501,6 +502,7 @@ fn retry(
             version: None,
             upload: None,
             retry: Some(id(source)),
+            remove: false,
             accept_volume_loss: Vec::new(),
         },
         &ployz_store::Trusted::default(),
@@ -595,6 +597,7 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
             version: None,
             upload: None,
             retry: Some(id(1)),
+            remove: false,
             accept_volume_loss: Vec::new(),
         },
         &ployz_store::Trusted::default(),
@@ -919,6 +922,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
                 version: None,
                 upload,
                 retry: None,
+                remove: false,
                 accept_volume_loss: Vec::new(),
             },
             &ployz_store::Trusted::default(),
@@ -1007,6 +1011,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             // A caller can't name the uploader: only Cloud's authentication does.
             upload: Some(upload(Some("mallory"))),
             retry: None,
+            remove: false,
             accept_volume_loss: Vec::new(),
         });
         let Written::Deployment(summary) = store.write_trusted(&who, &command, trusted).unwrap()

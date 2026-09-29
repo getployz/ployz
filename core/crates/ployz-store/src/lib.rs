@@ -23,6 +23,7 @@ mod scope;
 mod sealing;
 mod settings;
 mod storage;
+mod teardown;
 mod trusted;
 mod variables;
 
@@ -56,6 +57,10 @@ pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, SettingPath};
+pub use teardown::{
+    EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
+    SetDefaultEnvironment,
+};
 pub use trusted::{Trusted, VolumeObservation};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
@@ -579,6 +584,44 @@ impl ConfigStore {
     /// As [`write`](Self::write).
     pub fn keep_branch(&self, who: &Actor, keep: &KeepBranch) -> Result<Branched, RpcError> {
         self.storage.write(|tx| branch::keep_branch(tx, who, keep))
+    }
+
+    /// [`Query::Environments`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn environments(
+        &self,
+        who: &Actor,
+        query: &EnvironmentsQuery,
+    ) -> Result<EnvironmentsView, RpcError> {
+        self.storage
+            .read(|tx| teardown::environments(tx, who, query))
+    }
+
+    /// [`Command::SetDefaultEnvironment`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` for an Environment being removed.
+    pub fn set_default_environment(
+        &self,
+        who: &Actor,
+        set: &SetDefaultEnvironment,
+    ) -> Result<EnvironmentsView, RpcError> {
+        self.storage.write(|tx| teardown::set_default(tx, who, set))
+    }
+
+    /// [`Command::RemoveEnvironment`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` for the Default Environment, one with
+    /// Branches, or one that may still run on the Servers (`details.deployed`).
+    pub fn remove_environment(
+        &self,
+        who: &Actor,
+        remove: &RemoveEnvironment,
+    ) -> Result<EnvironmentRemoved, RpcError> {
+        self.storage.write(|tx| teardown::remove(tx, who, remove))
     }
 
     /// [`Query::Branch`].
