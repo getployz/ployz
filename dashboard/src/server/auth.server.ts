@@ -3,13 +3,18 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
 import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
-import { organization as organizationPlugin } from "better-auth/plugins";
+import {
+  bearer,
+  deviceAuthorization,
+  organization as organizationPlugin,
+} from "better-auth/plugins";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
   account,
+  deviceCode,
   invitation,
   member,
   session,
@@ -90,6 +95,7 @@ export class Auth extends Context.Service<Auth, AuthService>()("ployz/Auth") {}
 
 const AuthSchema = {
   account,
+  deviceCode,
   invitation,
   member,
   organization,
@@ -97,6 +103,23 @@ const AuthSchema = {
   user,
   verification,
 };
+
+/** The `ployz` CLI's device-authorization client id. */
+export const CLI_CLIENT_ID = "ployz-cli";
+
+// Dark until the Config Store cutover: production keeps CLI sign-in off.
+// better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
+// so another signed-in user can neither approve nor deny it.
+function cliSignInPlugins(nodeEnv: string) {
+  if (nodeEnv === "production") return [];
+  return [
+    deviceAuthorization({
+      verificationUri: "/device",
+      validateClient: (clientId) => clientId === CLI_CLIENT_ID,
+    }),
+    bearer(),
+  ];
+}
 
 function hostedPolarPlugin(
   config: Effect.Success<typeof AppConfig.make>,
@@ -221,6 +244,7 @@ const makeAuth = Effect.gen(function* () {
     },
     plugins: [
       organizationPlugin(),
+      ...cliSignInPlugins(config.nodeEnv),
       ...(polarPlugin === null ? [] : [polarPlugin]),
       tanstackStartCookies(),
     ],

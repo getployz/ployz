@@ -2,7 +2,7 @@ import { createdAt, updatedAt } from "#/db/tables";
 
 import { organization } from "#/modules/organization/tables";
 
-import { boolean, index, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -132,4 +132,30 @@ export const invitation = pgTable(
     index("invitation_organization_id_idx").on(table.organizationId),
     index("invitation_email_idx").on(table.email),
   ],
+);
+
+/** better-auth's RFC 8628 device codes: one per pending `ployz login`, claimed by the user who opens it. */
+export const deviceCode = pgTable(
+  "device_code",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    createdAt,
+    updatedAt,
+    deviceCode: text("device_code").notNull(),
+    userCode: text("user_code").notNull(),
+    userId: uuid("user_id").references(() => user.id, { onDelete: "cascade" }),
+    expiresAt: timestamp("expires_at", {
+      mode: "date",
+      withTimezone: true,
+    }).notNull(),
+    status: text("status").notNull().$type<"pending" | "approved" | "denied">(),
+    lastPolledAt: timestamp("last_polled_at", {
+      mode: "date",
+      withTimezone: true,
+    }),
+    pollingInterval: integer("polling_interval"),
+    clientId: text("client_id"),
+    scope: text("scope"),
+  },
+  (table) => [unique().on(table.deviceCode), unique().on(table.userCode)],
 );
