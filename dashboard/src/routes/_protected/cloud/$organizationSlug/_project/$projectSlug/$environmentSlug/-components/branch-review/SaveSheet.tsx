@@ -27,10 +27,10 @@ type RowPick = { ticked: boolean; option?: BranchOption; value: string };
  * A change as a sheet shows it, from the Cloud document's rows or the Config Store's: `node` adds a whole node, and a
  * `conflict` row changed on the receiving side too.
  */
-export type SheetRow = { key: string; node: boolean; conflict: boolean; choice?: BranchChoice | undefined };
+type SheetRow = { key: string; node: boolean; conflict: boolean; choice?: BranchChoice | undefined };
 /** One row of a sheet. Without `pick` it's read-only. */
 type Entry = { row: SheetRow; presented: PresentedRow; choice?: BranchChoice | undefined; pick?: RowPick };
-export type Picks = ReturnType<typeof useRowPicks>;
+type Picks = ReturnType<typeof useRowPicks>;
 
 /** A Cloud document row as a sheet row. */
 const sheetRow = (row: ChangeRow): SheetRow => ({
