@@ -43,6 +43,7 @@ const polar = {
       },
     ]),
   createCheckout: () => Effect.die("unused"),
+  createCustomerPortal: () => Effect.die("unused"),
 } satisfies PolarService;
 
 it.live(

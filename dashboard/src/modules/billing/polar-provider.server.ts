@@ -33,6 +33,11 @@ export type PolarService =
       readonly createCheckout: (
         input: CreatePolarCheckout,
       ) => Effect.Effect<{ readonly url: string }, PolarFailure>;
+      /** A customer portal session for the user who paid, where plans are changed or cancelled. */
+      readonly createCustomerPortal: (input: {
+        readonly externalCustomerId: string;
+        readonly returnUrl: string;
+      }) => Effect.Effect<{ readonly customerPortalUrl: string }, PolarFailure>;
     };
 
 export class Polar extends Context.Service<Polar, PolarService>()(
@@ -40,6 +45,7 @@ export class Polar extends Context.Service<Polar, PolarService>()(
 ) {}
 
 const Checkout = Schema.Struct({ url: Schema.String });
+const CustomerPortal = Schema.Struct({ customerPortalUrl: Schema.String });
 const ProviderErrorEvidence = Schema.Struct({
   status: Schema.optionalKey(Schema.Finite),
   statusCode: Schema.optionalKey(Schema.Finite),
@@ -123,6 +129,12 @@ export function makePolarService(
             metadata: { referenceId: input.referenceId },
           }),
         Checkout,
+      ),
+    createCustomerPortal: (input) =>
+      call(
+        "create customer portal",
+        () => client.customerSessions.create(input),
+        CustomerPortal,
       ),
   };
 }
