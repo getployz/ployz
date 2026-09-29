@@ -195,9 +195,14 @@ mod tests {
         );
         let output = serde_json::to_value(MachineObservationOutput {
             gateway: observation.machine.subnet.gateway().0,
+            public_key: observation.machine.public_key.to_string(),
             observation: &observation,
         })
         .unwrap();
         assert_eq!(output.get("gateway").unwrap(), "10.210.7.1");
+        assert_eq!(
+            output.get("public_key").unwrap(),
+            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+        );
     }
 }

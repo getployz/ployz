@@ -496,10 +496,8 @@ fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
         return Ok(Some(Store::Local(ConfigStore::open(&url, key)?, actor)));
     }
     let credentials = CredentialStore::beside(config);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     let runtime = runtime()?;
-    match runtime.block_on(cloud_account::credential(&credentials, token, cloud)) {
+    match runtime.block_on(cloud_account::from_env(&credentials)) {
         Ok(credential) => Ok(Some(Store::Cloud(runtime, credential))),
         Err(LoginError::SignedOut) => Ok(None),
         Err(error) => Err(error.into()),
