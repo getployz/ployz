@@ -267,7 +267,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   async function close() {
     setShutting(false);
     if (!offServers) {
-      setLoss(await takeOff({ accept: [], version: null }));
+      setLoss(await takeOff({ accept: [], version: null }, false));
       return;
     }
     try {
