@@ -28,8 +28,6 @@ import type { EnvironmentNodeNameIdentity } from "#/modules/environment-design/e
 import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
 import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
 import { decodeStrict } from "#/modules/environment-design/schema";
-import type { EnvironmentRef } from "@ployz/sdk";
-import { storeEnabled, type StoreServiceRef } from "#/modules/config-store/store.contract";
 
 export type ServiceRouteParams = {
   organizationSlug: string;
@@ -53,8 +51,6 @@ export type ServiceDrawerState = {
   defaultTargetPort: number | null;
   /** Public domains in the Service's Applied State; empty before its first deploy. */
   appliedDomains: { managedPrefixes: ReadonlySet<string>; routeHostnames: ReadonlySet<string> };
-  /** Where the Config Store holds this Service; null while the Store is dark. */
-  store: StoreServiceRef | null;
 };
 
 function resolveDefaultTargetPort(
@@ -193,15 +189,7 @@ export function useServiceDrawerState(
       .flatMap((item) => item.service.managedHostnames.map((m) => m.prefix)),
     defaultTargetPort: resolveDefaultTargetPort(service.env),
     appliedDomains: appliedDomains(environmentChangeState?.applied.nodes ?? [], params.serviceId),
-    store: storeService(environmentMatch?.loaderData?.store,
-      rawServices.find((item) => item.service.id === params.serviceId)?.document.intent.services
-        .find((node) => node.id === params.serviceId)?.slug),
   };
-}
-
-// TODO(#1270): Services move to the Store; until then the Store names a Service by the dashboard's slug.
-function storeService(environment: EnvironmentRef | undefined, service: string | undefined): StoreServiceRef | null {
-  return storeEnabled && environment && service ? { environment, service } : null;
 }
 
 function appliedDomains(

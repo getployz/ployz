@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, EnvironmentRef, JsonValue } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 
 // TODO(#1275): the Config Store is dark in production until the cutover; production keeps the old backend.
@@ -20,8 +20,6 @@ export type StoreCall = { operation: "read"; query: ConfigQuery } | { operation:
 /** The view a query answers with: each query kind has the view of the same name. */
 export type StoreViewOf<Q extends ConfigQuery> = Extract<ConfigView, { view: Q["query"] }>;
 
-/** A Service in the Store: its Environment and its name there. */
-export type StoreServiceRef = { environment: EnvironmentRef; service: string };
 
 /** The Store decodes and validates queries and commands itself, refusing anything else as `invalid_argument`. */
 export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: Schema.Json });

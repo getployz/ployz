@@ -1,6 +1,7 @@
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import { ServiceContextMenu } from "./ServiceContextMenu";
+import { useDeleteService } from "../../services/$serviceId/-components/useDeleteService";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Badge } from "#/components/ui/badge";
 import {
@@ -31,6 +32,8 @@ import {
 import { cn } from "#/lib/utils";
 import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import { LiveNodeCard } from "./LiveServiceNode";
+import { StoreServiceCard } from "./StoreServiceNode";
+import type { StoreCanvasService } from "./types";
 
 function ServiceListItem({
   serviceView,
@@ -43,6 +46,7 @@ function ServiceListItem({
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const service = serviceView.service;
+  const deleteService = useDeleteService(service.id);
   const { runtime } = useRuntimeService(runtimeServiceIdentity(service));
   const subtitle = getServiceSubtitle(service);
   const semantics = getServiceDeploymentSemantics({
@@ -60,7 +64,7 @@ function ServiceListItem({
   const statusClasses = getServiceStatusClasses(semantics.state);
 
   return (
-    <ServiceContextMenu serviceId={service.id}>
+    <ServiceContextMenu serviceId={service.id} onDelete={deleteService}>
       <Link
         to={ENVIRONMENT_SERVICE_ROUTE_TO}
         params={{
@@ -116,12 +120,15 @@ function ServiceListItem({
 
 export function CanvasNodeList({
   services,
+  storeServices,
   liveNodes,
   selectedNodeId,
   servicesById,
   volumeResourcesById,
 }: {
   services: EnvironmentServiceViewRecord[];
+  /** The Config Store's Services, listed instead of `services`; null while the Store is dark. */
+  storeServices: StoreCanvasService[] | null;
   /** A Branch's Live Nodes, after its own services. */
   liveNodes: LiveNode[];
   selectedNodeId: string | null;
@@ -134,7 +141,10 @@ export function CanvasNodeList({
       className="canvas-node-list absolute inset-0 overflow-y-auto px-4 pb-4 pt-16 min-[861px]:hidden"
     >
       <div className="flex flex-col gap-3">
-        {services.map((serviceView) => {
+        {storeServices?.map((service) => (
+          <StoreServiceCard key={service.service.id} {...service} selected={service.service.id === selectedNodeId} className="block" />
+        ))}
+        {storeServices ? null : services.map((serviceView) => {
           const serviceState = servicesById.get(serviceView.service.id);
           return serviceState ? (
             <ServiceListItem

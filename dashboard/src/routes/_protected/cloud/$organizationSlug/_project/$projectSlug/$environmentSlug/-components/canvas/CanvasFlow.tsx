@@ -40,7 +40,7 @@ import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
-import type { CanvasResourceNode } from "./types";
+import type { CanvasResourceNode, StoreCanvasService } from "./types";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { DestructiveChangesDialog } from "./DestructiveChangesDialog";
 import { getServiceIcon } from "./service-node-helpers";
@@ -62,6 +62,7 @@ export function CanvasFlow({
   nodeIntroductions,
   canvasNodes,
   canvasEdges,
+  storeServices,
 }: {
   organizationId: string;
   environmentId: string;
@@ -71,6 +72,8 @@ export function CanvasFlow({
   nodeIntroductions: EnvironmentNodeIntroduction[];
   canvasNodes: CanvasResourceNode[];
   canvasEdges: Edge[];
+  /** The Config Store's Services, which replace the legacy ones on the canvas; null while the Store is dark. */
+  storeServices: StoreCanvasService[] | null;
 }) {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
@@ -88,7 +91,11 @@ export function CanvasFlow({
     organizationId,
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
-  const findableNodes = useEnvironmentNavigationNodes(params).nodes;
+  const navigationNodes = useEnvironmentNavigationNodes(params).nodes;
+  const findableNodes = storeServices
+    ? [...storeServices.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
+      ...navigationNodes.filter((node) => node.type === "volume")]
+    : navigationNodes;
   const {
     canvasChangeState,
     diffGroups,
@@ -212,6 +219,7 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList
         services={activeServicesWithBoundEnv}
+        storeServices={storeServices}
         liveNodes={canvasNodes.flatMap((node) => node.type === "live" ? [node.data.liveNode] : [])}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}

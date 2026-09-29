@@ -40,7 +40,6 @@ import {
   insertServiceIdentity,
   serviceDocumentRecord,
   listServicesForEnvironment,
-  serviceExists,
   upsertCanvasPosition,
 } from "./service-repository.server";
 import {
@@ -233,8 +232,6 @@ export const updateServiceCanvasPosition = Effect.fn(
   },
 ) {
   yield* requireEnvironmentForActorById(actor, input);
-  if (!(yield* serviceExists(input.environmentId, input.serviceId))) {
-    return yield* new NotFound({ message: "Service not found." });
-  }
+  // Positions are presentation: a Config Store Service is placed before the Store creates it.
   return yield* withMutationResult(upsertCanvasPosition(input));
 });
