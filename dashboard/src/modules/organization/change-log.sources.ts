@@ -1,4 +1,16 @@
 /**
+ * The Config Store's organization-owned tables, keyed by the scope whose views a change invalidates. The Store
+ * creates them when Cloud first opens it, so Cloud attaches their triggers then (see config-store.server.ts).
+ * The Organization column is text there, because the Store's SQL also runs on SQLite.
+ */
+export const storeChangeSources = {
+  config_project: { key: ["id"] },
+  config_environment: { key: ["id"] },
+  config_node_introduction: { key: ["environment_id"] },
+  config_saved: { key: ["environment_id"] },
+} satisfies Record<string, { key: readonly string[] }>;
+
+/**
  * Every organization-owned table: the column naming its Organization (`organization_id` unless given)
  * and the key columns its change trigger logs (joined with ':'). The spec logs every organization-owned
  * table (#1042 user story 21), including tables that feed no collection yet. The migration attaches each
@@ -46,6 +58,7 @@ export const changeSources = {
   teardown_attempt: { key: ["id"] },
   variable: { key: ["id"] },
   variable_secret: { key: ["variable_id"] },
+  ...storeChangeSources,
 } satisfies Record<string, { organizationColumn?: string; key: readonly string[] }>;
 
 export type ChangeSource = keyof typeof changeSources;
