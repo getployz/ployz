@@ -15,6 +15,7 @@ import { githubInstallation, githubRepositoryCache } from "#/modules/github/tabl
 import { member, user } from "#/modules/identity/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
+import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { encodePublicError, NotFound, statusForPublicError } from "#/server/public-error";
 import { postgresTestDatabase } from "#/test/postgres";
@@ -46,6 +47,7 @@ const cloudLayer = Effect.fn(function* (
   const services = Layer.mergeAll(
     configLayer,
     DatabaseLive.pipe(Layer.provide(configLayer)),
+    SecretEncryptionLive.pipe(Layer.provide(configLayer)),
     Layer.succeed(Polar, { mode: "self_hosted" }),
     Layer.succeed(InngestClient, inngest),
     Layer.succeed(GithubApi, github.service),
@@ -249,7 +251,7 @@ it.live(
         yield* request("write", alice, shop);
         yield* request("write", alice, web);
         const admit: ConfigCommand = {
-          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, accept_volume_loss: [],
         };
         assert.strictEqual((yield* request("write", alice, admit)).status, 200);
         // A retried request replays the admission and sends the same event, which Inngest drops.

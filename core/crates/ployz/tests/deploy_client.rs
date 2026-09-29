@@ -982,7 +982,9 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
+                accept_volume_loss: Vec::new(),
             },
+            &ployz_store::Trusted::default(),
         )
         .unwrap();
     let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
@@ -1021,8 +1023,11 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         environment: EnvironmentRef::default(),
         services: Vec::new(),
         version: None,
+        accept_volume_loss: Vec::new(),
     };
-    store.admit(&who, &admit).unwrap();
+    store
+        .admit(&who, &admit, &ployz_store::Trusted::default())
+        .unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
         who.clone(),
@@ -1046,7 +1051,9 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 
     // Cancelled while queued, it never runs.
     admit.id = DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap();
-    store.admit(&who, &admit).unwrap();
+    store
+        .admit(&who, &admit, &ployz_store::Trusted::default())
+        .unwrap();
     store
         .cancel(
             &who,
@@ -1065,5 +1072,161 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     .await
     .unwrap_err();
     assert_eq!(never.code, ployz_core::RpcErrorCode::Conflict);
+    server.abort();
+}
+
+#[tokio::test]
+async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, Mount, OrganizationId, ProjectId,
+        ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey, ServiceId, Trusted,
+        VolumeId, VolumeName, VolumesQuery,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor {
+        organization: OrganizationId::parse("org").unwrap(),
+    };
+    store
+        .create_project(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: web.clone(),
+                image: Some("postgres".into()),
+            },
+        )
+        .unwrap();
+    let data = VolumeName::parse("data").unwrap();
+    store
+        .create_volume(
+            &who,
+            &CreateVolume {
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: data.clone(),
+                mounts: vec![Mount {
+                    service: web,
+                    path: "/var/lib/postgresql".into(),
+                }],
+            },
+        )
+        .unwrap();
+    let service = DeployService::new(machine('a', "one"));
+    let held = Arc::clone(&service.volumes);
+    let (address, server) = listening(service).await;
+    let connections = || vec![ployz::context::Connection::tcp(address)];
+    let deploy = |n: u8, accept: Vec<VolumeName>, trusted: Trusted| {
+        let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+        store
+            .admit(
+                &who,
+                &Admit {
+                    id: id.clone(),
+                    environment: EnvironmentRef::default(),
+                    services: Vec::new(),
+                    version: None,
+                    accept_volume_loss: accept,
+                },
+                &trusted,
+            )
+            .map(|_| id)
+    };
+
+    let first = deploy(1, Vec::new(), Trusted::default()).unwrap();
+    let ran = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        who.clone(),
+        first,
+        RunnerId::parse("cloud-run-1").unwrap(),
+        connections(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    // The Server holds the mounted Volume's data.
+    let docker = ployz_core::DockerVolumeName::parse(
+        "shop-production_vol-00000000-0000-4000-8000-000000000004",
+    )
+    .unwrap();
+    let on = |letter: char| ployz_core::DockerVolume {
+        id: ployz_core::DockerVolumeId {
+            machine_id: ployz_core::MachineId::parse(letter.to_string().repeat(32)).unwrap(),
+            name: docker.clone(),
+        },
+        options: Default::default(),
+        labels: Default::default(),
+        storage: ployz_core::DockerVolumeStorageObservation::Plain {
+            driver: "local".into(),
+        },
+    };
+    held.lock().unwrap().push(on('a'));
+
+    store
+        .remove_volume(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: data.clone(),
+            },
+        )
+        .unwrap();
+    let sought = store
+        .removals(&who, &RemovalsQuery::default())
+        .unwrap()
+        .volumes
+        .into_iter()
+        .map(|volume| volume.docker_volume)
+        .collect();
+    let observed = ployz::sdk::observe_volumes(connections(), sought)
+        .await
+        .unwrap();
+    assert_eq!(observed.held.len(), 1);
+    let trusted = Trusted {
+        volumes: Some(observed),
+        ..Trusted::default()
+    };
+    // Unaccepted it refuses; accepted, the runner deletes exactly the reviewed one.
+    assert_eq!(
+        deploy(2, Vec::new(), trusted.clone()).unwrap_err().code,
+        ployz_core::RpcErrorCode::ConfirmationRequired
+    );
+    let second = deploy(2, vec![data], trusted).unwrap();
+    // A same-named Docker Volume that appeared after the review is never deleted.
+    held.lock().unwrap().push(on('b'));
+    let ran = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        who.clone(),
+        second,
+        RunnerId::parse("cloud-run-2").unwrap(),
+        connections(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(ran.status, DeploymentStatus::Applied);
+    assert_eq!(*held.lock().unwrap(), [on('b')]);
+    assert!(
+        store
+            .volumes(&who, &VolumesQuery::default())
+            .unwrap()
+            .volumes
+            .is_empty()
+    );
     server.abort();
 }

@@ -46,6 +46,31 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
     })
 }
 
+/// Which of `connections`' Servers hold each Docker Volume named in `sought`: the
+/// evidence (`VolumeObservation`) Cloud admits a Deploy that removes deployed
+/// Volumes with. Servers that don't answer are named, never assumed empty.
+///
+/// # Errors
+/// Returns `invalid_argument` for malformed input, or the connection's error when
+/// no Server can be reached.
+#[napi]
+pub async fn observe_volumes(
+    connections: serde_json::Value,
+    sought: Vec<String>,
+) -> Result<serde_json::Value> {
+    let connections = serde_json::from_value(connections)
+        .map_err(|_| invalid_argument("invalid management connections"))?;
+    let sought = sought
+        .into_iter()
+        .map(ployz_core::DockerVolumeName::parse)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|_| invalid_argument("invalid Docker Volume name"))?;
+    let observed = ployz::sdk::observe_volumes(connections, sought)
+        .await
+        .map_err(rpc_to_napi)?;
+    serde_json::to_value(observed).map_err(|error| Error::from_reason(error.to_string()))
+}
+
 #[napi]
 impl ConfigStore {
     /// Answer a `ConfigQuery` as the given Organization.

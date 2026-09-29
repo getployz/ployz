@@ -6,7 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{DeployOutcome, RpcError, RpcErrorCode};
 use ployz_store::{
     Actor, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, RunEvidence, RunnerId,
 };
@@ -55,9 +55,25 @@ pub async fn run_deployment(
         Ok(session) => session,
         Err(error) => return run.not_executed(error.message).await,
     };
-    let recorded = run.execute(&session, claimed.intent).await;
+    let recorded = run.execute(&session, claimed.intent, claimed.deletes).await;
     session.close().await;
     recorded
+}
+
+/// Which of `connections`' Servers hold each Docker Volume in `sought`: the
+/// evidence a Deploy that removes deployed Volumes is admitted with.
+///
+/// # Errors
+/// Returns the connection's error when no Server can be reached, or listing the
+/// Machines fails.
+pub async fn observe_volumes(
+    connections: Vec<Connection>,
+    sought: Vec<ployz_core::DockerVolumeName>,
+) -> Result<ployz_store::VolumeObservation, RpcError> {
+    let session = connect_connections(connections, Arc::new(SystemConnector::default())).await?;
+    let observed = session.observe_volumes(sought).await;
+    session.close().await;
+    observed
 }
 
 struct Run {
@@ -72,6 +88,7 @@ impl Run {
         &self,
         session: &Session,
         intent: ployz_core::DeployIntent,
+        deletes: Vec<ployz_core::DockerVolumeId>,
     ) -> Result<DeploymentSummary, RpcError> {
         let prepared = match session.preview(intent).await {
             Ok(prepared) => prepared,
@@ -105,7 +122,18 @@ impl Run {
             }
         };
         match outcome {
-            Ok(outcome) => self.record(RunEvidence::Executed(Box::new(outcome))).await,
+            Ok(outcome) => {
+                let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
+                    remove_volumes(session, deletes).await
+                } else {
+                    Vec::new()
+                };
+                self.record(RunEvidence::Executed {
+                    outcome: Box::new(outcome),
+                    removed,
+                })
+                .await
+            }
             // The session ended mid-execution: what ran is unknown.
             Err(_) => self.record(RunEvidence::Abandoned).await,
         }
@@ -138,6 +166,24 @@ impl Run {
             .await
             .map_err(|_| internal("A Config Store call stopped unexpectedly"))?
     }
+}
+
+/// Delete exactly the Docker Volumes admission accepted, never others of the same
+/// name. Failing to reach the Cluster deletes none, so their Volumes stay deployed.
+async fn remove_volumes(
+    session: &Session,
+    volumes: Vec<ployz_core::DockerVolumeId>,
+) -> Vec<ployz_core::VolumeRemoval> {
+    if volumes.is_empty() {
+        return Vec::new();
+    }
+    session
+        .remove_volumes(ployz_core::RemoveVolumesRequest {
+            volumes,
+            force: false,
+        })
+        .await
+        .unwrap_or_default()
 }
 
 fn internal(message: &str) -> RpcError {

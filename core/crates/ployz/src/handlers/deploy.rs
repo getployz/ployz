@@ -8,10 +8,10 @@ use std::io::Write as _;
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::ServiceName;
+use ployz_core::{RemoveVolumesRequest, ServiceName};
 use ployz_store::{
     Admit, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, PlanQuery, RunEvidence, RunnerId,
+    DeploymentsQuery, PlanQuery, RemovalsQuery, RunEvidence, RunnerId, Trusted, VolumeName,
 };
 
 use super::store::{
@@ -19,6 +19,8 @@ use super::store::{
 };
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
+use crate::cloud_account::StoreCallError;
+use crate::connect::Client;
 use crate::deploy::ApplyError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
@@ -52,6 +54,7 @@ pub(crate) fn deploy_command() -> Command {
             .conflicts_with("events")
             .help("Return the queued Deployment at once instead of following it"),
     )
+    .arg(crate::cli::volume_acceptance())
 }
 
 /// How often `deploy` reads a Deployment Cloud runs while following it.
@@ -109,14 +112,43 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .map(std::fs::File::create)
         .transpose()?
         .map(std::io::BufWriter::new);
-    let admitted = store
-        .admit(&Admit {
-            id: DeploymentId::parse(mint())?,
-            environment: environment(matches)?,
-            services,
-            version: matches.get_one::<String>("expect-version").cloned(),
+    let accept = matches
+        .get_many::<String>("accept-volume-loss")
+        .into_iter()
+        .flatten()
+        .map(|name| {
+            VolumeName::parse(name.as_str()).map_err(|_| {
+                Error::usage("Expected Volume names: lowercase letters, digits and -")
+                    .with_exit(USAGE_EXIT)
+            })
         })
-        .map_err(|error| failed(matches, &["deploy"])(with_refresh_hint(error, matches, "diff")))?;
+        .collect::<Result<Vec<_>, _>>()?;
+    let environment = environment(matches)?;
+    // The in-process Store trusts this CLI to observe the Servers; Cloud observes
+    // them itself.
+    let (trusted, client) = match store.local() {
+        Some(_) if services.is_empty() => observe(matches, &store, &environment)?,
+        Some(_) | None => (Trusted::default(), None),
+    };
+    let admitted = store
+        .admit(
+            &Admit {
+                id: DeploymentId::parse(mint())?,
+                environment,
+                services: services.clone(),
+                version: matches.get_one::<String>("expect-version").cloned(),
+                accept_volume_loss: accept,
+            },
+            &trusted,
+        )
+        .map_err(|error| {
+            let error = with_retry(
+                with_refresh_hint(error, matches, "diff"),
+                matches,
+                &services,
+            );
+            failed(matches, &["deploy"])(error)
+        })?;
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
     // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
     // runner runs it otherwise, and this command follows it unless detached.
@@ -130,7 +162,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         Some(local) => {
             let runner = RunnerId::parse(format!("cli-{}", mint()))?;
             let claimed = local.claim(&admitted.id, &runner)?;
-            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, events));
+            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, client, events));
             let view = store
                 .deployment(&admitted.id)
                 .map_err(failed(matches, &["deploy"]))?;
@@ -248,12 +280,92 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     })
 }
 
-/// Run a claimed Deployment on the Cluster and record each step's evidence.
+/// When a Deploy removes deployed Volumes, observe which Servers hold their data:
+/// the evidence the in-process Store reviews it against. A Cluster it can't reach
+/// leaves the evidence out, so the Store refuses. Returns the connection to reuse.
+fn observe(
+    matches: &ArgMatches,
+    store: &Store,
+    environment: &ployz_store::EnvironmentRef,
+) -> Result<(Trusted, Option<Client>), Error> {
+    let removals = store
+        .removals(&RemovalsQuery {
+            environment: environment.clone(),
+        })
+        .map_err(failed(matches, &["deploy"]))?;
+    if removals.volumes.is_empty() {
+        return Ok((Trusted::default(), None));
+    }
+    let sought = removals
+        .volumes
+        .into_iter()
+        .map(|volume| volume.docker_volume)
+        .collect();
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    runtime()?.block_on(async {
+        let Ok(mut client) = connect_client(matches, context).await else {
+            return Ok((Trusted::default(), None));
+        };
+        let volumes = client.observe_volumes(sought).await.ok();
+        Ok((
+            Trusted {
+                volumes,
+                ..Trusted::default()
+            },
+            Some(client),
+        ))
+    })
+}
+
+/// A refusal to delete Volume data unaccepted names the exact command that accepts
+/// it, bound to the reviewed version so a changed review refuses again.
+fn with_retry(
+    error: StoreCallError,
+    matches: &ArgMatches,
+    services: &[ServiceName],
+) -> StoreCallError {
+    let StoreCallError::Refused(mut error) = error else {
+        return error;
+    };
+    if error.code != ployz_core::RpcErrorCode::ConfirmationRequired {
+        return StoreCallError::Refused(error);
+    }
+    let version = error
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let accept: Vec<String> = error
+        .details
+        .get("accept")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|name| name.as_str().map(str::to_owned))
+        .collect();
+    let mut words = vec!["deploy"];
+    words.extend(services.iter().map(ServiceName::as_str));
+    words.extend(["--expect-version", version.as_str()]);
+    for name in &accept {
+        words.extend(["--accept-volume-loss", name.as_str()]);
+    }
+    let retry = next(matches, &words);
+    error.message = format!("{}.\nRetry: {retry}", error.message);
+    if let Some(details) = error.details.as_object_mut() {
+        details.insert("next".into(), serde_json::json!(retry));
+    }
+    StoreCallError::Refused(error)
+}
+
+/// Run a claimed Deployment on the Cluster and record each step's evidence. A
+/// successful Deploy then deletes exactly the Docker Volumes admission accepted.
 async fn run(
     matches: &ArgMatches,
     store: &ConfigStore,
     claimed: &Claimed,
     runner: &RunnerId,
+    client: Option<Client>,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
 ) -> Result<(), Error> {
     let id = &claimed.deployment.id;
@@ -264,9 +376,12 @@ async fn run(
         }
     };
     let context = matches.get_one::<String>("context").map(String::as_str);
-    let mut client = match connect_client(matches, context).await {
-        Ok(client) => client,
-        Err(error) => return Err(not_executed(error)),
+    let mut client = match client {
+        Some(client) => client,
+        None => match connect_client(matches, context).await {
+            Ok(client) => client,
+            Err(error) => return Err(not_executed(error)),
+        },
     };
     let plan = match client.preview(claimed.intent.clone()).await {
         Ok(plan) => plan,
@@ -306,7 +421,27 @@ async fn run(
         }
         Err(error @ ApplyError::Prepare(_)) => return Err(not_executed(error.into())),
     };
-    store.record(id, runner, RunEvidence::Executed(Box::new(outcome)))?;
+    let removed = if failure.is_none() && !claimed.deletes.is_empty() {
+        // ponytail: failing to reach the Cluster deletes nothing; the Volume stays
+        // deployed, and the next Deploy deletes it.
+        client
+            .remove_volumes(RemoveVolumesRequest {
+                volumes: claimed.deletes.clone(),
+                force: false,
+            })
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    store.record(
+        id,
+        runner,
+        RunEvidence::Executed {
+            outcome: Box::new(outcome),
+            removed,
+        },
+    )?;
     failure.map_or(Ok(()), Err)
 }
 
@@ -373,4 +508,29 @@ fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error>
             say!("  {}: {:?}", node.name, node.outcome);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_volume_loss_names_the_exact_retry() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .unwrap();
+        let refused = ployz_core::RpcError {
+            code: ployz_core::RpcErrorCode::ConfirmationRequired,
+            message: "This Deploy permanently deletes the data of data".into(),
+            details: serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }),
+        };
+        let StoreCallError::Refused(error) =
+            with_retry(StoreCallError::Refused(refused), leaf_matches(&root), &[])
+        else {
+            panic!("a refusal stays a refusal");
+        };
+        let retry = "ployz deploy --expect-version 3:1:0.1 --accept-volume-loss data --env staging";
+        assert_eq!(error.details.get("next"), Some(&serde_json::json!(retry)));
+        assert!(error.message.ends_with(&format!("Retry: {retry}")));
+    }
 }

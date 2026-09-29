@@ -11,7 +11,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError, VolumeObservationFailure};
+use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError};
 use serde::Serialize;
 
 use crate::failure::Failure;
@@ -175,14 +175,11 @@ pub(crate) fn emitted() -> bool {
 }
 
 /// Gaps in a fan-out result: Machines whose answer was an error (`failures`) or
-/// never came (`omitted`), and Volumes a Machine answered for but could not
-/// inspect (`unavailable_volumes`). Any gap makes the command exit [`Failure::partial`].
+/// never came (`omitted`). Any gap makes the command exit [`Failure::partial`].
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct Gaps {
     pub failures: Vec<MachineFailure<RpcError>>,
     pub omitted: Vec<MachineId>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub unavailable_volumes: Vec<VolumeObservationFailure>,
 }
 
 impl Gaps {
@@ -190,7 +187,6 @@ impl Gaps {
         Self {
             failures: result.failures.clone(),
             omitted: result.omissions.clone(),
-            unavailable_volumes: Vec::new(),
         }
     }
 
@@ -209,7 +205,7 @@ impl Gaps {
     }
 
     fn is_complete(&self) -> bool {
-        self.failures.is_empty() && self.omitted.is_empty() && self.unavailable_volumes.is_empty()
+        self.failures.is_empty() && self.omitted.is_empty()
     }
 
     /// `Ok` when every Machine answered; otherwise the partial exit.
@@ -220,19 +216,9 @@ impl Gaps {
             Err(Failure::partial())
         }
     }
-
-    /// A fan-out that found nothing: `not_found` only when every Machine answered,
-    /// otherwise an absent value, since absence is unproven.
-    pub(crate) fn absence<T>(&self, not_found: Failure) -> Result<Option<T>, Failure> {
-        if self.is_complete() {
-            Err(not_found)
-        } else {
-            Ok(None)
-        }
-    }
 }
 
-/// Finish a fan-out: `{key: value, failures, omitted[, unavailable_volumes]}`, or
+/// Finish a fan-out: `{key: value, failures, omitted}`, or
 /// `human`; then the partial exit if any gap.
 ///
 /// # Errors
@@ -245,16 +231,6 @@ pub(crate) fn finish_fanout(
     human: impl FnOnce(),
 ) -> Result<(), Failure> {
     finish(&Fanout::new(key, value, gaps), human)?;
-    gaps.outcome()
-}
-
-/// [`finish_fanout`] for inspect-style commands: the object is pretty JSON in both modes.
-///
-/// # Errors
-///
-/// Returns a serialization or stdout write error, or [`Failure::partial`].
-pub(crate) fn show_fanout(key: &str, value: &impl Serialize, gaps: &Gaps) -> Result<(), Failure> {
-    show(&Fanout::new(key, value, gaps))?;
     gaps.outcome()
 }
 

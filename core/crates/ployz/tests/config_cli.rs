@@ -221,6 +221,7 @@ fn github() -> Trusted {
             default_branch: "main".into(),
             branches: vec!["dev".into()],
         }],
+        volumes: None,
     }
 }
 
@@ -347,6 +348,57 @@ fn an_agent_adds_lists_renames_and_removes_services() {
                 .len(),
             1
         );
+    }
+}
+
+#[test]
+fn an_agent_adds_mounts_detaches_and_removes_volumes() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "db", "--image", "postgres:17"]);
+        let added = ok(
+            store,
+            &["volume", "add", "data", "--mount", "db:/var/lib/postgresql"],
+        );
+        assert_eq!(added["staged"], json!(["volumes.data", "db.mounts.data"]));
+        assert_eq!(added["next"], json!("ployz diff"));
+        let bad = failed(store, &["volume", "add", "logs", "--mount", "db"], 2);
+        assert!(bad["message"].as_str().unwrap().contains("SERVICE:/PATH"));
+
+        assert_eq!(
+            ok(store, &["get", "db.mounts.data"])["settings"][0]["value"],
+            json!("/var/lib/postgresql")
+        );
+        ok(store, &["set", "db.mounts.data=/data"]);
+        let listed = ok(store, &["volume", "ls"]);
+        assert_eq!(
+            listed["volumes"],
+            json!([{
+                "id": added["volume"]["id"], "name": "data",
+                "mounts": [{ "service": "db", "path": "/data" }],
+                "deployed": false, "change": "create",
+            }])
+        );
+        let inspected = ok(store, &["volume", "inspect", "data"]);
+        assert_eq!(inspected["lineage"], inspected["id"]);
+
+        // Detaching keeps the Volume; removing an undeployed one needs no Server.
+        ok(store, &["unset", "db.mounts.data"]);
+        assert_eq!(
+            ok(store, &["volume", "ls"])["volumes"][0]["mounts"],
+            json!([])
+        );
+        let removed = ok(store, &["volume", "rm", "data"]);
+        assert_eq!(removed["staged"], json!(["volumes.data"]));
+        assert_eq!(
+            error(store, &["volume", "inspect", "data"])["code"],
+            json!("not_found")
+        );
+
+        // Nothing deployed loses data, so there is nothing to accept, and --yes is no bypass.
+        let accept = error(store, &["deploy", "--accept-volume-loss", "data"]);
+        assert_eq!(accept["code"], json!("invalid_argument"));
+        failed(store, &["deploy", "--yes"], 2);
     }
 }
 

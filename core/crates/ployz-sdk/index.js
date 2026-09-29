@@ -332,6 +332,7 @@ async function openConfigStore(url, sealingSecret) {
 
 module.exports = {
   openConfigStore,
+  observeVolumes: (connections, sought) => withRpcError(native.observeVolumes(connections, sought)),
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
