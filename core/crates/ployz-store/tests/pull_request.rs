@@ -123,10 +123,10 @@ fn facts(open: bool, updated: &str) -> PullRequest {
 }
 
 fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
-    match store.system(&who.organization, &event).unwrap() {
-        Written::Automated(automated) => automated,
-        other => panic!("expected automated, got {other:?}"),
-    }
+    let Written::Automated(automated) = store.system(&who.organization, &event).unwrap() else {
+        panic!("a system event writes Automated")
+    };
+    automated
 }
 
 fn pull(store: &ConfigStore, who: &Actor, event: PullRequest) -> Automated {

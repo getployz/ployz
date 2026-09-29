@@ -481,6 +481,21 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
 }
 
 #[test]
+fn an_agent_reads_pr_plans_and_names_the_repository_to_change() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        // No Service deploys from a GitHub repository: no plans, nothing to name.
+        let listed = ok(store, &["env", "pr"]);
+        assert_eq!(listed["project"]["name"], json!("shop"));
+        assert_eq!(listed["plans"], json!([]));
+        failed(store, &["env", "pr", "--on"], 2);
+        let missing = error(store, &["env", "pr", "acme/web", "--on"]);
+        assert_eq!(missing["code"], json!("not_found"));
+    }
+}
+
+#[test]
 fn an_agent_branches_an_environment_without_servers() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
