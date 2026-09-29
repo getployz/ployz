@@ -14,7 +14,7 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
     RemoveService, RenameService, Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    ServicesQuery, SettingPath, UploadBase, UploadedSource, Written,
 };
 use serde_json::{Value, json};
 
@@ -81,6 +81,7 @@ fn admit(
                 .map(|name| ServiceName::parse(*name).unwrap())
                 .collect(),
             version,
+            upload: None,
         },
     )
 }
@@ -534,4 +535,81 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
         )
         .unwrap();
     assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
+    let (store, who) = shop();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    let upload = UploadedSource {
+        digest: "d".repeat(64),
+        base: Some(UploadBase {
+            commit: "c".repeat(40),
+            changed: true,
+        }),
+    };
+    let with = |n: u8, upload: Option<UploadedSource>| {
+        store.admit(
+            &who,
+            &Admit {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload,
+            },
+        )
+    };
+    let mut bad = upload.clone();
+    bad.digest = "D".repeat(64);
+    assert_eq!(code(with(1, Some(bad))), RpcErrorCode::InvalidArgument);
+    let first = with(1, Some(upload.clone())).unwrap();
+    assert_eq!(first.upload.as_ref(), Some(&upload));
+    let a = runner("cli-a");
+    let claimed = store.claim(&id(1), &a).unwrap();
+    // The runner prepares the Service without a source from the lowering input.
+    assert!(claimed.intent.target.iter().all(|spec| spec.name.as_str() != "app"));
+    assert_eq!(
+        claimed.input["snapshots"][2]["config"]["source"]["type"],
+        json!("empty")
+    );
+    assert!(claimed.receipts.is_empty());
+    let receipt = json!({"fingerprint": "f".repeat(64)});
+    let built = |receipt: Value| {
+        RunEvidence::Built([(ServiceName::parse("app").unwrap(), receipt)].into())
+    };
+    assert_eq!(
+        code(store.record(&id(1), &runner("cli-b"), built(receipt.clone()))),
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(
+        code(store.record(&id(1), &a, built(json!("image")))),
+        RpcErrorCode::InvalidArgument
+    );
+    store.record(&id(1), &a, built(receipt.clone())).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    // A later Deployment without a new upload keeps building from the latest one.
+    let second = with(2, None).unwrap();
+    assert_eq!(second.upload.as_ref(), Some(&upload));
+    let claimed = store.claim(&id(2), &a).unwrap();
+    assert_eq!(
+        claimed.receipts.get(&ServiceName::parse("app").unwrap()),
+        Some(&receipt)
+    );
+    assert_eq!(
+        store.deployment(&who, &id(1)).unwrap().deployment.upload,
+        Some(upload)
+    );
 }
