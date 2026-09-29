@@ -411,12 +411,13 @@ pub(crate) fn freeze(
             nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone())));
         }
     }
+    // Live values and Setup Commands resolve at claim; checking without them is the same.
     lower(
         environment,
         saved,
         services,
-        namespace.clone(),
-        cluster_domain,
+        (namespace.clone(), cluster_domain),
+        &crate::branch::Lowering::default(),
         None,
     )?;
     Ok(Frozen {
@@ -428,20 +429,31 @@ pub(crate) fn freeze(
 }
 
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
-/// (none: every Service). Variables resolve here; secrets, and values that
-/// reference one, only with `unseal`, and are left out without it.
+/// (none: every Service) into its Namespace, with generated domains under the
+/// Cluster Domain. Variables resolve here, a Branch's Live Node references against
+/// `branch.live`; secrets, and values that reference one, only with `unseal`, and
+/// are left out without it.
 fn lower(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
     services: &[ServiceName],
-    namespace: Namespace,
-    cluster_domain: Option<&Hostname>,
+    (namespace, cluster_domain): (Namespace, Option<&Hostname>),
+    branch: &crate::branch::Lowering,
     unseal: Option<&SealingKey>,
 ) -> Result<(Value, DeployIntent), RpcError> {
-    let compiled = compile_environment_intent(
+    let mut compiled = compile_environment_intent(
         environment.as_str(),
         crate::domain::expand(saved, cluster_domain),
     );
+    // Live values order nothing: what provides them runs elsewhere.
+    let lineages: serde_json::Map<String, Value> = compiled
+        .variable_producers
+        .iter()
+        .map(|producer| (producer.owner_lineage_id.clone(), json!(producer.owner_id)))
+        .collect();
+    compiled
+        .variable_producers
+        .extend(branch.live.iter().cloned());
     let mut resolved = variables::resolve(&compiled, unseal)?;
     let targeted: Vec<&str> = saved
         .services
@@ -464,15 +476,11 @@ fn lower(
             CompiledNodeConfig::Service(config) => Some(json!({
                 "serviceId": node.node_id,
                 "resolvedEnv": resolved.remove(&node.node_id).unwrap_or_default(),
+                "setupCommands": branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
                 "config": config,
             })),
             CompiledNodeConfig::Volume(_) => None,
         })
-        .collect();
-    let lineages: serde_json::Map<String, Value> = compiled
-        .variable_producers
-        .into_iter()
-        .map(|producer| (producer.owner_lineage_id, json!(producer.owner_id)))
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
     let selected: Vec<Value> = saved
@@ -818,12 +826,13 @@ pub(crate) fn claim(
     let sources = build::sources_of(tx, &stored)?;
     let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+    let branch = crate::branch::lowering(tx, &stored.environment, &saved)?;
     let (input, mut intent) = lower(
         &stored.environment,
         &saved,
         &stored.summary.services,
-        stored.namespace,
-        stored.cluster_domain.as_ref(),
+        (stored.namespace, stored.cluster_domain.as_ref()),
+        &branch,
         Some(sealing),
     )?;
     let credentials = tx.query(

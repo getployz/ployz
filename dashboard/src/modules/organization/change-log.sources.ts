@@ -14,6 +14,7 @@ export const storeChangeSources = {
   config_applied: { key: ["environment_id"] },
   config_registry_credential: { key: ["environment_id"] },
   config_service_policy: { key: ["environment_id"] },
+  config_environment_branch: { key: ["environment_id"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
 /**

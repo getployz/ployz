@@ -9,9 +9,9 @@ use std::fmt;
 
 use ployz_core::config::{
     CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult, ResolverValue,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVariableIntent, SavedVariableValue,
-    ServiceEnvValue, ValuePart, ValuePartOwner, VariableProducer, parse_variable_template,
-    render_variable_parts, resolve_variables,
+    SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart,
+    ValuePartOwner, VariableProducer, parse_variable_template, render_variable_parts,
+    resolve_variables,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde_json::{Map, Value, json};
@@ -60,21 +60,16 @@ enum Input {
 
 /// A variable's value as reads show it: text with references by Service name, or
 /// `{"secret": true}`.
-pub(crate) fn shown(variable: &SavedVariableIntent, intent: &SavedEnvironmentIntent) -> Value {
-    let slugs = intent
-        .services
-        .iter()
-        .map(|service| (service.lineage_id.clone(), service.slug.clone()))
-        .collect();
+pub(crate) fn shown(variable: &SavedVariableIntent, names: &BTreeMap<String, String>) -> Value {
     match &variable.value {
         SavedVariableValue::Secret { .. } => json!({ "secret": true }),
         SavedVariableValue::Literal { value } => json!(render_variable_parts(
             &[ValuePart::Text {
                 value: value.clone()
             }],
-            &slugs
+            names
         )),
-        SavedVariableValue::Template { parts } => json!(render_variable_parts(parts, &slugs)),
+        SavedVariableValue::Template { parts } => json!(render_variable_parts(parts, names)),
     }
 }
 
@@ -82,13 +77,13 @@ pub(crate) fn shown(variable: &SavedVariableIntent, intent: &SavedEnvironmentInt
 /// value, or `{"value": …, "exported": true}` for an exported one.
 pub(crate) fn patch_values(
     service: &SavedServiceIntent,
-    intent: &SavedEnvironmentIntent,
+    names: &BTreeMap<String, String>,
 ) -> Map<String, Value> {
     service
         .variables
         .iter()
         .map(|variable| {
-            let value = shown(variable, intent);
+            let value = shown(variable, names);
             let value = if variable.exported {
                 json!({ "value": value, "exported": true })
             } else {
@@ -161,7 +156,7 @@ pub(crate) fn set(
         | Value::Array(_)
         | Value::Object(_)) => (Some(input(key, value)?), None),
     };
-    let intent = &environment.working;
+    let names = environment.names();
     let current = environment
         .service(service)?
         .variables
@@ -182,14 +177,13 @@ pub(crate) fn set(
         }
         (Some(Input::Text(text)), _) => {
             let template = parse_variable_template(&text, |name| {
-                intent
-                    .services
+                names
                     .iter()
-                    .find(|service| service.slug == name)
-                    .map(|service| service.lineage_id.clone())
+                    .find(|(_, slug)| slug.as_str() == name)
+                    .map(|(lineage, _)| lineage.clone())
             });
             if let Some(name) = template.unresolved.first() {
-                let names = intent.services.iter().map(|service| service.slug.as_str());
+                let names = names.values().map(String::as_str);
                 return Err(error::invalid(
                     format!("{key}: a reference names no Service in this Environment"),
                     json!({
