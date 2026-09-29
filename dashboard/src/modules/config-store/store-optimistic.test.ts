@@ -1,17 +1,20 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DiffView, EnvironmentView, ServicesView } from "@ployz/sdk";
+import type { DiffView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "./store-view.queries";
 
 const ref = { project: "shop", environment: "production" };
+// SAFETY: test ids stand in for the Store's UUIDs.
+const id = (value: string) => value as ServiceId;
 const environment = { id: "env", project: "shop", name: "production", revision: 3 };
 
 function cached() {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "s", userId: "u" };
   const key = (query: Parameters<typeof storeViewOptions>[2]) => storeViewOptions("acme", scope, query).queryKey;
-  const put = (query: Parameters<typeof storeViewOptions>[2], value: object) => queryClient.setQueryData<unknown>(key(query), { ok: true, value });
+  const put = (query: Parameters<typeof storeViewOptions>[2], value: DiffView | EnvironmentView | ServicesView) =>
+    queryClient.setQueryData<unknown>(key(query), { ok: true, value });
   put(diffQuery(ref), {
     environment, version: "3:1:1", saved: 1, published: false, hints: [], total_count: 3, changes: [
       { type: "service", id: "w", name: "web", lifecycle: "update", comparison: null, data: null, settings: [
@@ -26,8 +29,8 @@ function cached() {
     { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
   ] } satisfies EnvironmentView);
   put(servicesQuery(ref), { environment, services: [
-    { id: "w", name: "web", private_dns: "web", source: "image", change: "update" },
-    { id: "c", name: "cache", private_dns: "cache", source: "image", change: "create" },
+    { id: id("w"), name: "web", private_dns: "web", source: "image", change: "update" },
+    { id: id("c"), name: "cache", private_dns: "cache", source: "image", change: "create" },
   ] } satisfies ServicesView);
   const read = <V,>(query: Parameters<typeof storeViewOptions>[2]) => (queryClient.getQueryData<{ value: V }>(key(query)))?.value;
   return { queryClient, read };
