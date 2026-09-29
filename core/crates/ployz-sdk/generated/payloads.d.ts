@@ -170,6 +170,42 @@ export type BranchPlan = { nodes: Array<BranchPlanNode>, preset: BranchPreset | 
 
 export type BranchPlanNode = { lineageId: string, nodeType: EnvironmentNodeType, } & ({ "role": "own", because: BranchNodeReason, } | { "role": "live" } | { "role": "left_out" });
 
+export type BranchPlanQuery = {
+/**
+ * The Environment to branch.
+ */
+from: EnvironmentRef,
+/**
+ * The nodes the Branch is for, by name: what a preset plans around.
+ */
+focus: Array<string>,
+/**
+ * The nodes to copy, by name, as [`CreateBranch::copy`]; ignored with a preset.
+ */
+copy: Array<string>,
+/**
+ * Plan what a preset copies around `focus` instead.
+ */
+preset?: BranchPreset | null, };
+
+export type BranchPlanView = {
+/**
+ * The Environment it comes from.
+ */
+from: EnvironmentSummary,
+/**
+ * The preset this plan is, if any.
+ */
+preset: BranchPreset | null,
+/**
+ * The presets worth offering: "uses" only when it copies more than "only".
+ */
+presets: Array<BranchPreset>,
+/**
+ * Each node, as the Branch would have it.
+ */
+nodes: Array<PlannedNode>, };
+
 export type BranchPreset = "only" | "uses" | "all";
 
 export type BranchQuery = {
@@ -441,7 +477,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "move" } & MoveQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "branch_plan" } & BranchPlanQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "move" } & MoveQuery | { "query": "environments" } & EnvironmentsQuery | { "query": "projects" } & ProjectsQuery | { "query": "pr_plans" } & PrPlansQuery | { "query": "pull_request" } & PullRequestQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -463,7 +499,7 @@ volumes?: VolumeObservation,
  */
 uploader?: string | null, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "project_removed" } & ProjectRemoved | { "written": "organization_removed" } & OrganizationRemoved | { "written": "pr_plans" } & PrPlansView;
 
@@ -1337,7 +1373,11 @@ name: string,
  * The nearest Environment the Branch comes from that runs it; none when
  * nothing does, so what reads it deploys empty.
  */
-owner: EnvironmentName | null, };
+owner: EnvironmentName | null,
+/**
+ * It holds its owner's real data: a Volume, or a Service mounting one.
+ */
+data: boolean, };
 
 export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
 
@@ -1618,7 +1658,13 @@ row: string,
  * included), `parent` (the Parent's deployed value) or `leave_out`; omitted,
  * each its default.
  */
-choice?: BranchOption | null, };
+choice?: BranchOption | null,
+/**
+ * With `choice: new`, the variable's own value in the receiver: text that may
+ * reference Services there by name, or a secret's plaintext, sealed before it
+ * is stored.
+ */
+value?: string | null, };
 
 export type MoveQuery = {
 /**
@@ -1855,6 +1901,35 @@ changes: Array<NodeChange>,
  * move, and where.
  */
 unresolved: Array<string>, };
+
+export type PlannedNode = {
+/**
+ * Its name where the Branch comes from.
+ */
+name: string, kind: EnvironmentNodeType,
+/**
+ * `own`: the Branch gets its own copy; `live`: it uses the running one;
+ * `left_out`: it has none.
+ */
+role: PlannedRole,
+/**
+ * Why it is copied.
+ */
+because: BranchNodeReason | null,
+/**
+ * What it would become if the user toggled it.
+ */
+toggled: PlannedRole,
+/**
+ * Used live, the nearest Environment that runs it; none when nothing does.
+ */
+owner: EnvironmentName | null,
+/**
+ * It holds data: a Volume, or a Service mounting one.
+ */
+data: boolean, };
+
+export type PlannedRole = "own" | "live" | "left_out";
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 

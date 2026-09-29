@@ -8,12 +8,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::config::{
-    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNodeRole, BranchOption,
-    BranchPick, BranchPickChoice, BranchPicks, BranchRole, BranchRow, ConfigError, LiveLineageUse,
-    LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
-    SavedVariableProducer, ServiceImageCredentials, ServiceSource, ValuePart, ValuePartOwner,
-    branch_changes, canonicalize_environment_intent, compile_environment_intent, live_values,
-    parse_environment_intent, plan_branch,
+    BranchChanges, BranchChangesInput, BranchChoice, BranchHostnames, BranchNewValue,
+    BranchNodeReason, BranchNodeRole, BranchOption, BranchPick, BranchPickChoice, BranchPicks,
+    BranchPlan, BranchPreset, BranchRole, BranchRow, ConfigError, EnvironmentNodeType,
+    LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVariableProducer, SavedVariableValue, ServiceImageCredentials, ServiceSource, ValuePart,
+    ValuePartOwner, branch_changes, canonicalize_environment_intent, compile_environment_intent,
+    live_values, parse_environment_intent, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,7 @@ use crate::deployment::{self, DeploymentStatus, NodeStatus};
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, EnvironmentName, Revision};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::sealing::SealingKey;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
@@ -143,6 +145,12 @@ pub struct MovePick {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub choice: Option<BranchOption>,
+    /// With `choice: new`, the variable's own value in the receiver: text that may
+    /// reference Services there by name, or a secret's plaintext, sealed before it
+    /// is stored.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub value: Option<String>,
 }
 
 /// Read what a [`Move`] between a Branch and its Parent would stage.
@@ -249,6 +257,68 @@ pub struct KeepBranch {
     pub kept: bool,
 }
 
+/// Plan a Branch before creating it: what each node of the Environment it comes
+/// from becomes.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct BranchPlanQuery {
+    /// The Environment to branch.
+    #[serde(default)]
+    pub from: EnvironmentRef,
+    /// The nodes the Branch is for, by name: what a preset plans around.
+    #[serde(default)]
+    pub focus: Vec<String>,
+    /// The nodes to copy, by name, as [`CreateBranch::copy`]; ignored with a preset.
+    #[serde(default)]
+    pub copy: Vec<String>,
+    /// Plan what a preset copies around `focus` instead.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub preset: Option<BranchPreset>,
+}
+
+/// A planned Branch: pass the nodes it owns to [`CreateBranch::copy`] and those
+/// it uses live to [`CreateBranch::live`].
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct BranchPlanView {
+    /// The Environment it comes from.
+    pub from: EnvironmentSummary,
+    /// The preset this plan is, if any.
+    pub preset: Option<BranchPreset>,
+    /// The presets worth offering: "uses" only when it copies more than "only".
+    pub presets: Vec<BranchPreset>,
+    /// Each node, as the Branch would have it.
+    pub nodes: Vec<PlannedNode>,
+}
+
+/// One node of a planned Branch.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PlannedNode {
+    /// Its name where the Branch comes from.
+    pub name: String,
+    pub kind: EnvironmentNodeType,
+    /// `own`: the Branch gets its own copy; `live`: it uses the running one;
+    /// `left_out`: it has none.
+    pub role: PlannedRole,
+    /// Why it is copied.
+    pub because: Option<BranchNodeReason>,
+    /// What it would become if the user toggled it.
+    pub toggled: PlannedRole,
+    /// Used live, the nearest Environment that runs it; none when nothing does.
+    pub owner: Option<EnvironmentName>,
+    /// It holds data: a Volume, or a Service mounting one.
+    pub data: bool,
+}
+
+/// What a node becomes in a planned Branch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedRole {
+    Own,
+    Live,
+    LeftOut,
+}
+
 /// Read a Branch.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -285,6 +355,8 @@ pub struct LiveNode {
     /// The nearest Environment the Branch comes from that runs it; none when
     /// nothing does, so what reads it deploys empty.
     pub owner: Option<EnvironmentName>,
+    /// It holds its owner's real data: a Volume, or a Service mounting one.
+    pub data: bool,
 }
 
 /// A Branch after a change.
@@ -518,13 +590,14 @@ fn insert_branch(
 pub(crate) fn move_changes(
     tx: &mut dyn Tx,
     who: &Actor,
+    sealing: &SealingKey,
     request: &Move,
 ) -> Result<Moved, RpcError> {
     if request.take.is_some() {
         return crate::conditional_save::take(tx, who, request);
     }
     if crate::conditional_save::at_merge(tx, who, request.from.as_ref(), request.when)? {
-        return crate::conditional_save::save(tx, who, request);
+        return crate::conditional_save::save(tx, who, sealing, request);
     }
     let mut sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
     if let Some(removal) = crate::teardown::removing(tx, &sides.branch().summary.id)? {
@@ -548,7 +621,8 @@ pub(crate) fn move_changes(
     }
     let picks = picks(
         &moving,
-        &sides.into.working,
+        &sides.into,
+        sealing,
         &changes.rows,
         request.picks.as_deref(),
     )?;
@@ -763,11 +837,13 @@ pub(crate) fn version(into: &Environment, review: &str) -> String {
 }
 
 /// Core's picks for `asked`: every change named or under a name, each variable
-/// the way asked or its default. A secret wanting a fresh value is refused: the
-/// Store never makes one up, and a Branch's own secret moves only when asked.
+/// the way asked or its default. A secret wanting a fresh value without one is
+/// refused: the Store never makes one up, and a Branch's own secret moves only
+/// when asked. A fresh value given lands as text, or sealed for a secret.
 pub(crate) fn picks(
     moving: &Moving,
-    into: &SavedEnvironmentIntent,
+    into: &Environment,
+    sealing: &SealingKey,
     rows: &[BranchRow],
     asked: Option<&[MovePick]>,
 ) -> Result<Vec<BranchPick>, RpcError> {
@@ -775,18 +851,18 @@ pub(crate) fn picks(
         .iter()
         .filter_map(|row| match &row.role {
             BranchRole::Move { choice, .. } => Some((
-                moving.name(into, &row.key.to_string()),
+                moving.name(&into.working, &row.key.to_string()),
                 row,
                 choice.as_ref(),
             )),
             BranchRole::Differ { .. } => None,
         })
         .collect();
-    let mut chosen: BTreeMap<String, Option<BranchOption>> = BTreeMap::new();
+    let mut chosen: BTreeMap<String, (Option<BranchOption>, Option<&str>)> = BTreeMap::new();
     match asked {
         None => {
             for (_, row, _) in &named {
-                chosen.insert(row.key.to_string(), None);
+                chosen.insert(row.key.to_string(), (None, None));
             }
         }
         Some(asked) => {
@@ -814,17 +890,26 @@ pub(crate) fn picks(
                         json!({ "row": pick.row }),
                     ));
                 }
+                if pick.value.is_some()
+                    && (pick.choice != Some(BranchOption::New) || found.len() != 1)
+                {
+                    return Err(error::invalid(
+                        format!("{}: a value goes with one variable picked `new`", pick.row),
+                        json!({ "row": pick.row }),
+                    ));
+                }
                 for (_, row, _) in found {
-                    chosen.insert(row.key.to_string(), pick.choice);
+                    chosen.insert(row.key.to_string(), (pick.choice, pick.value.as_deref()));
                 }
             }
         }
     }
+    let names = into.names();
     let mut fresh = Vec::new();
     let mut picks = Vec::new();
     for (name, row, offered) in &named {
         let key = row.key.to_string();
-        let Some(asked) = chosen.get(&key) else {
+        let Some((asked, value)) = chosen.get(&key) else {
             continue;
         };
         let choice = match offered {
@@ -837,14 +922,17 @@ pub(crate) fn picks(
                         json!({ "row": name }),
                     ));
                 }
-                Some(match option {
-                    BranchOption::From => BranchPickChoice::From,
-                    BranchOption::Parent => BranchPickChoice::Parent,
-                    BranchOption::LeaveOut => BranchPickChoice::LeaveOut,
-                    BranchOption::New => {
+                Some(match (option, value) {
+                    (BranchOption::From, _) => BranchPickChoice::From,
+                    (BranchOption::Parent, _) => BranchPickChoice::Parent,
+                    (BranchOption::LeaveOut, _) => BranchPickChoice::LeaveOut,
+                    (BranchOption::New, None) => {
                         fresh.push(name.clone());
                         continue;
                     }
+                    (BranchOption::New, Some(text)) => BranchPickChoice::New {
+                        value: Some(fresh_value(name, offered.secret, text, &names, sealing)?),
+                    },
                 })
             }
         };
@@ -853,7 +941,7 @@ pub(crate) fn picks(
     if !fresh.is_empty() {
         return Err(error::invalid(
             format!(
-                "{}: a secret set in the Branch moves only when picked `from`; or pick `leave_out` and set a new one after",
+                "{}: a secret set in the Branch moves only when picked `from`; or pick `new` with a value, or `leave_out` and set one after",
                 fresh.join(", ")
             ),
             json!({ "rows": fresh }),
@@ -863,6 +951,31 @@ pub(crate) fn picks(
         return Err(error::conflict(moving.nothing.clone(), json!({})));
     }
     Ok(picks)
+}
+
+/// Variable row `name`'s own value in the receiver: sealed for a secret, else text
+/// referencing the receiver's Services by `names`.
+fn fresh_value(
+    name: &str,
+    secret: bool,
+    text: &str,
+    names: &BTreeMap<String, String>,
+    sealing: &SealingKey,
+) -> Result<BranchNewValue, RpcError> {
+    let key = crate::variables::VariableKey::parse(name.rsplit('.').next().unwrap_or(name))?;
+    let (value, value_fingerprint) = match secret {
+        true => (
+            SavedVariableValue::Secret {
+                encrypted_value: Some(sealing.seal(text)),
+            },
+            sealing.fingerprint(text),
+        ),
+        false => crate::variables::text_value(&key, text, names)?,
+    };
+    Ok(BranchNewValue {
+        value,
+        value_fingerprint,
+    })
 }
 
 pub(crate) fn copy_node(
@@ -1011,6 +1124,101 @@ pub(crate) fn branch(
     view(tx, &environment)
 }
 
+/// Plan a Branch of `query.from` by names, as creating it would.
+pub(crate) fn branch_plan(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &BranchPlanQuery,
+) -> Result<BranchPlanView, RpcError> {
+    let from = scope::environment(tx, who, &query.from)?;
+    let working = &from.working;
+    let chain = chain(tx, &from.summary.id)?;
+    let deployed = chain
+        .first()
+        .map(|own| lineages(&own.applied))
+        .unwrap_or_default();
+    let named = |names: &[String]| -> Result<Vec<String>, RpcError> {
+        names
+            .iter()
+            .map(|name| lineage_named(working, name))
+            .collect()
+    };
+    let focus = named(&query.focus)?;
+    let plan = |picks: &BranchPicks| plan_branch(working, &deployed, &focus, picks).map_err(config);
+    let planned = plan(&match query.preset {
+        Some(preset) => BranchPicks::Preset { preset },
+        None => BranchPicks::Own {
+            own: named(&query.copy)?,
+        },
+    })?;
+    let own = |plan: &BranchPlan| -> BTreeSet<String> {
+        plan.nodes
+            .iter()
+            .filter(|node| matches!(node.role, BranchNodeRole::Own { .. }))
+            .map(|node| node.lineage_id.clone())
+            .collect()
+    };
+    let owned = own(&planned);
+    let only = own(&plan(&BranchPicks::Preset {
+        preset: BranchPreset::Only,
+    })?);
+    let uses = own(&plan(&BranchPicks::Preset {
+        preset: BranchPreset::Uses,
+    })?);
+    // "Plus what it uses" only when it adds something to "Only what changes".
+    let presets = match uses == only {
+        true => vec![BranchPreset::Only, BranchPreset::All],
+        false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],
+    };
+    let role = |role: &BranchNodeRole| match role {
+        BranchNodeRole::Own { .. } => PlannedRole::Own,
+        BranchNodeRole::Live => PlannedRole::Live,
+        BranchNodeRole::LeftOut => PlannedRole::LeftOut,
+    };
+    let names = from.names();
+    let nodes = planned
+        .nodes
+        .iter()
+        .map(|node| {
+            let lineage = &node.lineage_id;
+            let mut flipped = owned.clone();
+            if !flipped.remove(lineage) {
+                flipped.insert(lineage.clone());
+            }
+            let toggled = plan(&BranchPicks::Own {
+                own: flipped.into_iter().collect(),
+            })?
+            .nodes
+            .iter()
+            .find(|other| other.lineage_id == *lineage)
+            .map_or(PlannedRole::LeftOut, |other| role(&other.role));
+            Ok(PlannedNode {
+                name: name_of(working, lineage)
+                    .or_else(|| names.get(lineage).cloned())
+                    .unwrap_or_else(|| lineage.clone()),
+                kind: node.node_type,
+                role: role(&node.role),
+                because: match &node.role {
+                    BranchNodeRole::Own { because } => Some(*because),
+                    BranchNodeRole::Live | BranchNodeRole::LeftOut => None,
+                },
+                toggled,
+                owner: chain
+                    .iter()
+                    .find(|ancestor| holds(&ancestor.applied, lineage))
+                    .map(|ancestor| ancestor.environment.summary.name.clone()),
+                data: holds_data(working, lineage),
+            })
+        })
+        .collect::<Result<_, RpcError>>()?;
+    Ok(BranchPlanView {
+        from: from.summary.clone(),
+        preset: planned.preset,
+        presets,
+        nodes,
+    })
+}
+
 /// What deploying a Branch adds to lowering: the values of the Live Nodes it
 /// reads, from where they run, and the Setup Commands of Own Copies never deployed.
 #[derive(Default)]
@@ -1099,16 +1307,19 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
     let uses = used_live(&branch.working);
     let live = uses
         .keys()
-        .map(|lineage| LiveNode {
-            name: branch
-                .live
-                .get(lineage)
-                .cloned()
-                .unwrap_or_else(|| lineage.clone()),
-            owner: chain
+        .map(|lineage| {
+            let owner = chain
                 .iter()
-                .find(|ancestor| holds(&ancestor.applied, lineage))
-                .map(|ancestor| ancestor.environment.summary.name.clone()),
+                .find(|ancestor| holds(&ancestor.applied, lineage));
+            LiveNode {
+                name: branch
+                    .live
+                    .get(lineage)
+                    .cloned()
+                    .unwrap_or_else(|| lineage.clone()),
+                owner: owner.map(|ancestor| ancestor.environment.summary.name.clone()),
+                data: owner.is_some_and(|ancestor| holds_data(&ancestor.applied, lineage)),
+            }
         })
         .collect();
     let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
@@ -1756,6 +1967,18 @@ pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
                 .find(|volume| volume.resource_lineage_id == lineage)
                 .map(|volume| volume.name.clone())
         })
+}
+
+/// Whether `lineage` in `intent` holds data: a Volume, or a Service mounting one.
+fn holds_data(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
+    intent
+        .volumes
+        .iter()
+        .any(|volume| volume.resource_lineage_id == lineage)
+        || intent
+            .services
+            .iter()
+            .any(|service| service.lineage_id == lineage && !service.volume_attachments.is_empty())
 }
 
 fn holds(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {

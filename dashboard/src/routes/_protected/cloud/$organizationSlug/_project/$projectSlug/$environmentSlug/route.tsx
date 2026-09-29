@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { prefetchStoreEnvironment, requireEnvironment, requireOrganization, requireStoreEnvironment } from "#/collections/route-data";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import { diffQuery, environmentSettingsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, saveQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug",
@@ -17,7 +17,9 @@ export const Route = createFileRoute(
     // The organization route already required it, so this is its cached answer.
     const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchStoreEnvironment(context, params.organizationSlug, store,
-      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store));
+      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store),
+      // A Branch's Live Nodes and its button's news; refused elsewhere.
+      branchQuery(store), saveQuery(store));
     return { environmentId: environment.id, organizationId: organization.id, store };
   },
 });

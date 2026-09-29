@@ -57,7 +57,7 @@ function NewsItem({ news, lead, review, environmentId, name }: Branch & { news: 
 }
 
 /** One line of news: what, in a few words, its one action, and its changes to open. The lead is a card. */
-function NewsRow({ lead = false, icon, title, detail, action, changes }: {
+export function NewsRow({ lead = false, icon, title, detail, action, changes }: {
   lead?: boolean;
   icon: ReactNode;
   title: string;
@@ -91,7 +91,7 @@ function NewsRow({ lead = false, icon, title, detail, action, changes }: {
 }
 
 /** The lead's action is the panel's one solid button. */
-const actionVariant = (lead: boolean) => lead ? "default" : "outline";
+export const actionVariant = (lead: boolean) => lead ? "default" : "outline";
 
 /** "web, api": the nodes the rows touch, once each. */
 const nodeNames = (rows: ChangeRow[], review: BranchReviewView) => [...new Set(rows.map((row) => presentRow(row, review.nameOf).node))].join(", ");

@@ -1,5 +1,7 @@
 import type { ReactNode } from "react";
 import { Handle, Position } from "@xyflow/react";
+import { Avatar, AvatarFallback } from "#/components/ui/avatar";
+import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
 import { cn } from "#/lib/utils";
 import type { NodePick } from "../new-branch/branch-picking";
 
@@ -38,5 +40,23 @@ export function LiveLabel({ label, ownsData }: { label: string; ownsData: boolea
       <span className="truncate text-muted-foreground">{label}</span>
       {ownsData ? <span className="truncate text-warning">real data</span> : null}
     </div>
+  );
+}
+
+/** A node while a Branch of the Config Store is picked: what it becomes, and a click toggles it. */
+export function PickedNode({ pick, name, nodeId, icon }: { pick: NodePick; name: string; nodeId: string; icon: ReactNode }) {
+  const card = pickCard(pick);
+  return (
+    <PickableNode pick={pick} name={name} nodeId={nodeId}>
+      <Card size="node" state={card.state} className={cn("h-full justify-between", card.className)}>
+        <CardHeader>
+          <div className="flex items-start gap-3">
+            <Avatar><AvatarFallback>{icon}</AvatarFallback></Avatar>
+            <CardTitle className="min-w-0 flex-1 truncate">{name}</CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent><LiveLabel label={pick.label} ownsData={pick.ownsData} /></CardContent>
+      </Card>
+    </PickableNode>
   );
 }

@@ -687,6 +687,7 @@ fn pick(only: &str) -> Result<MovePick, Error> {
     Ok(MovePick {
         row: row.to_owned(),
         choice,
+        value: None,
     })
 }
 
