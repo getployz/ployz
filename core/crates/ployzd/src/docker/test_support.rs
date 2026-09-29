@@ -383,6 +383,7 @@ pub(super) fn container_request<'spec, Storage>(
 ) -> ContainerRequest<'spec, Storage, std::future::Ready<Result<(), Error>>> {
     ContainerRequest {
         deployment_id: None,
+        registry_auth: None,
         creation_key: None,
         kind,
         namespace,

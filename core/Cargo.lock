@@ -3488,6 +3488,7 @@ version = "0.1.2-beta.50"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "bollard",
  "bytes",
  "chrono",

@@ -10,6 +10,7 @@ use super::{Command, replayable};
 use crate::Actor;
 use crate::deployment::{self, DeploymentSummary};
 use crate::id::DeploymentId;
+use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
@@ -66,12 +67,14 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         review.saved.as_ref(),
     )?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let frozen = deployment::freeze(
+    let saved_intent = canonicalize_environment_intent(environment.working);
+    let mut frozen = deployment::freeze(
         id,
-        &canonicalize_environment_intent(environment.working),
+        &saved_intent,
         &review.head.applied,
         &admit.services,
         namespace,
     )?;
+    frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     deployment::admit(tx, who, &admit.id, id, saved, &admit.services, &frozen)
 }

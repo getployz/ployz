@@ -11,6 +11,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::Revision;
+use crate::registry;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
@@ -101,6 +102,30 @@ pub(crate) fn edit(
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     for (path, value) in expand(&edit.changes)? {
         let service = path.service();
+        // A new credential applies at once; turning one on or off is staged.
+        if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
+            let changed = match &value {
+                Some(value) => registry::set(tx, who, &mut environment, service, value, sealing)?,
+                None => {
+                    let config = &mut environment.service_mut(service)?.config;
+                    let was = setting.value(config);
+                    setting.unset(config)?;
+                    registry::Changed {
+                        staged: setting.value(config) != was,
+                        rotated: false,
+                    }
+                }
+            };
+            for (changed, list) in [
+                (changed.staged, &mut staged),
+                (changed.rotated, &mut immediate),
+            ] {
+                if changed && !list.contains(&path) {
+                    list.push(path.clone());
+                }
+            }
+            continue;
+        }
         let (changed, apply) = match (path.target(), value) {
             (Some(Target::Setting(setting)), value) => {
                 let config = &mut environment.service_mut(service)?.config;

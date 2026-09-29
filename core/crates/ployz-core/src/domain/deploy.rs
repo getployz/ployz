@@ -53,6 +53,27 @@ pub struct DeployIntent {
     pub options: PlanOptions,
     #[serde(default)]
     dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
+    /// Credentials each Service's private image is pulled with. They reach only the
+    /// Machine creating that Service's containers, never a Deploy Preview.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[ts(as = "Option<BTreeMap<ServiceName, RegistryAuth>>", optional)]
+    pub registry_auth: BTreeMap<ServiceName, RegistryAuth>,
+}
+
+/// Registry credentials for pulling one private image. Debug never prints them.
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct RegistryAuth {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub username: Option<String>,
+    /// The password or access token.
+    pub password: String,
+}
+
+impl fmt::Debug for RegistryAuth {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RegistryAuth { .. }")
+    }
 }
 
 impl DeployIntent {
@@ -72,6 +93,7 @@ impl DeployIntent {
             target,
             options,
             dependencies: BTreeMap::new(),
+            registry_auth: BTreeMap::new(),
         }
     }
 

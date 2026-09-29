@@ -154,7 +154,10 @@ fn setting(one: ServiceSetting) -> Value {
     }
     object.insert("examples".into(), one.examples());
     object.insert("x-ployz-apply".into(), json!(one.apply()));
-    object.insert("x-ployz-secret".into(), json!(false));
+    object.insert(
+        "x-ployz-secret".into(),
+        json!(one == ServiceSetting::RegistryCredential),
+    );
     object.insert("x-ployz-data-loss".into(), json!(false));
     schema
 }
@@ -288,7 +291,12 @@ mod tests {
     fn completion_follows_the_service_name() {
         assert_eq!(
             complete("web.re"),
-            ["web.replicas", "web.restartPolicy", "web.repository"]
+            [
+                "web.registryCredential",
+                "web.replicas",
+                "web.restartPolicy",
+                "web.repository"
+            ]
         );
         assert!(complete("web").is_empty());
     }

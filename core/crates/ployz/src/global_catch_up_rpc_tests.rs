@@ -26,6 +26,7 @@ async fn real_catch_up_client_retries_readiness_and_placement_to_their_budget() 
                 creation_key: Some("global:test".into()),
                 kind: ContainerKind::ServiceContainer,
                 namespace: Namespace::parse("app").unwrap(),
+                registry_auth: None,
                 resolved_spec: requested(ServiceMode::Global)
                     .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                     .unwrap(),
@@ -165,6 +166,7 @@ async fn catch_up_uses_primitives_and_never_replaces_a_key_conflict_or_unknown_s
             creation_key: Some(crate::cluster::global_creation_key(&spec)),
             kind: ContainerKind::ServiceContainer,
             namespace: Namespace::parse("app").unwrap(),
+            registry_auth: None,
             resolved_spec: spec.clone(),
         };
         let expected = request.clone();
@@ -483,6 +485,7 @@ async fn provisioned_globals_use_target_storage_and_report_unknown() {
             creation_key: Some("global:storage".into()),
             kind: ContainerKind::ServiceContainer,
             namespace: Namespace::parse("app").unwrap(),
+            registry_auth: None,
             resolved_spec: provisioned_global_spec()
                 .to_resolved(service_id('a'), ResolvedUpdateConfig::default())
                 .unwrap(),

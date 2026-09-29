@@ -307,6 +307,7 @@ impl MachineRpc for MachineService {
                     &request.resolved_spec,
                     request.creation_key,
                     request.deployment_id,
+                    request.registry_auth,
                 )
                 .await,
         )
