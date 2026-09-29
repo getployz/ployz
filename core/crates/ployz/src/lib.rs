@@ -4,6 +4,7 @@
 pub mod build;
 mod cancellation;
 pub mod cli;
+mod cloud_account;
 mod cloud_enroll;
 mod cloud_login;
 mod cluster;

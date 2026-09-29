@@ -20,6 +20,7 @@ import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/clo
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
+import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
@@ -104,6 +105,11 @@ const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
 const ApiAuthGithubRoute = ApiAuthGithubRouteImport.update({
   id: '/api/auth/github',
   path: '/api/auth/github',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiCliSplatRoute = ApiCliSplatRouteImport.update({
+  id: '/api/cli/$',
+  path: '/api/cli/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiEnrollTokenRoute = ApiEnrollTokenRouteImport.update({
@@ -331,6 +337,7 @@ export interface FileRoutesByFullPath {
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -369,6 +376,7 @@ export interface FileRoutesByTo {
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -409,6 +417,7 @@ export interface FileRoutesById {
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
+  '/api/cli/$': typeof ApiCliSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -453,6 +462,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -491,6 +501,7 @@ export interface FileRouteTypes {
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -530,6 +541,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
+    | '/api/cli/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -570,6 +582,7 @@ export interface RootRouteChildren {
   DeviceRoute: typeof DeviceRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
+  ApiCliSplatRoute: typeof ApiCliSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
@@ -656,6 +669,13 @@ declare module '@tanstack/react-router' {
       path: '/api/auth/github'
       fullPath: '/api/auth/github'
       preLoaderRoute: typeof ApiAuthGithubRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/cli/$': {
+      id: '/api/cli/$'
+      path: '/api/cli/$'
+      fullPath: '/api/cli/$'
+      preLoaderRoute: typeof ApiCliSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/enroll/$token': {
@@ -1079,6 +1099,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeviceRoute: DeviceRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
+  ApiCliSplatRoute: ApiCliSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,

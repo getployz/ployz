@@ -25,6 +25,9 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     assert_eq!(
         paths,
         [
+            "billing",
+            "billing manage",
+            "billing upgrade",
             "build",
             "cloud",
             "cloud enroll",
@@ -48,6 +51,9 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "machine rm",
             "machine update",
             "machine upgrade",
+            "org",
+            "org ls",
+            "org use",
             "service",
             "service exec",
             "service inspect",
@@ -59,6 +65,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "service scale",
             "service start",
             "service stop",
+            "token",
+            "token ls",
+            "token new",
+            "token rm",
             "volume",
             "volume create",
             "volume inspect",
@@ -230,6 +240,11 @@ fn machine_upgrade_requires_explicit_targets() {
 
 /// Run the binary against an empty config home; returns (exit code, stdout JSON, stderr).
 fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    run_json_with(args, &[])
+}
+
+/// [`run_json`] with extra environment variables.
+fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_json::Value, String) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -238,6 +253,9 @@ fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
         .env("HOME", home.path())
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
+        .envs(envs.iter().copied())
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -303,6 +321,53 @@ fn json_with_a_missing_subcommand_is_a_usage_error_not_help() {
         "{json}"
     );
     assert_eq!(message(&json), "ployz machine requires a subcommand");
+}
+
+#[test]
+fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
+    for args in [
+        &["token", "ls", "--json"][..],
+        &["org", "ls", "--json"],
+        &["billing", "--json"],
+    ] {
+        let (code, json, _) = run_json(args);
+        assert_eq!(code, Some(1), "{args:?}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "unauthenticated",
+            "{json}"
+        );
+        assert_eq!(
+            json.pointer("/error/details/next").unwrap(),
+            "ployz login",
+            "{json}"
+        );
+    }
+
+    // A token needs no sign-in: it goes straight to its Cloud (here, nothing listens).
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:1"),
+    ];
+    let (code, json, _) = run_json_with(&["billing", "--json"], &token);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert!(!json.to_string().contains("ployz_secret"), "{json}");
+
+    let (code, json, _) = run_json_with(&["org", "use", "acme", "--json"], &token);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unsupported",
+        "{json}"
+    );
+
+    let (code, json, _) = run_json(&["token", "new", "ci", "--expires-in", "0", "--json"]);
+    assert_eq!(code, Some(2), "{json}");
 }
 
 fn message(json: &serde_json::Value) -> &str {

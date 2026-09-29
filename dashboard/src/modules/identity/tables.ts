@@ -159,3 +159,31 @@ export const deviceCode = pgTable(
   },
   (table) => [unique().on(table.deviceCode), unique().on(table.userCode)],
 );
+
+/**
+ * Organization Tokens: `PLOYZ_TOKEN` credentials, each bound to one Organization and acting as the member who made it.
+ * Only the SHA-256 of the secret is kept; the secret is shown once, when the token is made.
+ */
+export const organizationToken = pgTable(
+  "organization_token",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    createdAt,
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    secretHash: text("secret_hash").notNull(),
+    expiresAt: timestamp("expires_at", {
+      mode: "date",
+      withTimezone: true,
+    }).notNull(),
+  },
+  (table) => [
+    unique().on(table.secretHash),
+    index("organization_token_organization_id_idx").on(table.organizationId),
+  ],
+);
