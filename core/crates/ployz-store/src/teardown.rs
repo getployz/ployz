@@ -79,7 +79,7 @@ pub(crate) fn environments(
     let project = scope::project(tx, who, query.project.as_ref())?;
     let rows = tx.query(
         "SELECT e.id, e.name, COALESCE(p.name, '') FROM config_environment e \
-         LEFT JOIN config_branch b ON b.environment_id = e.id \
+         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
          LEFT JOIN config_environment p ON p.id = b.parent_id \
          WHERE e.project_id = ?1 ORDER BY e.name",
         &[project.id.as_str().into()],
@@ -145,7 +145,10 @@ pub(crate) fn remove(
     guard(tx, &environment)?;
     let id = &environment.summary.id;
     let history = deployment::history(tx, id, i64::MAX)?;
-    if let Some(running) = history.iter().find(|deployment| deployment.status.in_flight()) {
+    if let Some(running) = history
+        .iter()
+        .find(|deployment| deployment.status.in_flight())
+    {
         return Err(error::conflict(
             format!(
                 "Deployment #{} of {} hasn't ended: wait for it or cancel it first",
@@ -156,7 +159,9 @@ pub(crate) fn remove(
     }
     // What ran last decides what the Servers may hold: nothing, if nothing ever ran
     // or the last run was a removal that applied.
-    let ran = history.iter().find(|deployment| deployment.runner.is_some());
+    let ran = history
+        .iter()
+        .find(|deployment| deployment.runner.is_some());
     if let Some(ran) = ran
         && !(ran.remove && ran.status == DeploymentStatus::Applied)
     {
@@ -192,7 +197,7 @@ pub(crate) fn guard(tx: &mut dyn Tx, environment: &Environment) -> Result<(), Rp
         ));
     }
     let branches = tx.query(
-        "SELECT e.name FROM config_branch b JOIN config_environment e ON e.id = b.environment_id \
+        "SELECT e.name FROM config_environment_branch b JOIN config_environment e ON e.id = b.environment_id \
          WHERE b.parent_id = ?1 ORDER BY e.name",
         &[summary.id.as_str().into()],
     )?;
@@ -271,7 +276,9 @@ fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
         "config_node_introduction",
         "config_registry_credential",
         "config_build_receipt",
-        "config_branch",
+        "config_service_policy",
+        "config_waiting_deploy",
+        "config_environment_branch",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE environment_id = ?1"),

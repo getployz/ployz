@@ -57,7 +57,7 @@ it.live(
           { op: "set", path: "web.env.GREETING", value: "hi-${{ TOKEN }}" },
         ],
       });
-      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
 
       const worker = createRunStoreDeployment(
         new Inngest({ id: "store-deployment-test" }),
@@ -81,7 +81,7 @@ it.live(
       expect(duplicate.result).toMatchObject({ nothingToRun: expect.any(String) });
 
       // A cancelled Deployment never runs.
-      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
       yield* write({ command: "cancel", deployment: CANCELLED });
       const cancelled = yield* run(CANCELLED);
       expect(cancelled.result).toMatchObject({ nothingToRun: expect.any(String) });
@@ -153,7 +153,7 @@ it.live(
         repositories: [{ repository: "acme/web", repository_id: 42, access: { type: "public" }, default_branch: "main", branches: [] }],
         domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       });
-      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, remove: false, accept_volume_loss: [] });
 
       const state = { branchGone: false, heads: 0, archives: [] as string[] };
       const worker = createRunStoreDeployment(
@@ -181,7 +181,7 @@ it.live(
 
       // A branch GitHub no longer has is why the next Deployment ran nothing.
       state.branchGone = true;
-      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, remove: false, accept_volume_loss: [] });
       yield* run(CANCELLED);
       expect(yield* view(CANCELLED)).toMatchObject({
         status: "failed",

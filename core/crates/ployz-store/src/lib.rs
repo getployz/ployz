@@ -51,11 +51,11 @@ pub use removal::{RemovedVolume, VolumeLoss};
 pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
+pub use settings::{Apply, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
     SetDefaultEnvironment,
 };
-pub use settings::{Apply, SettingPath};
 pub use trusted::{Trusted, VolumeObservation};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.

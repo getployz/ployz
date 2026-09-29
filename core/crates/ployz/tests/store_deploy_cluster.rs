@@ -162,6 +162,62 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     let gone = run(address, &store, &["logs", "--deployment", scaled_id]);
     let gone: Value = serde_json::from_slice(&gone.stdout).unwrap();
     assert_eq!(gone["error"]["code"], json!("not_found"), "{gone}");
+
+    // Removing an Environment takes what it runs off the Servers, deleting each
+    // Volume accepted by name, and only then deletes it.
+    ployz(&["env", "new", "staging"]);
+    let staging = |args: &[&str]| {
+        let mut args = args.to_vec();
+        args.extend(["--env", "staging"]);
+        ployz(&args)
+    };
+    staging(&["service", "add", "api", "--image", SERVICE_CONTAINER_IMAGE]);
+    staging(&["set", "api.startCommand=sh -c 'sleep 600'"]);
+    let cache = staging(&["volume", "add", "cache", "--mount", "api:/cache"]);
+    let cache = format!(
+        "shop-staging_vol-{}",
+        cache["volume"]["id"].as_str().unwrap()
+    );
+    assert_eq!(staging(&["deploy"])["status"], json!("applied"));
+    let api_containers = |live: &ployz_core::LiveServices<ployz_core::RpcError>| {
+        live.services()
+            .iter()
+            .find(|service| service.has_name("api"))
+            .map_or(0, |service| service.containers.len())
+    };
+    wait_for_web(&mut client, &api_containers, 1).await;
+    let (code, refused) = attempt(
+        address,
+        &store,
+        &["env", "rm", "staging", "--confirm", "staging"],
+    );
+    assert_eq!(code, Some(1), "{refused}");
+    assert_eq!(
+        refused["error"]["details"]["next"],
+        json!("ployz env rm staging --confirm staging --accept-volume-loss cache")
+    );
+    let removed = ployz(&[
+        "env",
+        "rm",
+        "staging",
+        "--confirm",
+        "staging",
+        "--accept-volume-loss",
+        "cache",
+    ]);
+    assert_eq!(removed["deployment"]["remove"], json!(true), "{removed}");
+    wait_for_web(&mut client, &api_containers, 0).await;
+    assert!(
+        !held(&mut client, &cache).await,
+        "the accepted Volume is gone"
+    );
+    assert_eq!(
+        ployz(&["env", "ls"])["environments"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// Whether a Server holds Docker Volume `name`.
@@ -535,6 +591,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                             uploader: None,
                         }),
                         retry: None,
+                        remove: false,
                         accept_volume_loss: Vec::new(),
                     },
                     &ployz_store::Trusted::default(),

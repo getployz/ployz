@@ -36,7 +36,7 @@ export function useStoreDeploy(organizationSlug: string, environment: Environmen
   async function admit({ accept, version }: { accept: readonly string[]; version: string | null }) {
     try {
       await writer.commit({
-        command: "admit", id: crypto.randomUUID(), environment, services: [], version, accept_volume_loss: [...accept],
+        command: "admit", id: crypto.randomUUID(), environment, services: [], version, remove: false, accept_volume_loss: [...accept],
       }).isPersisted.promise;
       toast("Deploy queued.");
       return null;

@@ -439,6 +439,48 @@ fn an_agent_adds_checks_and_removes_domains() {
 }
 
 #[test]
+fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "new", "staging"]);
+        let listed = ok(store, &["env", "ls"]);
+        assert_eq!(listed["environments"][0]["name"], json!("production"));
+        assert_eq!(listed["environments"][0]["default"], json!(true));
+
+        // Unconfirmed, it names what goes and the exact retry; nothing changes.
+        let unconfirmed = error(store, &["env", "rm", "production"]);
+        assert_eq!(unconfirmed["code"], json!("confirmation_required"));
+        assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
+        assert_eq!(
+            unconfirmed["details"]["next"],
+            json!("ployz env rm production --confirm production")
+        );
+        let default = error(
+            store,
+            &["env", "rm", "production", "--confirm", "production"],
+        );
+        assert_eq!(default["code"], json!("conflict"));
+        assert_eq!(
+            default["details"]["next"],
+            json!("ployz env default ENV --project shop")
+        );
+
+        let moved = ok(store, &["env", "default", "staging"]);
+        assert_eq!(moved["environments"][1]["default"], json!(true));
+        // Nothing of production ever ran, so it goes without a Server.
+        let removed = ok(
+            store,
+            &["env", "rm", "production", "--confirm", "production"],
+        );
+        assert_eq!(removed["environment"]["name"], json!("production"));
+        assert_eq!(removed["deployment"], json!(null));
+        let listed = ok(store, &["env", "ls"]);
+        assert_eq!(listed["environments"].as_array().unwrap().len(), 1);
+    }
+}
+
+#[test]
 fn an_agent_branches_an_environment_without_servers() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

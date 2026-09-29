@@ -283,10 +283,27 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     assert_eq!(removals.volumes[0].docker_volume, held().name);
     let unobserved = refusal(admit(&store, &who, "production", 2, true, &[], None));
     assert_eq!(unobserved.code, RpcErrorCode::Unavailable);
-    let unaccepted = refusal(admit(&store, &who, "production", 2, true, &[], Some(observed())));
+    let unaccepted = refusal(admit(
+        &store,
+        &who,
+        "production",
+        2,
+        true,
+        &[],
+        Some(observed()),
+    ));
     assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(unaccepted.details["accept"], json!(["data"]));
-    let queued = admit(&store, &who, "production", 2, true, &["data"], Some(observed())).unwrap();
+    let queued = admit(
+        &store,
+        &who,
+        "production",
+        2,
+        true,
+        &["data"],
+        Some(observed()),
+    )
+    .unwrap();
     assert!(queued.remove);
 
     // Nothing branches from it, and it isn't gone until the removal applies.
@@ -386,7 +403,10 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
         .unwrap();
     deploy(&store, &who, "fix", 2, &["web"]);
     set_default(&store, &who, "staging");
-    assert_eq!(listed(&store, &who), ["fix<production", "production", "staging*"]);
+    assert_eq!(
+        listed(&store, &who),
+        ["fix<production", "production", "staging*"]
+    );
 
     for refused in [
         refusal(remove(&store, &who, "production")),
@@ -420,5 +440,14 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     remove(&store, &who, "fix").unwrap();
     assert_eq!(listed(&store, &who), ["production", "staging*"]);
     // With its Branch gone, the Parent can go too.
-    admit(&store, &who, "production", 5, true, &["data"], Some(observed())).unwrap();
+    admit(
+        &store,
+        &who,
+        "production",
+        5,
+        true,
+        &["data"],
+        Some(observed()),
+    )
+    .unwrap();
 }

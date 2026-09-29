@@ -1011,6 +1011,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             // A caller can't name the uploader: only Cloud's authentication does.
             upload: Some(upload(Some("mallory"))),
             retry: None,
+            remove: false,
             accept_volume_loss: Vec::new(),
         });
         let Written::Deployment(summary) = store.write_trusted(&who, &command, trusted).unwrap()

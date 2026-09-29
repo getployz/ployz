@@ -17,10 +17,11 @@ export const AdmitCommand = Schema.Struct({
     environment: Schema.optional(Schema.NullOr(Text)),
   })),
   services: Schema.optional(Schema.Array(Text)),
+  remove: Schema.optional(Schema.Boolean),
 });
 
 /**
- * For a full Deploy that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
+ * For a full Deploy, or a removal, that removes deployed Volumes: which Servers hold their data, as Cloud itself observes them.
  * Nothing here comes from the caller. When the Servers can't be reached the evidence is left out, and the Store refuses
  * the Deploy rather than delete data it could not see.
  */
@@ -31,7 +32,7 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 ) {
   if (command === undefined || (command.services ?? []).length > 0) return undefined;
   const environment = { project: command.environment?.project ?? null, environment: command.environment?.environment ?? null };
-  const view = yield* Effect.tryPromise(() => read({ query: "removals", environment })).pipe(Effect.option);
+  const view = yield* Effect.tryPromise(() => read({ query: "removals", environment, remove: command.remove ?? false })).pipe(Effect.option);
   const removals = Option.getOrUndefined(view);
   if (removals?.view !== "removals" || removals.volumes.length === 0) return undefined;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
