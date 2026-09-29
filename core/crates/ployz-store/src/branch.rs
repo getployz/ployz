@@ -834,6 +834,7 @@ fn land(
         }
     }
     branch.live = live_names(tx, &id, &branch.working)?;
+    staged.sort();
     Ok(staged)
 }
 

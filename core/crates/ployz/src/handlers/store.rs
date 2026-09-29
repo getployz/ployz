@@ -4,15 +4,16 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
-    CreateEnvironment, CreateGitService, CreateProject, CreateService, CreateVolume, DeploymentId,
-    DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView,
-    DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView,
-    DomainsQuery, DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
-    EnvironmentView, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
-    ProjectCreated, ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView,
-    RemoveDomain, RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery,
-    ServiceStaged, ServiceView, ServicesQuery, ServicesView, Start, Trusted, VolumeQuery,
+    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
+    CopyNode, CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService,
+    CreateVolume, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
+    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
+    DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
+    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, KeepBranch,
+    NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated,
+    ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView, RemoveDomain,
+    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, ServicesView, Start, Trusted, UpdateBranch, VolumeQuery,
     VolumeStaged, VolumeView, VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -299,6 +300,30 @@ impl Store {
         self.call("read", &request, |store, who| {
             store.domain(who, query, &self_hosted())
         })
+    }
+
+    pub(crate) fn create_branch(&self, create: &CreateBranch) -> Result<Branched, StoreCallError> {
+        let request = Command::CreateBranch(create.clone());
+        self.call("write", &request, |store, who| {
+            store.create_branch(who, create)
+        })
+    }
+
+    pub(crate) fn update_branch(&self, update: &UpdateBranch) -> Result<Branched, StoreCallError> {
+        let request = Command::UpdateBranch(update.clone());
+        self.call("write", &request, |store, who| {
+            store.update_branch(who, update)
+        })
+    }
+
+    pub(crate) fn copy_node(&self, copy: &CopyNode) -> Result<Branched, StoreCallError> {
+        let request = Command::CopyNode(copy.clone());
+        self.call("write", &request, |store, who| store.copy_node(who, copy))
+    }
+
+    pub(crate) fn keep_branch(&self, keep: &KeepBranch) -> Result<Branched, StoreCallError> {
+        let request = Command::KeepBranch(keep.clone());
+        self.call("write", &request, |store, who| store.keep_branch(who, keep))
     }
 
     /// The in-process Store, which only the hidden test mode has: there this CLI

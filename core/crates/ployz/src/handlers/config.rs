@@ -65,13 +65,13 @@ pub(crate) fn unset_command() -> Command {
 }
 
 // Parsed by the handler, not clap: clap's error would echo the rejected value.
-fn expect() -> Arg {
+pub(super) fn expect() -> Arg {
     value("expect", None)
         .value_name("REVISION")
         .help("Refuse unless Working State is still at this revision")
 }
 
-fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> {
+pub(super) fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> {
     matches
         .get_one::<String>("expect")
         .map(|revision| {
