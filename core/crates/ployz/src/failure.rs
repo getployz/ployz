@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use crate::{
     cloud_enroll,
+    cloud_login::LoginError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
@@ -406,14 +407,19 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::Http(_)
         | cloud_enroll::Error::RetrySameCommand { .. } => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
-        cloud_enroll::Error::Status { status, .. } => match status {
-            401 | 403 => RpcErrorCode::Unauthenticated,
-            404 => RpcErrorCode::NotFound,
-            409 => RpcErrorCode::Conflict,
-            408 | 429 => RpcErrorCode::Unavailable,
-            400..=499 => RpcErrorCode::InvalidArgument,
-            _ => RpcErrorCode::Unavailable,
-        },
+        cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
+    }
+}
+
+/// The `--json` code of a Cloud HTTP refusal.
+fn http_status_code(status: u16) -> RpcErrorCode {
+    match status {
+        401 | 403 => RpcErrorCode::Unauthenticated,
+        404 => RpcErrorCode::NotFound,
+        409 => RpcErrorCode::Conflict,
+        408 | 429 => RpcErrorCode::Unavailable,
+        400..=499 => RpcErrorCode::InvalidArgument,
+        _ => RpcErrorCode::Unavailable,
     }
 }
 
@@ -596,6 +602,29 @@ impl From<DeployError> for Failure {
             DeployError::Plan(error) => error.into(),
             DeployError::Project(error) => error.into(),
         }
+    }
+}
+
+impl From<LoginError> for Failure {
+    /// Sign-in failures carry the command that fixes them as `details.next`.
+    fn from(error: LoginError) -> Self {
+        let (code, next) = match &error {
+            LoginError::Unreachable { .. } => (RpcErrorCode::Unavailable, None),
+            LoginError::Unsupported(_) => (RpcErrorCode::Unsupported, None),
+            LoginError::Status { status, .. } => (http_status_code(*status), None),
+            LoginError::Reply(_) | LoginError::Store { .. } => (RpcErrorCode::Internal, None),
+            LoginError::Corrupt { .. } => (RpcErrorCode::Internal, Some("ployz logout")),
+            LoginError::OtherCloud { .. } => (RpcErrorCode::Conflict, Some("ployz logout")),
+            LoginError::SignedOut
+            | LoginError::Expired
+            | LoginError::Denied
+            | LoginError::Ended => (RpcErrorCode::Unauthenticated, Some("ployz login")),
+            LoginError::AwaitingApproval { .. } => {
+                (RpcErrorCode::Unauthenticated, Some("ployz login --wait"))
+            }
+        };
+        let details = next.map_or(Value::Null, |next| serde_json::json!({ "next": next }));
+        Self::detailed(code, error.to_string(), details)
     }
 }
 

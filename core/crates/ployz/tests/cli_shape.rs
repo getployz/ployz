@@ -36,6 +36,8 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "ctx use",
             "ingress",
             "ingress deploy",
+            "login",
+            "logout",
             "machine",
             "machine add",
             "machine build-cache-clear",

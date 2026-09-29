@@ -11,6 +11,7 @@ pub(crate) mod cloud;
 pub(crate) mod context;
 mod data_loss;
 pub(crate) mod ingress;
+pub(crate) mod login;
 pub(crate) mod machine;
 mod operator;
 pub(crate) mod project;
@@ -233,6 +234,8 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
         ("ingress", rest) => ingress::handler(rest),
+        ("login", "") => Some((login::login, Json::Supported)),
+        ("logout", "") => Some((login::logout, Json::Supported)),
         ("machine", rest) => machine::handler(rest),
         ("project", rest) => project::handler(rest),
         ("service", rest) => service::handler(rest),
