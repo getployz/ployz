@@ -3,11 +3,13 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigView, ConfigWritten } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect, Option, Redacted, Schema } from "effect";
+import { Data, Effect, Option, Redacted, Schema } from "effect";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
+import { sendInngestEvent } from "#/modules/inngest/client";
+import { createConfigDeploymentAdmittedEvent } from "#/modules/inngest/events";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
@@ -59,6 +61,41 @@ export function storeAt(url: string, database: DatabaseService, sealingSecret: s
   return store;
 }
 
+export class ConfigStoreOpenFailure extends Data.TaggedError("ConfigStoreOpenFailure")<{ readonly cause: unknown }> {
+  readonly publicErrorCategory = "internal" as const;
+}
+
+/** Cloud's Config Store, in Cloud's database. */
+export const cloudStore = Effect.gen(function* () {
+  const config = yield* AppConfig;
+  const database = yield* Database;
+  return yield* Effect.tryPromise({
+    try: () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret)),
+    catch: (cause) => new ConfigStoreOpenFailure({ cause }),
+  });
+});
+
+/**
+ * Hand an admitted Deployment to Cloud's worker; the refusal to answer instead when it can't. A replayed admission
+ * sends the same event, which Inngest drops, so a retried request starts one run.
+ */
+const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
+  organizationId: string,
+  written: ConfigWritten,
+  read: (query: ConfigQuery) => Promise<ConfigView>,
+) {
+  if (written.written !== "deployment") return undefined;
+  const view = yield* Effect.tryPromise({ try: () => read({ query: "deployment", id: written.id }), catch: (cause) => cause });
+  if (view.view !== "deployment") return yield* Effect.die(new Error("A deployment query answered another view"));
+  const event = createConfigDeploymentAdmittedEvent({ organizationId, environmentId: view.environment.id, deploymentId: written.id });
+  return yield* sendInngestEvent(event).pipe(
+    Effect.as(undefined),
+    Effect.catchTag("InngestEventSendError", () => Effect.succeed<StoreRefusal>({
+      code: "unavailable", message: "Cloud couldn't start this Deployment; deploy again.", details: null,
+    })),
+  );
+});
+
 /** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
 function statusFor(code: string) {
   switch (code) {
@@ -95,10 +132,8 @@ function refusal(error: StoreRefusal) {
  * is a defect.
  */
 export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
-  const config = yield* AppConfig;
-  const database = yield* Database;
-  const openStore = () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret));
-  const read = (query: ConfigQuery) => openStore().then((store) => store.read(organizationId, query));
+  const store = yield* cloudStore;
+  const read = (query: ConfigQuery) => store.read(organizationId, query);
   const trusted = call.operation === "write"
     ? yield* gatherGitEvidence(organizationId, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(call.command)), read).pipe(
       Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
@@ -109,16 +144,26 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
   }
   return yield* Effect.tryPromise({
     try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
-      const store = await openStore();
       const value = call.operation === "read"
-        ? await store.read(organizationId, call.query)
+        ? await read(call.query)
         : await store.write(organizationId, call.command, trusted);
       return { ok: true, value };
     },
     catch: (cause) => cause,
-  }).pipe(Effect.catch((cause) => cause instanceof RpcError
-    ? Effect.succeed<StoreResult<never>>({ ok: false, refusal: { code: cause.code, message: cause.message, details: cause.details } })
-    : Effect.die(cause)));
+  }).pipe(
+    // An admitted Deployment goes to Cloud's worker, whoever admitted it.
+    Effect.flatMap((result) => {
+      if (!result.ok || call.operation !== "write" || call.command.command !== "admit") return Effect.succeed(result);
+      // SAFETY: a write answers what it wrote.
+      const written = result.value as ConfigWritten;
+      return dispatchAdmitted(organizationId, written, read).pipe(
+        Effect.map((refused): StoreResult<ConfigView | ConfigWritten> => refused === undefined ? result : { ok: false, refusal: refused }),
+      );
+    }),
+    Effect.catch((cause) => cause instanceof RpcError
+      ? Effect.succeed<StoreResult<never>>({ ok: false, refusal: { code: cause.code, message: cause.message, details: cause.details } })
+      : Effect.die(cause)),
+  );
 });
 
 /**

@@ -90,6 +90,7 @@ export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested
 export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const prCheckRequestedEvent = "pr-environments/check.requested";
+export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -143,6 +144,14 @@ export type PrCheckRequestedEventData = {
   pullRequestKey: string;
 };
 
+/** A Config Store Deployment was admitted; Cloud's worker runs it. */
+export type ConfigDeploymentAdmittedEventData = {
+  organizationId: string;
+  /** Deployments of one Environment run one at a time. */
+  environmentId: string;
+  deploymentId: string;
+};
+
 export type InngestFunctionCancelledEventData = {
   function_id: string;
   run_id: string;
@@ -175,6 +184,10 @@ export const githubRepositoriesSyncRequestedEventType = eventType(
 export const organizationBillingSyncRequestedEventType = eventType(
   organizationBillingSyncRequestedEvent,
   { schema: staticSchema<OrganizationBillingSyncRequestedEventData>() },
+);
+export const configDeploymentAdmittedEventType = eventType(
+  configDeploymentAdmittedEvent,
+  { schema: staticSchema<ConfigDeploymentAdmittedEventData>() },
 );
 export const environmentDeployRequestedEventType = eventType(
   environmentDeployRequestedEvent,
@@ -318,6 +331,11 @@ export function createOrganizationBillingSyncRequestedEvent(
     name: organizationBillingSyncRequestedEvent,
     data,
   } as const;
+}
+
+/** Keyed by the Deployment, so admitting it again (a replayed request) sends nothing new. */
+export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {
+  return { id: `config-deployment-admitted-${data.deploymentId}`, name: configDeploymentAdmittedEvent, data } as const;
 }
 
 export function createEnvironmentDeployRequestedEvent(
@@ -490,6 +508,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createPrCheckRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
+  | ReturnType<typeof createConfigDeploymentAdmittedEvent>
   | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>

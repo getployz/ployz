@@ -32,9 +32,11 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use running::Running;
+pub use store_runner::run_deployment;
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;

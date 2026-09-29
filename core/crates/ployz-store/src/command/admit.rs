@@ -1,5 +1,5 @@
 //! Admission: freeze what a Deployment ships and queue it. Deploying publishes
-//! Working State first when Saved State doesn't hold it yet.
+//! Working State first when Saved State doesn't hold it yet. Cancelling stops one.
 
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{RpcError, ServiceName};
@@ -27,6 +27,21 @@ pub struct Admit {
     /// Refuse with `conflict` unless this is still the latest `diff` version.
     #[serde(default)]
     pub version: Option<String>,
+}
+
+/// Cancel a Deployment: a queued one never runs, and a running one stops.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Cancel {
+    pub deployment: DeploymentId,
+}
+
+pub(crate) fn cancel(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    cancel: &Cancel,
+) -> Result<DeploymentSummary, RpcError> {
+    deployment::cancel(tx, who, &cancel.deployment)
 }
 
 pub(crate) fn admit(
