@@ -261,10 +261,14 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
             prompt.escape_debug()
         )));
     }
-    println!("{prompt}");
-    println!("This removes Ployz-managed containers and resets this machine's cluster membership.");
-    println!("Volume data will not be erased, but will lose access through the current cluster.");
-    print!("Type yes to confirm, or press Enter to cancel: ");
+    crate::output::say!("{prompt}");
+    crate::output::say!(
+        "This removes Ployz-managed containers and resets this machine's cluster membership."
+    );
+    crate::output::say!(
+        "Volume data will not be erased, but will lose access through the current cluster."
+    );
+    crate::output::say_inline!("Type yes to confirm, or press Enter to cancel: ");
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;

@@ -22,6 +22,9 @@ use crate::{
 /// Exit code of a command that printed its result but did not fully succeed.
 pub const PARTIAL_EXIT: u8 = 3;
 
+/// Exit code of a rejected command line, as clap exits.
+pub const USAGE_EXIT: u8 = 2;
+
 /// CLI command outcome. `Display` is product stderr. `exit` is silent.
 #[derive(Debug)]
 pub struct Failure {
@@ -230,10 +233,6 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     RpcErrorCode::Internal
 }
 
-#[expect(
-    clippy::wildcard_enum_match_arm,
-    reason = "every unlisted connection failure means the Cluster was not reached"
-)]
 fn connect_code(error: &ConnectError) -> RpcErrorCode {
     match error {
         ConnectError::Remote(error) => error.code.clone(),
@@ -245,7 +244,25 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
         ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
             RpcErrorCode::InvalidArgument
         }
-        _ => RpcErrorCode::Unavailable,
+        ConnectError::Codec(error) => codec_code(error),
+        // Every connection failed: the last one says why.
+        ConnectError::AllFailed {
+            last: Some(last), ..
+        } => connect_code(last),
+        ConnectError::Join(_) => RpcErrorCode::Internal,
+        ConnectError::IdentityMismatch { .. }
+        | ConnectError::Attempt(_)
+        | ConnectError::EntryNotReady
+        | ConnectError::Io(_)
+        | ConnectError::Dial(_)
+        | ConnectError::MissingMachineDetails
+        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshProbe { .. }
+        | ConnectError::Routing(_)
+        | ConnectError::Path { .. }
+        | ConnectError::AllFailed { last: None, .. }
+        | ConnectError::Rpc(_)
+        | ConnectError::Framing(_) => RpcErrorCode::Unavailable,
     }
 }
 
@@ -488,14 +505,14 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         }) => ExitCode::from(code),
         // A printed result stays the one stdout object; what failed after it is partial.
         Err(error) if crate::output::emitted() => {
-            eprintln!("{error}");
+            crate::output::warning!("{error}");
             ExitCode::from(PARTIAL_EXIT)
         }
         Err(error) => {
             if crate::output::json() {
                 crate::output::error(&error.report());
             } else {
-                eprintln!("{error}");
+                crate::output::warning!("{error}");
             }
             match error.inner {
                 Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),

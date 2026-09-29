@@ -48,7 +48,7 @@ fn usage_failure(error: clap::Error) -> Error {
     crate::output::set_json(true);
     let message = error.render().to_string();
     Error::usage(message.trim().trim_start_matches("error: ").to_owned())
-        .with_exit(u8::try_from(error.exit_code()).unwrap_or(2))
+        .with_exit(u8::try_from(error.exit_code()).unwrap_or(crate::failure::USAGE_EXIT))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
@@ -60,10 +60,10 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if matches.subcommand().is_none() {
         if matches.get_flag("json") {
-            return Err(Error::usage("a command is required").with_exit(2));
+            return Err(Error::usage("a command is required").with_exit(crate::failure::USAGE_EXIT));
         }
         command.print_help()?;
-        println!();
+        crate::output::say!();
         return Ok(());
     }
     let path = command_path(matches);

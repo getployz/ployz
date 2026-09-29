@@ -79,7 +79,15 @@ macro_rules! say_inline {
     }};
 }
 
-pub(crate) use {say, say_inline};
+/// A warning or diagnostic line: stderr in both modes.
+macro_rules! warning {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($arg)*);
+    }};
+}
+
+pub(crate) use {say, say_inline, warning};
 
 /// Finish with `value`: printed as the JSON result, or rendered by `human`.
 ///

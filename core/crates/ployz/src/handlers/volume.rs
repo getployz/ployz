@@ -151,13 +151,11 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .failures
                 .retain(|failure| failure.error.code != RpcErrorCode::NotFound);
             let gaps = Gaps::of(&result);
-            let unchecked = crate::failure::partial_failure_details(&result);
             let names = machines
                 .iter()
                 .map(|machine| (machine.machine.id, machine.machine.name.clone()))
                 .collect::<BTreeMap<_, _>>();
-            let volumes = result
-                .successes
+            let volumes = std::mem::take(&mut result.successes)
                 .into_iter()
                 .map(|success| MachineVolume {
                     machine_name: names
@@ -169,10 +167,10 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .collect();
             let volume = inspected(volumes, &name, &gaps)?;
             if volume.is_none() {
-                eprintln!(
+                crate::output::warning!(
                     "Docker Volume {} was not found on the Machines that answered; not checked: {}",
                     name.as_str().escape_debug(),
-                    unchecked
+                    crate::failure::partial_failure_details(&result)
                 );
             }
             output::show_fanout("volume", &volume, &gaps)
@@ -363,11 +361,11 @@ fn select_create_machine(
             "multiple Machines are available; specify --machine",
         )),
         _ => {
-            println!("Select a Machine (blank or q cancels):");
+            crate::output::say!("Select a Machine (blank or q cancels):");
             for (index, machine) in machines.iter().enumerate() {
-                println!("  {}. {}", index + 1, machine.machine.name);
+                crate::output::say!("  {}. {}", index + 1, machine.machine.name);
             }
-            print!("> ");
+            crate::output::say_inline!("> ");
             io::stdout().flush()?;
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
@@ -392,10 +390,10 @@ fn select_create_machine(
 
 fn report_failures<T>(result: &PartialResult<T, RpcError>) {
     for failure in &result.failures {
-        eprintln!("{}: {}", failure.machine_id, failure.error.message);
+        crate::output::warning!("{}: {}", failure.machine_id, failure.error.message);
     }
     for machine_id in &result.omissions {
-        eprintln!("{machine_id}: no terminal response");
+        crate::output::warning!("{machine_id}: no terminal response");
     }
 }
 
@@ -414,24 +412,25 @@ fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bo
 
 fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in volume_failures(result) {
-        eprintln!("{failure}");
+        crate::output::warning!("{failure}");
     }
 }
 
 fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in &result.failures {
-        eprintln!(
+        crate::output::warning!(
             "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
-            failure.machine_id, failure.error.message
+            failure.machine_id,
+            failure.error.message
         );
     }
     for machine_id in &result.omissions {
-        eprintln!(
+        crate::output::warning!(
             "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
         );
     }
     for failure in volume_failures(result) {
-        eprintln!("WARNING: {failure}; this Volume will not be removed");
+        crate::output::warning!("WARNING: {failure}; this Volume will not be removed");
     }
 }
 

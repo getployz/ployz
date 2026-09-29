@@ -315,7 +315,7 @@ fn progress_signature(event: &DeployEvent) -> String {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        eprintln!("WARNING: {warning}");
+        crate::output::warning!("WARNING: {warning}");
     }
 }
 
@@ -325,7 +325,7 @@ async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool,
             "confirmation requires a terminal; pass --yes to continue",
         ));
     }
-    print!("{prompt}");
+    crate::output::say_inline!("{prompt}");
     io::stdout().flush()?;
     let input =
         crate::cancellation::read_line(cancellation, io::BufReader::new(io::stdin())).await?;

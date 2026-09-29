@@ -15,7 +15,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             let machines = client.machines().await?;
             let snapshot = client.deploy_snapshot(machines).await?;
             for line in observer_listing_warnings(&snapshot) {
-                eprintln!("{line}");
+                crate::output::warning!("{line}");
             }
             let projects = derive_projects(
                 &snapshot.containers,

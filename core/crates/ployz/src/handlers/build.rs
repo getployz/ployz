@@ -107,7 +107,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
             .await
             .map_err(std::io::Error::other)?;
         if let Err(error) = exported {
-            eprintln!(
+            crate::output::warning!(
                 "warning: the image was pushed, but its build cache was not exported: {error}"
             );
         }
@@ -213,10 +213,13 @@ async fn push(grant: &BuildGrant, built: &LocalImage, events: &Events) -> Result
     events.push_line(&format!("Pushed {digest}"));
     // The Machine stores a tagged manifest only when its bytes hash to the tag's
     // digest, so a completed push is the Machine's confirmation of `digest`.
-    println!(
+    // The Cloud runner's fixed result line: stdout in every mode.
+    use std::io::Write as _;
+    writeln!(
+        std::io::stdout().lock(),
         "{}",
         json!({"digest": digest, "tag": tag, "platforms": built.image.platforms})
-    );
+    )?;
     Ok(())
 }
 

@@ -1,3 +1,6 @@
+// Human text and warnings go through `crate::output`; tests may print freely.
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
+
 pub mod build;
 mod cancellation;
 pub mod cli;

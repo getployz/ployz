@@ -202,16 +202,16 @@ fn prompt<'a>(
         )));
     }
     let choices = choices.collect::<Vec<_>>();
-    println!("{title}:");
+    crate::output::say!("{title}:");
     for (index, choice) in choices.iter().enumerate() {
         let marker = if Some(index) == default {
             " (current)"
         } else {
             ""
         };
-        println!("  {}. {choice}{marker}", index + 1);
+        crate::output::say!("  {}. {choice}{marker}", index + 1);
     }
-    print!("> ");
+    crate::output::say_inline!("> ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
