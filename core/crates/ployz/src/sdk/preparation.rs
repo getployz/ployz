@@ -23,6 +23,11 @@ pub struct PreparationInput {
     /// Git commits pinned by the source owner, keyed by runtime Service name.
     #[serde(default)]
     pub source_commits: BTreeMap<ServiceName, String>,
+    /// Uploaded Source content digests, keyed by runtime Service name: these Services
+    /// build from an upload instead of a commit. With a `sources` directory it must hold
+    /// exactly that content; without one only a matching, still-usable receipt serves it.
+    #[serde(default)]
+    pub uploads: BTreeMap<ServiceName, String>,
     /// Previous completed images are hints; preparation verifies their availability.
     #[serde(default)]
     pub build_receipts: BTreeMap<ServiceName, BuildReceipt>,
@@ -106,16 +111,34 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             ));
         }
     }
-    let frozen = freeze(input.deployment, &mut input.source_commits)?;
+    let frozen = freeze(
+        input.deployment,
+        &mut input.source_commits,
+        &mut input.uploads,
+    )?;
     let mut builds = BTreeMap::new();
+    let mut sourceless = Vec::new();
     for (name, (root_dir, settings)) in frozen.checkouts {
-        let repository = input
-            .sources
-            .remove(&name)
-            .ok_or_else(|| invalid(format!("missing checkout for {name}")))?;
+        let Some(repository) = input.sources.remove(&name) else {
+            if frozen.uploaded.contains_key(&name) {
+                // Only its receipt can serve it now; checked below.
+                sourceless.push(name);
+                continue;
+            }
+            return Err(invalid(format!("missing checkout for {name}")));
+        };
         let repository = repository
             .canonicalize()
             .map_err(|_| invalid("checkout directory is unavailable"))?;
+        if let Some(digest) = frozen.uploaded.get(&name) {
+            // ponytail: an edit between this check and capture goes unnoticed; Cloud's
+            // extracted uploads are private, so only a local runner's directory can race.
+            if crate::build::content_digest(&repository).map_err(invalid)? != *digest {
+                return Err(invalid(format!(
+                    "the source for {name} is not the uploaded content {digest}"
+                )));
+            }
+        }
         let context = contained(&repository, &repository, &root_dir)?;
         if !context.is_dir() {
             return Err(invalid("source root must be a directory"));
@@ -174,7 +197,14 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
                 _retention: None,
             })
         })
+        .collect::<Vec<BuiltService>>();
+    let missing: Vec<ServiceName> = sourceless
+        .into_iter()
+        .filter(|name| !reusable.iter().any(|built| &built.name == name))
         .collect();
+    if !missing.is_empty() {
+        return Err(upload_needed(&missing));
+    }
     Ok(CapturedPreparation {
         intent,
         build,
@@ -184,18 +214,38 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     })
 }
 
-/// A frozen deployment lowered with each Git Service's source replaced by a pending
+/// No source and no usable image for these uploaded Services: only a new upload builds them.
+pub(crate) fn upload_needed(services: &[ServiceName]) -> RpcError {
+    let names = services
+        .iter()
+        .map(ServiceName::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    RpcError {
+        code: RpcErrorCode::NotFound,
+        message: format!(
+            "No upload or usable image for {names}: its image is gone, or its build inputs \
+             changed. Upload its source again"
+        ),
+        details: json!({"preparation": {"kind": "upload_needed", "services": services}}),
+    }
+}
+
+/// A frozen deployment lowered with each built Service's source replaced by a pending
 /// image, plus what its checkout and fingerprint need.
 struct Frozen {
     intent: DeployIntent,
-    /// Root directory and build settings of each Git Service, for its checkout.
+    /// Root directory and build settings of each Git or uploaded Service, for its source.
     checkouts: BTreeMap<ServiceName, (String, ServiceBuildConfig)>,
     identities: BTreeMap<ServiceName, Value>,
+    /// Content digest of each Service built from an Uploaded Source.
+    uploaded: BTreeMap<ServiceName, String>,
 }
 
 fn freeze(
     mut deployment: Value,
     source_commits: &mut BTreeMap<ServiceName, String>,
+    uploads: &mut BTreeMap<ServiceName, String>,
 ) -> Result<Frozen, RpcError> {
     let snapshots = deployment
         .get_mut("snapshots")
@@ -203,43 +253,72 @@ fn freeze(
         .ok_or_else(|| invalid("deployment snapshots must be an array"))?;
     let mut checkouts = BTreeMap::new();
     let mut identities = BTreeMap::new();
+    let mut uploaded = BTreeMap::new();
     for snapshot in snapshots {
         let config = ployz_core::config::parse_service_config(snapshot["config"].clone())
             .map_err(invalid)?;
-        if let ServiceSource::Git {
-            repository_id,
-            root_dir,
-            ..
-        } = &config.settings.source
-        {
-            let name = &config.settings.private_dns;
-            if let Some(commit) = source_commits.remove(name) {
-                if !ployz_core::is_lower_hex(&commit, 40) {
-                    return Err(invalid("source commit must be a lowercase Git SHA"));
+        let name = &config.settings.private_dns;
+        let (root_dir, repository_id) = match &config.settings.source {
+            ServiceSource::Git {
+                repository_id,
+                root_dir,
+                ..
+            } => (root_dir, Some(repository_id)),
+            ServiceSource::Empty { root_dir, .. } => (root_dir, None),
+            ServiceSource::Image { .. } => continue,
+        };
+        // Tagged, so an upload's identity never equals a commit's.
+        let source = match (uploads.remove(name), repository_id) {
+            (Some(digest), _) => {
+                if !ployz_core::is_lower_hex(&digest, 64) {
+                    return Err(invalid("upload digest must be a lowercase sha256"));
                 }
-                identities.insert(name.clone(), json!({
-                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
-                    "repository": repository_id, "commit": commit, "root": root_dir, "build": config.settings.build,
-                }));
+                if source_commits.contains_key(name) {
+                    return Err(invalid(format!(
+                        "{name} builds from a commit or an upload, not both"
+                    )));
+                }
+                uploaded.insert(name.clone(), digest.clone());
+                Some(json!({"type": "uploaded", "digest": digest}))
             }
-            checkouts.insert(
-                name.clone(),
-                (root_dir.clone(), config.settings.build.clone()),
-            );
-            // This tag never escapes preparation: binding replaces it with verified content.
-            snapshot
-                .get_mut("config")
-                .and_then(Value::as_object_mut)
-                .expect("validated config object")
-                .insert(
-                    "source".into(),
-                    json!({"type":"image", "version":1,
-                "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
-                );
+            (None, Some(repository_id)) => source_commits
+                .remove(name)
+                .map(|commit| {
+                    if !ployz_core::is_lower_hex(&commit, 40) {
+                        return Err(invalid("source commit must be a lowercase Git SHA"));
+                    }
+                    Ok(json!({"type": "git", "repository": repository_id, "commit": commit}))
+                })
+                .transpose()?,
+            // An Empty Service without an upload has nothing to deploy.
+            (None, None) => continue,
+        };
+        if let Some(source) = source {
+            identities.insert(name.clone(), json!({
+                "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
+                "source": source, "root": root_dir, "build": config.settings.build,
+            }));
         }
+        checkouts.insert(
+            name.clone(),
+            (root_dir.clone(), config.settings.build.clone()),
+        );
+        // This tag never escapes preparation: binding replaces it with verified content.
+        snapshot
+            .get_mut("config")
+            .and_then(Value::as_object_mut)
+            .expect("validated config object")
+            .insert(
+                "source".into(),
+                json!({"type":"image", "version":1,
+            "image":format!("ployz-build/{name}:pending"), "credentials":{"type":"none"}}),
+            );
     }
     if !source_commits.is_empty() {
         return Err(invalid("checkout supplied for a non-Git service"));
+    }
+    if !uploads.is_empty() {
+        return Err(invalid("upload supplied for a Service that pulls an image"));
     }
     let intent =
         ployz_core::config::lower_deployment(serde_json::from_value(deployment).map_err(invalid)?)
@@ -248,6 +327,7 @@ fn freeze(
         intent,
         checkouts,
         identities,
+        uploaded,
     })
 }
 
@@ -272,15 +352,17 @@ fn fingerprints(
 /// The ployz version every fingerprint covers; a runner must install exactly this one.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// What `capture` would fingerprint for these pinned commits, without any checkout:
-/// the fingerprint Cloud hands a runner to build against.
+/// What `capture` would fingerprint for these pinned commits and upload digests,
+/// without any source: the fingerprint Cloud hands a runner to build against.
 /// # Errors
-/// Rejects an invalid deployment or a commit for a non-Git Service.
+/// Rejects an invalid deployment, a commit for a non-Git Service, or an upload for
+/// a Service that pulls an image.
 pub fn expected_fingerprints(
     deployment: Value,
     mut source_commits: BTreeMap<ServiceName, String>,
+    mut uploads: BTreeMap<ServiceName, String>,
 ) -> Result<BTreeMap<ServiceName, String>, RpcError> {
-    let frozen = freeze(deployment, &mut source_commits)?;
+    let frozen = freeze(deployment, &mut source_commits, &mut uploads)?;
     Ok(fingerprints(&frozen.intent, frozen.identities))
 }
 
@@ -288,7 +370,7 @@ pub fn expected_fingerprints(
 /// # Errors
 /// Rejects an invalid deployment.
 pub(crate) fn frozen_intent(deployment: Value) -> Result<DeployIntent, RpcError> {
-    Ok(freeze(deployment, &mut BTreeMap::new())?.intent)
+    Ok(freeze(deployment, &mut BTreeMap::new(), &mut BTreeMap::new())?.intent)
 }
 
 fn contained(root: &Path, base: &Path, setting: &str) -> Result<PathBuf, RpcError> {
@@ -326,6 +408,7 @@ mod tests {
             deployment,
             sources: BTreeMap::new(),
             source_commits: BTreeMap::new(),
+            uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
@@ -349,8 +432,12 @@ mod tests {
     fn expected_fingerprints_refuse_an_invalid_deployment_or_commit() {
         let web = ServiceName::parse("web").unwrap();
         let commit = |value: &str| BTreeMap::from([(web.clone(), value.to_owned())]);
-        let error = expected_fingerprints(json!({"namespace": "app"}), commit(&"a".repeat(40)))
-            .unwrap_err();
+        let error = expected_fingerprints(
+            json!({"namespace": "app"}),
+            commit(&"a".repeat(40)),
+            BTreeMap::new(),
+        )
+        .unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
         let deployment = json!({"namespace": "app", "snapshots": [{"config": {
             "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
@@ -359,7 +446,8 @@ mod tests {
             "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
         }}]});
         for refused in ["A".repeat(40), "abc".into()] {
-            let error = expected_fingerprints(deployment.clone(), commit(&refused)).unwrap_err();
+            let error = expected_fingerprints(deployment.clone(), commit(&refused), BTreeMap::new())
+                    .unwrap_err();
             assert_eq!(
                 error.code,
                 RpcErrorCode::InvalidArgument,
@@ -394,7 +482,8 @@ mod tests {
         assert_eq!(
             expected_fingerprints(
                 base.get("deployment").unwrap().clone(),
-                BTreeMap::from([(web.clone(), "a".repeat(40))])
+                BTreeMap::from([(web.clone(), "a".repeat(40))]),
+                BTreeMap::new(),
             )
             .unwrap()
             .get(&web),
@@ -427,7 +516,8 @@ mod tests {
             assert_eq!(
                 expected_fingerprints(
                     changed.get("deployment").unwrap().clone(),
-                    BTreeMap::from([(web.clone(), "a".repeat(40))])
+                    BTreeMap::from([(web.clone(), "a".repeat(40))]),
+                    BTreeMap::new(),
                 )
                 .unwrap(),
                 expected,
@@ -472,6 +562,92 @@ mod tests {
             "image": {"reference":"mutable:latest", "tags":[], "platforms":["linux/amd64"], "location":"unused"}
         }}));
         assert!(capture(serde_json::from_value(invalid_receipt).unwrap()).is_err());
+    }
+
+    #[test]
+    fn an_uploaded_source_has_its_own_identity_and_needs_its_content_or_a_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let digest = crate::build::content_digest(root.path()).unwrap();
+        let web = ServiceName::parse("web").unwrap();
+        let service = |source: Value| {
+            json!({"namespace": "app", "snapshots": [{"config": {
+                "version": 2, "privateDns": "web", "healthcheck": {"type":"none"},
+                "restartPolicy":"on-failure", "source": source,
+                "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
+            }}]})
+        };
+        // A directory without Git metadata deploys through a Service with no source.
+        let empty = service(json!({"type":"empty", "version":1, "rootDir":"/"}));
+        let git = service(json!({"version":2, "type":"git", "repository":"acme/web",
+            "repositoryId":42, "access":{"type":"public"}, "rootDir":"/",
+            "branch":{"type":"connected", "name":"main"}}));
+        let input = |deployment: &Value, sources: bool, commit: Option<&str>, upload: Option<&str>| {
+            serde_json::from_value::<PreparationInput>(json!({
+                "deployment": deployment,
+                "sources": if sources { json!({"web": root.path()}) } else { json!({}) },
+                "source_commits": commit.map_or(json!({}), |commit| json!({"web": commit})),
+                "uploads": upload.map_or(json!({}), |digest| json!({"web": digest})),
+            }))
+            .unwrap()
+        };
+        let uploads = || BTreeMap::from([(web.clone(), digest.clone())]);
+        let uploaded = capture(input(&empty, true, None, Some(&digest))).unwrap();
+        assert_eq!(uploaded.build.targets().count(), 1);
+        let fingerprint = uploaded.fingerprints.get(&web).unwrap().clone();
+        assert_eq!(
+            expected_fingerprints(empty.clone(), BTreeMap::new(), uploads()).unwrap()[&web],
+            fingerprint,
+            "Cloud computes the same fingerprint without the upload"
+        );
+        // Git receipts stay separate: the same bytes as a commit never match.
+        let commit = "a".repeat(40);
+        let clean = capture(input(&git, true, Some(&commit), None)).unwrap();
+        assert_ne!(clean.fingerprints[&web], fingerprint);
+        let dirty = capture(input(&git, true, None, Some(&digest))).unwrap();
+        assert_eq!(dirty.fingerprints[&web], fingerprint, "the base commit is provenance only");
+        // Changed build inputs change the fingerprint.
+        let mut railpack = empty.clone();
+        *railpack.pointer_mut("/snapshots/0/config/build/buildMethod").unwrap() = json!("railpack");
+        let mut variable = empty.clone();
+        variable["snapshots"][0]["resolvedEnv"] = json!({"TOKEN": "changed"});
+        for changed in [railpack, variable] {
+            assert_ne!(
+                expected_fingerprints(changed, BTreeMap::new(), uploads()).unwrap()[&web],
+                fingerprint
+            );
+        }
+        // The source must hold exactly the uploaded content.
+        std::fs::write(root.path().join("extra"), "edit").unwrap();
+        let error = capture(input(&empty, true, None, Some(&digest))).err().unwrap();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
+        // Without its content, only a matching receipt serves it.
+        let error = capture(input(&empty, false, None, Some(&digest))).err().unwrap();
+        assert_eq!(error.code, RpcErrorCode::NotFound, "{error:?}");
+        assert_eq!(error.details["preparation"]["kind"], "upload_needed");
+        let receipt = |fingerprint: &str| {
+            json!({"web": {"fingerprint": fingerprint, "machine_id": "a".repeat(32),
+                "image": {"reference": format!("sha256:{}", "1".repeat(64)), "tags": [],
+                    "platforms": ["linux/amd64"], "location": "unused"}}})
+        };
+        let mut sourceless = input(&empty, false, None, Some(&digest));
+        sourceless.build_receipts = serde_json::from_value(receipt(&"f".repeat(64))).unwrap();
+        assert_eq!(capture(sourceless).err().unwrap().code, RpcErrorCode::NotFound);
+        let mut sourceless = input(&empty, false, None, Some(&digest));
+        sourceless.build_receipts = serde_json::from_value(receipt(&fingerprint)).unwrap();
+        let reused = capture(sourceless).unwrap();
+        assert_eq!(reused.build.targets().count(), 0);
+        assert_eq!(reused.reusable.len(), 1);
+        // Refused: a bad digest, a commit and an upload together, an upload for an image.
+        let image = service(json!({"type":"image", "version":1, "image":"nginx",
+            "credentials":{"type":"none"}}));
+        for refused in [
+            input(&empty, false, None, Some("abc")),
+            input(&git, true, Some(&commit), Some(&digest)),
+            input(&image, false, None, Some(&digest)),
+        ] {
+            assert_eq!(capture(refused).err().unwrap().code, RpcErrorCode::InvalidArgument);
+        }
     }
 
     #[test]

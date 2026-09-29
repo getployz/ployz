@@ -16,6 +16,7 @@ use ployz_core::{
 use serde::Serialize;
 use thiserror::Error;
 
+pub(crate) use inputs::content_digest;
 use inputs::BuildInputs;
 
 mod ignore;

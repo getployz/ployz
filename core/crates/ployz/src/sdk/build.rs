@@ -30,9 +30,12 @@ pub(super) async fn run(
     reporter: Reporter,
 ) -> Result<BuildOutcome, RpcError> {
     let captured = super::capture(input).await?;
-    if captured.build.targets().count() != 1 || captured.fingerprints.len() != 1 {
+    // An uploaded Service without its source has no target: its receipt alone serves it.
+    if captured.build.targets().count() > 1 || captured.fingerprints.len() != 1 {
         return Err(super::invalid_argument(
-            "build input must hold exactly one Git Service with its source commit".into(),
+            "build input must hold exactly one Git Service with its source commit, \
+             or one uploaded Service"
+                .into(),
         ));
     }
     let admit_by = start_within.map(|limit| tokio::time::Instant::now() + limit);
@@ -114,6 +117,7 @@ async fn reuse(
     let fingerprints = preparation::expected_fingerprints(
         input.deployment,
         std::collections::BTreeMap::from([(spec.name.clone(), input.commit)]),
+        std::collections::BTreeMap::new(),
     )?;
     if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
         || receipt.image.platforms.is_empty()
