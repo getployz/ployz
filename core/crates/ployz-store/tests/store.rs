@@ -187,8 +187,17 @@ fn patch(value: Value) -> Change {
 fn every_setting_round_trips_get_patch_get() {
     let (store, who) = shop();
     let catalog = ployz_store::catalog::schema(Some("web")).unwrap();
-    let mut values = get(&store, &who, Some("web")).values.unwrap();
+    let view = get(&store, &who, Some("web"));
+    let mut values = view.values.unwrap();
+    let applies = |name: &str| {
+        view.settings
+            .iter()
+            .any(|row| row.path.to_string() == format!("web.{name}"))
+    };
     for (name, setting) in catalog["properties"].as_object().unwrap() {
+        if !applies(name) {
+            continue; // Source and build Settings of a Git-backed Service: see tests/git.rs.
+        }
         values.insert(name.clone(), setting["examples"][0].clone());
     }
     store
@@ -453,7 +462,13 @@ fn wrong_paths_and_values_name_the_fix() {
             "preDeployCommand",
             "replicas",
             "restartPolicy",
-            "startCommand"
+            "startCommand",
+            "repository",
+            "branch",
+            "rootDir",
+            "buildMethod",
+            "dockerfilePath",
+            "buildCommand"
         ])
     );
     let error = SettingPath::parse("Web!.replicas").unwrap_err();

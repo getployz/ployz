@@ -124,7 +124,11 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             .into_iter()
                             .find(|setting| setting.field() == row.path)
                         {
-                            Some(setting) => format!("{name}.{}", setting.name()),
+                            Some(setting) => {
+                                row.before = setting.shown(row.before);
+                                row.after = setting.shown(row.after);
+                                format!("{name}.{}", setting.name())
+                            }
                             None => format!("{name}.{}", row.path),
                         };
                         row

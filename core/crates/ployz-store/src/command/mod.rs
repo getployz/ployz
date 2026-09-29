@@ -21,12 +21,12 @@ pub use project::{
 pub(crate) use project::{create_environment, create_project};
 pub use review::{Discard, Discarded, Publish, Published};
 pub(crate) use review::{discard, publish};
-pub(crate) use service::create_service;
 pub use service::{CreateService, ServiceCreated, ServiceSummary};
+pub(crate) use service::{create_service, insert_service};
 
-use crate::Actor;
 use crate::error;
 use crate::storage::Tx;
+use crate::{Actor, CreateGitService, Trusted};
 
 /// One change to authored configuration, applied in one transaction.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -39,6 +39,8 @@ pub enum Command {
     CreateEnvironment(CreateEnvironment),
     /// Create an image Service.
     CreateService(CreateService),
+    /// Create a Service that builds a GitHub repository.
+    CreateGitService(CreateGitService),
     /// Set and unset Settings in one Environment.
     Edit(Edit),
     /// Save Working State as the next Saved revision.
@@ -57,6 +59,7 @@ impl Command {
             }
             Self::CreateEnvironment(create) => vec![create.id.as_str()],
             Self::CreateService(create) => vec![create.id.as_str()],
+            Self::CreateGitService(create) => vec![create.id.as_str()],
             Self::Edit(_) | Self::Publish(_) | Self::Discard(_) => Vec::new(),
         }
     }
@@ -81,14 +84,22 @@ pub enum Written {
     Discarded(Discarded),
 }
 
-pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: &Command) -> Result<Written, RpcError> {
+pub(crate) fn run(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    command: &Command,
+    trusted: &Trusted,
+) -> Result<Written, RpcError> {
     match command {
         Command::CreateProject(create) => create_project(tx, who, create).map(Written::Project),
         Command::CreateEnvironment(create) => {
             create_environment(tx, who, create).map(Written::Environment)
         }
         Command::CreateService(create) => create_service(tx, who, create).map(Written::Service),
-        Command::Edit(edit) => self::edit(tx, who, edit).map(Written::Edited),
+        Command::CreateGitService(create) => {
+            crate::git::create_git_service(tx, who, create, trusted).map(Written::Service)
+        }
+        Command::Edit(edit) => self::edit(tx, who, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
     }
@@ -97,7 +108,7 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: &Command) -> Result<Wri
 /// Run a create keyed by its caller-minted IDs once. Replaying the identical
 /// command returns what the first run wrote; any of its IDs reused with another
 /// body, or from another Organization, is `conflict`.
-fn replayable<T: Serialize + DeserializeOwned>(
+pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
     tx: &mut dyn Tx,
     who: &Actor,
     command: &Command,
