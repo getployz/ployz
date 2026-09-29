@@ -11,7 +11,7 @@ import { useCachedStoreView, useStoreView } from "#/modules/config-store/store-v
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { actionVariant, NewsRow } from "./BranchNews";
-import { SaveButton, saveInfo, Sheet, useRowPicks } from "./SaveSheet";
+import { SaveButton, saveInfo, Sheet, SwitchField, useRowPicks } from "./SaveSheet";
 
 /**
  * A PR Environment's pull request, once read: its title for the panel's header, and the view its news reads. It waits
@@ -28,12 +28,16 @@ export function useStorePullRequest(pullRequest: PullRequestRef | null) {
  * merge (Save), a standing Conditional Save (Undo), one the Branch or target branch moved past (Save again). Then the
  * pull request's check on GitHub. The first line leads unless `lead` is false.
  */
-export function StorePullRequestNews({ store, view, lead }: { store: EnvironmentRef; view: PullRequestView; lead: boolean }) {
+export function StorePullRequestNews({ store, view, lead, onShutDown }: {
+  store: EnvironmentRef; view: PullRequestView; lead: boolean;
+  /** Takes the PR Environment off the Servers until the next push, as its ⋮ does. */
+  onShutDown: () => void;
+}) {
   const pr = view.pull_request;
   const news = pr ? destinationNews(view, store.environment ?? "") : [];
   return (
     <>
-      {news.map((item, index) => <DestinationRow key={item.into} store={store} news={item} number={pr?.number ?? 0} lead={lead && index === 0} />)}
+      {news.map((item, index) => <DestinationRow key={item.into} store={store} news={item} number={pr?.number ?? 0} lead={lead && index === 0} onShutDown={onShutDown} />)}
       {pr?.open ? (
         <NewsRow icon={view.passing ? <CircleCheckIcon className="text-success" /> : <TriangleAlertIcon className="text-warning" />}
           title={view.passing ? "Ready to merge on GitHub" : "Not ready to merge on GitHub"} detail={view.reason} />
@@ -42,14 +46,16 @@ export function StorePullRequestNews({ store, view, lead }: { store: Environment
   );
 }
 
-function DestinationRow({ store, news, number, lead }: { store: EnvironmentRef; news: DestinationNews; number: number; lead: boolean }) {
+function DestinationRow({ store, news, number, lead, onShutDown }: {
+  store: EnvironmentRef; news: DestinationNews; number: number; lead: boolean; onShutDown: () => void;
+}) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
   const [saving, setSaving] = useState(false);
   const into = { project: store.project, environment: news.into };
   const sheet = saving ? (
     <Suspense fallback={null}>
-      <AtMergeSheet from={store} into={into} number={number} onClose={() => setSaving(false)} />
+      <AtMergeSheet from={store} into={into} number={number} onClose={() => setSaving(false)} onShutDown={onShutDown} />
     </Suspense>
   ) : null;
   if (news.kind === "saved") {
@@ -76,7 +82,9 @@ function DestinationRow({ store, news, number, lead }: { store: EnvironmentRef; 
  * Save for the merge: what the PR Environment puts in one Destination, picked row by row, each variable its way. Nothing
  * changes there yet: it lands when the pull request merges, with the push that carries the merge.
  */
-function AtMergeSheet({ from, into, number, onClose }: { from: EnvironmentRef; into: EnvironmentRef; number: number; onClose: () => void }) {
+function AtMergeSheet({ from, into, number, onClose, onShutDown }: {
+  from: EnvironmentRef; into: EnvironmentRef; number: number; onClose: () => void; onShutDown: () => void;
+}) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
   const view = useStoreView(params.organizationSlug, atMergeQuery(from, into));
@@ -85,6 +93,8 @@ function AtMergeSheet({ from, into, number, onClose }: { from: EnvironmentRef; i
     presented: presentMoveRow(row),
   })));
   const [pending, setPending] = useState(false);
+  // Once saved, the PR Environment needn't keep running: off until the next push, if the user says so.
+  const [shutDown, setShutDown] = useState(false);
   const destination = into.environment ?? "";
 
   async function save() {
@@ -98,6 +108,7 @@ function AtMergeSheet({ from, into, number, onClose }: { from: EnvironmentRef; i
       }).isPersisted.promise;
       toast.success(`Saved for #${number}'s merge into ${destination}`);
       onClose();
+      if (shutDown) onShutDown();
     } catch {
       // The writer toasted the refusal; a stale review shows the fresh rows.
     } finally {
@@ -109,6 +120,9 @@ function AtMergeSheet({ from, into, number, onClose }: { from: EnvironmentRef; i
     <Sheet title={`${plural(rows.picks.length, "change")} for ${destination}`} entries={rows.picks} picks={rows} destination={destination}
       info={!view.ok ? view.refusal.message : saveInfo(rows, destination) ?? `Nothing changes in ${destination} until #${number} merges.`}
       actions={<SaveButton picks={rows} destination={destination} pending={pending} onClick={() => void save()} />}
-      onClose={onClose} />
+      onClose={onClose}>
+      <SwitchField id="save-then-shut-down" label={`Shut down ${from.environment ?? ""} now`}
+        description="It comes back with the pull request's next push." checked={shutDown} onChange={setShutDown} />
+    </Sheet>
   );
 }

@@ -5,7 +5,6 @@ import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, Mo
 import { isInFlight } from "#/modules/config-store/store-deployments";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
-import { ConfirmDialog } from "#/components/confirm-dialog";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
@@ -16,7 +15,10 @@ import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { ItemGroup } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
-import { branchQuery, environmentsQuery, saveQuery, updateQuery, useStoreDeployments, useStoreViews } from "#/modules/config-store/store-view.queries";
+import {
+  branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreDeployments, useStoreViews, volumesQuery,
+} from "#/modules/config-store/store-view.queries";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
 import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -62,13 +64,19 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   const saveView = save.ok ? save.value : null;
   const removal = me?.removal ?? null;
   const deletable = !branch.kept && !me?.default;
+  // The Store closes a Branch only once its own Branches are gone.
+  const children = listing.ok ? listing.value.environments.filter((environment) => environment.parent === name).map((environment) => environment.name) : [];
+  const scope = useCollectionScope();
   const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
     removal ? <RemovalNews key="removal" lead name={name} status={removal.status} shutDown={branch.pull_request !== null}
-      onFinish={() => void closing.close()} /> : null,
+      onFinish={() => void closing.close()} onStart={() => {
+        // Back on the Servers until shut down again; the writer toasts a refusal.
+        writer.commit({ command: "admit", id: crypto.randomUUID(), environment: store, services: [], version: null, remove: false, accept_volume_loss: [] });
+      }} /> : null,
     // A PR Environment saves into each Destination for the merge, not into its Parent now.
-    branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} /> : saveView?.rows.length ? (
+    branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} onShutDown={() => void closing.shutDown()} /> : saveView?.rows.length ? (
       <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`${plural(saveView.rows.length, "change")} to save`}
         detail={nodeNames(saveView)}
         action={<Button size="sm" variant={actionVariant(!removal)} onClick={() => setSaving(true)}>Save to {branch.parent}</Button>}
@@ -110,8 +118,9 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
             Shut down until the next push
           </DropdownMenuItem>
         ) : null}
-        <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || removal !== null}
-          title={me?.default ? `${name} is the project's default` : undefined} onClick={() => setAsking(true)}>
+        <DropdownMenuItem variant="destructive" disabled={Boolean(me?.default) || removal !== null || children.length > 0}
+          title={me?.default ? `${name} is the project's default` : children.length ? `Close its branches first: ${children.join(", ")}` : undefined}
+          onClick={() => setAsking(true)}>
           Close {name}…
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -133,8 +142,20 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
           {news.length ? news : <NewsRow lead icon={<CircleCheckIcon className="text-success" />} title={`Up to date with ${branch.parent}`} />}
         </ItemGroup>
         {closing.dialog}
-        <ConfirmDialog open={asking} onOpenChange={setAsking} title={`Close ${name}?`} description="Its services and data go with it."
-          actionLabel="Close branch" variant="destructive" onConfirm={() => { setAsking(false); return closing.close(); }} />
+        {/* Everything that goes, by name, and the user types where: a closed Branch doesn't come back. */}
+        <DeletionDialog open={asking} onOpenChange={setAsking} title={`Close ${name}?`} place={`${params.projectSlug}/${name}`}
+          confirmLabel="Close branch" callbacks={{
+            load: async () => {
+              const [services, volumes] = await Promise.all([fetchStoreView(params.organizationSlug, scope, servicesQuery(store)),
+                fetchStoreView(params.organizationSlug, scope, volumesQuery(store))]);
+              const items: DeletionItem[] = [
+                ...services.services.map((service): DeletionItem => ({ kind: "service", name: service.name })),
+                ...volumes.volumes.map((volume): DeletionItem => ({ kind: "volume", name: volume.name })),
+              ];
+              return { items, evidence: null };
+            },
+            confirm: async () => { setAsking(false); await closing.close(); },
+          }} />
         {saving && saveView ? (
           <StoreSaveSheet store={store} branch={branch} view={saveView} deletable={deletable}
             onSaved={(deleteAfter) => deleteAfter ? closing.close() : closing.leave()} onClose={() => setSaving(false)} />
@@ -153,19 +174,23 @@ const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => present
  * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
  * stays off until the pull request's next push brings it back.
  */
-function RemovalNews({ lead, name, status, shutDown, onFinish }: {
-  lead: boolean; name: string; status: DeploymentStatus; shutDown: boolean; onFinish: () => void;
+function RemovalNews({ lead, name, status, shutDown, onFinish, onStart }: {
+  lead: boolean; name: string; status: DeploymentStatus; shutDown: boolean; onFinish: () => void; onStart: () => void;
 }) {
   if (status === "applied" && shutDown) {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shut down" detail="The next push brings it back"
-      action={<Button size="sm" variant="outline" onClick={onFinish}>Close {name}</Button>} />;
+      action={<span className="flex gap-2">
+        <Button size="sm" variant={actionVariant(lead)} onClick={onStart}>Deploy {name}</Button>
+        <Button size="sm" variant="outline" onClick={onFinish}>Close</Button>
+      </span>} />;
   }
   if (status === "applied") {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off the servers" detail={`Finish closing ${name}`}
       action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Finish closing</Button>} />;
   }
   return isInFlight(status)
-    ? <NewsRow lead={lead} icon={<PowerOffIcon />} title="Coming off the servers" detail="Then it closes" />
+    ? <NewsRow lead={lead} icon={<PowerOffIcon />} title={shutDown ? "Shutting down" : "Coming off the servers"}
+      detail={shutDown ? "The next push brings it back" : "Then it closes"} />
     : <NewsRow lead={lead} icon={<PowerOffIcon className="text-destructive" />} title="Couldn't come off the servers"
       detail="Some services may still run" action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Close again</Button>} />;
 }

@@ -56,7 +56,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
                   <EmptyDescription>Discard the delete from the staged changes to manage mounts again.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
-            ) : <StoreVolumeMounts state={state} services={services} diff={diff} />}
+            ) : <StoreVolumeMounts state={state} services={services} volumes={volumes} diff={diff} />}
           </div>
         </section>
         <div className="py-8"><Separator /></div>
@@ -66,7 +66,9 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   );
 }
 
-function StoreVolumeMounts({ state, services, diff }: { state: StoreVolume; services: readonly ServiceListing[]; diff: DiffView }) {
+function StoreVolumeMounts({ state, services, volumes, diff }: {
+  state: StoreVolume; services: readonly ServiceListing[]; volumes: readonly VolumeListing[]; diff: DiffView;
+}) {
   const writer = useStoreWriter(state.organizationSlug);
   const [adding, setAdding] = useState<{ service: string; path: string; error: string | null }>({ service: "", path: "/data", error: null });
   const mounted = new Set(state.volume.mounts.map((mount) => mount.service));
@@ -77,7 +79,11 @@ function StoreVolumeMounts({ state, services, diff }: { state: StoreVolume; serv
     writer.edit({ environment: state.environment, changes: [mountChange(service, state.volume.name, path)] });
 
   function attach() {
-    const error = adding.service === "" ? "Select a service." : mountPathError(adding.path);
+    // Another Volume at the same path in that Service would hide one of them.
+    const taken = volumes.some((other) => other.id !== state.volume.id
+      && other.mounts.some((mount) => mount.service === adding.service && mount.path === adding.path));
+    const error = adding.service === "" ? "Select a service."
+      : mountPathError(adding.path) ?? (taken ? `Another volume is already mounted at ${adding.path}.` : null);
     if (error) return setAdding({ ...adding, error });
     edit(adding.service, adding.path);
     setAdding({ service: "", path: "/data", error: null });
