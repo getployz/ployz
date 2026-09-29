@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
 import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
-import { missingStorePrGrantsQueryOptions, prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { missingStorePrGrantsQueryOptions } from "#/modules/config-store/store-pr-grants.queries";
 import { StoreEnvironmentSettings, StoreProjectSettings } from "./-components/store-settings";
 
 const settingsSection = Schema.Literals(["environment", "project"]);

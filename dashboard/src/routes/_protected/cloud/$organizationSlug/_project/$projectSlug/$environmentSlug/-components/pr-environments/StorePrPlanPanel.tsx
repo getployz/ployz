@@ -7,7 +7,8 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet 
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
-import { prPlansQuery, useMissingStorePrGrant } from "#/modules/config-store/store-pull-requests";
+import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
 import { ownLineages } from "#/modules/config-store/branch-picks";
 import { planOf } from "#/modules/config-store/store-branches";
 import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";

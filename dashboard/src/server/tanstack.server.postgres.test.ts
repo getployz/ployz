@@ -217,8 +217,8 @@ it(
             });
             expect(page.status).toBe(200);
             const html = await page.text();
-            expect(html).toContain("SSR project");
-            expect(html).toContain("SSR production");
+            expect(html).toContain("ssr-project");
+            expect(html).toContain("ssr-production");
             expect(html).toContain('aria-label="Dashboard navigation"');
             expect(html).toContain("dehydratedDbClient");
             expect(html).not.toContain("Switched to client rendering");
