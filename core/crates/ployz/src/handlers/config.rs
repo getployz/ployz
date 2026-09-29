@@ -1,20 +1,15 @@
-//! `ployz get`, `set` and `unset`: read and edit Settings in the Config Store,
-//! and the Store access every authoring command shares.
+//! `ployz get`, `set` and `unset`: read and edit Settings in the Config Store.
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ployz_core::RpcErrorCode;
-use ployz_store::{
-    Actor, Change, ConfigStore, Edit, Edited, EnvironmentName, EnvironmentQuery, EnvironmentRef,
-    OrganizationId, ProjectName, Query, Revision, View, Written,
-};
+use ployz_core::{RpcError, RpcErrorCode};
+use ployz_store::{Change, Edit, Edited, EnvironmentQuery, Revision, SettingPath};
 use serde_json::{Value, json};
 
+use super::store::{environment, failed, scoped, store};
 use super::{Error, leaf_matches};
-use crate::cli::{env, positional, value};
+use crate::cli::{positional, value};
+use crate::failure::USAGE_EXIT;
 use crate::output::say;
-
-/// The Organization of the hidden in-process Store.
-const LOCAL_ORGANIZATION: &str = "local";
 
 pub(crate) fn get_command() -> Command {
     scoped(Command::new("get").about("Show Settings: every Service, one Service, or one Setting"))
@@ -42,75 +37,36 @@ pub(crate) fn unset_command() -> Command {
         .arg(expect())
 }
 
+// Parsed by the handler, not clap: clap's error would echo the rejected value.
 fn expect() -> Arg {
     value("expect", None)
         .value_name("REVISION")
-        .value_parser(clap::value_parser!(u64))
         .help("Refuse unless Working State is still at this revision")
 }
 
-/// `--project` and `--env`, which every Environment-scoped command takes.
-pub(crate) fn scoped(command: Command) -> Command {
-    command
-        .arg(
-            value("project", None)
-                .env(env::PROJECT)
-                .help("Project [default: the only Project]"),
-        )
-        .arg(
-            value("env", None)
-                .env(env::ENVIRONMENT)
-                .help("Environment [default: the Project's Default Environment]"),
-        )
-}
-
-pub(crate) fn project(matches: &ArgMatches) -> Result<Option<ProjectName>, Error> {
+fn expected(matches: &ArgMatches) -> Result<Option<Revision>, Error> {
     matches
-        .get_one::<String>("project")
-        .map(|name| ProjectName::parse(name.as_str()))
+        .get_one::<String>("expect")
+        .map(|revision| {
+            revision.parse().map(Revision).map_err(|_| {
+                Error::usage("Expected --expect REVISION to be a revision number, for example 3")
+                    .with_exit(USAGE_EXIT)
+            })
+        })
         .transpose()
-        .map_err(Into::into)
-}
-
-pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error> {
-    Ok(EnvironmentRef {
-        project: project(matches)?,
-        environment: matches
-            .get_one::<String>("env")
-            .map(|name| EnvironmentName::parse(name.as_str()))
-            .transpose()?,
-    })
-}
-
-/// The Config Store this command writes to. Only the hidden in-process SQLite
-/// Store exists yet; Cloud's arrives with its HTTPS transport.
-pub(crate) fn store() -> Result<(ConfigStore, Actor), Error> {
-    let Ok(url) = std::env::var(env::STORE) else {
-        return Err(Error::coded(
-            RpcErrorCode::Unsupported,
-            "This command needs Ployz Cloud's Config Store, which this CLI cannot reach yet",
-        ));
-    };
-    let store = ConfigStore::open(&url)?;
-    let actor = Actor {
-        organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
-    };
-    Ok((store, actor))
-}
-
-/// Mint the ID a create is keyed by, so a retried request replays instead of repeating.
-pub(crate) fn mint() -> String {
-    uuid::Uuid::new_v4().to_string()
 }
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let (store, actor) = store()?;
-    let query = Query::Environment(EnvironmentQuery {
+    let query = EnvironmentQuery {
         environment: environment(matches)?,
-        path: matches.get_one::<String>("path").cloned(),
-    });
-    let View::Environment(view) = store.read(&actor, &query)?;
+        path: matches
+            .get_one::<String>("path")
+            .map(|path| SettingPath::parse(path))
+            .transpose()?,
+    };
+    let view = store.environment(&actor, &query).map_err(failed)?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -125,7 +81,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             } else {
                 ""
             };
-            say!("{} = {}{default}", row.path, text(&row.value));
+            say!("{} = {}{default}", row.path, display_value(&row.value));
         }
     })
 }
@@ -137,11 +93,12 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
         .into_iter()
         .flatten()
         .map(|assignment| {
-            let (path, value) = assignment
-                .split_once('=')
-                .ok_or_else(|| Error::usage("Expected PATH=VALUE, for example web.replicas=3"))?;
+            let (path, value) = assignment.split_once('=').ok_or_else(|| {
+                Error::usage("Expected PATH=VALUE, for example web.replicas=3")
+                    .with_exit(USAGE_EXIT)
+            })?;
             Ok(Change::Set {
-                path: path.to_owned(),
+                path: SettingPath::parse(path)?,
                 value: Value::String(value.to_owned()),
             })
         })
@@ -155,24 +112,25 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
         .get_many::<String>("path")
         .into_iter()
         .flatten()
-        .map(|path| Change::Unset { path: path.clone() })
-        .collect();
+        .map(|path| {
+            Ok(Change::Unset {
+                path: SettingPath::parse(path)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     edit(matches, changes)
 }
 
 fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
-    let (store, actor) = store()?;
-    let written = store.write(
-        &actor,
-        ployz_store::Command::Edit(Edit {
-            environment: environment(matches)?,
-            expect: matches.get_one::<u64>("expect").copied().map(Revision),
-            changes,
-        }),
-    );
-    let Written::Edited(edited) = written.map_err(|error| stale(error, matches))? else {
-        unreachable!("an edit writes an edit");
+    let edit = Edit {
+        environment: environment(matches)?,
+        expect: expected(matches)?,
+        changes,
     };
+    let (store, actor) = store()?;
+    let edited = store
+        .edit(&actor, &edit)
+        .map_err(|error| failed(with_refresh_hint(error, matches)))?;
     report(&edited)
 }
 
@@ -182,19 +140,26 @@ fn report(edited: &Edited) -> Result<(), Error> {
         if !edited.staged.is_empty() {
             say!(
                 "Staged {} in {where_} (revision {}).",
-                edited.staged.join(", "),
+                join(&edited.staged),
                 edited.environment.revision
             );
         }
         if !edited.immediate.is_empty() {
-            say!("Applied {} in {where_}.", edited.immediate.join(", "));
+            say!("Applied {} in {where_}.", join(&edited.immediate));
         }
     })
 }
 
+fn join(paths: &[SettingPath]) -> String {
+    paths
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// A refused `--expect` names the command that shows the fresh state.
-fn stale(error: ployz_core::RpcError, matches: &ArgMatches) -> Error {
-    let mut error = error;
+fn with_refresh_hint(mut error: RpcError, matches: &ArgMatches) -> RpcError {
     if error.code == RpcErrorCode::Conflict
         && let Some(details) = error.details.as_object_mut()
     {
@@ -206,11 +171,11 @@ fn stale(error: ployz_core::RpcError, matches: &ArgMatches) -> Error {
         }
         details.insert("next".into(), json!(shell_words::join(next)));
     }
-    error.into()
+    error
 }
 
 /// A Setting value as a person reads it: text bare, anything else as JSON.
-fn text(value: &Value) -> String {
+fn display_value(value: &Value) -> String {
     match value {
         Value::String(text) => text.clone(),
         Value::Null => "-".to_owned(),

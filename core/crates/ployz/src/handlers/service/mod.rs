@@ -755,7 +755,7 @@ pub(crate) fn command() -> Command {
 }
 
 fn service_add() -> Command {
-    super::config::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
+    super::store::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
         .arg(positional("name", true).help("Service name, also its Private DNS name"))
         .arg(
             value("image", None)
@@ -768,20 +768,20 @@ fn service_add() -> Command {
 /// Add an image Service to the Config Store's Working State.
 fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let name = ployz_core::ServiceName::parse(required(matches, "name")?)?;
-    let (store, actor) = super::config::store()?;
-    let ployz_store::Written::Service(created) = store.write(
-        &actor,
-        ployz_store::Command::CreateService(ployz_store::CreateService {
-            id: ployz_store::ServiceId::parse(super::config::mint())?,
-            environment: super::config::environment(matches)?,
-            name,
-            image: required(matches, "image")?,
-        }),
-    )?
-    else {
-        unreachable!("a Service create writes a Service");
+    // Core's name error quotes the value; a rejected value is never echoed.
+    let name = ployz_core::ServiceName::parse(required(matches, "name")?).map_err(|_| {
+        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
+    })?;
+    let create = ployz_store::CreateService {
+        id: ployz_store::ServiceId::parse(super::store::mint())?,
+        environment: super::store::environment(matches)?,
+        name,
+        image: required(matches, "image")?,
     };
+    let (store, actor) = super::store::store()?;
+    let created = store
+        .create_service(&actor, &create)
+        .map_err(super::store::failed)?;
     output::finish(&created, || {
         say!(
             "Staged Service {} in {}/{} (revision {}).",

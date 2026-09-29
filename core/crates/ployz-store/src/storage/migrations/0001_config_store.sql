@@ -15,11 +15,9 @@ CREATE TABLE config_environment (
     organization_id TEXT NOT NULL,
     project_id TEXT NOT NULL REFERENCES config_project (id),
     name TEXT NOT NULL,
-    namespace TEXT NOT NULL,
     working_revision BIGINT NOT NULL,
     working TEXT NOT NULL,
-    UNIQUE (project_id, name),
-    UNIQUE (organization_id, namespace)
+    UNIQUE (project_id, name)
 );
 
 CREATE TABLE config_node_introduction (
@@ -36,4 +34,4 @@ CREATE TABLE config_create (
     organization_id TEXT NOT NULL,
     command TEXT NOT NULL,
     written TEXT NOT NULL
-)
+);

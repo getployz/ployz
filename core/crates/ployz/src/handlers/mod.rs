@@ -20,6 +20,7 @@ mod operator;
 pub(crate) mod project;
 pub(crate) mod server;
 pub(crate) mod service;
+pub(crate) mod store;
 pub(crate) mod volume;
 
 #[doc(hidden)]
