@@ -21,6 +21,7 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
+import { ServiceCommandField } from "./ServiceCommandField";
 import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
@@ -174,6 +175,13 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   );
 }
 
+/** Optional commands: a button until set. Pre-deploy is one most Services never need. */
+const COMMANDS = new Map<ServiceSettingName, { placeholder: string; compact: boolean }>([
+  ["startCommand", { placeholder: "npm start", compact: false }],
+  ["preDeployCommand", { placeholder: "npm run migrate", compact: true }],
+  ["buildCommand", { placeholder: "pnpm run build", compact: false }],
+]);
+
 /** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
 function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
   const setting: SettingSchema = serviceSetting(name);
@@ -194,6 +202,15 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
     );
   }
   if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
+  const command = COMMANDS.get(name);
+  if (command) {
+    return (
+      <ServiceCommandField label={setting.title} description={setting.description} placeholder={command.placeholder}
+        compact={command.compact} value={row.value === null ? null : settingText(row.value)} isChanged={change !== undefined}
+        baselineValue={change ? settingText(change.before) : undefined} validate={(raw) => settingError(setting, raw)}
+        onCommit={(value) => edit(value ?? "")} />
+    );
+  }
 
   return (
     <Field>
