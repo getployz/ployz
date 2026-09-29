@@ -3,6 +3,8 @@
 
 export type AdvertisedEndpoint = string;
 
+export type Apply = "staged" | "immediate";
+
 export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
@@ -126,6 +128,8 @@ export type CertificateObservation = { hostname: CertificateHost, status: Certif
  */
 via_proxy: boolean, };
 
+export type Change = { "op": "set", path: string, value: JsonValue, } | { "op": "unset", path: string, };
+
 export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
@@ -138,13 +142,21 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "edit" } & Edit;
+
 export type ConfigMount = { config_name: string,
 /**
  * Omission defaults to `/{config_name}`. Admitted specs retain the canonical target.
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery;
+
 export type ConfigSpec = { name: string, content: Array<number>, };
+
+export type ConfigView = { "view": "environment" } & EnvironmentView;
+
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceCreated | { "written": "edited" } & Edited;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -191,6 +203,12 @@ export type ContractDescription = { machine_id: MachineId, protocol_major: numbe
 daemon_version: string, capabilities: Array<CapabilityName>, };
 
 export type CpuNanos = number;
+
+export type CreateEnvironment = { id: EnvironmentId, project: ProjectName | null, name: EnvironmentName, };
+
+export type CreateProject = { id: ProjectId, name: ProjectName, default_environment: EnvironmentId, };
+
+export type CreateService = { id: ServiceId, environment: EnvironmentRef, name: ServiceName, image: string, };
 
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
@@ -311,6 +329,14 @@ bound_bytes: number,
  */
 used_bytes: number, };
 
+export type Edit = { environment: EnvironmentRef,
+/**
+ * Refuse with `conflict` unless Working State is still at this revision.
+ */
+expect: Revision | null, changes: Array<Change>, };
+
+export type Edited = { environment: EnvironmentSummary, staged: Array<string>, immediate: Array<string>, };
+
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
 export type EndBuildGrantRequest = { id: BuildGrantId, };
@@ -343,7 +369,21 @@ machines: Array<Machine>,
  */
 target_versions: { [key in string]: number }, };
 
+export type EnvironmentCreated = { environment: EnvironmentSummary, };
+
+export type EnvironmentId = string;
+
+export type EnvironmentName = string;
+
 export type EnvironmentNodeType = "service" | "volume";
+
+export type EnvironmentQuery = { environment: EnvironmentRef, path: string | null, };
+
+export type EnvironmentRef = { project: ProjectName | null, environment: EnvironmentName | null, };
+
+export type EnvironmentSummary = { id: EnvironmentId, project: ProjectName, name: EnvironmentName, namespace: Namespace, revision: Revision, };
+
+export type EnvironmentView = { environment: EnvironmentSummary, settings: Array<SettingRow>, };
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
@@ -703,6 +743,14 @@ id: DockerVolumeId,
  */
 machine_name: MachineName | null, };
 
+export type ProjectCreated = { project: ProjectSummary, environment: EnvironmentSummary, };
+
+export type ProjectId = string;
+
+export type ProjectName = string;
+
+export type ProjectSummary = { id: ProjectId, name: ProjectName, };
+
 export type ProvisionedVolumeMaximumBytes = number;
 
 export type PruneRefusal = "incomplete_snapshot" | "selected_services";
@@ -808,6 +856,8 @@ export type ReviewNodeProjection = { node: ReviewNodeIdentity, config: CompiledN
 
 export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProjection>, };
 
+export type Revision = number;
+
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
 
 export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | string;
@@ -905,6 +955,8 @@ hostname: ContainerHostname | null,
  */
 extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
+export type ServiceCreated = { service: ServiceSummary, environment: EnvironmentSummary, staged: Array<string>, immediate: Array<string>, };
+
 export type ServiceDependency = {
 /**
  * Service that the dependent Service requires.
@@ -971,11 +1023,15 @@ export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | 
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
+export type ServiceSummary = { id: ServiceId, name: ServiceName, };
+
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
 export type ServiceVolumeReference = string;
 
 export type SetManagementClientResponse = { capability: string | null, };
+
+export type SettingRow = { path: string, value: JsonValue, default: JsonValue, apply: Apply, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

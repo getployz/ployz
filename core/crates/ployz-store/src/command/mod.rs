@@ -8,6 +8,7 @@ mod service;
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 pub use edit::{Change, Edit, Edited};
 pub use project::{
@@ -20,8 +21,9 @@ use crate::error;
 use crate::storage::Tx;
 
 /// One change to authored configuration, applied in one transaction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "command", rename_all = "snake_case")]
+#[ts(rename = "ConfigCommand")]
 pub enum Command {
     CreateProject(CreateProject),
     CreateEnvironment(CreateEnvironment),
@@ -30,8 +32,9 @@ pub enum Command {
 }
 
 /// What a command did.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "written", rename_all = "snake_case")]
+#[ts(rename = "ConfigWritten")]
 pub enum Written {
     Project(ProjectCreated),
     Environment(EnvironmentCreated),
