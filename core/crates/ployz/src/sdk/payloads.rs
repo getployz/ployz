@@ -121,6 +121,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::View>();
     declarations.add::<ployz_store::Command>();
     declarations.add::<ployz_store::Written>();
+    declarations.add::<ployz_store::Trusted>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {

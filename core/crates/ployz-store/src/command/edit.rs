@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::Actor;
 use crate::error;
 use crate::id::Revision;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath};
 use crate::storage::Tx;
+use crate::{Actor, Trusted};
 
 /// Apply every change to one Environment, all or none.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
@@ -68,7 +68,12 @@ pub struct Edited {
     pub immediate: Vec<SettingPath>,
 }
 
-pub(crate) fn edit(tx: &mut dyn Tx, who: &Actor, edit: &Edit) -> Result<Edited, RpcError> {
+pub(crate) fn edit(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    edit: &Edit,
+    trusted: &Trusted,
+) -> Result<Edited, RpcError> {
     if edit.changes.is_empty() {
         return Err(error::invalid(
             "An edit needs at least one change",
@@ -93,7 +98,7 @@ pub(crate) fn edit(tx: &mut dyn Tx, who: &Actor, edit: &Edit) -> Result<Edited, 
         let service = environment.service_mut(path.service())?;
         let was = setting.value(&service.config);
         match value {
-            Some(value) => setting.set(&mut service.config, value)?,
+            Some(value) => setting.set(&mut service.config, value, trusted)?,
             None => setting.unset(&mut service.config)?,
         }
         if setting.value(&service.config) == was {
@@ -107,6 +112,7 @@ pub(crate) fn edit(tx: &mut dyn Tx, who: &Actor, edit: &Edit) -> Result<Edited, 
             list.push(path);
         }
     }
+    crate::git::check_sources(&before, &environment.working, trusted)?;
     if environment.working != before {
         scope::save_working(tx, &mut environment)?;
     }

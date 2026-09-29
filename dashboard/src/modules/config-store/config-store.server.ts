@@ -3,7 +3,8 @@ import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option, Schema } from "effect";
+import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
@@ -102,13 +103,22 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
+  const organization = caller.organization.id;
+  const read = (query: ConfigQuery) =>
+    storeAt(config.database.url.href, database).then((store) => store.read(organization, query));
+  const trusted = operation === "write"
+    ? yield* gatherGitEvidence(organization, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(input)), read).pipe(
+      Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
+    )
+    : undefined;
+  if (trusted === null) return refusal({ code: "unavailable", message: "GitHub didn't answer; retry.", details: null });
   return yield* Effect.tryPromise({
     try: async () => {
       const store = await storeAt(config.database.url.href, database);
       // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
       return operation === "read"
-        ? await store.read(caller.organization.id, input as ConfigQuery)
-        : await store.write(caller.organization.id, input as ConfigCommand);
+        ? await store.read(organization, input as ConfigQuery)
+        : await store.write(organization, input as ConfigCommand, trusted);
     },
     catch: (cause) => cause,
   }).pipe(

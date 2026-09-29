@@ -141,7 +141,7 @@ jobs:
       - name: Config Store behaviour suite on Postgres
         env:
           PLOYZ_STORE_TEST_POSTGRES: postgres://postgres:postgres@127.0.0.1:5432
-        run: cargo nextest run --package ployz-store --test store --test review --test deployment --locked
+        run: cargo nextest run --package ployz-store --test store --test review --test deployment --test git --locked
       - name: Check the missing SSH prerequisite
         env:
           PLOYZ_BIN: ${{ github.workspace }}/core/target/debug/ployz
