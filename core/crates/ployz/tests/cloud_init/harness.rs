@@ -746,8 +746,8 @@ impl MachineRpc for JoinDaemon {
                 .unwrap()
                 .push(create.clone());
             let machine = self.inner.current_machine.lock().unwrap().clone();
-            let eligibility = create.resolved_spec.placement_eligibility_in_project(
-                &create.project_name,
+            let eligibility = create.resolved_spec.placement_eligibility_in_namespace(
+                &create.namespace,
                 &machine,
                 None,
             );
@@ -767,7 +767,7 @@ impl MachineRpc for JoinDaemon {
                     display_name: format!("{}-slot", create.resolved_spec.name),
                     created_at_unix_nanos: n as i64,
                     machine_id,
-                    project_name: create.project_name,
+                    namespace: create.namespace,
                     kind: ContainerKind::ServiceContainer,
                     runtime: ContainerRuntimeObservation::Created,
                     effective_healthcheck: None,
@@ -794,7 +794,7 @@ impl MachineRpc for JoinDaemon {
                 display_name: display_name.clone(),
                 created_at_unix_nanos: n as i64,
                 machine_id: self.inner.registration.assigned_machine.id,
-                project_name: create.project_name,
+                namespace: create.namespace,
                 kind: create.kind,
                 runtime: ContainerRuntimeObservation::Created,
                 effective_healthcheck: None,
@@ -1016,7 +1016,7 @@ pub fn ingress_on(machine: &Machine) -> ContainerObservation {
         display_name: "ingress-a".into(),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
-        project_name: ployz_core::ProjectName::system(),
+        namespace: ployz_core::Namespace::system(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

@@ -13,7 +13,6 @@ mod data_loss;
 pub(crate) mod ingress;
 pub(crate) mod machine;
 mod operator;
-pub(crate) mod project;
 pub(crate) mod service;
 pub(crate) mod volume;
 
@@ -234,7 +233,6 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("ctx", rest) => context::handler(rest),
         ("ingress", rest) => ingress::handler(rest),
         ("machine", rest) => machine::handler(rest),
-        ("project", rest) => project::handler(rest),
         ("service", rest) => service::handler(rest),
         ("volume", rest) => volume::handler(rest),
         _ => None,
@@ -627,15 +625,15 @@ mod tests {
     }
 
     #[test]
-    fn reserved_and_invalid_project_names_fail_before_connecting() {
+    fn reserved_and_invalid_namespaces_fail_before_connecting() {
         let mut command = command();
         let invalid = command
             .clone()
-            .try_get_matches_from(["ployz", "service", "rm", "--project-name", "My_App", "web"])
+            .try_get_matches_from(["ployz", "service", "rm", "--namespace", "My_App", "web"])
             .unwrap();
         assert_eq!(
             dispatch(&invalid, &mut command).unwrap_err().to_string(),
-            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+            "invalid Namespace \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
         );
         let service_remove = command
             .clone()
@@ -643,7 +641,7 @@ mod tests {
                 "ployz",
                 "service",
                 "rm",
-                "--project-name",
+                "--namespace",
                 "ployz-system",
                 "web",
             ])
@@ -652,27 +650,7 @@ mod tests {
             dispatch(&service_remove, &mut command)
                 .unwrap_err()
                 .to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let project_remove = command
-            .clone()
-            .try_get_matches_from(["ployz", "project", "rm", "ployz-system"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&project_remove, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "Project 'ployz-system' is reserved for Ployz infrastructure",
-        );
-        let invalid_project_remove = command
-            .clone()
-            .try_get_matches_from(["ployz", "project", "rm", "My_App"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&invalid_project_remove, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "invalid Project Name \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
+            "Namespace 'ployz-system' is reserved for Ployz infrastructure",
         );
     }
 

@@ -95,8 +95,8 @@ export const destroyEnvironmentActivity = Effect.fn(
       cause: session,
     });
   }
-  return yield* session.connected.destroyProject(
-    input.target.projectName,
+  return yield* session.connected.destroyNamespace(
+    input.target.namespace,
     { confirmed: [...input.confirmDataLoss] },
     true,
   ).pipe(

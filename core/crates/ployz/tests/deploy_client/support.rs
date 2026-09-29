@@ -20,10 +20,10 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, ExecResponseFrame, GET_CONTAINER_OBSERVATIONS_CAPABILITY,
     HealthObservation, LocalMachinePhase, MACHINE_STORAGE_OBSERVATION_CAPABILITY, Machine,
     MachineDetails, MachineId, MachineImages, MachineList, MachineName, MachineObservation,
-    MachineRpc, MachineRpcServer, MembershipObservation, OpaquePayload, PROTOCOL_MAJOR,
-    ProjectName, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError,
-    RpcErrorCode, RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume,
-    ServiceVolumeGraph, ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
+    MachineRpc, MachineRpcServer, MembershipObservation, Namespace, OpaquePayload, PROTOCOL_MAJOR,
+    RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RpcError, RpcErrorCode,
+    RpcRequestBody, RpcResponse, ServiceId, ServiceMount, ServiceVolume, ServiceVolumeGraph,
+    ServiceVolumeReference, UpdateOrder, VolumeInventory, WireGuardPublicKey,
 };
 use serde_json::Value;
 use tokio::net::TcpListener;
@@ -46,7 +46,7 @@ pub(super) struct DeployService {
     create_volume_error: Option<RpcError>,
     create_volume_verification_error: Option<RpcError>,
     containers: Arc<AtomicUsize>,
-    created_projects: Arc<Mutex<Vec<ProjectName>>>,
+    created_namespaces: Arc<Mutex<Vec<Namespace>>>,
     created_specs: Arc<Mutex<Vec<ResolvedServiceSpec>>>,
     listed_containers: Arc<Mutex<Vec<ployz_core::ContainerObservation>>>,
     mutating_rpcs: Arc<AtomicUsize>,
@@ -69,7 +69,7 @@ impl DeployService {
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
-            created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_namespaces: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
@@ -92,7 +92,7 @@ impl DeployService {
             create_volume_error: None,
             create_volume_verification_error: None,
             containers: Arc::new(AtomicUsize::new(0)),
-            created_projects: Arc::new(Mutex::new(Vec::new())),
+            created_namespaces: Arc::new(Mutex::new(Vec::new())),
             created_specs: Arc::new(Mutex::new(Vec::new())),
             listed_containers: Arc::new(Mutex::new(Vec::new())),
             mutating_rpcs: Arc::new(AtomicUsize::new(0)),
@@ -189,8 +189,8 @@ impl DeployService {
         self.listed_containers.clone()
     }
 
-    pub(super) fn created_projects(&self) -> Arc<Mutex<Vec<ProjectName>>> {
-        self.created_projects.clone()
+    pub(super) fn created_namespaces(&self) -> Arc<Mutex<Vec<Namespace>>> {
+        self.created_namespaces.clone()
     }
 
     pub(super) fn created_specs(&self) -> Arc<Mutex<Vec<ResolvedServiceSpec>>> {
@@ -392,10 +392,10 @@ impl MachineRpc for DeployService {
             );
             return encoded(RpcResponse::from(error));
         }
-        self.created_projects
+        self.created_namespaces
             .lock()
             .unwrap()
-            .push(create.project_name);
+            .push(create.namespace);
         self.created_specs
             .lock()
             .unwrap()
@@ -540,7 +540,7 @@ impl MachineRpc for DeployService {
                         .first()
                         .map(|machine| machine.machine.id)
                         .unwrap_or_else(MachineId::random),
-                    project_name: ProjectName::parse("app").unwrap(),
+                    namespace: Namespace::parse("app").unwrap(),
                     kind: ContainerKind::ServiceContainer,
                     runtime: ContainerRuntimeObservation::Running { health },
                     effective_healthcheck: None,
@@ -608,7 +608,7 @@ impl MachineRpc for DeployService {
                                 display_name: "web-1".into(),
                                 created_at_unix_nanos: 0,
                                 machine_id,
-                                project_name: ProjectName::parse("app").unwrap(),
+                                namespace: Namespace::parse("app").unwrap(),
                                 kind: ContainerKind::ServiceContainer,
                                 runtime: ContainerRuntimeObservation::Running {
                                     health: HealthObservation::Healthy,
@@ -926,7 +926,7 @@ pub(super) fn running_container(
     spec.set_volume_graph(
         spec.volume_graph()
             .clone()
-            .scope_to_project(&ProjectName::parse("app").unwrap())
+            .scope_to_namespace(&Namespace::parse("app").unwrap())
             .unwrap(),
     )
     .unwrap();
@@ -944,7 +944,7 @@ pub(super) fn running_container(
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,

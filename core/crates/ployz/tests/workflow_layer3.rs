@@ -154,19 +154,17 @@ async fn session(address: std::net::SocketAddr) -> Session {
     .unwrap()
 }
 
-/// One image Service in Project `workflow`, lowered as Cloud authors it.
+/// One image Service in Namespace `workflow`, lowered as Cloud authors it.
 /// Cloud authors no placement; these scenarios pin one to observe it.
 fn intent(name: &str, constraint: &str, pre_deploy: Option<&str>) -> DeployIntent {
     let mut intent = ployz_core::config::lower_deployment(
-        serde_json::from_value(
-            serde_json::json!({"projectName": "workflow", "snapshots": [{
-                "config": {"version": 2, "privateDns": name, "source": {
-                    "type": "image", "version": 1, "image": SERVICE_CONTAINER_IMAGE,
-                    "credentials": {"type": "none"}
-                }, "startCommand": "sleep 60", "preDeployCommand": pre_deploy,
-                "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}
-            }]}),
-        )
+        serde_json::from_value(serde_json::json!({"namespace": "workflow", "snapshots": [{
+            "config": {"version": 2, "privateDns": name, "source": {
+                "type": "image", "version": 1, "image": SERVICE_CONTAINER_IMAGE,
+                "credentials": {"type": "none"}
+            }, "startCommand": "sleep 60", "preDeployCommand": pre_deploy,
+            "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}
+        }]}))
         .unwrap(),
     )
     .unwrap();

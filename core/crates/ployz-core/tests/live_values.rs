@@ -131,15 +131,15 @@ fn branch_resolves_live_values_in_the_owner_scope() {
 }
 
 #[test]
-fn owner_namespace_must_be_a_project_name() {
-    for namespace in ["Not_A_Project", "", "ployz-system"] {
+fn owner_namespace_must_be_a_namespace() {
+    for namespace in ["Not_A_Namespace", "", "ployz-system"] {
         let error = live_values(namespace).unwrap_err();
         assert_eq!(error.path, "owner.namespace");
     }
 }
 
 #[test]
-fn an_address_the_owner_uses_live_keeps_its_project() {
+fn an_address_the_owner_uses_live_keeps_its_namespace() {
     let live = config_request(json!({
         "operation": "live_values",
         "value": {

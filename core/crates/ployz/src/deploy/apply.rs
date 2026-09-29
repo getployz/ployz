@@ -1,8 +1,7 @@
 use std::{io, num::NonZeroU32};
 
 use ployz_core::{
-    DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, ProjectName,
-    RequestedServiceSpec, ServiceSelector,
+    DeployEvent, DeployIntent, Namespace, OperationRow, RequestedServiceSpec, ServiceSelector,
 };
 use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
@@ -15,13 +14,13 @@ use crate::{
 };
 
 use super::{
-    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
+    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError,
     pipeline::{plan_options, plan_scale},
     render,
     report::{self, Ink},
 };
 
-/// Apply one Ployz infrastructure Service in the reserved system Project.
+/// Apply one Ployz infrastructure Service in the reserved system Namespace.
 pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
@@ -37,7 +36,7 @@ pub(crate) async fn apply_requested(
         async |client| {
             client
                 .preview(DeployIntent::apply_one(
-                    ProjectName::system(),
+                    Namespace::system(),
                     requested.clone(),
                     plan_options(force_recreate, skip_health_monitor),
                 ))
@@ -171,37 +170,6 @@ async fn confirm_and_execute(
         )
         .await,
         &format!("Deployed to {}", gate.context),
-    )
-}
-
-pub(crate) async fn remove_project(
-    client: &mut Client,
-    name: &ProjectName,
-    volumes: VolumeFate,
-    context: &str,
-    confirm_data_loss: &DataLossConfirmation,
-) -> Result<Outcome, ApplyError> {
-    let preview = client
-        .prepare_project_destroy(name, confirm_data_loss, volumes)
-        .await
-        .map_err(crate::failure::refusal_from_rpc)?;
-    print_warnings(&preview);
-    say_inline!("{}", render::removal_plan_text(&preview, context));
-    if preview.noop() {
-        return Ok(nothing_done());
-    }
-    let cancellation = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancellation.clone().drop_guard();
-    finish(
-        stream_confirm(
-            client,
-            &preview,
-            format!("Removing Project {name} from {context}"),
-            Ink::human(),
-            &cancellation,
-        )
-        .await,
-        &format!("Removed Project {name} from {context}"),
     )
 }
 
@@ -392,7 +360,7 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::project_not_found;
+    use super::super::pipeline::namespace_not_found;
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
@@ -464,7 +432,7 @@ mod tests {
             .into_iter()
             .map(DeployWarning::from)
             .collect(),
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
         );
         assert_eq!(
             preview
@@ -490,10 +458,10 @@ mod tests {
     #[test]
     fn incomplete_empty_view_is_not_reported_as_missing() {
         let mut preview =
-            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
-        assert!(project_not_found(&preview));
+            DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
+        assert!(namespace_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
-        assert!(!project_not_found(&preview));
+        assert!(!namespace_not_found(&preview));
     }
 
     #[test]

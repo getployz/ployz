@@ -25,7 +25,7 @@ pub enum ServiceVolumeGraphError {
     /// Two references describe incompatible sources for one physical Docker Volume.
     #[error("incompatible Service Volume aliases use Docker Volume {name}")]
     IncompatibleVolumeAliases { name: DockerVolumeName },
-    #[error("resolved Service Volume {reference} has no Project scope")]
+    #[error("resolved Service Volume {reference} has no Namespace scope")]
     UnscopedVolume { reference: ServiceVolumeReference },
 }
 
@@ -76,13 +76,13 @@ impl ServiceVolumeGraph {
     /// # Errors
     ///
     /// Returns an incompatible-alias error if scoping creates a physical-name collision.
-    pub fn scope_to_project(
+    pub fn scope_to_namespace(
         self,
-        project: &crate::ProjectName,
+        namespace: &crate::Namespace,
     ) -> Result<Self, ServiceVolumeGraphError> {
         let (mut volumes, mounts) = self.into_parts();
         for volume in &mut volumes {
-            volume.source.scope_to_project(project);
+            volume.source.scope_to_namespace(namespace);
         }
         Self::parse(volumes, mounts)
     }
@@ -226,7 +226,7 @@ pub enum ServiceSpecGraphError {
     Config(#[from] ServiceConfigGraphError),
 }
 
-/// A graph whose managed sources all carry privately established Project scope.
+/// A graph whose managed sources all carry privately established Namespace scope.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolvedServiceVolumeGraph(ServiceVolumeGraph);
 
@@ -316,12 +316,12 @@ impl ServiceMountGraph {
     ///
     /// # Errors
     /// Rejects physical volume aliases made incompatible by scoping.
-    pub fn scope_to_project(
+    pub fn scope_to_namespace(
         self,
-        project: &crate::ProjectName,
+        namespace: &crate::Namespace,
     ) -> Result<Self, ServiceVolumeGraphError> {
         Ok(Self {
-            volumes: self.volumes.scope_to_project(project)?,
+            volumes: self.volumes.scope_to_namespace(namespace)?,
             configs: self.configs,
         })
     }
@@ -331,7 +331,7 @@ impl ServiceMountGraph {
     }
 }
 
-/// Admitted mounts whose managed Volume sources also have Project scope.
+/// Admitted mounts whose managed Volume sources also have Namespace scope.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ResolvedServiceMountGraph {
     volumes: ResolvedServiceVolumeGraph,

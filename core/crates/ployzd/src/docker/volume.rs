@@ -8,13 +8,13 @@ use bollard::{
 use futures_util::{StreamExt, stream};
 use ployz_core::{
     CreateVolumeReport, CreateVolumeRequest, DockerVolume, DockerVolumeId, DockerVolumeName,
-    DockerVolumeStorageObservation, MachineId, ProjectName, QualifiedService, ResolvedServiceSpec,
+    DockerVolumeStorageObservation, MachineId, Namespace, QualifiedService, ResolvedServiceSpec,
     ServiceName, VolumeInventory, VolumeObservationFailure, VolumeSource,
 };
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{ContainerRuntime, Error, LABEL_PROJECT_NAME, LABEL_SERVICE_NAME, some_map};
+use super::{ContainerRuntime, Error, LABEL_NAMESPACE, LABEL_SERVICE_NAME, some_map};
 use crate::VolumePluginStatus;
 
 const VOLUME_INSPECTION_CONCURRENCY: usize = 8;
@@ -285,9 +285,9 @@ impl ContainerRuntime {
 
 fn holder_service(labels: Option<&HashMap<String, String>>) -> Option<QualifiedService> {
     let labels = labels?;
-    let project = ProjectName::parse(labels.get(LABEL_PROJECT_NAME)?).ok()?;
+    let namespace = Namespace::parse(labels.get(LABEL_NAMESPACE)?).ok()?;
     let name = ServiceName::parse(labels.get(LABEL_SERVICE_NAME)?).ok()?;
-    Some(QualifiedService::new(project, name))
+    Some(QualifiedService::new(namespace, name))
 }
 
 fn volume_in_use(holders: Vec<Option<QualifiedService>>) -> Error {

@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { MachineId, ProjectName } from "@ployz/sdk";
+import type { MachineId, Namespace } from "@ployz/sdk";
 import { parseServiceConfig, type ServiceSource } from "@ployz/sdk/config";
 import { and, eq } from "drizzle-orm";
 import { ConfigProvider, Effect, Layer, Schema } from "effect";
@@ -158,7 +158,7 @@ describe("PR Environment lifecycle", () => {
     open: () => Effect.succeed({
       status: "connected" as const,
       connected: asTestDouble<PloyzSession>()({
-        dataLossIfProjectDestroyed: (namespace: ProjectName) => runtimeFails ? Effect.die("The runtime did not answer.") : Effect.succeed({
+        dataLossIfNamespaceDestroyed: (namespace: Namespace) => runtimeFails ? Effect.die("The runtime did not answer.") : Effect.succeed({
           data_loss: [{ kind: "docker_volume" as const, id: { machine_id: "a".repeat(32) as MachineId, name: `${namespace}-data` } }],
           unknown_machines: [],
         }),

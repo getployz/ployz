@@ -12,7 +12,7 @@ use super::{
     ContainerRuntimeObservation, HealthObservation, RequestedServiceSpec, ResolvedServiceSpec,
 };
 use crate::{
-    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, ProjectName,
+    ContainerId, DockerVolumeId, DockerVolumeName, MachineId, MachineName, Namespace,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, ServiceName,
 };
 use thiserror::Error;
@@ -45,8 +45,8 @@ pub struct ServiceAttempt {
 /// Complete desired Services plus which of those Services this command applies.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeployIntent {
-    /// Project that will own Containers this Deploy creates.
-    pub project_name: ProjectName,
+    /// Namespace that will own Containers this Deploy creates.
+    pub namespace: Namespace,
     /// Complete desired Services for this Cluster.
     pub target: Vec<RequestedServiceSpec>,
     /// Planner knobs for this Deploy, including the selected Service list.
@@ -63,12 +63,12 @@ impl DeployIntent {
     /// prune.
     #[must_use]
     pub fn new(
-        project_name: ProjectName,
+        namespace: Namespace,
         target: Vec<RequestedServiceSpec>,
         options: PlanOptions,
     ) -> Self {
         Self {
-            project_name,
+            namespace,
             target,
             options,
             dependencies: BTreeMap::new(),
@@ -78,30 +78,30 @@ impl DeployIntent {
     /// Full reconciliation of every spec: `target` is those specs and `selected` stays empty.
     #[must_use]
     pub fn apply_all<'a>(
-        project_name: ProjectName,
+        namespace: Namespace,
         specs: impl IntoIterator<Item = &'a RequestedServiceSpec>,
         options: PlanOptions,
     ) -> Self {
-        Self::new(project_name, specs.into_iter().cloned().collect(), options)
+        Self::new(namespace, specs.into_iter().cloned().collect(), options)
     }
 
     /// One-spec target; `selected` is that name, so the Deploy is partial.
     #[must_use]
     pub fn apply_one(
-        project_name: ProjectName,
+        namespace: Namespace,
         spec: RequestedServiceSpec,
         mut options: PlanOptions,
     ) -> Self {
         options.selected = vec![ServiceAttempt {
             name: spec.name.clone(),
         }];
-        Self::new(project_name, vec![spec], options)
+        Self::new(namespace, vec![spec], options)
     }
 
     /// Target from every loaded spec; `options.selected` is this command's Service list.
     #[must_use]
     pub fn from_named_specs(
-        project_name: ProjectName,
+        namespace: Namespace,
         services: &BTreeMap<String, RequestedServiceSpec>,
         dependencies: &BTreeMap<String, Vec<ServiceDependency>>,
         options: PlanOptions,
@@ -118,7 +118,7 @@ impl DeployIntent {
                 ))
             })
             .collect();
-        Self::new(project_name, services.values().cloned().collect(), options)
+        Self::new(namespace, services.values().cloned().collect(), options)
             .with_dependencies(dependencies)
     }
 
@@ -383,7 +383,7 @@ pub enum DeployOperation {
         spec: ResolvedServiceSpec,
         old_hook_containers: Vec<(MachineId, ContainerId)>,
     },
-    /// Destroy a named Docker Volume. Project removal may emit this; `preview_deploy` never does.
+    /// Destroy a named Docker Volume. Namespace removal may emit this; `preview_deploy` never does.
     RemoveVolume { id: DockerVolumeId },
 }
 
@@ -396,8 +396,8 @@ pub struct DeployPreview {
     /// Capacity budget for every Machine receiving provisioned storage.
     #[serde(default)]
     pub storage: Vec<MachineStorageBudget>,
-    /// Project this preview describes.
-    pub project_name: ProjectName,
+    /// Namespace this preview describes.
+    pub namespace: Namespace,
     /// Pending rows for the operations this snapshot would execute.
     pub operations: Vec<OperationRow>,
     /// Observer-relative warnings for this snapshot, including ingress DNS misses.
@@ -407,10 +407,10 @@ pub struct DeployPreview {
     /// provisioned storage preparation appears separately in `operations`.
     #[serde(default)]
     pub volumes_to_create: Vec<VolumeToCreate>,
-    /// Visible Services in the Project that the Deploy Intent no longer declares.
+    /// Visible Services in the Namespace that the Deploy Intent no longer declares.
     #[serde(default)]
     pub would_remove: Vec<QualifiedService>,
-    /// Docker Volumes owned by this Project that this Deploy Intent no longer
+    /// Docker Volumes owned by this Namespace that this Deploy Intent no longer
     /// declares. They are not deleted.
     #[serde(default)]
     pub preserved_volumes: Vec<PreservedVolume>,
@@ -434,7 +434,7 @@ pub struct VolumeToCreate {
     pub maximum_bytes: Option<ProvisionedVolumeMaximumBytes>,
 }
 
-/// A Project-owned Docker Volume this Deploy keeps because it is omitted
+/// A Namespace-owned Docker Volume this Deploy keeps because it is omitted
 /// from this Deploy's target.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PreservedVolume {
@@ -474,10 +474,10 @@ impl DeployPreview {
     pub fn new(
         operations: Vec<OperationRow>,
         warnings: Vec<DeployWarning>,
-        project_name: ProjectName,
+        namespace: Namespace,
     ) -> Self {
         Self {
-            project_name,
+            namespace,
             operations,
             warnings,
             storage: Vec::new(),

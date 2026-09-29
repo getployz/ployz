@@ -211,7 +211,7 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
                 },
             )
             .expect("volume graph is scoped"),
-        ployz_core::ProjectName::system(),
+        ployz_core::Namespace::system(),
         'c',
     );
     let daemon = JoinDaemon::new(Registered {

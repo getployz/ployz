@@ -9,7 +9,7 @@ use crate::docker::test_support::*;
 async fn rejected_admission_does_not_poll_deferred_local_admission() {
     let (runtime, fake) = fake_runtime().await;
     let machine = machine();
-    let project = ProjectName::parse("app").unwrap();
+    let namespace = Namespace::parse("app").unwrap();
     let mut ineligible = spec_with_sources(Vec::new());
     ineligible.placement = ployz_core::Placement {
         constraints: ["node.labels.target==other".parse().unwrap()].into(),
@@ -22,7 +22,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
                 deployment_id: None,
                 creation_key: None,
                 kind: ContainerKind::ServiceContainer,
-                project_name: &project,
+                namespace: &namespace,
                 spec: &ineligible,
                 admission: async { Err(Error::EndpointCapacity) },
                 storage: std::future::ready(None),
@@ -34,7 +34,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
     let unknown = spec_with_sources(vec![provisioned_source("bounded", 1_073_741_824)]);
     let mut request = container_request(
         ContainerKind::ServiceContainer,
-        &project,
+        &namespace,
         &unknown,
         std::future::ready(None),
     );
@@ -63,7 +63,7 @@ async fn service_and_hook_creation_reach_the_same_volume_ensure() {
     );
     let spec = spec_with_sources(vec![ordinary_source("unsafe")]);
     let machine = machine();
-    let project = ProjectName::parse("app").unwrap();
+    let namespace = Namespace::parse("app").unwrap();
 
     for kind in [
         ContainerKind::ServiceContainer,
@@ -73,7 +73,7 @@ async fn service_and_hook_creation_reach_the_same_volume_ensure() {
             runtime
                 .create_with_admission(
                     &machine,
-                    container_request(kind, &project, &spec, std::future::ready(None)),
+                    container_request(kind, &namespace, &spec, std::future::ready(None)),
                 )
                 .await,
             Err(Error::VolumeShapeMismatch { .. })

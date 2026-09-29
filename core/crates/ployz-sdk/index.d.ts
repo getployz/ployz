@@ -23,7 +23,7 @@ import type {
   DataLossConfirmation,
   ClusterTeardown,
   PlanOptions,
-  ProjectName,
+  Namespace,
   PublishCertificateMaterialRequest,
   RegisterRequest,
   Registered,
@@ -57,7 +57,7 @@ export type WatchOptions = {
 };
 
 export type LogFilter = {
-  projectName?: string; serviceId?: string; serviceName?: string; deploymentId?: string;
+  namespace?: string; serviceId?: string; serviceName?: string; deploymentId?: string;
   machineId?: string; containerId?: string; kind?: "service_container" | "pre_deploy_hook";
 };
 export type LogRecord = ContainerLogRecord & { id: string };
@@ -171,13 +171,13 @@ export declare function ployzVersion(): string;
 /** The tag a Build Grant push retains `digest` under in `repository`, as Image Cleanup knows it. */
 export declare function buildGrantTag(repository: string, digest: string): string;
 export declare function applyAll(
-  project_name: ProjectName,
+  namespace: Namespace,
   specs: readonly RequestedServiceSpec[],
   options?: PlanOptions,
 ): DeployIntent;
 
 export declare function applyOne(
-  project_name: ProjectName,
+  namespace: Namespace,
   spec: RequestedServiceSpec,
   options?: PlanOptions,
 ): DeployIntent;
@@ -207,8 +207,8 @@ export declare class Client {
     logHistory(options: LogHistoryOptions): Promise<LogHistoryPage>;
   };
   preview(intent: DeployIntent): Promise<PreparedDeploy>;
-  previewProjectRemoval(
-    project_name: ProjectName,
+  previewNamespaceRemoval(
+    namespace: Namespace,
     destroy_volumes: boolean,
   ): Promise<PreparedDeploy>;
   run(
@@ -230,12 +230,12 @@ export declare class Client {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ): Promise<MachineUpdated>;
-  dataLossIfProjectDestroyed(
-    project_name: ProjectName,
+  dataLossIfNamespaceDestroyed(
+    namespace: Namespace,
     destroy_volumes?: boolean,
   ): Promise<ObservedDataLoss>;
-  destroyProject(
-    project_name: ProjectName,
+  destroyNamespace(
+    namespace: Namespace,
     confirmDataLoss: DataLossConfirmation,
     destroy_volumes?: boolean,
   ): Promise<DeployOutcome<ExecutionError>>;

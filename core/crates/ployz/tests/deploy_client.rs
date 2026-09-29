@@ -12,7 +12,7 @@ use ployz::deploy::{
     ExecutionError, FailedOperation, OperationStatus, PlanError, PruneRefusal, VolumeFate,
 };
 use ployz_core::{
-    ContainerId, MachineId, MachineStorageObservation, OperationPhase, ProjectName,
+    ContainerId, MachineId, MachineStorageObservation, Namespace, OperationPhase,
     ProvisionedVolumeMaximumBytes, QualifiedService, RequestedServiceSpec,
 };
 use tokio_util::sync::CancellationToken;
@@ -86,14 +86,14 @@ async fn ingress_deploy_builds_the_caddy_spec() {
 }
 
 #[tokio::test]
-async fn deploy_creates_containers_owned_by_the_intent_project() {
+async fn deploy_creates_containers_owned_by_the_intent_namespace() {
     let service = DeployService::new(machine('a', "one"));
-    let created = service.created_projects();
+    let created = service.created_namespaces();
     let (mut client, server) = connected(service).await;
     client
         .run(
             DeployIntent::apply_one(
-                ProjectName::parse("shop").unwrap(),
+                Namespace::parse("shop").unwrap(),
                 spec("web"),
                 skip_health(),
             ),
@@ -104,7 +104,7 @@ async fn deploy_creates_containers_owned_by_the_intent_project() {
         .unwrap();
     assert_eq!(
         *created.lock().unwrap(),
-        [ProjectName::parse("shop").unwrap()]
+        [Namespace::parse("shop").unwrap()]
     );
     server.abort();
 }
@@ -119,7 +119,7 @@ async fn deploy_returns_success_for_a_completed_run() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -151,11 +151,7 @@ async fn deploy_waits_for_the_replicated_serving_container_after_start() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -180,11 +176,7 @@ async fn deploy_barrier_requires_every_capable_machine_and_uses_waiting_rounds()
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -227,11 +219,7 @@ async fn deploy_barrier_propagates_a_reached_store_error() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -267,11 +255,7 @@ async fn deploy_cancellation_aborts_an_in_flight_observation_wait() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &cancellation,
             None,
         )
@@ -351,7 +335,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
     let mut target = machine('a', "one");
     target.storage = Some(MachineStorageObservation::Ready);
     let service = DeployService::new(target);
-    let created = service.created_projects();
+    let created = service.created_namespaces();
     let (mut client, server) = connected(service).await;
     let mut requested = spec("web");
     add_named_volume(&mut requested, "data");
@@ -381,7 +365,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
         .unwrap();
     let intent =
-        DeployIntent::apply_one(ProjectName::parse("app").unwrap(), requested, skip_health());
+        DeployIntent::apply_one(Namespace::parse("app").unwrap(), requested, skip_health());
 
     let outcome = client
         .run(intent, &CancellationToken::new(), None)
@@ -389,10 +373,7 @@ async fn provisioned_volume_deploy_reaches_container_creation() {
         .unwrap();
 
     assert!(matches!(outcome, DeployOutcome::Success { .. }));
-    assert_eq!(
-        *created.lock().unwrap(),
-        [ProjectName::parse("app").unwrap()]
-    );
+    assert_eq!(*created.lock().unwrap(), [Namespace::parse("app").unwrap()]);
     server.abort();
 }
 
@@ -407,7 +388,7 @@ async fn volume_ensure_failure_is_reported_on_the_container_operation() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -450,7 +431,7 @@ async fn created_but_unverified_volume_fails_the_container_operation() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(ProjectName::parse("app").unwrap(), spec, skip_health()),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec, skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -492,11 +473,7 @@ async fn deploy_surfaces_a_planning_error_instead_of_an_outcome() {
 
     let error = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             &CancellationToken::new(),
             None,
         )
@@ -526,7 +503,7 @@ async fn preview_returns_operations_and_mutates_nothing() {
 
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             skip_health(),
         ))
@@ -555,7 +532,7 @@ async fn confirm_executes_the_previewed_operations_without_re_planning() {
     let listed = service.listed_containers();
     let (mut client, server) = connected(service).await;
     let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         spec.clone(),
         skip_health(),
     );
@@ -615,7 +592,7 @@ async fn preview_includes_dns_warnings() {
 
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             skip_health(),
         ))
@@ -664,7 +641,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
     .unwrap();
     let mut owner = running_container(&machine, &owner_spec);
     owner
-        .try_update(|parts| parts.project_name = ProjectName::parse("blog").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("blog").unwrap())
         .unwrap();
     service.listed_containers().lock().unwrap().push(owner);
     let (mut client, server) = connected(service).await;
@@ -672,7 +649,7 @@ async fn preview_rejects_a_visible_owner_of_the_hostname() {
 
     let error = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             owner_spec,
             skip_health(),
         ))
@@ -698,7 +675,7 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
 
     let error = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -713,15 +690,15 @@ async fn preview_surfaces_a_planning_error_instead_of_a_preview() {
 }
 
 #[tokio::test]
-async fn preview_project_removal_refuses_the_reserved_project() {
+async fn preview_namespace_removal_refuses_the_reserved_namespace() {
     let (mut client, server) = connected(DeployService::empty()).await;
     let error = client
-        .preview_project_removal(&ProjectName::system(), VolumeFate::Preserve)
+        .preview_namespace_removal(&Namespace::system(), VolumeFate::Preserve)
         .await
         .unwrap_err();
     assert!(matches!(
         error,
-        DeployError::Project(ployz::project::ProjectError::Reserved { .. })
+        DeployError::Namespace(ployz::namespace::NamespaceError::Reserved { .. })
     ));
     server.abort();
 }
@@ -735,7 +712,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
     let (mut client, server) = connected(service).await;
     let plan = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -743,7 +720,7 @@ async fn confirm_ignores_changed_preview_payload_and_replays_with_fresh_pending_
         .unwrap();
     let mut displayed: ployz_core::DeployPreview =
         serde_json::from_value(serde_json::to_value(plan.preview()).unwrap()).unwrap();
-    displayed.project_name = ProjectName::parse("forged").unwrap();
+    displayed.namespace = Namespace::parse("forged").unwrap();
     let row = displayed.operations.first_mut().unwrap();
     row.machine_id = MachineId::random();
     row.index = 42;
@@ -799,7 +776,7 @@ async fn empty_target_is_noop_and_confirm_succeeds_with_zero_operations() {
     let (mut client, server) = connected(DeployService::new(machine)).await;
     let preview = client
         .preview(DeployIntent::new(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             Vec::new(),
             skip_health(),
         ))
@@ -831,7 +808,7 @@ async fn full_preview_confirms_prune_operations_without_replanning() {
     let (mut client, server) = connected(service).await;
     let preview = client
         .preview(DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&spec("web")],
             skip_health(),
         ))
@@ -873,7 +850,7 @@ async fn partial_preview_does_not_prune_an_unselected_imperative_service() {
     let (mut client, server) = connected(service).await;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -900,7 +877,7 @@ async fn abort_during_health_wait_settles_a_cancelled_outcome() {
     options.skip_health_monitor = false;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             health_spec("web"),
             options,
         ))
@@ -954,7 +931,7 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
     options.skip_health_monitor = false;
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             health_spec("web"),
             options,
         ))

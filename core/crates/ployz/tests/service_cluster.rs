@@ -2,9 +2,8 @@ use std::{process, time::Duration};
 
 use ployz_core::{
     ContainerAction, ContainerId, ContainerKind, ContainerRuntimeObservation,
-    InspectContainerRequest, Machine, MachineId, MachineTarget, ProjectName,
-    RemoveContainerRequest, ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest,
-    op, select_service,
+    InspectContainerRequest, Machine, MachineId, MachineTarget, Namespace, RemoveContainerRequest,
+    ResolvedServiceSpec, ServiceId, ServiceSelector, StopContainerRequest, op, select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 
@@ -32,7 +31,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[0].id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             first.clone(),
             None,
         )
@@ -42,7 +41,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             second.clone(),
             None,
         )
@@ -52,7 +51,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[0].id,
             ContainerKind::PreDeployHook,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             first.clone(),
             None,
         )
@@ -62,7 +61,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::PreDeployHook,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             second.clone(),
             None,
         )
@@ -95,7 +94,7 @@ async fn service_observations_and_lifecycle_remain_partial_in_a_real_cluster() {
         .create_container(
             machines[1].id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("shop-staging").unwrap(),
+            Namespace::parse("shop-staging").unwrap(),
             spec(&collision_id, "shared", "collision"),
             None,
         )
@@ -238,7 +237,7 @@ async fn assert_l3_061_default_spec(
         .create_container(
             machine.id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec.clone(),
             None,
         )
@@ -325,7 +324,7 @@ async fn assert_l3_062_full_spec(
         .create_container(
             machine.id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec.clone(),
             None,
         )

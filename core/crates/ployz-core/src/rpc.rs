@@ -21,7 +21,7 @@ use crate::{
     AdvertisedEndpoint, CapabilityName, CertificateHost, ContainerId, ContainerKind,
     ContainerObservation, DockerVolume, Machine, MachineId, MachineLogService, MachineName,
     MachineObservation, MachineRuntime, MachineToken, MachineUpdate, ManagementCapability,
-    ManagementClientLabel, ProjectName, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice,
+    ManagementClientLabel, Namespace, PublicIpDiscovery, ResolvedServiceSpec, StorageChoice,
     WireGuardDevice, WireGuardPublicKey,
 };
 
@@ -285,11 +285,11 @@ pub struct CreateContainerRequest {
     /// Correlation metadata, never part of the Service configuration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment_id: Option<crate::DeploymentLogId>,
-    /// Retry identity for a currently existing creation, scoped to Machine, Project, and kind.
+    /// Retry identity for a currently existing creation, scoped to Machine, Namespace, and kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub creation_key: Option<String>,
     pub kind: ContainerKind,
-    pub project_name: ProjectName,
+    pub namespace: Namespace,
     pub resolved_spec: ResolvedServiceSpec,
 }
 

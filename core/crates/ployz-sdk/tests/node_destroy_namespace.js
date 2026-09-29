@@ -13,10 +13,10 @@ const machineId = process.env.PLOYZ_MACHINE_ID;
 const volumeMachineId = process.env.PLOYZ_VOLUME_MACHINE_ID;
 
 if (!addon || !pkg || !socketDirectory || !machineId || !volumeMachineId) {
-  throw new Error("Node Project destroy is missing environment");
+  throw new Error("Node Namespace destroy is missing environment");
 }
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-destroy-project-"));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ployz-sdk-destroy-namespace-"));
 fs.copyFileSync(path.join(pkg, "index.js"), path.join(dir, "index.js"));
 fs.copyFileSync(path.join(pkg, "runtime-logs.js"), path.join(dir, "runtime-logs.js"));
 fs.copyFileSync(addon, path.join(dir, "ployz-sdk.node"));
@@ -33,11 +33,11 @@ function dockerVolume(loss) {
 }
 
 (async () => {
-  if (typeof sdk.Client.prototype.destroyProject !== "function") {
-    throw new Error("Client.destroyProject must be a method");
+  if (typeof sdk.Client.prototype.destroyNamespace !== "function") {
+    throw new Error("Client.destroyNamespace must be a method");
   }
-  if (typeof sdk.Client.prototype.dataLossIfProjectDestroyed !== "function") {
-    throw new Error("Client.dataLossIfProjectDestroyed must be a method");
+  if (typeof sdk.Client.prototype.dataLossIfNamespaceDestroyed !== "function") {
+    throw new Error("Client.dataLossIfNamespaceDestroyed must be a method");
   }
   if (typeof sdk.Client.prototype.confirmAll === "function") {
     throw new Error("no API may confirm a read's Data Loss without naming its entries");
@@ -45,12 +45,12 @@ function dockerVolume(loss) {
 
   const client = await sdk.connect({ connections: connectionsFor(machineId) });
 
-  const preserved = await client.dataLossIfProjectDestroyed("shop");
+  const preserved = await client.dataLossIfNamespaceDestroyed("shop");
   if (!Array.isArray(preserved.data_loss) || preserved.data_loss.length !== 0) {
     throw new Error(`preserving volumes must be empty Data Loss, got ${JSON.stringify(preserved)}`);
   }
 
-  const observed = await client.dataLossIfProjectDestroyed("shop", true);
+  const observed = await client.dataLossIfNamespaceDestroyed("shop", true);
   if (observed.data_loss.length !== 2) {
     throw new Error(`expected two Data Loss entries, got ${JSON.stringify(observed)}`);
   }
@@ -66,7 +66,7 @@ function dockerVolume(loss) {
   }
 
   try {
-    await client.destroyProject("shop", { confirmed: [] }, true);
+    await client.destroyNamespace("shop", { confirmed: [] }, true);
     throw new Error("unconfirmed destroy must fail");
   } catch (error) {
     if (error.message === "unconfirmed destroy must fail") {
@@ -86,7 +86,7 @@ function dockerVolume(loss) {
   }
 
   try {
-    await client.destroyProject("shop", observed, true);
+    await client.destroyNamespace("shop", observed, true);
     throw new Error("ObservedDataLoss must not confirm a read");
   } catch (error) {
     if (error.message === "ObservedDataLoss must not confirm a read") {
@@ -98,14 +98,14 @@ function dockerVolume(loss) {
     }
   }
 
-  const reserved = await client.dataLossIfProjectDestroyed("ployz-system").then(
+  const reserved = await client.dataLossIfNamespaceDestroyed("ployz-system").then(
     () => {
-      throw new Error("reserved Project Data Loss must fail");
+      throw new Error("reserved Namespace Data Loss must fail");
     },
     (error) => expectRpcError(sdk, error),
   );
   if (reserved.code !== "invalid_argument" || !reserved.message.includes("ployz-system")) {
-    throw new Error(`reserved Project must be refused, got ${JSON.stringify(reserved)}`);
+    throw new Error(`reserved Namespace must be refused, got ${JSON.stringify(reserved)}`);
   }
 
   const union = {
@@ -117,12 +117,12 @@ function dockerVolume(loss) {
       },
     ],
   };
-  const destroyed = await client.destroyProject("shop", union, true);
+  const destroyed = await client.destroyNamespace("shop", union, true);
   if (!destroyed || destroyed.type !== "success") {
     throw new Error(`expected successful destroy, got ${JSON.stringify(destroyed)}`);
   }
 
-  const staging = await client.destroyProject("staging", union, true);
+  const staging = await client.destroyNamespace("staging", union, true);
   if (!staging || staging.type !== "success") {
     throw new Error(`expected staging destroy to reuse the union, got ${JSON.stringify(staging)}`);
   }

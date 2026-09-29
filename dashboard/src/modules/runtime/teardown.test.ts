@@ -21,7 +21,7 @@ import { strictValidator } from "#/server/tanstack";
 const machineA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
 const machineB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as MachineId;
 const clusterTeardown = {
-  destroyed_projects: ["app-production"],
+  destroyed_namespaces: ["app-production"],
   machines: { successes: [], failures: [], omissions: [] },
   pairing_revoked: false,
 } satisfies ClusterTeardown;
@@ -72,17 +72,17 @@ describe("teardown Data Loss", () => {
     expect(united.cloud.some((row) => row.kind === "project")).toBe(true);
   });
 
-  it("keeps Cloud runtime project targets without reconstructing volume ownership", () => {
+  it("keeps Cloud runtime Namespace targets without reconstructing volume ownership", () => {
     const targets: TeardownTargets = {
       environments: [
         {
           environmentId: "env-1",
           projectId: "project-1",
-          projectName: "app-production",
+          namespace: "app-production",
           cloudName: "acme/app/production",
         },
       ],
-      destroyRuntimeProjects: true,
+      destroyRuntimeNamespaces: true,
       revokePairing: false,
       runtimeMembership: "untouched",
     };
@@ -91,11 +91,11 @@ describe("teardown Data Loss", () => {
       {
         environmentId: "env-1",
         projectId: "project-1",
-        projectName: "app-production",
+        namespace: "app-production",
         cloudName: "acme/app/production",
       },
     ]);
-    expect(targets.destroyRuntimeProjects).toBe(true);
+    expect(targets.destroyRuntimeNamespaces).toBe(true);
   });
 
   it("only resends a pending dispatch; terminal work needs a fresh confirmation", () => {
@@ -208,7 +208,7 @@ describe("teardown Data Loss", () => {
   it("requires the current teardown target shape", () => {
     const current = {
       environments: [],
-      destroyRuntimeProjects: false,
+      destroyRuntimeNamespaces: false,
       revokePairing: false,
       runtimeMembership: "untouched",
     };

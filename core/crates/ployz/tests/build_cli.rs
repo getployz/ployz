@@ -37,7 +37,7 @@ fn build_refuses_a_mismatched_fingerprint_or_an_unclean_checkout() {
     let deployment = root.path().join("deployment.json");
     std::fs::write(
         &deployment,
-        serde_json::json!({"projectName": "build", "snapshots": [{"config": {
+        serde_json::json!({"namespace": "build", "snapshots": [{"config": {
             "version": 2, "privateDns": "app", "healthcheck": {"type": "none"},
             "restartPolicy": "on-failure",
             "source": {"version": 2, "type": "git", "repository": "acme/app", "repositoryId": 42,

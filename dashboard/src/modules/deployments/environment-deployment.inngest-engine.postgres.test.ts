@@ -238,7 +238,7 @@ describe("deployment Inngest durable smoke", () => {
     function preparedDeploy(buildReceipts: BuildReceipts) {
       const outcome = { type: "success" as const, completed: [] };
       return asTestDouble<PreparedDeploy>()({
-        project_name: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
+        namespace: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
         buildReceipts, pruneTargets: [], close: () => undefined,
         confirm: () => ({ abort: () => undefined, finished: Promise.resolve(outcome),
           async *[Symbol.asyncIterator]() { yield { type: "outcome" as const, outcome }; } }),

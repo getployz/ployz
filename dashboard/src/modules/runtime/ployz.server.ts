@@ -26,7 +26,7 @@ import type {
   PreparedDeploy,
   PreparationInput,
   PreparationEvent,
-  ProjectName,
+  Namespace,
   RemoveVolumesRequest,
   ImageCleanupReport,
   PruneTarget,
@@ -108,12 +108,12 @@ export interface PloyzSession {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ) => Effect.Effect<void, PloyzSdkError>;
-  readonly dataLossIfProjectDestroyed: (
-    projectName: ProjectName,
+  readonly dataLossIfNamespaceDestroyed: (
+    namespace: Namespace,
     destroyVolumes?: boolean,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
-  readonly destroyProject: (
-    projectName: ProjectName,
+  readonly destroyNamespace: (
+    namespace: Namespace,
     confirmDataLoss: DataLossConfirmation,
     destroyVolumes?: boolean,
   ) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
@@ -313,13 +313,13 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),
       ),
-    dataLossIfProjectDestroyed: (projectName, destroyVolumes) =>
-      sdkPromise("load project data loss", () =>
-        client.dataLossIfProjectDestroyed(projectName, destroyVolumes),
+    dataLossIfNamespaceDestroyed: (namespace, destroyVolumes) =>
+      sdkPromise("load namespace data loss", () =>
+        client.dataLossIfNamespaceDestroyed(namespace, destroyVolumes),
       ),
-    destroyProject: (projectName, confirmDataLoss, destroyVolumes) =>
-      sdkPromise("destroy project", () =>
-        client.destroyProject(projectName, confirmDataLoss, destroyVolumes),
+    destroyNamespace: (namespace, confirmDataLoss, destroyVolumes) =>
+      sdkPromise("destroy namespace", () =>
+        client.destroyNamespace(namespace, confirmDataLoss, destroyVolumes),
       ),
     dataLossIfClusterDestroyed: () =>
       sdkPromise("load cluster data loss", () =>

@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn capture_preserves_cloud_dependencies() {
         let deployment = json!({
-            "projectName": "app",
+            "namespace": "app",
             "snapshots": (["web", "db"].map(|name| json!({"config": {
                 "version": 2, "privateDns": name,
                 "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
@@ -347,10 +347,10 @@ mod tests {
     fn expected_fingerprints_refuse_an_invalid_deployment_or_commit() {
         let web = ServiceName::parse("web").unwrap();
         let commit = |value: &str| BTreeMap::from([(web.clone(), value.to_owned())]);
-        let error = expected_fingerprints(json!({"projectName": "app"}), commit(&"a".repeat(40)))
+        let error = expected_fingerprints(json!({"namespace": "app"}), commit(&"a".repeat(40)))
             .unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
-        let deployment = json!({"projectName": "app", "snapshots": [{"config": {
+        let deployment = json!({"namespace": "app", "snapshots": [{"config": {
             "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
             "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
                 "access":{"type":"public"}, "rootDir":"/", "branch":{"type":"connected", "name":"main"}},
@@ -373,7 +373,7 @@ mod tests {
         std::fs::create_dir(root.path().join("app")).unwrap();
         std::fs::write(root.path().join("app/Dockerfile"), "FROM scratch\n").unwrap();
         let base = json!({
-            "deployment": {"projectName": "app", "snapshots": [{"config": {
+            "deployment": {"namespace": "app", "snapshots": [{"config": {
                 "version": 2, "privateDns": "web", "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
                 "source": {"version":2, "type":"git", "repository":"acme/web", "repositoryId":42,
                     "access":{"type":"public"}, "rootDir":"/", "branch":{"type":"connected", "name":"main"}},

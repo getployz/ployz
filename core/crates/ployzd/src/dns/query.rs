@@ -1,7 +1,7 @@
 //! Parse an Internal DNS name into a typed query.
 
 use hickory_server::proto::rr::Name;
-use ployz_core::{MachineId, ProjectName, QualifiedService, ServiceId, ServiceName};
+use ployz_core::{MachineId, Namespace, QualifiedService, ServiceId, ServiceName};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum Query {
@@ -55,17 +55,17 @@ fn parse_internal(selector: &str) -> InternalQuery {
         (Some(service), None, None, None, None) => ServiceName::parse(service)
             .map(InternalQuery::CallerService)
             .unwrap_or(InternalQuery::Empty),
-        (Some(service), Some(project), None, None, None) => {
-            identity(service, project).map_or(InternalQuery::Empty, InternalQuery::Service)
+        (Some(service), Some(namespace), None, None, None) => {
+            identity(service, namespace).map_or(InternalQuery::Empty, InternalQuery::Service)
         }
-        (Some(service), Some(project), Some("nearest"), None, None) => {
-            identity(service, project).map_or(InternalQuery::Empty, InternalQuery::Nearest)
+        (Some(service), Some(namespace), Some("nearest"), None, None) => {
+            identity(service, namespace).map_or(InternalQuery::Empty, InternalQuery::Nearest)
         }
         (Some(service_id), Some("id"), Some("lookup"), None, None) => {
             ServiceId::parse(service_id).map_or(InternalQuery::Empty, InternalQuery::ServiceId)
         }
-        (Some(service), Some(project), Some(machine_id), Some("machine"), None) => {
-            match (MachineId::parse(machine_id), identity(service, project)) {
+        (Some(service), Some(namespace), Some(machine_id), Some("machine"), None) => {
+            match (MachineId::parse(machine_id), identity(service, namespace)) {
                 (Ok(machine_id), Some(identity)) => InternalQuery::Machine(MachineServiceTarget {
                     machine_id,
                     identity,
@@ -73,8 +73,8 @@ fn parse_internal(selector: &str) -> InternalQuery {
                 _ => InternalQuery::Empty,
             }
         }
-        (Some(service), Some(project), Some(region), Some("region"), None)
-            if !region.is_empty() && identity(service, project).is_some() =>
+        (Some(service), Some(namespace), Some(region), Some("region"), None)
+            if !region.is_empty() && identity(service, namespace).is_some() =>
         {
             InternalQuery::Regional
         }
@@ -82,9 +82,9 @@ fn parse_internal(selector: &str) -> InternalQuery {
     }
 }
 
-fn identity(service: &str, project: &str) -> Option<QualifiedService> {
+fn identity(service: &str, namespace: &str) -> Option<QualifiedService> {
     Some(QualifiedService::new(
-        ProjectName::parse(project).ok()?,
+        Namespace::parse(namespace).ok()?,
         ServiceName::parse(service).ok()?,
     ))
 }
@@ -142,12 +142,12 @@ mod tests {
     }
 
     #[test]
-    fn reserved_words_remain_valid_service_and_project_names() {
+    fn reserved_words_remain_valid_service_and_namespaces() {
         for name in ["rr", "nearest", "machine", "region", "id", "lookup"] {
             assert_eq!(
-                query(&format!("{name}.project.internal.")),
+                query(&format!("{name}.namespace.internal.")),
                 internal(InternalQuery::Service(
-                    QualifiedService::parse(format!("project/{name}")).unwrap()
+                    QualifiedService::parse(format!("namespace/{name}")).unwrap()
                 ))
             );
             assert_eq!(

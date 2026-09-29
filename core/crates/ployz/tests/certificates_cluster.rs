@@ -6,8 +6,8 @@ use std::{
 
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, CertificateHost, CertificateMaterialChange,
-    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate,
-    ProjectName, PublicIpUpdate, PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId,
+    ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate, Namespace,
+    PublicIpUpdate, PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId,
     StartContainerRequest, StopContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
@@ -772,7 +772,7 @@ async fn create_and_start(
         .create_container(
             machine.id,
             ContainerKind::ServiceContainer,
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec,
             None,
         )

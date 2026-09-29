@@ -2,7 +2,7 @@
 use super::{BuiltService, CapturedBuild, CapturedTarget, platforms::placeable};
 use crate::connect::Client;
 use ployz_core::{
-    DeployIntent, MachineId, MachineObservation, PartialResult, ProjectName, RequestedServiceSpec,
+    DeployIntent, MachineId, MachineObservation, Namespace, PartialResult, RequestedServiceSpec,
     RpcError,
 };
 use tokio_util::sync::CancellationToken;
@@ -56,7 +56,7 @@ fn reusable(
         .platforms
         .iter()
         .all(|platform| receipt.built.platforms.contains(platform));
-    if !covers_platforms || !runs_everywhere(&receipt.built, spec, &intent.project_name, machines) {
+    if !covers_platforms || !runs_everywhere(&receipt.built, spec, &intent.namespace, machines) {
         return None;
     }
     let mut image = receipt.clone();
@@ -68,10 +68,10 @@ fn reusable(
 pub(crate) fn runs_everywhere(
     built: &ployz_build::BuiltImage,
     spec: &RequestedServiceSpec,
-    project: &ProjectName,
+    namespace: &Namespace,
     machines: &[MachineObservation],
 ) -> bool {
-    placeable(spec, project, machines).all(|machine| {
+    placeable(spec, namespace, machines).all(|machine| {
         built.platforms.iter().any(|platform| {
             crate::image::platform_compatible(platform, &machine.machine.runtime.architecture)
         })

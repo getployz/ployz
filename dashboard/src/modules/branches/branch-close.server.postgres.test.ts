@@ -1,4 +1,4 @@
-import type { MachineId, ProjectName } from "@ployz/sdk";
+import type { MachineId, Namespace } from "@ployz/sdk";
 import { Effect, Logger } from "effect";
 import { Inngest } from "inngest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -54,7 +54,7 @@ describe("closing a Branch", () => {
         open: () => Effect.succeed({
           status: "connected" as const,
           connected: asTestDouble<PloyzSession>()({
-            dataLossIfProjectDestroyed: (namespace: ProjectName) => namespace === unreachable
+            dataLossIfNamespaceDestroyed: (namespace: Namespace) => namespace === unreachable
               ? Effect.fail(new Error("The runtime is unreachable."))
               : Effect.succeed({ data_loss: [volumeOf(namespace)], unknown_machines: [] }),
           }),

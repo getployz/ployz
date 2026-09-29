@@ -1,58 +1,56 @@
-//! Observer-derived Projects. There is no standalone Project record.
+//! Observer-derived Namespaces. There is no standalone Namespace record.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    ContainerObservation, DockerVolumeId, PROJECT_NAME_LABEL, ProjectName, QualifiedService,
-};
+use crate::{ContainerObservation, DockerVolumeId, NAMESPACE_LABEL, Namespace, QualifiedService};
 
-/// One observer-derived Project. It exists while this observer sees an owned
+/// One observer-derived Namespace. It exists while this observer sees an owned
 /// Service or a managed volume.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ProjectObservation {
-    pub name: ProjectName,
+pub struct NamespaceObservation {
+    pub name: Namespace,
     #[serde(default)]
     pub services: Vec<QualifiedService>,
     #[serde(default)]
     pub volumes: Vec<DockerVolumeId>,
 }
 
-/// Project ownership from Docker Volume labels. Missing or invalid labels are
-/// not a Project; the volume name is never consulted.
+/// Namespace ownership from Docker Volume labels. Missing or invalid labels are
+/// not a Namespace; the volume name is never consulted.
 #[must_use]
-pub fn owned_volume_project(labels: &BTreeMap<String, String>) -> Option<ProjectName> {
-    ProjectName::parse(labels.get(PROJECT_NAME_LABEL)?).ok()
+pub fn owned_volume_namespace(labels: &BTreeMap<String, String>) -> Option<Namespace> {
+    Namespace::parse(labels.get(NAMESPACE_LABEL)?).ok()
 }
 
-/// Derive Projects from owned Services and managed volumes.
+/// Derive Namespaces from owned Services and managed volumes.
 ///
-/// Unlabeled volumes and invalid Project labels are skipped. The result is
+/// Unlabeled volumes and invalid Namespace labels are skipped. The result is
 /// whatever this observer supplied; it is not Cluster completeness.
 #[must_use]
-pub fn derive_projects<'a>(
+pub fn derive_namespaces<'a>(
     containers: impl IntoIterator<Item = &'a ContainerObservation>,
     volumes: impl IntoIterator<Item = (&'a DockerVolumeId, &'a BTreeMap<String, String>)>,
-) -> Vec<ProjectObservation> {
-    let mut projects =
-        BTreeMap::<ProjectName, (BTreeSet<QualifiedService>, BTreeSet<DockerVolumeId>)>::new();
+) -> Vec<NamespaceObservation> {
+    let mut namespaces =
+        BTreeMap::<Namespace, (BTreeSet<QualifiedService>, BTreeSet<DockerVolumeId>)>::new();
     for observation in containers {
-        projects
-            .entry(observation.project_name.clone())
+        namespaces
+            .entry(observation.namespace.clone())
             .or_default()
             .0
             .insert(observation.identity());
     }
     for (id, labels) in volumes {
-        let Some(name) = owned_volume_project(labels) else {
+        let Some(name) = owned_volume_namespace(labels) else {
             continue;
         };
-        projects.entry(name).or_default().1.insert(id.clone());
+        namespaces.entry(name).or_default().1.insert(id.clone());
     }
-    projects
+    namespaces
         .into_iter()
-        .map(|(name, (services, volumes))| ProjectObservation {
+        .map(|(name, (services, volumes))| NamespaceObservation {
             name,
             services: services.into_iter().collect(),
             volumes: volumes.into_iter().collect(),
@@ -73,25 +71,25 @@ mod tests {
     };
 
     #[test]
-    fn projects_come_from_owned_services_and_managed_volumes() {
+    fn namespaces_come_from_owned_services_and_managed_volumes() {
         let shop = observation("shop", "web");
         let staging = observation("shop-staging", "web");
         let shop_data = volume("shop_data", Some("shop"));
         let staging_data = volume("shop-staging_data", Some("shop-staging"));
-        let projects = derive_projects(
+        let namespaces = derive_namespaces(
             [&shop, &staging],
             [as_volume(&shop_data), as_volume(&staging_data)],
         );
-        assert_eq!(names(&projects), ["shop", "shop-staging"]);
-        let [shop_project, staging_project] = projects.as_slice() else {
-            panic!("expected two Projects, got {projects:?}");
+        assert_eq!(names(&namespaces), ["shop", "shop-staging"]);
+        let [shop_namespace, staging_namespace] = namespaces.as_slice() else {
+            panic!("expected two Namespaces, got {namespaces:?}");
         };
         assert_eq!(
-            shop_project.services,
+            shop_namespace.services,
             [QualifiedService::parse("shop/web").unwrap()]
         );
         assert_eq!(
-            shop_project
+            shop_namespace
                 .volumes
                 .first()
                 .expect("shop owns a volume")
@@ -100,32 +98,32 @@ mod tests {
             "shop_data"
         );
         assert_eq!(
-            staging_project.services,
+            staging_namespace.services,
             [QualifiedService::parse("shop-staging/web").unwrap()]
         );
     }
 
     #[test]
-    fn a_project_holding_only_volumes_still_lists() {
+    fn a_namespace_holding_only_volumes_still_lists() {
         let data = volume("shop_data", Some("shop"));
-        let projects = derive_projects([] as [&ContainerObservation; 0], [as_volume(&data)]);
-        assert_eq!(names(&projects), ["shop"]);
-        let shop = projects.first().expect("shop still lists");
+        let namespaces = derive_namespaces([] as [&ContainerObservation; 0], [as_volume(&data)]);
+        assert_eq!(names(&namespaces), ["shop"]);
+        let shop = namespaces.first().expect("shop still lists");
         assert!(shop.services.is_empty());
         assert_eq!(shop.volumes.len(), 1);
     }
 
     #[test]
-    fn a_project_disappears_when_this_observer_sees_no_owned_service_or_volume() {
+    fn a_namespace_disappears_when_this_observer_sees_no_owned_service_or_volume() {
         let leftover = observation("other", "web");
         let orphan = volume("orphan", None);
-        let projects = derive_projects([&leftover], [as_volume(&orphan)]);
-        assert_eq!(names(&projects), ["other"]);
-        assert!(!names(&projects).contains(&"shop"));
+        let namespaces = derive_namespaces([&leftover], [as_volume(&orphan)]);
+        assert_eq!(names(&namespaces), ["other"]);
+        assert!(!names(&namespaces).contains(&"shop"));
     }
 
     #[test]
-    fn unlabeled_and_invalid_volume_labels_are_not_assigned_to_a_project() {
+    fn unlabeled_and_invalid_volume_labels_are_not_assigned_to_a_namespace() {
         let guessed = volume("shop_data", None);
         let invalid = (
             DockerVolumeId {
@@ -133,7 +131,7 @@ mod tests {
                 name: DockerVolumeName::parse("broken").unwrap(),
             },
             BTreeMap::from([
-                (PROJECT_NAME_LABEL.to_owned(), "Not_DNS".to_owned()),
+                (NAMESPACE_LABEL.to_owned(), "Not_DNS".to_owned()),
                 (MANAGED_LABEL.to_owned(), String::new()),
             ]),
         );
@@ -144,7 +142,7 @@ mod tests {
             },
             BTreeMap::from([(MANAGED_LABEL.to_owned(), String::new())]),
         );
-        let projects = derive_projects(
+        let namespaces = derive_namespaces(
             [] as [&ContainerObservation; 0],
             [
                 as_volume(&guessed),
@@ -152,24 +150,24 @@ mod tests {
                 as_volume(&managed_only),
             ],
         );
-        assert!(projects.is_empty(), "{projects:?}");
+        assert!(namespaces.is_empty(), "{namespaces:?}");
     }
 
     #[test]
-    fn reserved_project_still_lists() {
+    fn reserved_namespace_still_lists() {
         let ingress = observation("ployz-system", "ingress");
-        let projects = derive_projects([&ingress], std::iter::empty());
-        assert_eq!(names(&projects), ["ployz-system"]);
+        let namespaces = derive_namespaces([&ingress], std::iter::empty());
+        assert_eq!(names(&namespaces), ["ployz-system"]);
     }
 
-    fn names(projects: &[ProjectObservation]) -> Vec<&str> {
-        projects
+    fn names(namespaces: &[NamespaceObservation]) -> Vec<&str> {
+        namespaces
             .iter()
-            .map(|project| project.name.as_str())
+            .map(|namespace| namespace.name.as_str())
             .collect()
     }
 
-    fn observation(project: &str, service: &str) -> ContainerObservation {
+    fn observation(namespace: &str, service: &str) -> ContainerObservation {
         let service_id = ServiceId::parse("a".repeat(32)).unwrap();
         let service_name = ServiceName::parse(service).unwrap();
         let resolved_spec: ResolvedServiceSpec = serde_json::from_value(json!({
@@ -184,7 +182,7 @@ mod tests {
             display_name: format!("{service}-c"),
             created_at_unix_nanos: 0,
             machine_id: machine_id(),
-            project_name: ProjectName::parse(project).unwrap(),
+            namespace: Namespace::parse(namespace).unwrap(),
             kind: ContainerKind::ServiceContainer,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,
@@ -201,15 +199,15 @@ mod tests {
         (&volume.0, &volume.1)
     }
 
-    fn volume(name: &str, project: Option<&str>) -> (DockerVolumeId, BTreeMap<String, String>) {
+    fn volume(name: &str, namespace: Option<&str>) -> (DockerVolumeId, BTreeMap<String, String>) {
         let id = DockerVolumeId {
             machine_id: machine_id(),
             name: DockerVolumeName::parse(name).unwrap(),
         };
-        let labels = project
-            .map(|project| {
+        let labels = namespace
+            .map(|namespace| {
                 BTreeMap::from([
-                    (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+                    (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
                     (MANAGED_LABEL.to_owned(), String::new()),
                 ])
             })

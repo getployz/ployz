@@ -7,9 +7,8 @@ use std::{
 use ployz_core::{
     CertificateKeyType, CertificatePolicy, ContainerAddress, ContainerId, ContainerKind,
     ContainerObservation, ContainerRuntimeObservation, DEFAULT_RENEW_AT_LIFETIME_FRACTION,
-    HealthObservation, HttpProtocol, IngressHost, MACHINE_API_PORT, Machine, MachineId,
-    PortPublication, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName,
-    resolve_certificate_policy,
+    HealthObservation, HttpProtocol, IngressHost, MACHINE_API_PORT, Machine, MachineId, Namespace,
+    PortPublication, ResolvedServiceSpec, ServiceId, ServiceName, resolve_certificate_policy,
 };
 use serde_json::json;
 
@@ -418,14 +417,14 @@ fn ingress_challenge_ips_come_from_running_ingress_machines() {
         .try_update(|parts| {
             parts.machine_id = local.id;
             parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
-            parts.project_name = ProjectName::system();
+            parts.namespace = Namespace::system();
         })
         .unwrap();
     let mut down = observation(2, "ingress", Vec::new());
     down.try_update(|parts| {
         parts.machine_id = remote.id;
         parts.resolved_spec.name = ServiceName::parse("ingress").unwrap();
-        parts.project_name = ProjectName::system();
+        parts.namespace = Namespace::system();
         parts.runtime = ContainerRuntimeObservation::Exited { code: 1 };
     })
     .unwrap();
@@ -817,7 +816,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("a".repeat(32)).unwrap(),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

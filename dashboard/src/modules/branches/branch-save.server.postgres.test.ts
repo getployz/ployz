@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { Inngest } from "inngest";
-import type { MachineId, ProjectName } from "@ployz/sdk";
+import type { MachineId, Namespace } from "@ployz/sdk";
 import { branchChanges, parseServiceConfig, type ServiceSource } from "@ployz/sdk/config";
 import * as schema from "#/db/schema";
 import { asTestDouble } from "#/lib/test-double";
@@ -62,7 +62,7 @@ const runtime = {
   open: () => Effect.succeed({
     status: "connected" as const,
     connected: asTestDouble<PloyzSession>()({
-      dataLossIfProjectDestroyed: (namespace: ProjectName) => namespace === "shop-unreachable"
+      dataLossIfNamespaceDestroyed: (namespace: Namespace) => namespace === "shop-unreachable"
         ? Effect.fail(new Error("The runtime is unreachable."))
         : Effect.succeed({ data_loss: [{ kind: "docker_volume" as const, id: { machine_id: "a".repeat(32) as MachineId, name: `${namespace}-data` } }], unknown_machines: [] }),
     }),

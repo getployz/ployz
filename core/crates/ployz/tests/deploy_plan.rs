@@ -6,10 +6,10 @@ mod comparison;
 mod hostnames;
 #[path = "deploy_plan/intent.rs"]
 mod intent;
+#[path = "deploy_plan/namespace.rs"]
+mod namespace;
 #[path = "deploy_plan/placement.rs"]
 mod placement;
-#[path = "deploy_plan/project.rs"]
-mod project;
 #[path = "deploy_plan/prune.rs"]
 mod prune;
 #[path = "deploy_plan/rollout.rs"]

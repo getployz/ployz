@@ -32,7 +32,7 @@ export const runtimeContainerRecordSchema = Schema.Struct({
   id: Schema.String,
   displayName: Schema.String,
   machineId: Schema.String,
-  projectName: Schema.String,
+  namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });

@@ -156,23 +156,23 @@ fn unknown_lineages_and_invalid_parents_are_refused() {
 }
 
 #[test]
-fn the_name_check_follows_the_project_name_rule() {
+fn the_name_check_follows_the_namespace_rule() {
     let check = |name: &str| config_request(json!({"operation":"check_branch_name","name":name}));
     assert_eq!(check("shop-pr-12").unwrap(), json!("shop-pr-12"));
     for (name, message) in [
-        ("", "Project name is empty"),
-        (&"a".repeat(64), "Project name is longer than 63 characters"),
-        ("Shop_PR", "Project name must be a lowercase DNS label"),
-        ("-shop", "Project name must be a lowercase DNS label"),
+        ("", "Namespace is empty"),
+        (&"a".repeat(64), "Namespace is longer than 63 characters"),
+        ("Shop_PR", "Namespace must be a lowercase DNS label"),
+        ("-shop", "Namespace must be a lowercase DNS label"),
         (
             "ployz-system",
-            "Project name is reserved for the system Project",
+            "Namespace is reserved for the system Namespace",
         ),
     ] {
         let error = check(name).unwrap_err();
         assert_eq!(
             (error.path.as_str(), error.message.as_str()),
-            ("projectName", message)
+            ("namespace", message)
         );
     }
 }
