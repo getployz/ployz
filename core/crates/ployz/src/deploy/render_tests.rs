@@ -754,10 +754,10 @@ fn replacement_health_prints_compensation_facts() {
     };
     let outcome = DeployOutcome::Failed {
         completed: Vec::new(),
-        failed: FailedOperation::ReplacementHealth {
+        failed: FailedOperation::Replacement {
             operation,
             error: health_timeout(ContainerId::parse("c".repeat(64)).unwrap()),
-            compensation: ReplacementCompensation::StartFirst {
+            compensation: ReplacementCompensation::OldUntouched {
                 stop_new_container: StopAttempt::Stopped,
             },
         },
@@ -790,7 +790,6 @@ fn operation_failure_is_silent_on_compensation() {
     let text = outcome_text(&outcome);
     assert!(!text.contains("stopped the new container"), "{text}");
     assert!(!text.contains("restarted the old container"), "{text}");
-    assert!(!text.contains("did not restart"), "{text}");
     assert!(!text.contains("compensation"), "{text}");
 }
 
@@ -799,24 +798,29 @@ fn stop_first_replacement_prints_restart_facts() {
     let machine_id = MachineId::parse("d".repeat(32)).unwrap();
     let outcome = DeployOutcome::Failed {
         completed: Vec::new(),
-        failed: FailedOperation::ReplacementHealth {
+        failed: FailedOperation::Replacement {
             operation: ReplacementOperation {
                 machine_id,
                 old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
                 spec: resolved("cashdash-frontend", "app:latest"),
                 skip_health_monitor: false,
             },
-            error: health_timeout(ContainerId::parse("c".repeat(64)).unwrap()),
-            compensation: ReplacementCompensation::StopFirst {
-                stop_new_container: StopAttempt::Stopped,
-                restart_old_container: RestartAttempt::NotAttempted,
+            error: timed_out_create(),
+            compensation: ReplacementCompensation::OldStopped {
+                stop_new_container: None,
+                restart_old_container: RestartAttempt::Failed {
+                    error: timed_out_create(),
+                },
             },
         },
         unexecuted: Vec::new(),
     };
     let text = outcome_text(&outcome);
-    assert!(text.contains("stopped the new container"), "{text}");
-    assert!(text.contains("did not restart the old container"), "{text}");
+    assert!(!text.contains("stopped the new container"), "{text}");
+    assert!(
+        text.contains("could not restart the old container"),
+        "{text}"
+    );
 }
 
 #[test]
