@@ -22,7 +22,7 @@ impl VolumeSource {
     ///
     /// External Volumes, Bind Mounts, and Tmpfs Mounts have no creation
     /// request because Ployz does not create them as Docker Volumes. Managed
-    /// declarations have no creation request until Project scoping establishes ownership.
+    /// declarations have no creation request until Namespace scoping establishes ownership.
     #[must_use]
     pub fn to_create_volume_request(&self) -> Option<CreateVolumeRequest> {
         if !self.is_resolved() {

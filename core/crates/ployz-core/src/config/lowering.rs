@@ -11,8 +11,8 @@ use super::{
 };
 use crate::{
     ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
-    HttpHealthcheck, HttpProtocol, IngressHost, PlanOptions, PortPublication, PreDeployCommand,
-    PreDeployHook, ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy,
+    HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions, PortPublication,
+    PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy,
     ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount,
     ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
 };
@@ -33,11 +33,11 @@ fn target_port(
         })
 }
 
-/// Captured node settings plus adapter-resolved runtime inputs for one Project.
+/// Captured node settings plus adapter-resolved runtime inputs for one Namespace.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LowerDeploymentInput {
-    project_name: ProjectName,
+    namespace: Namespace,
     snapshots: Vec<LowerDeploymentSnapshot>,
     #[serde(default)]
     volumes: Vec<LowerDeploymentVolume>,
@@ -308,7 +308,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             .collect()
     });
     Ok(DeployIntent::new(
-        input.project_name,
+        input.namespace,
         target,
         PlanOptions {
             force_recreate: false,

@@ -1,7 +1,7 @@
 //! Native Cloud session: connect, observe_enrollment, register,
 //! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
-//! preview_project_removal, remove_volumes, Data Loss for Machine, Project, and
-//! Cluster destroy, remove_machine, destroy_project, destroy_cluster, and close.
+//! preview_namespace_removal, remove_volumes, Data Loss for Machine, Namespace, and
+//! Cluster destroy, remove_machine, destroy_namespace, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -17,10 +17,10 @@ use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
 use ployz_core::{
     CertificateMaterialPublished, ClusterTeardown, ContractDescription, DataLossConfirmation,
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
-    ExecutionError, LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload,
-    ProjectName, PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered,
-    RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
-    ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
+    ExecutionError, LocalMachineRemoved, MachineTarget, Namespace, ObservedDataLoss, OpaquePayload,
+    PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest,
+    Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation,
+    VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
@@ -446,22 +446,22 @@ impl Session {
         })
     }
 
-    /// Calculate a Project-removal preview. Confirming executes these operations.
+    /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, the Project
+    /// Returns a generated [`RpcError`] when the session is closed, the Namespace
     /// is reserved, snapshot gathering fails, or planning fails.
-    pub async fn preview_project_removal(
+    pub async fn preview_namespace_removal(
         &self,
-        project_name: ProjectName,
+        namespace: Namespace,
         volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
-            preview = client.preview_project_removal(&project_name, volumes) => preview?,
+            preview = client.preview_namespace_removal(&namespace, volumes) => preview?,
         };
         Ok(PreparedDeploy {
             preview,
@@ -587,52 +587,52 @@ impl Session {
         .await
     }
 
-    /// Live Observation of Data Loss that destroying `project` would cause.
+    /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// [`VolumeFate::Preserve`] yields an empty list. Mutates nothing.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, `project`
-    /// is not a Project Name or is reserved, snapshot gathering fails, or
+    /// Returns a generated [`RpcError`] when the session is closed, `namespace`
+    /// is not a Namespace or is reserved, snapshot gathering fails, or
     /// destroying volumes is requested against a known incomplete snapshot.
-    pub async fn data_loss_if_project_destroyed(
+    pub async fn data_loss_if_namespace_destroyed(
         &self,
-        project: &str,
+        namespace: &str,
         volumes: VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let project_name =
-            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace =
+            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.data_loss_if_project_destroyed(&project_name, volumes))
+        self.until_closed(client.data_loss_if_namespace_destroyed(&namespace, volumes))
             .await
     }
 
-    /// Destroy `project` after an exact Data Loss confirmation.
+    /// Destroy `namespace` after an exact Data Loss confirmation.
     ///
     /// `confirm_data_loss` is derived from the Live Observation the caller
     /// showed a human. Confirmed identities that disappeared are ignored, so
-    /// one confirmation can cover several Projects. Re-reads Data Loss at
+    /// one confirmation can cover several Namespaces. Re-reads Data Loss at
     /// execute time. [`VolumeFate::Preserve`] is the non-destructive default.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, `project`
-    /// is not a Project Name or is reserved, the Project is not visible, the
+    /// Returns a generated [`RpcError`] when the session is closed, `namespace`
+    /// is not a Namespace or is reserved, the Namespace is not visible, the
     /// snapshot is incomplete, or the confirmation does not cover the fresh
     /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
     /// Execution failure is a [`DeployOutcome::Failed`].
-    pub async fn destroy_project(
+    pub async fn destroy_namespace(
         &self,
-        project: &str,
+        namespace: &str,
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let project_name =
-            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace =
+            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.destroy_project(
-            &project_name,
+        self.until_closed(client.destroy_namespace(
+            &namespace,
             confirm_data_loss,
             volumes,
             &self.inner.cancel,
@@ -643,7 +643,7 @@ impl Session {
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.
     ///
-    /// Unions Docker Volumes across every visible Project and Machine. Mutates
+    /// Unions Docker Volumes across every visible Namespace and Machine. Mutates
     /// nothing: it is safe to call when the operator then cancels.
     ///
     /// # Errors

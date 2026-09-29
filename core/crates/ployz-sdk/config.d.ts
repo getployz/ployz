@@ -28,7 +28,7 @@ export function destructivePublicationMismatch(value: { expected: { serviceIds: 
 export function canonicalWorkingReview(value: unknown): string;
 export function parsePublicationBasis(value: unknown): import('./generated/payloads').PublicationBasis;
 export function reusePublication(input: { policy: 'always_create' | 'reuse_latest_if_equivalent'; current: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown }; latest: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null }): boolean;
-export function lowerDeployment(value: { projectName: string; selected?: import('./generated/payloads').ServiceAttempt[]; /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */ lineages?: Record<string, string>; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
+export function lowerDeployment(value: { namespace: string; selected?: import('./generated/payloads').ServiceAttempt[]; /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */ lineages?: Record<string, string>; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 
 export function redactEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
 
@@ -36,5 +36,5 @@ export function parseRuntimePreview(value: unknown): import('./generated/payload
 export function projectRuntimeOutcome(preview: unknown, value: unknown): import('./generated/payloads').RuntimeOutcomeProjection;
 
 export function planBranch(input: { parent: import('./generated/payloads').SavedEnvironmentIntent; deployed: string[]; focus: string[]; picks: import('./generated/payloads').BranchPicks }): import('./generated/payloads').BranchPlan;
-/** Returns the accepted Project name; throws a ConfigError saying why a name would fail at deploy. */
+/** Returns the accepted Namespace; throws a ConfigError saying why a name would fail at deploy. */
 export function checkBranchName(name: string): string;

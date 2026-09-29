@@ -56,11 +56,11 @@ async function insertAttempt(harness: PostgresTestHarness) {
           {
             environmentId,
             projectId,
-            projectName: "app-production",
+            namespace: "app-production",
             cloudName: "acme/app/Production",
           },
         ],
-        destroyRuntimeProjects: true,
+        destroyRuntimeNamespaces: true,
         revokePairing: false,
         runtimeMembership: "untouched",
       },
@@ -97,7 +97,7 @@ describe("teardown durable state", () => {
   async function dropOrganization() {
     const attempt = await harness.runEffect(insertTeardownAttempt({
       organizationId, requestedByUserId: userId, projectId: null, environmentId: null, scope: "organization", confirmDataLoss: [],
-      targets: { environments: [], destroyRuntimeProjects: true, revokePairing: true, runtimeMembership: "verified" },
+      targets: { environments: [], destroyRuntimeNamespaces: true, revokePairing: true, runtimeMembership: "verified" },
     }));
     await runPromiseDb(dropTeardownCloudRowsActivity(attempt).pipe(Effect.provideService(InngestClient, undefined as never)));
   }
@@ -145,7 +145,7 @@ describe("teardown durable state", () => {
     const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as MachineId;
     const volume = { kind: "docker_volume" as const, id: { machine_id: machineId, name: "data" } };
     const clusterTeardown: ClusterTeardown = {
-      destroyed_projects: [],
+      destroyed_namespaces: [],
       machines: {
         successes: [],
         failures: [{ machine_id: machineId, error: { code: "unavailable", message: "machine did not answer", details: null } }],
@@ -326,9 +326,9 @@ describe("teardown durable state", () => {
     const failedEvidence = {
       pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
-      projectTeardowns: [
+      namespaceTeardowns: [
         {
-          projectName: "app-production",
+          namespace: "app-production",
           outcome: { type: "success" as const, completed: [] },
         },
       ],
@@ -379,9 +379,9 @@ describe("teardown durable state", () => {
     const cancelledEvidence = {
       pairingRevocationUnconfirmed: false,
       runtimeMembership: "untouched" as const,
-      projectTeardowns: [
+      namespaceTeardowns: [
         {
-          projectName: "app-production",
+          namespace: "app-production",
           outcome: { type: "success" as const, completed: [] },
         },
       ],

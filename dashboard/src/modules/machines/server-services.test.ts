@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { servicesOnServers } from "./server-services";
 
-const container = (machineId: string) => ({ id: `c-${machineId}`, displayName: "web", machineId, projectName: "shop-production", kind: "service" });
+const container = (machineId: string) => ({ id: `c-${machineId}`, displayName: "web", machineId, namespace: "shop-production", kind: "service" });
 
 describe("servicesOnServers", () => {
   it("joins each running Service to its Cloud Service by namespace and private DNS name", () => {

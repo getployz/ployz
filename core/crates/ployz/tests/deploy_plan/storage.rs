@@ -23,7 +23,7 @@ fn intent() -> DeployIntent {
             service
         });
     DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         services.iter(),
         PlanOptions::default(),
     )
@@ -118,7 +118,7 @@ fn surviving_datasets_anchor_single_and_shared_services_without_docker_metadata(
             .collect::<Vec<_>>();
         let intent = |services: &[RequestedServiceSpec]| {
             DeployIntent::apply_all(
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 services.iter(),
                 PlanOptions::default(),
             )
@@ -296,7 +296,7 @@ fn placement_budgets_include_observed_pinned_commitments() {
             })
             .collect::<Vec<_>>();
         let intent = DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             services.iter(),
             PlanOptions {
                 placement_seed,
@@ -353,7 +353,7 @@ fn shared_groups_reserve_private_mounts_before_later_placement() {
         })
         .collect::<Vec<_>>();
         let intent = DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             services.iter(),
             PlanOptions {
                 placement_seed,
@@ -396,7 +396,7 @@ fn preparation_and_preview_include_unchanged_assigned_storage() {
         ..Default::default()
     };
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&old, &new],
         PlanOptions::default(),
     );

@@ -22,7 +22,7 @@ import type {
   MachinePath,
   PidMode,
   PreDeployCommand,
-  ProjectName,
+  Namespace,
   QualifiedService,
   RegisterRequest,
   Registered,
@@ -100,7 +100,7 @@ const web: RequestedServiceSpec = {
 };
 const intent: DeployIntent = {
   dependencies: {},
-  project_name: "app" as ProjectName,
+  namespace: "app" as Namespace,
   target: [web],
   options: {
     force_recreate: false,
@@ -146,7 +146,7 @@ const invalidVolumeDriver: VolumeDriver = { name: "local" };
   // @ts-expect-error targets is not a field of DeployIntent
   targets: [web],
 }) satisfies DeployIntent;
-("project_name") satisfies keyof DeployIntent;
+("namespace") satisfies keyof DeployIntent;
 // @ts-expect-error an undeclared name is not a key of DeployIntent
 ("from_a_newer_daemon") satisfies keyof DeployIntent;
 
@@ -188,13 +188,13 @@ const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId
 
 const ordinary = { kind: "ordinary", name: "data", driver: { name: "local", options: {} }, labels: {} } as const;
 ordinary satisfies VolumeSource;
-({ ...ordinary, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+({ ...ordinary, scope: { namespace: "app" as Namespace, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 // @ts-expect-error a resolved source always states its scope, even when absent
 ordinary satisfies ResolvedVolumeSource;
 const bind = { kind: "bind", machine_path: "/srv" as MachinePath, create_machine_path: false, propagation: null, recursive: null } as const;
 ({ ...bind, scope: null }) satisfies ResolvedVolumeSource;
 // @ts-expect-error only a managed source carries a scope
-({ ...bind, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+({ ...bind, scope: { namespace: "app" as Namespace, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 
 // The façade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
@@ -230,8 +230,8 @@ const identity: RegisterRequest = {
     running_builds: 0,
   },
 };
-applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
-applyOne("app" as ProjectName, web) satisfies DeployIntent;
+applyAll("app" as Namespace, [web]) satisfies DeployIntent;
+applyOne("app" as Namespace, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
 client.runtime.watch() satisfies AsyncIterable<RuntimeWatchView>;
 client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;
@@ -261,4 +261,4 @@ client.register(assignment) satisfies Promise<Registered>;
 import { lowerDeployment } from '../config';
 import type { ServiceConfig } from '../config';
 declare const serviceConfig: ServiceConfig;
-lowerDeployment({ projectName: 'test', snapshots: [{ serviceId: 'service-id', config: serviceConfig }] });
+lowerDeployment({ namespace: 'test', snapshots: [{ serviceId: 'service-id', config: serviceConfig }] });

@@ -73,7 +73,7 @@ const emptySavedIntent = {
 };
 
 const preview = () => ({
-  project_name: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
+  namespace: "production", operations: [], warnings: [], would_remove: [], preserved_volumes: [],
 });
 
 function deployment(input: {
@@ -278,7 +278,7 @@ describe("deployment runtime persistence", () => {
     const filter = await harness.runTransaction(() => resolveLogFilter(organizationId, {
       organizationSlug: "runtime", environmentSlug: "production", serviceId: apiNodeId,
     }));
-    expect(filter).toEqual({ projectName: "production", serviceId: apiNodeId, deploymentId: undefined });
+    expect(filter).toEqual({ namespace: "production", serviceId: apiNodeId, deploymentId: undefined });
     await expect(harness.runTransaction(() => resolveLogFilter("00000000-0000-4000-8000-000000000999", {
       organizationSlug: "other", environmentSlug: "production",
     }))).rejects.toThrow("Environment was not found");

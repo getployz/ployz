@@ -67,11 +67,11 @@ function createStepTools(): Pick<PloyzStepTools, "run"> {
 function serializedAttempt(input: {
   scope: "environment" | "organization";
   runtimeMembership: "verified" | "unknown" | "untouched";
-  destroyRuntimeProjects: boolean;
+  destroyRuntimeNamespaces: boolean;
   environments?: Array<{
     environmentId: string;
     projectId: string;
-    projectName: string;
+    namespace: string;
     cloudName: string;
   }>;
 }) {
@@ -85,7 +85,7 @@ function serializedAttempt(input: {
     confirmDataLoss: [],
     targets: {
       environments: input.environments ?? [],
-      destroyRuntimeProjects: input.destroyRuntimeProjects,
+      destroyRuntimeNamespaces: input.destroyRuntimeNamespaces,
       revokePairing: input.runtimeMembership !== "untouched",
       runtimeMembership: input.runtimeMembership,
     },
@@ -216,7 +216,7 @@ describe("teardown Inngest boundary", () => {
 
   it("persists an incomplete ClusterTeardown before Cloud cleanup", async () => {
     const clusterTeardown = {
-      destroyed_projects: [],
+      destroyed_namespaces: [],
       machines: {
         successes: [],
         failures: [
@@ -239,7 +239,7 @@ describe("teardown Inngest boundary", () => {
       serializedAttempt({
         scope: "organization",
         runtimeMembership: "verified",
-        destroyRuntimeProjects: false,
+        destroyRuntimeNamespaces: false,
       }),
     );
 
@@ -271,7 +271,7 @@ describe("teardown Inngest boundary", () => {
     const pairingRemovals = [{ machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", status: "confirmed" }];
     activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: false, pairingRemovals });
     const clusterTeardown = {
-      destroyed_projects: ["app-production"],
+      destroyed_namespaces: ["app-production"],
       machines: {
         successes: [
           {
@@ -290,7 +290,7 @@ describe("teardown Inngest boundary", () => {
       serializedAttempt({
         scope: "organization",
         runtimeMembership: "verified",
-        destroyRuntimeProjects: false,
+        destroyRuntimeNamespaces: false,
       }),
     );
 
@@ -317,7 +317,7 @@ describe("teardown Inngest boundary", () => {
   it("does not clean Cloud rows when Cluster pairing revocation is incomplete", async () => {
     activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: true });
     const clusterTeardown = {
-      destroyed_projects: [],
+      destroyed_namespaces: [],
       machines: { successes: [], failures: [], omissions: [] },
       pairing_revoked: false,
     } satisfies ClusterTeardown;
@@ -327,7 +327,7 @@ describe("teardown Inngest boundary", () => {
       serializedAttempt({
         scope: "organization",
         runtimeMembership: "verified",
-        destroyRuntimeProjects: false,
+        destroyRuntimeNamespaces: false,
       }),
     );
 
@@ -349,7 +349,7 @@ describe("teardown Inngest boundary", () => {
     const pairingRemovals = [{ machineId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", status: "unconfirmed" }];
     activity.revokePairing.mockResolvedValue({ pairingRevocationUnconfirmed: true, pairingRemovals });
     const result = await execute(serializedAttempt({
-      scope: "organization", runtimeMembership: "unknown", destroyRuntimeProjects: false,
+      scope: "organization", runtimeMembership: "unknown", destroyRuntimeNamespaces: false,
     }));
     expect(result).toEqual({ attemptId: "attempt-1", status: "partial" });
     expect(activity.destroyCluster).not.toHaveBeenCalled();
@@ -358,13 +358,13 @@ describe("teardown Inngest boundary", () => {
     expect(activity.dropCloudRows).not.toHaveBeenCalled();
     expect(activity.complete).toHaveBeenCalledWith(expect.objectContaining({
       status: "partial", outcome: {
-        pairingRevocationUnconfirmed: true, runtimeMembership: "unknown", projectTeardowns: [], pairingRemovals,
+        pairingRevocationUnconfirmed: true, runtimeMembership: "unknown", namespaceTeardowns: [], pairingRemovals,
       },
     }));
   });
 
   it("persists a failed project DeployOutcome before Cloud cleanup", async () => {
-    const projectOutcome = {
+    const namespaceOutcome = {
       type: "failed",
       completed: [],
       failed: {
@@ -380,18 +380,18 @@ describe("teardown Inngest boundary", () => {
       },
       unexecuted: [],
     } satisfies DeployOutcome<ExecutionError>;
-    activity.destroyEnvironment.mockResolvedValue(projectOutcome);
+    activity.destroyEnvironment.mockResolvedValue(namespaceOutcome);
 
     const result = await execute(
       serializedAttempt({
         scope: "environment",
         runtimeMembership: "untouched",
-        destroyRuntimeProjects: true,
+        destroyRuntimeNamespaces: true,
         environments: [
           {
             environmentId: "environment-1",
             projectId: "project-1",
-            projectName: "app-production",
+            namespace: "app-production",
             cloudName: "acme/app/Production",
           },
         ],
@@ -405,7 +405,7 @@ describe("teardown Inngest boundary", () => {
         outcome: {
           pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
-          projectTeardowns: [{ projectName: "app-production", outcome: projectOutcome }],
+          namespaceTeardowns: [{ namespace: "app-production", outcome: namespaceOutcome }],
         },
       }),
     );
@@ -415,7 +415,7 @@ describe("teardown Inngest boundary", () => {
         outcome: {
           pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
-          projectTeardowns: [{ projectName: "app-production", outcome: projectOutcome }],
+          namespaceTeardowns: [{ namespace: "app-production", outcome: namespaceOutcome }],
         },
       }),
     );
@@ -432,18 +432,18 @@ describe("teardown Inngest boundary", () => {
     const attempt = serializedAttempt({
       scope: "environment",
       runtimeMembership: "untouched",
-      destroyRuntimeProjects: true,
+      destroyRuntimeNamespaces: true,
       environments: [
         {
           environmentId: "environment-1",
           projectId: "project-1",
-          projectName: "app-production",
+          namespace: "app-production",
           cloudName: "acme/app/Production",
         },
         {
           environmentId: "environment-2",
           projectId: "project-1",
-          projectName: "app-staging",
+          namespace: "app-staging",
           cloudName: "acme/app/Staging",
         },
       ],
@@ -456,8 +456,8 @@ describe("teardown Inngest boundary", () => {
         outcome: {
           pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
-          projectTeardowns: [
-            { projectName: "app-production", outcome: firstOutcome },
+          namespaceTeardowns: [
+            { namespace: "app-production", outcome: firstOutcome },
           ],
         },
       }),
@@ -465,16 +465,16 @@ describe("teardown Inngest boundary", () => {
     expect(activity.dropCloudRows).not.toHaveBeenCalled();
   });
 
-  it("skips Runtime projects that lacked a Cloud connection at confirmation", async () => {
+  it("skips Namespaces that lacked a Cloud connection at confirmation", async () => {
     const attempt = serializedAttempt({
       scope: "environment",
       runtimeMembership: "untouched",
-      destroyRuntimeProjects: false,
+      destroyRuntimeNamespaces: false,
       environments: [
         {
           environmentId: "environment-1",
           projectId: "project-1",
-          projectName: "app-production",
+          namespace: "app-production",
           cloudName: "acme/app/Production",
         },
       ],
@@ -489,7 +489,7 @@ describe("teardown Inngest boundary", () => {
         outcome: {
           pairingRevocationUnconfirmed: false,
           runtimeMembership: "untouched",
-          projectTeardowns: [],
+          namespaceTeardowns: [],
         },
       }),
     );

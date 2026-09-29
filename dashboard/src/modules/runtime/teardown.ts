@@ -69,7 +69,7 @@ export type TeardownAttemptStatus =
 const TeardownEnvironmentTargetSchema = Schema.Struct({
   environmentId: NonEmptyString,
   projectId: NonEmptyString,
-  projectName: NonEmptyString,
+  namespace: NonEmptyString,
   cloudName: NonEmptyString,
 });
 export type TeardownEnvironmentTarget =
@@ -87,7 +87,7 @@ export type TeardownRuntimeOutcome = "verified_zero" | "unknown" | "untouched";
 
 const TeardownTargetsSchema = Schema.Struct({
   environments: Schema.Array(TeardownEnvironmentTargetSchema),
-  destroyRuntimeProjects: Schema.Boolean,
+  destroyRuntimeNamespaces: Schema.Boolean,
   revokePairing: Schema.Boolean,
   runtimeMembership: TeardownRuntimeMembershipSchema,
 });
@@ -101,8 +101,8 @@ export function parseTeardownTargets<Input>(targets: Input): TeardownTargets {
 
 export type TeardownRuntimeEvidence = {
   pairingRemovals?: Array<{ machineId: string; status: "confirmed" | "unconfirmed" }>;
-  projectTeardowns?: Array<{
-    projectName: string;
+  namespaceTeardowns?: Array<{
+    namespace: string;
     outcome: DeployOutcome<ExecutionError>;
   }>;
   clusterTeardown?: ClusterTeardown;

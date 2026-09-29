@@ -15,7 +15,7 @@ const options = {
 };
 
 const emptyPreview = {
-  noop: false, project_name: "test", storage: [], prune_refusal: null, operations: [],
+  noop: false, namespace: "test", storage: [], prune_refusal: null, operations: [],
   warnings: [], would_remove: [], volumes_to_create: [], preserved_volumes: [],
 };
 
@@ -75,25 +75,25 @@ it.effect("classifies provider connection failures", () =>
 
 it.effect("passes shipped project and cluster teardown methods through", () =>
   Effect.gen(function* () {
-    const projectDataLoss = { data_loss: [] };
-    const projectOutcome = { type: "success" as const, completed: [] };
+    const namespaceDataLoss = { data_loss: [] };
+    const namespaceOutcome = { type: "success" as const, completed: [] };
     const clusterDataLoss = { data_loss: [] };
     const clusterOutcome = {
-      destroyed_projects: [],
+      destroyed_namespaces: [],
       machines: { successes: [], failures: [], omissions: [] },
       pairing_revoked: true,
     };
     const calls: unknown[] = [];
     const client = asTestDouble<Client>()({
-      dataLossIfProjectDestroyed: async (
-        ...args: Parameters<Client["dataLossIfProjectDestroyed"]>
+      dataLossIfNamespaceDestroyed: async (
+        ...args: Parameters<Client["dataLossIfNamespaceDestroyed"]>
       ) => {
         calls.push(["project data loss", args]);
-        return projectDataLoss;
+        return namespaceDataLoss;
       },
-      destroyProject: async (...args: Parameters<Client["destroyProject"]>) => {
-        calls.push(["destroy project", args]);
-        return projectOutcome;
+      destroyNamespace: async (...args: Parameters<Client["destroyNamespace"]>) => {
+        calls.push(["destroy namespace", args]);
+        return namespaceOutcome;
       },
       dataLossIfClusterDestroyed: async () => {
         calls.push(["cluster data loss"]);
@@ -114,12 +114,12 @@ it.effect("passes shipped project and cluster teardown methods through", () =>
       Effect.gen(function* () {
         const session = yield* (yield* Ployz).connect(options);
         assert.deepStrictEqual(
-          yield* session.dataLossIfProjectDestroyed("app", true),
-          projectDataLoss,
+          yield* session.dataLossIfNamespaceDestroyed("app", true),
+          namespaceDataLoss,
         );
         assert.deepStrictEqual(
-          yield* session.destroyProject("app", confirmation, true),
-          projectOutcome,
+          yield* session.destroyNamespace("app", confirmation, true),
+          namespaceOutcome,
         );
         assert.deepStrictEqual(
           yield* session.dataLossIfClusterDestroyed(),
@@ -134,7 +134,7 @@ it.effect("passes shipped project and cluster teardown methods through", () =>
 
     assert.deepStrictEqual(calls, [
       ["project data loss", ["app", true]],
-      ["destroy project", ["app", confirmation, true]],
+      ["destroy namespace", ["app", confirmation, true]],
       ["cluster data loss"],
       ["destroy cluster", [confirmation]],
     ]);
@@ -302,7 +302,7 @@ it("keeps the session owned through quiet preparation interruption cleanup", asy
   const interruption = new AbortController();
   const running = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* Ployz).connect(options);
-    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
+    return yield* session.prepare({ deployment: { namespace: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
   })).pipe(Effect.provide(layer)), { signal: interruption.signal }).then(() => undefined, () => undefined);
   await started;
   interruption.abort();
@@ -321,7 +321,7 @@ it.effect("distinguishes rejected preparation input from a disconnected preparat
     }) });
     const failure = yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* (yield* Ployz).connect(options);
-      return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
+      return yield* session.prepare({ deployment: { namespace: "test", snapshots: [] }, sources: {} }, async () => undefined, new AbortController().signal);
     })).pipe(Effect.provide(layer), Effect.flip);
     assert.instanceOf(failure, PloyzPreparationError);
     if (failure instanceof PloyzPreparationError) assert.strictEqual(failure.failureCode, failureCode);
@@ -347,7 +347,7 @@ it.effect("retains sanitized terminal diagnosis alongside builder output", () =>
   }) });
   const failure = yield* Effect.scoped(Effect.gen(function* () {
     const session = yield* (yield* Ployz).connect(options);
-    return yield* session.prepare({ deployment: { projectName: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { output.push(...progress.event(event).output); }, new AbortController().signal);
+    return yield* session.prepare({ deployment: { namespace: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { output.push(...progress.event(event).output); }, new AbortController().signal);
   })).pipe(Effect.provide(layer), Effect.flip);
   assert.deepEqual(output, [{ build: 0, step: "build-output", stderr: false, text: "A".repeat(1024) }]);
   assert.instanceOf(failure, PloyzPreparationError);
@@ -372,7 +372,7 @@ it("retains progress persistence failures and waits for the remote cleanup resul
     }) });
     const result = Effect.runPromise(Effect.scoped(Effect.gen(function* () {
       const session = yield* (yield* Ployz).connect(options);
-      return yield* session.prepare({ deployment: { projectName: "test", snapshots: [] }, sources: {} }, async () => { throw storageError; }, new AbortController().signal);
+      return yield* session.prepare({ deployment: { namespace: "test", snapshots: [] }, sources: {} }, async () => { throw storageError; }, new AbortController().signal);
     })).pipe(Effect.provide(layer), Effect.flip));
     await aborted;
     assert.isFalse(closed);

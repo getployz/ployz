@@ -37,7 +37,7 @@ const rustOperation: OperationRow["operation"] = {
 const rustPreview: DeployPreview = {
   storage: [],
   prune_refusal: null,
-  project_name: "production",
+  namespace: "production",
   operations: [
     {
       machine_name: null,
@@ -84,7 +84,7 @@ function imageSnapshot(input?: {
 describe("deploy intent lowering", () => {
   it("compiles an image service with decrypted env into rust DeployIntent wire JSON", () => {
     const intent = compileIntent({
-      projectName: "production",
+      namespace: "production",
       snapshots: [
         imageSnapshot({
           env: { API_KEY: "decrypted-secret", PORT: "8080" },
@@ -104,7 +104,7 @@ describe("deploy intent lowering", () => {
     });
 
     expect(intent).toEqual({
-      project_name: "production",
+      namespace: "production",
       dependencies: {},
       target: [
         {
@@ -154,7 +154,7 @@ describe("deploy intent lowering", () => {
 
   it("omits empty services and unmounted volumes from the intent", () => {
     const intent = compileIntent({
-      projectName: "production",
+      namespace: "production",
       snapshots: [
         imageSnapshot(),
         {
@@ -187,7 +187,7 @@ describe("deploy intent lowering", () => {
   it("refuses to compile git-as-source instead of inventing an image", () => {
     expect(() =>
       compileIntent({
-        projectName: "production",
+        namespace: "production",
         snapshots: [
           {
             serviceId: "service-git",
@@ -243,7 +243,7 @@ function referencedSnapshots(edges: Record<string, string[]>) {
     ownerScope: "service" as const, ownerId: `id-${name}`, ownerLineageId: `lineage-${name}`,
     key: "PORT", value: { kind: "literal" as const, value: "3000" },
   }));
-  return { projectName: "production", snapshots, variableProducers };
+  return { namespace: "production", snapshots, variableProducers };
 }
 
 it("orders the deploy through the frozen producers' lineages", () => {

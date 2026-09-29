@@ -1,7 +1,7 @@
 use super::support::*;
 use ployz::deploy::preview_deploy;
 use ployz_core::{
-    DeployWarning, HttpProtocol, IngressHost, PortPublication, ProjectName, QualifiedService,
+    DeployWarning, HttpProtocol, IngressHost, Namespace, PortPublication, QualifiedService,
     ServiceAttempt,
 };
 
@@ -11,7 +11,7 @@ fn plan_ingress<'a>(
 ) -> Result<DeployPreview, PlanError> {
     preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             requested,
             PlanOptions::default(),
         ),
@@ -22,7 +22,7 @@ fn plan_ingress<'a>(
 #[test]
 fn complete_snapshot_rejects_another_qualified_service_already_publishing_the_hostname() {
     let spec = custom_web();
-    let snapshot = snapshot_with(vec![other_project_container(&spec, 1)]);
+    let snapshot = snapshot_with(vec![other_namespace_container(&spec, 1)]);
     let error = plan_ingress([&spec], &snapshot).unwrap_err();
     assert_eq!(
         error,
@@ -48,7 +48,7 @@ fn visible_conflict_rejects_even_when_the_snapshot_is_incomplete() {
             vec![machine_id('1')],
         )
         .expect("valid Volume Snapshot fixture"),
-        ..snapshot_with(vec![other_project_container(&spec, 1)])
+        ..snapshot_with(vec![other_namespace_container(&spec, 1)])
     };
     assert!(!snapshot.is_observer_complete());
     let error = plan_ingress([&spec], &snapshot).unwrap_err();
@@ -75,7 +75,7 @@ fn same_qualified_service_redeploy_keeps_the_hostname() {
 fn full_deploy_renames_service_without_losing_its_hostname() {
     let lower = |name: &str, retries: u8| {
         let input = serde_json::from_value(serde_json::json!({
-            "projectName": "app", "selected": [], "snapshots": [{
+            "namespace": "app", "selected": [], "snapshots": [{
                 "serviceId": "same-cloud-service",
                 "config": {
                     "version": 2, "privateDns": name,
@@ -106,7 +106,7 @@ fn rename_cannot_take_hostname_when_old_service_will_remain() {
     renamed.name = ServiceName::parse("renamed").unwrap();
     let snapshot = snapshot_with(vec![container('c', '1', &previous, &service_id('a'))]);
     let full = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&renamed],
         PlanOptions::default(),
     );
@@ -133,13 +133,13 @@ fn rename_cannot_take_hostname_when_old_service_will_remain() {
 }
 
 #[test]
-fn retiring_hostname_winner_does_not_hide_another_projects_claim() {
+fn retiring_hostname_winner_does_not_hide_another_namespaces_claim() {
     let previous = custom_web();
     let mut renamed = previous.clone();
     renamed.name = ServiceName::parse("renamed").unwrap();
     let snapshot = snapshot_with(vec![
         container('c', '1', &previous, &service_id('a')),
-        other_project_container(&previous, 1),
+        other_namespace_container(&previous, 1),
     ]);
     assert_eq!(
         plan_ingress([&renamed], &snapshot).unwrap_err(),
@@ -206,7 +206,7 @@ fn unselected_target_spec_is_not_an_applied_conflict() {
     api.name = ServiceName::parse("api").unwrap();
     let web = named_web("shared.example.com");
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![api, web.clone()],
         PlanOptions {
             selected: vec![ServiceAttempt { name: web.name }],
@@ -228,7 +228,7 @@ fn unselected_target_spec_is_not_an_applied_conflict() {
 fn preview_does_not_mutate_the_intent() {
     let spec = custom_web();
     let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         spec.clone(),
         PlanOptions::default(),
     );
@@ -258,11 +258,11 @@ fn ingress_web(hostname: IngressHost) -> RequestedServiceSpec {
     spec
 }
 
-fn other_project_container(spec: &RequestedServiceSpec, created_at: i64) -> ContainerObservation {
+fn other_namespace_container(spec: &RequestedServiceSpec, created_at: i64) -> ContainerObservation {
     let mut observation = container('d', '1', spec, &service_id('b'));
     observation
         .try_update(|parts| {
-            parts.project_name = ProjectName::parse("blog").unwrap();
+            parts.namespace = Namespace::parse("blog").unwrap();
             parts.created_at_unix_nanos = created_at;
         })
         .unwrap();

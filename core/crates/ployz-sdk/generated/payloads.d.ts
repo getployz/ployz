@@ -130,7 +130,7 @@ export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
-export type ClusterTeardown = { destroyed_projects: Array<ProjectName>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
+export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
 
@@ -168,7 +168,7 @@ display_name: string,
 /**
  * Docker creation time, used only to select the newest observed Service spec.
  */
-created_at_unix_nanos: number, machine_id: MachineId, project_name: ProjectName, kind: ContainerKind, runtime: ContainerRuntimeObservation,
+created_at_unix_nanos: number, machine_id: MachineId, namespace: Namespace, kind: ContainerKind, runtime: ContainerRuntimeObservation,
 /**
  * Effective Docker check (including image inheritance), or the Machine HTTP probe.
  */
@@ -204,9 +204,9 @@ export type DeployEvent = { "type": "progress", completed: number, total: number
 
 export type DeployIntent = {
 /**
- * Project that will own Containers this Deploy creates.
+ * Namespace that will own Containers this Deploy creates.
  */
-project_name: ProjectName,
+namespace: Namespace,
 /**
  * Complete desired Services for this Cluster.
  */
@@ -234,9 +234,9 @@ export type DeployPreview = {
  */
 storage: Array<MachineStorageBudget>,
 /**
- * Project this preview describes.
+ * Namespace this preview describes.
  */
-project_name: ProjectName,
+namespace: Namespace,
 /**
  * Pending rows for the operations this snapshot would execute.
  */
@@ -252,11 +252,11 @@ warnings: Array<DeployWarning>,
  */
 volumes_to_create: Array<VolumeToCreate>,
 /**
- * Visible Services in the Project that the Deploy Intent no longer declares.
+ * Visible Services in the Namespace that the Deploy Intent no longer declares.
  */
 would_remove: Array<QualifiedService>,
 /**
- * Docker Volumes owned by this Project that this Deploy Intent no longer
+ * Docker Volumes owned by this Namespace that this Deploy Intent no longer
  * declares. They are not deleted.
  */
 preserved_volumes: Array<PreservedVolume>,
@@ -613,6 +613,8 @@ repository: BuildGrantRepository, };
 
 export type MissingLiveValue = { lineageId: string, key: string, };
 
+export type Namespace = string;
+
 export type ObservationKind = "container" | "volume";
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
@@ -700,8 +702,6 @@ id: DockerVolumeId,
  * Machine Name from this observer's snapshot when known.
  */
 machine_name: MachineName | null, };
-
-export type ProjectName = string;
 
 export type ProvisionedVolumeMaximumBytes = number;
 
@@ -871,7 +871,7 @@ encryptedValue: EncryptedSecretValue | null, };
 
 export type SavedVolumeIntent = { resourceId: string, resourceLineageId: string, name: string, };
 
-export type ScopedVolumeSource = { project: ProjectName, logical_name: DockerVolumeName, };
+export type ScopedVolumeSource = { namespace: Namespace, logical_name: DockerVolumeName, };
 
 export type SelectedEndpoint = string;
 

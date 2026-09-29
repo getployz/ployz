@@ -10,7 +10,7 @@ use futures_util::stream;
 use ployz_core::{
     ContainerKind, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     ContainerSelector, FanoutSelector, HealthObservation, HookContainer, LogBody, LogMetadata,
-    LogOrigin, MachineId, MachineName, MembershipObservation, ProjectName, ResolvedServiceSpec,
+    LogOrigin, MachineId, MachineName, MembershipObservation, Namespace, ResolvedServiceSpec,
     RestartPolicy, ServiceContainer, ServiceId, ServiceName, ServiceSelector,
 };
 
@@ -607,7 +607,7 @@ fn container(
         display_name: name.into(),
         created_at_unix_nanos: 0,
         machine_id: MachineId::parse("2".repeat(32)).unwrap(),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

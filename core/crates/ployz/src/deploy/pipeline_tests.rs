@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, num::NonZeroU32};
 use ployz_core::{
     AdvertisedEndpoint, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, Machine, MachineFailure, MachineId, MachineName, MachineSuccess,
-    MembershipObservation, PartialResult, ProjectName, RequestedServiceSpec, RpcError,
-    RpcErrorCode, ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
+    MembershipObservation, Namespace, PartialResult, RequestedServiceSpec, RpcError, RpcErrorCode,
+    ServiceId, ServiceMode, ServiceSelector, WireGuardPublicKey,
 };
 use serde_json::Value;
 
@@ -51,7 +51,7 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
         replicas(1),
     )
     .unwrap();
-    assert_eq!(matching.project_name.as_str(), "app");
+    assert_eq!(matching.namespace.as_str(), "app");
     assert!(matching.requested.is_none());
 
     assert!(
@@ -83,10 +83,10 @@ fn scale_plan_rejects_global_noops_matching_and_uses_one_mixed_spec() {
     )
     .unwrap();
     let requested = choice.requested.unwrap();
-    assert_eq!(choice.project_name.as_str(), "app");
+    assert_eq!(choice.namespace.as_str(), "app");
     assert_eq!(requested.container.image, "v1");
     let mixed = preview_deploy(
-        &DeployIntent::apply_one(choice.project_name, requested, PlanOptions::default()),
+        &DeployIntent::apply_one(choice.namespace, requested, PlanOptions::default()),
         &mixed_snapshot,
     )
     .unwrap();
@@ -149,14 +149,14 @@ fn scale_plan_accepts_only_service_containers() {
 }
 
 #[test]
-fn scale_does_not_select_a_service_owned_by_another_project() {
+fn scale_does_not_select_a_service_owned_by_another_namespace() {
     let service_id = ServiceId::random();
     let replicated = ServiceMode::Replicated {
         replicas: NonZeroU32::new(1).unwrap(),
     };
     let mut system = observation(&service_id, replicated, "v1", '1');
     system
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
     let snapshot = DeploySnapshot {
         machines: vec![machine()],
@@ -179,19 +179,19 @@ fn scale_does_not_select_a_service_owned_by_another_project() {
         NonZeroU32::new(2).unwrap(),
     )
     .unwrap();
-    assert_eq!(choice.project_name.as_str(), "ployz-system");
+    assert_eq!(choice.namespace.as_str(), "ployz-system");
     assert!(choice.requested.is_some());
 }
 
 #[test]
-fn scale_uses_the_selected_qualified_service_project() {
+fn scale_uses_the_selected_qualified_service_namespace() {
     let replicas = |count: u32| NonZeroU32::new(count).unwrap();
     let replicated = ServiceMode::Replicated {
         replicas: replicas(1),
     };
     let mut staging = observation(&ServiceId::random(), replicated.clone(), "v1", '1');
     staging
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-staging").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop-staging").unwrap())
         .unwrap();
     staging
         .try_update(|parts| {
@@ -200,7 +200,7 @@ fn scale_uses_the_selected_qualified_service_project() {
         .unwrap();
 
     let mut prod = observation(&ServiceId::random(), replicated, "v2", '2');
-    prod.try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+    prod.try_update(|parts| parts.namespace = Namespace::parse("shop-prod").unwrap())
         .unwrap();
     prod.try_update(|parts| {
         parts.resolved_spec.name = ployz_core::ServiceName::parse("web").unwrap()
@@ -220,7 +220,7 @@ fn scale_uses_the_selected_qualified_service_project() {
     )
     .unwrap();
     let requested = choice.requested.unwrap();
-    assert_eq!(choice.project_name.as_str(), "shop-staging");
+    assert_eq!(choice.namespace.as_str(), "shop-staging");
     assert_eq!(requested.name.as_str(), "web");
     assert_eq!(requested.container.image, "v1");
     assert!(
@@ -375,7 +375,7 @@ fn observation(
         display_name: format!("api-{id}"),
         created_at_unix_nanos: 0,
         machine_id: machine().machine.id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::NotConfigured,

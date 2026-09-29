@@ -11,7 +11,7 @@ use ts_rs::TS;
 
 use crate::{
     BindPropagation, BindRecursive, ContainerPath, DockerVolumeId, DockerVolumeName, MANAGED_LABEL,
-    MachinePath, PROJECT_NAME_LABEL, ProjectName, ServiceVolumeReference, ValueError,
+    MachinePath, NAMESPACE_LABEL, Namespace, ServiceVolumeReference, ValueError,
 };
 
 /// A storage source declared under a service-local reference.
@@ -93,16 +93,16 @@ pub struct VolumeSource {
     scope: Option<ScopedVolumeSource>,
 }
 
-/// Checked Project and logical identity from which a physical name and owner labels derive.
+/// Checked Namespace and logical identity from which a physical name and owner labels derive.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ScopedVolumeSource {
-    project: ProjectName,
+    namespace: Namespace,
     logical_name: DockerVolumeName,
 }
 
 impl ScopedVolumeSource {
     fn physical_name(&self) -> DockerVolumeName {
-        self.project.volume_name(&self.logical_name)
+        self.namespace.volume_name(&self.logical_name)
     }
 }
 
@@ -113,7 +113,7 @@ impl TryFrom<RawVolumeSource> for VolumeSource {
         | RawVolumeSource::Provisioned { labels, .. } = &source
             && let Some(key) = labels
                 .keys()
-                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == PROJECT_NAME_LABEL)
+                .find(|key| key.as_str() == MANAGED_LABEL || key.as_str() == NAMESPACE_LABEL)
         {
             return Err(ValueError::new(
                 "volume label",
@@ -167,7 +167,7 @@ impl VolumeSource {
     }
 
     /// Scope admitted declarations once; preserve imported observations' exact identity.
-    pub fn scope_to_project(&mut self, project: &ProjectName) {
+    pub fn scope_to_namespace(&mut self, namespace: &Namespace) {
         if self.scope.is_some() {
             return;
         }
@@ -180,9 +180,9 @@ impl VolumeSource {
             | RawVolumeSource::Tmpfs { .. } => return,
         };
         let logical_name = name.clone();
-        *name = project.volume_name(&logical_name);
+        *name = namespace.volume_name(&logical_name);
         self.scope = Some(ScopedVolumeSource {
-            project: project.clone(),
+            namespace: namespace.clone(),
             logical_name,
         });
     }
@@ -206,7 +206,7 @@ impl VolumeSource {
         };
         if let Some(scope) = &self.scope {
             labels.insert(MANAGED_LABEL.into(), String::new());
-            labels.insert(PROJECT_NAME_LABEL.into(), scope.project.to_string());
+            labels.insert(NAMESPACE_LABEL.into(), scope.namespace.to_string());
         }
         labels
     }
@@ -489,14 +489,14 @@ impl TryFrom<VolumeSource> for ResolvedVolumeSource {
             return Err(ValueError::new(
                 "resolved volume",
                 "unscoped",
-                "a Project-scoped managed source",
+                "a Namespace-scoped managed source",
             ));
         }
         Ok(Self(source))
     }
 }
 impl ResolvedVolumeSource {
-    /// Consume this source while retaining its Project ownership.
+    /// Consume this source while retaining its Namespace ownership.
     #[must_use]
     pub fn into_requested(self) -> VolumeSource {
         self.0

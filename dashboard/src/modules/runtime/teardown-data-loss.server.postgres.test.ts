@@ -150,8 +150,8 @@ describe("teardown Data Loss observation", () => {
     const observed: ObservedDataLoss = { data_loss: [projectVolume] };
     const runtime = connectedRuntime(
       asTestDouble<PloyzSession>()({
-        dataLossIfProjectDestroyed: (
-          ...args: Parameters<PloyzSession["dataLossIfProjectDestroyed"]>
+        dataLossIfNamespaceDestroyed: (
+          ...args: Parameters<PloyzSession["dataLossIfNamespaceDestroyed"]>
         ) => {
           calls.push(args);
           return Effect.succeed(observed);
@@ -185,7 +185,7 @@ describe("teardown Data Loss observation", () => {
     const observed: ObservedDataLoss = { data_loss: [clusterOnlyVolume] };
     const runtime = connectedRuntime(
       asTestDouble<PloyzSession>()({
-        dataLossIfProjectDestroyed: () =>
+        dataLossIfNamespaceDestroyed: () =>
           Effect.die("organization teardown must not enumerate Cloud projects"),
         dataLossIfClusterDestroyed: () => {
           calls.push("cluster");
@@ -230,8 +230,8 @@ describe("teardown Data Loss observation", () => {
 
   it("finds nothing to lose where the servers have nothing, and says when they don't answer", async () => {
     const answering = (code: string) => connectedRuntime(asTestDouble<PloyzSession>()({
-      dataLossIfProjectDestroyed: () => Effect.fail(new PloyzProviderError({
-        operation: "load project data loss",
+      dataLossIfNamespaceDestroyed: () => Effect.fail(new PloyzProviderError({
+        operation: "load namespace data loss",
         cause: { code, message: "Project 'app-production' was not found in this Cluster observation. No changes made.", details: null },
       })),
     }));
@@ -247,7 +247,7 @@ describe("teardown Data Loss observation", () => {
     expect(silent).toMatchObject({ _tag: "Validation", message: "Can't reach your servers. Check they're online, then try again." });
   });
 
-  it("persists no Runtime project authority when confirming without a connection", async () => {
+  it("persists no Namespace authority when confirming without a connection", async () => {
     const runtime = asTestDouble<OrganizationRuntimeService>()({
       open: () => Effect.succeed({ status: "no_connection" as const }),
     });
@@ -276,17 +276,17 @@ describe("teardown Data Loss observation", () => {
       ),
     );
 
-    expect(attempt.targets.destroyRuntimeProjects).toBe(false);
+    expect(attempt.targets.destroyRuntimeNamespaces).toBe(false);
     expect(sent).toHaveLength(1);
     const rows = await harness.pool.query<{ authorized: string | null }>(
-      `select targets ->> 'destroyRuntimeProjects' as authorized
+      `select targets ->> 'destroyRuntimeNamespaces' as authorized
        from teardown_attempt where id = $1`,
       [attempt.id],
     );
     expect(rows.rows).toEqual([{ authorized: "false" }]);
   });
 
-  it("persists Runtime project authority when confirmation is connected", async () => {
+  it("persists Namespace authority when confirmation is connected", async () => {
     const runtime = connectedRuntime(asTestDouble<PloyzSession>()({}));
     const inngest = new Inngest({ id: "teardown-connected-confirm" });
     inngest.send = async () => ({ ids: [] });
@@ -309,9 +309,9 @@ describe("teardown Data Loss observation", () => {
       ),
     );
 
-    expect(attempt.targets.destroyRuntimeProjects).toBe(true);
+    expect(attempt.targets.destroyRuntimeNamespaces).toBe(true);
     const rows = await harness.pool.query<{ authorized: string | null }>(
-      `select targets ->> 'destroyRuntimeProjects' as authorized
+      `select targets ->> 'destroyRuntimeNamespaces' as authorized
        from teardown_attempt where id = $1`,
       [attempt.id],
     );

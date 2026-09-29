@@ -15,7 +15,7 @@ use super::RuntimeWatchView;
 use ployz_core::{
     ClusterTeardown, ContractDescription, DataLossConfirmation, DeployEvent, DeployIntent,
     DeployOutcome, DeployPreview, ExecutionError, LocalMachineRemoved, MachineId, MachineTarget,
-    ObservedDataLoss, PlanOptions, ProjectName, RegisterRequest, Registered, RemoveVolumesRequest,
+    Namespace, ObservedDataLoss, PlanOptions, RegisterRequest, Registered, RemoveVolumesRequest,
     RequestedServiceSpec, RpcError, VolumeRemoval,
 };
 
@@ -88,7 +88,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_core::CertificateMaterialPublished>();
     declarations.add::<ObservedDataLoss>();
     declarations.add::<PlanOptions>();
-    declarations.add::<ProjectName>();
+    declarations.add::<Namespace>();
     declarations.add::<RegisterRequest>();
     declarations.add::<Registered>();
     declarations.add::<ployz_core::EnrollmentAssignment>();

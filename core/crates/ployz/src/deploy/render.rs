@@ -34,16 +34,6 @@ pub fn progress_text(event: &DeployEvent, title: &str) -> String {
 /// Tree plan plus footer. Empty operations with no listed drift are "No changes."
 #[must_use]
 pub fn plan_text(preview: &DeployPreview, context: &str) -> String {
-    titled_plan_text("Deployment plan", preview, context)
-}
-
-/// Same tree as [`plan_text`], titled for Project removal.
-#[must_use]
-pub fn removal_plan_text(preview: &DeployPreview, context: &str) -> String {
-    titled_plan_text("Removal plan", preview, context)
-}
-
-fn titled_plan_text(title: &str, preview: &DeployPreview, context: &str) -> String {
     if preview.noop()
         && preview.volumes_to_create.is_empty()
         && preview.would_remove.is_empty()
@@ -52,9 +42,9 @@ fn titled_plan_text(title: &str, preview: &DeployPreview, context: &str) -> Stri
     {
         return "No changes.\n".into();
     }
-    let mut out = format!("{title}\n");
+    let mut out = String::from("Deployment plan\n");
     let _ = writeln!(out, "context: {context}");
-    let _ = writeln!(out, "project: {}", preview.project_name);
+    let _ = writeln!(out, "namespace: {}", preview.namespace);
     out.push_str(&service_trees(preview));
     out.push_str(&volumes_to_create_lines(preview));
     for storage in &preview.storage {

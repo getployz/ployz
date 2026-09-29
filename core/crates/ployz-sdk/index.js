@@ -102,9 +102,9 @@ class Client {
     return wrapPreview(await withRpcError(this._inner.preview(intent)));
   }
 
-  async previewProjectRemoval(projectName, destroyVolumes) {
+  async previewNamespaceRemoval(namespace, destroyVolumes) {
     return wrapPreview(
-      await withRpcError(this._inner.previewProjectRemoval(projectName, destroyVolumes)),
+      await withRpcError(this._inner.previewNamespaceRemoval(namespace, destroyVolumes)),
     );
   }
 
@@ -134,12 +134,12 @@ class Client {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
-  dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
-    return withRpcError(this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes));
+  dataLossIfNamespaceDestroyed(namespace, destroyVolumes = false) {
+    return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
 
-  destroyProject(projectName, confirmDataLoss, destroyVolumes = false) {
-    return withRpcError(this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes));
+  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false) {
+    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes));
   }
 
   dataLossIfClusterDestroyed() {
@@ -271,17 +271,17 @@ function defaultPlanOptions() {
   };
 }
 
-function applyAll(project_name, specs, options = defaultPlanOptions()) {
+function applyAll(namespace, specs, options = defaultPlanOptions()) {
   return {
-    project_name,
+    namespace,
     target: specs,
     options,
   };
 }
 
-function applyOne(project_name, spec, options = defaultPlanOptions()) {
+function applyOne(namespace, spec, options = defaultPlanOptions()) {
   return {
-    project_name,
+    namespace,
     target: [spec],
     options: {
       ...defaultPlanOptions(),
