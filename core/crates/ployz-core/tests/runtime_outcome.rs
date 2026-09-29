@@ -38,6 +38,8 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     )
     .unwrap();
     assert_eq!(result["confirmedServices"], json!(["api"]));
+    assert_eq!(result["failedServices"], json!(["worker"]));
+    assert_eq!(result["unattemptedServices"], json!([]));
     let mut incomplete = partial;
     incomplete["unexecuted"] = json!([replica.clone()]);
     assert_eq!(
@@ -70,14 +72,14 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     );
     let preflight = json!({"type":"failed","completed":[],
         "failed":{"type":"operation","operation":operation("b"),"error":{"type":"cancelled"}},"unexecuted":[operation("a")]});
-    assert_eq!(
-        project(
-            preview(vec![("api", operation("a")), ("worker", operation("b"))]),
-            preflight
-        )
-        .unwrap()["confirmedServices"],
-        json!([])
-    );
+    let stopped = project(
+        preview(vec![("api", operation("a")), ("worker", operation("b"))]),
+        preflight,
+    )
+    .unwrap();
+    assert_eq!(stopped["confirmedServices"], json!([]));
+    assert_eq!(stopped["failedServices"], json!(["worker"]));
+    assert_eq!(stopped["unattemptedServices"], json!(["api"]));
     let invalid = config_request(
         json!({"operation":"project_runtime_outcome","preview":preview(vec![]),"value":{"version":2,"outcome":{"type":"success","completed":[]}}}),
     );

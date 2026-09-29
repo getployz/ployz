@@ -27,9 +27,7 @@ fn org() -> OrganizationId {
 /// A Project with Git Services `web` and `api` on `acme/web`'s `main`, published.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: org(),
-    };
+    let who = Actor::system(org());
     store
         .create_project(
             &who,
@@ -77,6 +75,7 @@ fn publish(store: &ConfigStore, who: &Actor) {
             &Command::Publish(Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -121,7 +120,8 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
 }
 
 fn system(store: &ConfigStore, event: &SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&org(), event).unwrap() else {
+    let Written::Automated(automated) = store.system(&org(), event, &Trusted::default()).unwrap()
+    else {
         panic!("a system event writes Automated")
     };
     automated
@@ -184,7 +184,7 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     );
     // A compare from a stale head is refused, so an older head never comes back.
     let error = store
-        .system(&org(), &push(Some(H1), Some(H3), None))
+        .system(&org(), &push(Some(H1), Some(H3), None), &Trusted::default())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details["head"], H2);
@@ -205,11 +205,19 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
 
     // Malformed observations are refused without echoing them.
     let error = store
-        .system(&org(), &push(Some(H3), Some("nope"), None))
+        .system(
+            &org(),
+            &push(Some(H3), Some("nope"), None),
+            &Trusted::default(),
+        )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     let error = store
-        .system(&org(), &push(Some(H3), Some(H1), Some(&["../etc"])))
+        .system(
+            &org(),
+            &push(Some(H3), Some(H1), Some(&["../etc"])),
+            &Trusted::default(),
+        )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 }

@@ -5,8 +5,10 @@
 //! outside the transaction and passes in as [`VolumeObservation`]. Missing or
 //! incomplete evidence refuses: a Deploy never deletes data it could not see. A
 //! Volume no Deploy ever applied needs no evidence, so undeployed Environments stay
-//! operable without Servers. Admission freezes the exact Docker Volumes accepted,
-//! each with its Machine, and the runner deletes only those.
+//! operable without Servers. Publish and every publishing Deploy run the same review,
+//! as Saved State then holds the removal. A confirmation binds the exact Docker
+//! Volumes found; admission freezes them, each with its Machine, and the runner
+//! deletes only those.
 
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::{DockerVolumeId, DockerVolumeName, Namespace, RpcError};
@@ -14,8 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use crate::Actor;
 use crate::error;
-use crate::id::{VolumeId, VolumeName};
+use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::trusted::VolumeObservation;
 
 /// A deployed Volume a Deploy removes, with the Docker Volume that holds its data.
@@ -75,16 +78,21 @@ pub(crate) fn docker_volume(
     Ok(namespace.volume_name(&logical))
 }
 
-/// Review `removed` against what the Servers hold. Refuses with `unavailable` when
-/// the observation is missing, didn't look for one of them, or a Server didn't
-/// answer; with `confirmation_required` unless `accepted` names every Volume whose
-/// data some Server holds; and with `invalid_argument` for an accepted name this
-/// Deploy doesn't remove. `retry` is the version the refusal hands back.
+/// Review `removed` against what the Servers hold, for the Deploy or Publish of
+/// review `base` (its version). Refuses with `unavailable` when the observation is
+/// missing, didn't look for one of them, or a Server didn't answer; with
+/// `invalid_argument` for an accepted name this doesn't remove; and with
+/// `confirmation_required` unless `accepted` names every Volume whose data some
+/// Server holds and `version` is the one that refusal hands back. That version binds
+/// the Organization, the Environment and every Docker Volume found, each on its
+/// Server, so a Server that starts holding one asks again.
 pub(crate) fn review(
+    who: &Actor,
+    environment: &EnvironmentId,
+    (base, version): (&str, Option<&str>),
     removed: Vec<RemovedVolume>,
     observed: Option<&VolumeObservation>,
     accepted: &[VolumeName],
-    retry: &str,
 ) -> Result<Vec<VolumeLoss>, RpcError> {
     let names = || {
         removed
@@ -94,7 +102,7 @@ pub(crate) fn review(
     };
     if let Some(unknown) = accepted.iter().find(|name| !names().contains(name)) {
         return Err(error::invalid(
-            format!("This Deploy deletes no Volume named {unknown}"),
+            format!("This deletes no Volume named {unknown}"),
             json!({ "valid_children": names() }),
         ));
     }
@@ -107,54 +115,68 @@ pub(crate) fn review(
             .all(|volume| observed.sought.contains(&volume.docker_volume))
     }) else {
         return Err(error::unobserved(
-            "This Deploy removes deployed Volumes, and the Servers weren't checked for their \
-             data, so it refuses. Deploy again once the Servers can be reached",
+            "This removes deployed Volumes, and the Servers weren't checked for their data, \
+             so it refuses. Try again once the Servers can be reached",
             json!({ "volumes": names() }),
         ));
     };
     if !observed.unanswered.is_empty() {
         return Err(error::unobserved(
-            "This Deploy removes deployed Volumes, and some Servers didn't answer whether they \
-             hold their data, so it refuses. Deploy again once they answer",
+            "This removes deployed Volumes, and some Servers didn't answer whether they hold \
+             their data, so it refuses. Try again once they answer",
             json!({ "volumes": names(), "unanswered": observed.unanswered }),
         ));
     }
     let losses: Vec<VolumeLoss> = removed
         .into_iter()
-        .map(|volume| VolumeLoss {
-            deletes: observed
+        .map(|volume| {
+            let mut deletes: Vec<DockerVolumeId> = observed
                 .held
                 .iter()
                 .filter(|held| held.name == volume.docker_volume)
                 .cloned()
-                .collect(),
-            volume,
+                .collect();
+            deletes.sort_by_key(ToString::to_string);
+            VolumeLoss { deletes, volume }
         })
         .collect();
-    let unaccepted: Vec<&VolumeName> = losses
+    let lost: Vec<&VolumeLoss> = losses
         .iter()
-        .filter(|loss| !loss.deletes.is_empty() && !accepted.contains(&loss.volume.name))
-        .map(|loss| &loss.volume.name)
+        .filter(|loss| !loss.deletes.is_empty())
         .collect();
-    if !unaccepted.is_empty() {
-        let lost: Vec<&VolumeLoss> = losses
-            .iter()
-            .filter(|loss| !loss.deletes.is_empty())
-            .collect();
-        return Err(error::confirmation_required(
-            format!(
-                "This Deploy permanently deletes the data of {}. Accept each by name",
-                lost.iter()
-                    .map(|loss| loss.volume.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            json!({
-                "volumes": lost,
-                "accept": lost.iter().map(|loss| &loss.volume.name).collect::<Vec<_>>(),
-                "version": retry,
-            }),
-        ));
+    if lost.is_empty() {
+        return Ok(losses);
     }
-    Ok(losses)
+    let bound = format!("{base}:{}", digest(who, environment, &lost));
+    let confirmed = version == Some(bound.as_str())
+        && lost.iter().all(|loss| accepted.contains(&loss.volume.name));
+    if confirmed {
+        return Ok(losses);
+    }
+    Err(error::confirmation_required(
+        format!(
+            "This permanently deletes the data of {}. Accept each by name",
+            lost.iter()
+                .map(|loss| loss.volume.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        json!({
+            "volumes": lost,
+            "accept": lost.iter().map(|loss| &loss.volume.name).collect::<Vec<_>>(),
+            "version": bound,
+        }),
+    ))
+}
+
+/// What a confirmation to delete `lost` binds: who, where, and each Docker Volume
+/// on each Server.
+fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLoss]) -> String {
+    let bound = json!({
+        "organization": who.organization,
+        "environment": environment,
+        "volumes": lost,
+    });
+    let digest = ring::digest::digest(&ring::digest::SHA256, bound.to_string().as_bytes());
+    hex::encode(digest.as_ref().get(..8).unwrap_or_default())
 }

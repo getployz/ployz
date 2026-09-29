@@ -227,12 +227,49 @@ pub(crate) fn lock(
     load(tx, project, &id)
 }
 
+/// Lock Environments `ids` for a write that touches several, strictly in ID order,
+/// so writers that share any of them wait in the same order and never deadlock.
+/// Locking one again later in the same transaction changes nothing.
+pub(crate) fn lock_all(
+    tx: &mut dyn Tx,
+    ids: impl IntoIterator<Item = EnvironmentId>,
+) -> Result<(), RpcError> {
+    let ids: std::collections::BTreeSet<EnvironmentId> = ids.into_iter().collect();
+    for id in ids {
+        tx.execute(
+            "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
+            &[id.as_str().into()],
+        )?;
+    }
+    Ok(())
+}
+
 /// Lock and load Environment `id` of `who`'s Organization, as [`lock`] does.
 pub(crate) fn lock_id(
     tx: &mut dyn Tx,
     who: &Actor,
     id: &EnvironmentId,
 ) -> Result<Environment, RpcError> {
+    lock_all(tx, [id.clone()])?;
+    owned(tx, who, id)
+}
+
+/// Load Environments `a` and `b` of `who`'s Organization, in that order; with
+/// `lock`, lock both first, in ID order.
+pub(crate) fn load_pair(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (a, b): (&EnvironmentId, &EnvironmentId),
+    lock: bool,
+) -> Result<(Environment, Environment), RpcError> {
+    if lock {
+        lock_all(tx, [a.clone(), b.clone()])?;
+    }
+    Ok((owned(tx, who, a)?, owned(tx, who, b)?))
+}
+
+/// Load Environment `id` of `who`'s Organization without locking it.
+fn owned(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<Environment, RpcError> {
     let rows = tx.query(
         "SELECT p.name FROM config_environment e JOIN config_project p ON p.id = e.project_id \
          WHERE e.id = ?1 AND e.organization_id = ?2",
@@ -243,10 +280,6 @@ pub(crate) fn lock_id(
             .ok_or_else(|| error::not_found("No such Environment", json!({})))?
             .text(0)?,
     ))?;
-    tx.execute(
-        "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
     load(tx, project, id)
 }
 

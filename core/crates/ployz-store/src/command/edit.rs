@@ -92,7 +92,7 @@ pub(crate) fn edit(
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
     for (path, value) in expand(&edit.changes)? {
-        let service = path.service();
+        let service = path.settings_of()?;
         // A new credential applies at once; turning one on or off is staged.
         if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {
@@ -203,10 +203,11 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
             Change::Set { path, value } => expanded.push((path.clone(), Some(value.clone()))),
             Change::Unset { path } => expanded.push((path.clone(), None)),
             Change::Patch { path, value } => {
+                let service = path.settings_of()?;
                 if path.target().is_some() {
                     return Err(error::invalid(
                         "A patch addresses a Service: set SERVICE --patch",
-                        json!({ "example": path.service() }),
+                        json!({ "example": service }),
                     ));
                 }
                 let Some(object) = value.as_object() else {
@@ -225,7 +226,7 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         };
                         for (key, value) in variables {
                             let key = VariableKey::parse(key)?;
-                            let path = SettingPath::at(path.service(), Target::Variable(key));
+                            let path = SettingPath::at(service, Target::Variable(key));
                             expanded.push((path, Some(value.clone())));
                         }
                         continue;
@@ -239,13 +240,13 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         };
                         for (volume, value) in mounts {
                             let volume = VolumeName::parse(volume.as_str())?;
-                            let path = SettingPath::at(path.service(), Target::Mount(volume));
+                            let path = SettingPath::at(service, Target::Mount(volume));
                             expanded.push((path, Some(value.clone())));
                         }
                         continue;
                     }
                     let setting = ServiceSetting::parse(name)?;
-                    let path = SettingPath::of(path.service(), setting);
+                    let path = SettingPath::of(service, setting);
                     expanded.push((path, Some(value.clone())));
                 }
             }
@@ -259,7 +260,7 @@ fn name_a_setting(path: &SettingPath) -> RpcError {
         "Name a Setting: SERVICE.SETTING",
         json!({
             "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
-            "example": format!("{}.replicas", path.service()),
+            "example": format!("{}.replicas", path.node()),
         }),
     )
 }
