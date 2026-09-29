@@ -43,7 +43,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -64,7 +64,7 @@ fn shop() -> (ConfigStore, Actor) {
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
                     id: ServiceLineageId::parse(uuid(n)).unwrap(),
@@ -93,7 +93,7 @@ fn shop() -> (ConfigStore, Actor) {
 use ployz_store::ConfigStore;
 
 fn plan(store: &ConfigStore, who: &Actor, set: SetPrPlan) {
-    store.set_pr_plan(who, &set).unwrap();
+    store.write(who, &set).unwrap();
 }
 
 fn on() -> SetPrPlan {
@@ -158,7 +158,7 @@ fn now() -> i64 {
 /// Each Environment's name, `<` naming its Parent.
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<String> {
     store
-        .environments(who, &EnvironmentsQuery::default())
+        .read(who, &EnvironmentsQuery::default())
         .unwrap()
         .environments
         .into_iter()
@@ -212,7 +212,7 @@ fn run(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
 fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
     let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
-        .admit(
+        .write_trusted(
             who,
             &Admit::Remove(Removal {
                 id: id.clone(),
@@ -229,7 +229,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
 #[test]
 fn plans_name_nodes_of_the_start_from_environment() {
     let (store, who) = shop();
-    let view = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let view = store.read(&who, &PrPlansQuery::default()).unwrap();
     assert_eq!(view.plans.len(), 1);
     assert!(!view.plans[0].enabled && view.plans[0].remove_on_close);
     assert_eq!(view.plans[0].start_from, None);
@@ -240,7 +240,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
         command: " php artisan migrate ".into(),
     }];
     let early = store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
                 setup: Some(setup.clone()),
@@ -251,7 +251,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
         .unwrap_err();
     assert_eq!(early.code, RpcErrorCode::InvalidArgument);
     let missing = store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
                 repository: backend::repo_name("acme/nope"),
@@ -281,7 +281,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
             ..on()
         },
     );
-    let view = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let view = store.read(&who, &PrPlansQuery::default()).unwrap();
     let plan = &view.plans[0];
     assert_eq!(plan.repository.as_str(), "acme/web");
     assert!(plan.enabled && plan.include_bots && !plan.remove_on_close);
@@ -308,7 +308,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
     // Its Git Services track the head branch and run one replica, pinned to the head.
     let branch = store
-        .branch(
+        .read(
             &who,
             &ployz_store::BranchQuery {
                 environment: at("pr-5"),
@@ -323,7 +323,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         Some((11, 5))
     );
     // The plan lists it as open, by the facts Cloud reported.
-    let plans = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let plans = store.read(&who, &PrPlansQuery::default()).unwrap();
     let open = &plans.plans[0].open;
     assert_eq!(plans.plans[0].repository_id.get(), 11);
     assert_eq!(open.len(), 1);
@@ -332,7 +332,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         (5, "pr-5".into())
     );
     let services = store
-        .services(
+        .read(
             &who,
             &ployz_store::ServicesQuery {
                 environment: at("pr-5"),
@@ -341,7 +341,12 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .unwrap();
     assert_eq!(services.services.len(), 2);
     let deployment = store
-        .deployment(&who, &opened.admitted[0].deployment.id)
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ToOwned::to_owned(&opened.admitted[0].deployment.id),
+            },
+        )
         .unwrap();
     assert_eq!(deployment.deployment.status, DeploymentStatus::Queued);
     let sources = store.sources(&opened.admitted[0].deployment.id).unwrap();
@@ -357,7 +362,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert!(again.admitted.is_empty() && again.checks.len() == 1);
     assert_eq!(listed(&store, &who).len(), 2);
     let view = store
-        .pull_request(
+        .read(
             &who,
             &PullRequestQuery {
                 repository_id: backend::repo_id(11),
@@ -387,7 +392,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     let view = store
-        .pull_request(
+        .read(
             &who,
             &PullRequestQuery {
                 repository_id: backend::repo_id(11),
@@ -408,7 +413,12 @@ fn a_late_open_never_restores_a_closed_pull_request() {
     // Never deployed: the queued Deployment is cancelled and the PR Environment deleted at once.
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
     assert_eq!(listed(&store, &who), ["production"]);
-    let cancelled = store.deployment(&who, &opened.admitted[0].deployment.id);
+    let cancelled = store.read(
+        &who,
+        &ployz_store::DeploymentQuery {
+            id: ToOwned::to_owned(&opened.admitted[0].deployment.id),
+        },
+    );
     assert!(cancelled.is_err(), "deleted with its Environment");
 
     // The open GitHub sent first arrives last.
@@ -436,7 +446,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
     pull(&store, &who, renamed);
     let redeploy = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
             &Admit::Deploy(Deploy {
                 id: redeploy.clone(),
@@ -533,7 +543,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
         (22, "fresh", false),
     ] {
         store
-            .create_branch(
+            .write(
                 &who,
                 &CreateBranch {
                     id: EnvironmentId::parse(uuid(n)).unwrap(),
@@ -551,7 +561,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
     for name in ["idle", "kept"] {
         let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
         store
-            .admit(
+            .write_trusted(
                 &who,
                 &Admit::Deploy(Deploy {
                     id: id.clone(),

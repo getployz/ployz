@@ -44,7 +44,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -55,7 +55,7 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, name) in [(3, "web"), (4, "db")] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
                     id: ServiceLineageId::parse(uuid(n)).unwrap(),
@@ -67,7 +67,7 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     store
-        .create_volume(
+        .write(
             &who,
             &CreateVolume {
                 id: VolumeId::parse(uuid(5)).unwrap(),
@@ -81,7 +81,7 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     store
-        .create_environment(
+        .write(
             &who,
             &CreateEnvironment {
                 id: EnvironmentId::parse(uuid(6)).unwrap(),
@@ -132,12 +132,12 @@ fn admit(
         volumes,
         ..Trusted::default()
     };
-    match store.admit(who, &request(None), &trusted) {
+    match store.write_trusted(who, &request(None), &trusted) {
         Err(refused)
             if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired =>
         {
             let version = refused.details["version"].as_str().unwrap().to_owned();
-            store.admit(who, &request(Some(version)), &trusted)
+            store.write_trusted(who, &request(Some(version)), &trusted)
         }
         admitted => admitted,
     }
@@ -197,7 +197,7 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, services: 
 
 fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> Result<(), RpcError> {
     store
-        .remove_environment(
+        .write(
             who,
             &RemoveEnvironment {
                 environment: at(environment),
@@ -208,7 +208,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> Result<(), Rpc
 
 fn set_default(store: &ConfigStore, who: &Actor, environment: &str) {
     store
-        .set_default_environment(
+        .write(
             who,
             &SetDefaultEnvironment {
                 environment: at(environment),
@@ -220,7 +220,7 @@ fn set_default(store: &ConfigStore, who: &Actor, environment: &str) {
 /// Each Environment's name, `*` marking the default and `<` naming its Parent.
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<String> {
     store
-        .environments(who, &EnvironmentsQuery::default())
+        .read(who, &EnvironmentsQuery::default())
         .unwrap()
         .environments
         .into_iter()
@@ -288,7 +288,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
 
     // The removal deletes the deployed Volume, under the same review as any Deploy.
     let removals = store
-        .removals(
+        .read(
             &who,
             &RemovalsQuery {
                 environment: at("production"),
@@ -323,7 +323,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     assert!(queued.remove);
 
     // Nothing branches from it, and it isn't gone until the removal applies.
-    let branching = store.create_branch(
+    let branching = store.write(
         &who,
         &CreateBranch {
             id: EnvironmentId::parse(uuid(7)).unwrap(),
@@ -343,13 +343,13 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     );
 
     // Cancelled, it stays deployed; retried, it runs as admitted.
-    store.cancel(&who, &Cancel { deployment: id(2) }).unwrap();
+    store.write(&who, &Cancel { deployment: id(2) }).unwrap();
     assert_eq!(
         refusal(remove(&store, &who, "production")).details["deployed"],
         json!(true)
     );
     let retried = store
-        .admit(
+        .write_trusted(
             &who,
             &Admit::Retry(Retry {
                 id: id(3),
@@ -371,9 +371,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
             outcome: VolumeRemovalOutcome::Removed,
         }],
     );
-    let listing = store
-        .environments(&who, &EnvironmentsQuery::default())
-        .unwrap();
+    let listing = store.read(&who, &EnvironmentsQuery::default()).unwrap();
     let removal = listing.environments[0].removal.as_ref().unwrap();
     assert_eq!(removal.status, DeploymentStatus::Applied);
 
@@ -381,7 +379,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     assert_eq!(listed(&store, &who), ["staging*"]);
     // Its name is free again.
     store
-        .create_environment(
+        .write(
             &who,
             &CreateEnvironment {
                 id: EnvironmentId::parse(uuid(8)).unwrap(),
@@ -397,7 +395,7 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, &["web", "db"]);
     store
-        .create_branch(
+        .write(
             &who,
             &CreateBranch {
                 id: EnvironmentId::parse(uuid(7)).unwrap(),
@@ -432,9 +430,7 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
     store
         .record(&id(3), &runner(), RunEvidence::Abandoned)
         .unwrap();
-    let unknown = store
-        .environments(&who, &EnvironmentsQuery::default())
-        .unwrap();
+    let unknown = store.read(&who, &EnvironmentsQuery::default()).unwrap();
     assert_eq!(
         unknown.environments[0].removal.as_ref().unwrap().status,
         DeploymentStatus::Unknown
@@ -464,7 +460,7 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
 
 fn remove_shop(store: &ConfigStore, who: &Actor) -> Result<Vec<String>, RpcError> {
     store
-        .remove_project(
+        .write(
             who,
             &RemoveProject {
                 project: ProjectName::parse("shop").unwrap(),
@@ -491,7 +487,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, &["web", "db"]);
     store
-        .create_branch(
+        .write(
             &who,
             &CreateBranch {
                 id: EnvironmentId::parse(uuid(7)).unwrap(),
@@ -507,7 +503,10 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
         .unwrap();
     deploy(&store, &who, "fix", 2, &["web"]);
     deploy(&store, &who, "staging", 3, &[]);
-    let listed = store.projects(&who).unwrap().projects;
+    let listed = store
+        .read(&who, &ployz_store::ProjectsQuery {})
+        .unwrap()
+        .projects;
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].default_environment.as_str(), "production");
     assert_eq!(
@@ -537,7 +536,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     let in_flight = refusal(remove_shop(&store, &who));
     assert_eq!(in_flight.code, RpcErrorCode::Conflict);
     assert_eq!(in_flight.details.get("deployed"), None);
-    store.cancel(&who, &Cancel { deployment: id(5) }).unwrap();
+    store.write(&who, &Cancel { deployment: id(5) }).unwrap();
     assert_eq!(
         refusal(remove_shop(&store, &who)).details["environment"],
         json!("fix")
@@ -588,11 +587,17 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
         remove_shop(&store, &who).unwrap(),
         ["fix", "staging", "production"]
     );
-    assert!(store.projects(&who).unwrap().projects.is_empty());
+    assert!(
+        store
+            .read(&who, &ployz_store::ProjectsQuery {})
+            .unwrap()
+            .projects
+            .is_empty()
+    );
     store.remove_organization(&who).unwrap();
     // Its name is free again.
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(10)).unwrap(),
@@ -615,7 +620,7 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, &["web", "db"]);
     store
-        .create_branch(
+        .write(
             &who,
             &CreateBranch {
                 id: EnvironmentId::parse(uuid(7)).unwrap(),

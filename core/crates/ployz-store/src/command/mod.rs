@@ -280,3 +280,69 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
     }
     Ok(written)
 }
+
+/// A [`Command`], or one of its payloads, and what it answers with.
+pub trait Tell: Clone {
+    type Written;
+    fn command(self) -> Command;
+    /// The result, as this command's own.
+    ///
+    /// # Errors
+    /// `internal` for the result of another command.
+    fn written(written: Written) -> Result<Self::Written, RpcError>;
+}
+
+impl Tell for Command {
+    type Written = Written;
+    fn command(self) -> Command {
+        self
+    }
+    fn written(written: Written) -> Result<Written, RpcError> {
+        Ok(written)
+    }
+}
+
+macro_rules! tells {
+    ($($command:ty => $variant:ident / $written:ident($answer:ty) $(as $unbox:tt)?),* $(,)?) => {$(
+        impl Tell for $command {
+            type Written = $answer;
+            fn command(self) -> Command {
+                Command::$variant(self)
+            }
+            fn written(written: Written) -> Result<$answer, RpcError> {
+                match written {
+                    Written::$written(answer) => Ok($($unbox)? answer),
+                    _ => Err(crate::error::internal("The Store answered another command")),
+                }
+            }
+        }
+    )*};
+}
+
+tells!(
+    CreateProject => CreateProject / Project(ProjectCreated),
+    CreateEnvironment => CreateEnvironment / Environment(EnvironmentCreated),
+    CreateService => CreateService / Service(ServiceStaged),
+    crate::CreateGitService => CreateGitService / Service(ServiceStaged),
+    RenameService => RenameService / ServiceRenamed(ServiceStaged),
+    RemoveService => RemoveService / ServiceRemoved(ServiceStaged),
+    CreateVolume => CreateVolume / Volume(VolumeStaged),
+    RemoveVolume => RemoveVolume / VolumeRemoved(VolumeStaged),
+    Edit => Edit / Edited(Edited),
+    Publish => Publish / Published(Published),
+    Discard => Discard / Discarded(Discarded),
+    Admit => Admit / Deployment(crate::DeploymentSummary),
+    Start => Start / Deployment(crate::DeploymentSummary),
+    Cancel => Cancel / Deployment(crate::DeploymentSummary),
+    crate::AddDomain => AddDomain / Domain(crate::DomainStaged),
+    crate::RemoveDomain => RemoveDomain / Domain(crate::DomainStaged),
+    crate::CreateBranch => CreateBranch / Branch(crate::Branched),
+    crate::Move => Move / Moved(crate::Moved) as *,
+    crate::CopyNode => CopyNode / Branch(crate::Branched),
+    crate::KeepBranch => KeepBranch / Branch(crate::Branched),
+    crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
+    crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
+    crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::EnvironmentRemoved),
+    crate::RemoveProject => RemoveProject / ProjectRemoved(crate::ProjectRemoved),
+    crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),
+);

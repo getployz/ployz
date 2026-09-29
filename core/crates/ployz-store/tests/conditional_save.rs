@@ -48,7 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -69,7 +69,7 @@ fn shop() -> (ConfigStore, Actor) {
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
                     id: ServiceLineageId::parse(uuid(n)).unwrap(),
@@ -84,7 +84,7 @@ fn shop() -> (ConfigStore, Actor) {
     }
     publish(&store, &who, "production");
     store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
                 project: None,
@@ -122,7 +122,7 @@ fn publish(store: &ConfigStore, who: &Actor, environment: &str) {
 
 fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Value)]) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: at(environment),
@@ -217,7 +217,7 @@ fn saving(rows: &[&str], version: Option<String>) -> Save {
 
 fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
     store
-        .service(
+        .read(
             who,
             &ployz_store::ServiceQuery {
                 environment: at(environment),
@@ -233,7 +233,7 @@ fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
 
 fn check(store: &ConfigStore, who: &Actor) -> (bool, String) {
     let view = store
-        .pull_request(
+        .read(
             who,
             &PullRequestQuery {
                 repository_id: backend::repo_id(11),
@@ -276,7 +276,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         into: None,
         when: None,
     };
-    let review = store.move_view(&who, &query).unwrap();
+    let review = store.read(&who, &query).unwrap();
     assert_eq!(review.into.name.as_str(), "production");
     let rows: Vec<&str> = review.rows.iter().map(|row| row.row.as_str()).collect();
     assert_eq!(rows, ["web.env.MODE", "web.env.TOKEN"]);
@@ -285,7 +285,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         ..saving(&["web.env"], None)
     });
     assert_eq!(
-        store.move_changes(&who, &now).unwrap_err().code,
+        store.write(&who, &now).unwrap_err().code,
         RpcErrorCode::InvalidArgument
     );
     assert_eq!(
@@ -294,7 +294,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
     );
 
     let saved = store
-        .move_changes(&who, &save(&["web.env"], Some(review.version)))
+        .write(&who, &save(&["web.env"], Some(review.version)))
         .unwrap();
     let conditional = saved.conditional_save.unwrap();
     assert_eq!(conditional.state, SaveState::Standing);
@@ -314,13 +314,13 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         check(&store, &who),
         (false, "Changed since saved · save again".into())
     );
-    let withdrawn = store.move_changes(&who, &save(&[], None)).unwrap();
+    let withdrawn = store.write(&who, &save(&[], None)).unwrap();
     assert!(withdrawn.conditional_save.is_none());
     assert_eq!(
         check(&store, &who),
         (false, "2 changes to save in Ployz".into())
     );
-    store.move_changes(&who, &save(&["web.env"], None)).unwrap();
+    store.write(&who, &save(&["web.env"], None)).unwrap();
     set(
         &store,
         &who,
@@ -407,7 +407,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             ("web.env.TOKEN", json!({ "secret": "pr-secret" })),
         ],
     );
-    store.move_changes(&who, &save(&["web.env"], None)).unwrap();
+    store.write(&who, &save(&["web.env"], None)).unwrap();
     // Production changes MODE live, then stages its own edit on top.
     set(
         &store,
@@ -438,7 +438,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
 
     let diff = |store: &ConfigStore| {
         store
-            .diff(
+            .read(
                 &who,
                 &DiffQuery {
                     environment: at("production"),
@@ -474,15 +474,13 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     };
     assert_eq!(
         store
-            .move_changes(&who, &take(Some("web.env.NOPE")))
+            .write(&who, &take(Some("web.env.NOPE")))
             .unwrap_err()
             .code,
         RpcErrorCode::NotFound
     );
     // The PR Environment is gone; its value still moves.
-    let taken = store
-        .move_changes(&who, &take(Some("web.env.MODE")))
-        .unwrap();
+    let taken = store.write(&who, &take(Some("web.env.MODE"))).unwrap();
     assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
     assert_eq!(taken.conditional_save.unwrap().state, SaveState::Landed);
@@ -490,7 +488,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     assert_eq!(diff(&store)[0].landed, Landed::Staged);
     // Nothing is left to take.
     assert_eq!(
-        store.move_changes(&who, &take(None)).unwrap_err().code,
+        store.write(&who, &take(None)).unwrap_err().code,
         RpcErrorCode::Conflict
     );
     publish(&store, &who, "production");

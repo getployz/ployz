@@ -47,7 +47,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -58,7 +58,7 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, name, image) in [(3, "web", "web:1"), (4, "db", "postgres:17")] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
                     id: ServiceLineageId::parse(uuid(n)).unwrap(),
@@ -70,7 +70,7 @@ fn shop() -> (ConfigStore, Actor) {
             .unwrap();
     }
     store
-        .create_volume(
+        .write(
             &who,
             &CreateVolume {
                 id: VolumeId::parse(uuid(5)).unwrap(),
@@ -101,7 +101,7 @@ fn shop() -> (ConfigStore, Actor) {
 
 fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Value)]) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: at(environment),
@@ -136,7 +136,7 @@ fn branch(name: &str, from: &str, copy: &[&str]) -> CreateBranch {
 
 fn services(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<(String, String)> {
     store
-        .services(
+        .read(
             who,
             &ployz_store::ServicesQuery {
                 environment: at(environment),
@@ -157,7 +157,7 @@ fn services(store: &ConfigStore, who: &Actor, environment: &str) -> Vec<(String,
 fn values(store: &ConfigStore, who: &Actor, environment: &str, service: &str) -> Value {
     Value::Object(
         store
-            .service(
+            .read(
                 who,
                 &ServiceQuery {
                     environment: at(environment),
@@ -174,7 +174,7 @@ fn values(store: &ConfigStore, who: &Actor, environment: &str, service: &str) ->
 fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: bool) -> Value {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
-        .admit(
+        .write_trusted(
             who,
             &Admit::Deploy(Deploy {
                 id: id.clone(),
@@ -266,15 +266,12 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
         service: ServiceName::parse("web").unwrap(),
         command: "  pnpm db:seed ".into(),
     }];
-    let made = store.create_branch(&who, &create).unwrap();
+    let made = store.write(&who, &create).unwrap();
     // A replay returns the same; the ID with another body is a conflict.
-    assert_eq!(store.create_branch(&who, &create).unwrap(), made);
+    assert_eq!(store.write(&who, &create).unwrap(), made);
     let mut other = create.clone();
     other.keep = false;
-    assert_eq!(
-        code(store.create_branch(&who, &other)),
-        RpcErrorCode::Conflict
-    );
+    assert_eq!(code(store.write(&who, &other)), RpcErrorCode::Conflict);
 
     // The Parent runs nothing, so web brings db and db its Volume, all under fresh ids.
     assert_eq!(texts(&made.staged), ["db", "web", "volumes.data"]);
@@ -292,7 +289,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
             .all(|(_, id)| *id != uuid(3) && *id != uuid(4))
     );
     let web = store
-        .service(
+        .read(
             &who,
             &ServiceQuery {
                 environment: at("fix-web"),
@@ -321,7 +318,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     assert_eq!(made.branch.parent.as_str(), "production");
     // Each copy has its Node Introduction: all three are created by the next Deploy.
     let diff = store
-        .diff(
+        .read(
             &who,
             &DiffQuery {
                 environment: at("fix-web"),
@@ -359,20 +356,17 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
 fn a_branch_is_refused_before_anything_is_written() {
     let (store, who) = shop();
     store
-        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
     let mut taken = branch("fix-web", "production", &["web"]);
     taken.id = EnvironmentId::parse(uuid(90)).unwrap();
+    assert_eq!(code(store.write(&who, &taken)), RpcErrorCode::Conflict);
     assert_eq!(
-        code(store.create_branch(&who, &taken)),
-        RpcErrorCode::Conflict
-    );
-    assert_eq!(
-        code(store.create_branch(&who, &branch("empty", "production", &[]))),
+        code(store.write(&who, &branch("empty", "production", &[]))),
         RpcErrorCode::InvalidArgument
     );
     assert_eq!(
-        code(store.create_branch(&who, &branch("stray", "production", &["nope"]))),
+        code(store.write(&who, &branch("stray", "production", &["nope"]))),
         RpcErrorCode::NotFound
     );
     let mut stray = branch("stray", "production", &["db"]);
@@ -381,7 +375,7 @@ fn a_branch_is_refused_before_anything_is_written() {
         command: "seed".into(),
     }];
     assert_eq!(
-        code(store.create_branch(&who, &stray)),
+        code(store.write(&who, &stray)),
         RpcErrorCode::InvalidArgument
     );
     stray.setup = vec![SetupCommand {
@@ -389,7 +383,7 @@ fn a_branch_is_refused_before_anything_is_written() {
         command: "x".repeat(2001),
     }];
     assert_eq!(
-        code(store.create_branch(&who, &stray)),
+        code(store.write(&who, &stray)),
         RpcErrorCode::InvalidArgument
     );
     // Only a Branch updates, copies or is kept.
@@ -398,12 +392,12 @@ fn a_branch_is_refused_before_anything_is_written() {
         kept: true,
     };
     assert_eq!(
-        code(store.keep_branch(&who, &keep)),
+        code(store.write(&who, &keep)),
         RpcErrorCode::InvalidArgument
     );
     assert!(
         store
-            .branch(
+            .read(
                 &who,
                 &ployz_store::BranchQuery {
                     environment: at("stray")
@@ -419,7 +413,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     deploy(&store, &who, "production", 1, true);
     let mut create = branch("fix-web", "production", &["web"]);
     create.live = vec![node("db")];
-    let made = store.create_branch(&who, &create).unwrap();
+    let made = store.write(&who, &create).unwrap();
     assert_eq!(texts(&made.staged), ["web"]);
     let production = EnvironmentName::parse("production").unwrap();
     assert_eq!(
@@ -446,7 +440,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let mut wrong = branch("other", "production", &["web"]);
     wrong.live = vec![node("volumes.data")];
     assert_eq!(
-        code(store.create_branch(&who, &wrong)),
+        code(store.write(&who, &wrong)),
         RpcErrorCode::InvalidArgument
     );
 
@@ -456,7 +450,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     assert_eq!(web["resolvedEnv"]["DB_URL"], "db.shop-production.internal");
     assert_eq!(web["resolvedEnv"]["DB_HOST"], "db.shop-production.internal");
     let child = store
-        .create_branch(&who, &branch("child", "fix-web", &["web"]))
+        .write(&who, &branch("child", "fix-web", &["web"]))
         .unwrap();
     assert_eq!(child.branch.live[0].owner, Some(production));
     let input = deploy(&store, &who, "child", 3, false);
@@ -469,7 +463,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     store
-        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
     let update = |version: Option<String>| {
         Move::Update(Update {
@@ -480,12 +474,12 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     };
     // Never deployed: it doesn't run its Working State yet.
     assert_eq!(
-        code(store.move_changes(&who, &update(None))),
+        code(store.write(&who, &update(None))),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 2, true);
     assert_eq!(
-        store.move_changes(&who, &update(None)).unwrap_err().message,
+        store.write(&who, &update(None)).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -498,7 +492,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     // Staged in the Parent isn't deployed: nothing to take yet.
     let view = |store: &ConfigStore| {
         store
-            .branch(
+            .read(
                 &who,
                 &ployz_store::BranchQuery {
                     environment: at("fix-web"),
@@ -513,7 +507,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     assert_eq!(pending, ["web.env.NEW", "web.image"]);
 
     let review = store
-        .move_view(
+        .read(
             &who,
             &MoveQuery::Update {
                 into: at("fix-web"),
@@ -522,18 +516,10 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
         .unwrap();
     assert_eq!(review.from.name.as_str(), "production");
     let stale = update(Some("0:0".into()));
-    assert_eq!(
-        code(store.move_changes(&who, &stale)),
-        RpcErrorCode::Conflict
-    );
+    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
     let reviewed = update(Some(review.version));
     assert_eq!(
-        store
-            .move_changes(&who, &reviewed)
-            .unwrap()
-            .into
-            .name
-            .as_str(),
+        store.write(&who, &reviewed).unwrap().into.name.as_str(),
         "fix-web"
     );
     let web = values(&store, &who, "fix-web", "web");
@@ -544,12 +530,12 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     // The base advanced: nothing left, and the change waits for a Deploy.
     assert!(view(&store).update.is_empty());
     assert_eq!(
-        code(store.move_changes(&who, &update(None))),
+        code(store.write(&who, &update(None))),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 4, true);
     assert_eq!(
-        store.move_changes(&who, &update(None)).unwrap_err().message,
+        store.write(&who, &update(None)).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -558,7 +544,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     deploy(&store, &who, "fix-web", 5, false);
     assert!(
         store
-            .move_changes(&who, &update(None))
+            .write(&who, &update(None))
             .unwrap_err()
             .message
             .contains("aren't deployed")
@@ -570,7 +556,7 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     store
-        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
     deploy(&store, &who, "fix-web", 2, true);
     let copy = CopyNode {
@@ -578,7 +564,7 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
         node: ServiceName::parse("db").unwrap(),
         expect: None,
     };
-    let copied: Branched = store.copy_node(&who, &copy).unwrap();
+    let copied: Branched = store.write(&who, &copy).unwrap();
     assert_eq!(texts(&copied.staged), ["db", "volumes.data"]);
     assert!(copied.branch.live.is_empty());
     let db = id_of(&store, &who, "fix-web", "db");
@@ -589,7 +575,7 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
     );
     // The copy is new to the Branch: its next Deploy creates it and the Volume.
     let diff = store
-        .diff(
+        .read(
             &who,
             &DiffQuery {
                 environment: at("fix-web"),
@@ -597,14 +583,14 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
         )
         .unwrap();
     assert_eq!(diff.changes.len(), 2);
-    assert_eq!(code(store.copy_node(&who, &copy)), RpcErrorCode::Conflict);
+    assert_eq!(code(store.write(&who, &copy)), RpcErrorCode::Conflict);
     // Its references now resolve inside the Branch.
     let input = deploy(&store, &who, "fix-web", 3, true);
     let web = snapshot(&input, &id_of(&store, &who, "fix-web", "web"));
     assert_eq!(web["resolvedEnv"]["DB_URL"], "db.internal");
     assert!(
         store
-            .branch(
+            .read(
                 &who,
                 &ployz_store::BranchQuery {
                     environment: at("fix-web")
@@ -629,20 +615,14 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
     // Only a failed Deployment, and only when a Service it failed gets its own copy.
     let mut fix = branch("fix", "production", &[]);
     fix.fix = Some(applied);
-    assert_eq!(
-        code(store.create_branch(&who, &fix)),
-        RpcErrorCode::InvalidArgument
-    );
+    assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
     fix.fix = Some(failed.clone());
     fix.copy = vec![node("volumes.data")];
-    assert_eq!(
-        code(store.create_branch(&who, &fix)),
-        RpcErrorCode::InvalidArgument
-    );
+    assert_eq!(code(store.write(&who, &fix)), RpcErrorCode::InvalidArgument);
 
     // Named none: it copies the Services the Deployment didn't apply.
     fix.copy = Vec::new();
-    let made = store.create_branch(&who, &fix).unwrap();
+    let made = store.write(&who, &fix).unwrap();
     assert_eq!(texts(&made.staged), ["web"]);
     assert_eq!(values(&store, &who, "fix", "web")["image"], "web:2");
     assert_eq!(values(&store, &who, "production", "web")["image"], "web:3");
@@ -652,7 +632,7 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
 fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
     let (store, who) = shop();
     store
-        .add_domain(
+        .write_trusted(
             &who,
             &AddDomain {
                 environment: at("production"),
@@ -664,15 +644,15 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
         )
         .unwrap();
     store
-        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
     let child = store
-        .create_branch(&who, &branch("child", "fix-web", &["web"]))
+        .write(&who, &branch("child", "fix-web", &["web"]))
         .unwrap();
     assert_eq!(child.branch.parent.as_str(), "fix-web");
     let prefix = |environment: &str| {
         let domains = store
-            .domains(
+            .read_trusted(
                 &who,
                 &DomainsQuery {
                     environment: at(environment),
@@ -694,20 +674,14 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
         environment: at("child"),
         kept,
     };
-    let kept = store.keep_branch(&who, &keep(true)).unwrap();
+    let kept = store.write(&who, &keep(true)).unwrap();
     assert!(kept.branch.kept);
     assert_eq!(
         (kept.immediate, kept.staged),
         (vec!["kept".to_owned()], Vec::new())
     );
-    assert!(
-        store
-            .keep_branch(&who, &keep(true))
-            .unwrap()
-            .immediate
-            .is_empty()
-    );
-    assert!(!store.keep_branch(&who, &keep(false)).unwrap().branch.kept);
+    assert!(store.write(&who, &keep(true)).unwrap().immediate.is_empty());
+    assert!(!store.write(&who, &keep(false)).unwrap().branch.kept);
 }
 
 fn save(picks: &[(&str, Option<&str>)], version: Option<&str>) -> Move {
@@ -732,7 +706,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     store
-        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .write(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
     set(
         &store,
@@ -762,7 +736,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         into: None,
         when: None,
     };
-    let review = store.move_view(&who, &query).unwrap();
+    let review = store.read(&who, &query).unwrap();
     assert_eq!(review.into.name.as_str(), "production");
     let rows: Vec<(&str, bool)> = review
         .rows
@@ -788,15 +762,15 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     let choice = token.choice.as_ref().unwrap();
     assert!(choice.secret);
     assert_eq!(json!(choice.default), json!("new"));
-    let refused = store.move_changes(&who, &save(&[], None)).unwrap_err();
+    let refused = store.write(&who, &save(&[], None)).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
     assert_eq!(refused.details["rows"], json!(["web.env.API_KEY"]));
     assert_eq!(
-        code(store.move_changes(&who, &save(&[("nope", None)], None))),
+        code(store.write(&who, &save(&[("nope", None)], None))),
         RpcErrorCode::NotFound
     );
     assert_eq!(
-        code(store.move_changes(&who, &save(&[("web.image", Some("from"))], None))),
+        code(store.write(&who, &save(&[("web.image", Some("from"))], None))),
         RpcErrorCode::InvalidArgument
     );
     // Only a Branch saves, into its own Parent.
@@ -805,25 +779,22 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         ..Save::default()
     });
     assert_eq!(
-        code(store.move_changes(&who, &root)),
+        code(store.write(&who, &root)),
         RpcErrorCode::InvalidArgument
     );
 
     // A review goes stale when the Parent moves on; nothing lands.
     set(&store, &who, "production", &[("web.replicas", json!(2))]);
     let stale = save(&[("web.image", None)], Some(&review.version));
-    assert_eq!(
-        code(store.move_changes(&who, &stale)),
-        RpcErrorCode::Conflict
-    );
+    assert_eq!(code(store.write(&who, &stale)), RpcErrorCode::Conflict);
     assert_eq!(
         values(&store, &who, "production", "web")["image"],
         json!("web:hot")
     );
 
-    let version = store.move_view(&who, &query).unwrap().version;
+    let version = store.read(&who, &query).unwrap().version;
     let saved = store
-        .move_changes(
+        .write(
             &who,
             &save(
                 &[("web.image", None), ("web.env.NEW", None)],
@@ -844,7 +815,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         (&json!("web:2"), &json!("1"), &json!("mine"), json!(2))
     );
     // The unpicked secret stays in the Branch and still moves later.
-    let rows = store.move_view(&who, &query).unwrap().rows;
+    let rows = store.read(&who, &query).unwrap().rows;
     assert_eq!(
         rows.iter().map(|row| row.row.as_str()).collect::<Vec<_>>(),
         ["web.env.API_KEY"]
@@ -857,7 +828,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     );
     // Picked `from`, the Branch's sealed value lands as it is.
     store
-        .move_changes(&who, &save(&[("web.env", Some("from"))], None))
+        .write(&who, &save(&[("web.env", Some("from"))], None))
         .unwrap();
     let input = deploy(&store, &who, "production", 3, true);
     assert_eq!(
@@ -865,10 +836,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         "branch-secret"
     );
     assert_eq!(
-        store
-            .move_changes(&who, &save(&[], None))
-            .unwrap_err()
-            .message,
+        store.write(&who, &save(&[], None)).unwrap_err().message,
         "Nothing to save into production"
     );
 
@@ -895,11 +863,11 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     };
     // A value is one variable's own.
     assert_eq!(
-        code(store.move_changes(&who, &picked(vec![fresh("web.env", "x")]))),
+        code(store.write(&who, &picked(vec![fresh("web.env", "x")]))),
         RpcErrorCode::InvalidArgument
     );
     store
-        .move_changes(
+        .write(
             &who,
             &picked(vec![
                 fresh("web.env.SESSION_KEY", "prod-key"),
@@ -920,7 +888,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     set(&store, &who, "fix-web", &[("web.env.LATE", json!("1"))]);
     deploy(&store, &who, "fix-web", 4, true);
     store
-        .admit(
+        .write_trusted(
             &who,
             &Admit::Remove(Removal {
                 id: DeploymentId::parse(uuid(90)).unwrap(),
@@ -932,7 +900,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         )
         .unwrap();
     assert_eq!(
-        code(store.move_changes(&who, &save(&[], None))),
+        code(store.write(&who, &save(&[], None))),
         RpcErrorCode::Conflict
     );
 }
@@ -978,7 +946,7 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
     assert!(plan(&[], Some("all")).iter().all(|node| node.1 == "own"));
     // The Store creates the Branch the plan shows.
     let created = store
-        .create_branch(&who, &branch("try-web", "production", &["web"]))
+        .write(&who, &branch("try-web", "production", &["web"]))
         .unwrap();
     assert_eq!(
         created

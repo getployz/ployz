@@ -26,7 +26,7 @@ fn who() -> Actor {
 /// Project `shop` with Services `web` and `api` in the Store at `store`.
 fn shop(store: &ConfigStore) {
     store
-        .create_project(
+        .write(
             &who(),
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -38,7 +38,7 @@ fn shop(store: &ConfigStore) {
         .unwrap();
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_service(
+            .write(
                 &who(),
                 &CreateService {
                     id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
@@ -53,7 +53,7 @@ fn shop(store: &ConfigStore) {
 }
 
 fn set(store: &ConfigStore, changes: &[(&str, Value)]) -> Result<Edited, RpcError> {
-    store.edit(
+    store.write(
         &who(),
         &Edit {
             environment: EnvironmentRef::default(),
@@ -71,7 +71,7 @@ fn set(store: &ConfigStore, changes: &[(&str, Value)]) -> Result<Edited, RpcErro
 
 fn unset(store: &ConfigStore, path: &str) -> Edited {
     store
-        .edit(
+        .write(
             &who(),
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -86,7 +86,7 @@ fn unset(store: &ConfigStore, path: &str) -> Edited {
 
 fn get(store: &ConfigStore, path: Option<&str>) -> ployz_store::EnvironmentView {
     store
-        .environment(
+        .read(
             &who(),
             &EnvironmentQuery {
                 path: path.map(|path| SettingPath::parse(path).unwrap()),
@@ -106,7 +106,7 @@ fn staged(edited: &Edited) -> Vec<String> {
 
 fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
-    store.admit(
+    store.write_trusted(
         &who(),
         &Admit::Deploy(Deploy {
             id: id.clone(),
@@ -164,7 +164,7 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
         value(&store, "api.env.DATABASE_URL"),
         "postgres://${{ web.PASSWORD }}@${{ web.DB_HOST }}/app"
     );
-    let diff = store.diff(&who(), &DiffQuery::default()).unwrap();
+    let diff = store.read(&who(), &DiffQuery::default()).unwrap();
     let rows = diff
         .changes
         .iter()
@@ -173,7 +173,7 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
         .collect::<Vec<_>>();
     assert!(rows.contains(&("web.env.PASSWORD", json!({ "secret": true }))));
     assert!(rows.contains(&("web.env.DB_HOST", json!("db"))));
-    let plan = store.plan(&who(), &PlanQuery::default()).unwrap();
+    let plan = store.read(&who(), &PlanQuery::default()).unwrap();
 
     let id = admit(&store, 1).unwrap();
     let reads = [
@@ -182,12 +182,17 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
         json!(get(&store, Some("web"))),
         json!(diff),
         json!(plan),
-        json!(store.deployment(&who(), &id).unwrap()),
         json!(
             store
-                .deployments(&who(), &DeploymentsQuery::default())
+                .read(
+                    &who(),
+                    &ployz_store::DeploymentQuery {
+                        id: ToOwned::to_owned(&id)
+                    }
+                )
                 .unwrap()
         ),
+        json!(store.read(&who(), &DeploymentsQuery::default()).unwrap()),
     ];
     for read in reads {
         let text = read.to_string();
@@ -279,7 +284,7 @@ fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     assert_eq!(staged(&unset(&store, "web.env.TOKEN")), ["web.env.TOKEN"]);
     assert!(staged(&unset(&store, "web.env.TOKEN")).is_empty());
     let missing = store
-        .environment(
+        .read(
             &who(),
             &EnvironmentQuery {
                 path: Some(SettingPath::parse("web.env.PLAN").unwrap()),
@@ -328,7 +333,7 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     // get SERVICE → set SERVICE --patch → get changes nothing.
     let revision = web.environment.revision;
     let patched = store
-        .edit(
+        .write(
             &who(),
             &Edit {
                 environment: EnvironmentRef::default(),

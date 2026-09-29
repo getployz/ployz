@@ -171,7 +171,7 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
         (None, _) => (401, json!({ "code": "UNAUTHORIZED" })),
         (Some(who), "/api/config/read") => answer(store.read_trusted(
             &who,
-            &serde_json::from_slice(&body).unwrap(),
+            &serde_json::from_slice::<ployz_store::Query>(&body).unwrap(),
             &evidence(&who),
         )),
         (Some(who), "/api/config/write") => {

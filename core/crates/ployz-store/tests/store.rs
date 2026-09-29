@@ -77,7 +77,7 @@ fn get(store: &ConfigStore, who: &Actor, at: Option<&str>) -> EnvironmentView {
         path: at.map(path),
         all: false,
     };
-    store.environment(who, &query).unwrap()
+    store.read(who, &query).unwrap()
 }
 
 fn value(store: &ConfigStore, who: &Actor, path: &str) -> Value {
@@ -92,9 +92,9 @@ fn paths(paths: &[SettingPath]) -> Vec<String> {
 fn shop() -> (ConfigStore, Actor) {
     let store = open();
     let who = actor("org");
-    store.create_project(&who, &create_project("shop")).unwrap();
+    store.write(&who, &create_project("shop")).unwrap();
     store
-        .create_service(&who, &create_service("svc-web", "web", "nginx:1"))
+        .write(&who, &create_service("svc-web", "web", "nginx:1"))
         .unwrap();
     (store, who)
 }
@@ -103,7 +103,7 @@ fn shop() -> (ConfigStore, Actor) {
 fn a_new_project_opens_an_empty_default_environment() {
     let store = open();
     let who = actor("org");
-    let created = store.create_project(&who, &create_project("shop")).unwrap();
+    let created = store.write(&who, &create_project("shop")).unwrap();
     assert_eq!(created.environment.name.as_str(), "production");
     let view = get(&store, &who, None);
     assert_eq!(view.environment, created.environment);
@@ -114,9 +114,9 @@ fn a_new_project_opens_an_empty_default_environment() {
 fn an_image_service_shows_every_setting_with_its_default() {
     let store = open();
     let who = actor("org");
-    store.create_project(&who, &create_project("shop")).unwrap();
+    store.write(&who, &create_project("shop")).unwrap();
     let created = store
-        .create_service(&who, &create_service("svc-web", "web", "nginx:1"))
+        .write(&who, &create_service("svc-web", "web", "nginx:1"))
         .unwrap();
     assert_eq!(
         paths(&created.staged),
@@ -159,7 +159,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
 fn the_whole_environment_shows_only_what_is_set_unless_all() {
     let (store, who) = shop();
     store
-        .edit(&who, &edit(None, vec![set("web.cpuLimit", json!("0.5"))]))
+        .write(&who, &edit(None, vec![set("web.cpuLimit", json!("0.5"))]))
         .unwrap();
     let view = get(&store, &who, None);
     let rows = view
@@ -173,7 +173,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         all: true,
         ..EnvironmentQuery::default()
     };
-    let all = store.environment(&who, &query).unwrap();
+    let all = store.read(&who, &query).unwrap();
     assert_eq!(all.settings.len(), 10);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
@@ -206,7 +206,7 @@ fn every_setting_round_trips_get_patch_get() {
         values.insert(name.clone(), setting["examples"][0].clone());
     }
     store
-        .edit(
+        .write(
             &who,
             &edit(None, vec![patch(Value::Object(values.clone()))]),
         )
@@ -214,7 +214,7 @@ fn every_setting_round_trips_get_patch_get() {
     let after = get(&store, &who, Some("web")).values.unwrap();
     assert_eq!(json!(after), json!(values));
     let again = store
-        .edit(&who, &edit(None, vec![patch(Value::Object(after))]))
+        .write(&who, &edit(None, vec![patch(Value::Object(after))]))
         .unwrap();
     assert!(again.staged.is_empty(), "sending get back changes nothing");
 }
@@ -223,10 +223,10 @@ fn every_setting_round_trips_get_patch_get() {
 fn a_patch_keeps_omitted_settings_and_never_clears() {
     let (store, who) = shop();
     store
-        .edit(&who, &edit(None, vec![set("web.memLimit", json!(2))]))
+        .write(&who, &edit(None, vec![set("web.memLimit", json!(2))]))
         .unwrap();
     let edited = store
-        .edit(&who, &edit(None, vec![patch(json!({ "replicas": 3 }))]))
+        .write(&who, &edit(None, vec![patch(json!({ "replicas": 3 }))]))
         .unwrap();
     assert_eq!(paths(&edited.staged), ["web.replicas"]);
     assert_eq!(value(&store, &who, "web.memLimit"), json!(2.0));
@@ -236,12 +236,12 @@ fn a_patch_keeps_omitted_settings_and_never_clears() {
         (json!([1]), RpcErrorCode::InvalidArgument),
     ] {
         let error = store
-            .edit(&who, &edit(None, vec![patch(body.clone())]))
+            .write(&who, &edit(None, vec![patch(body.clone())]))
             .unwrap_err();
         assert_eq!(error.code, code, "{body}");
     }
     let error = store
-        .edit(
+        .write(
             &who,
             &edit(
                 None,
@@ -260,7 +260,7 @@ fn a_patch_keeps_omitted_settings_and_never_clears() {
 fn set_stages_text_values_and_unset_restores_the_default() {
     let (store, who) = shop();
     let edited = store
-        .edit(
+        .write(
             &who,
             &edit(
                 None,
@@ -286,7 +286,7 @@ fn set_stages_text_values_and_unset_restores_the_default() {
     assert_eq!(value(&store, &who, "web.image"), json!("nginx:2"));
 
     store
-        .edit(
+        .write(
             &who,
             &edit(
                 None,
@@ -309,7 +309,7 @@ fn set_stages_text_values_and_unset_restores_the_default() {
 fn an_edit_that_changes_nothing_keeps_the_revision() {
     let (store, who) = shop();
     let edited = store
-        .edit(&who, &edit(None, vec![set("web.replicas", json!(1))]))
+        .write(&who, &edit(None, vec![set("web.replicas", json!(1))]))
         .unwrap();
     assert_eq!(edited.environment.revision, Revision(2));
     assert!(edited.staged.is_empty());
@@ -350,7 +350,7 @@ fn an_identical_replay_returns_the_first_result_and_a_different_body_conflicts()
         );
     }
     let error = store
-        .create_project(&actor("other"), &create_project("shop"))
+        .write(&actor("other"), &create_project("shop"))
         .unwrap_err();
     assert_eq!(
         error.code,
@@ -378,10 +378,10 @@ fn a_misspelled_field_is_refused_rather_than_ignored() {
 fn an_expected_revision_refuses_when_working_state_moved() {
     let (store, who) = shop();
     store
-        .edit(&who, &edit(Some(2), vec![set("web.replicas", json!(2))]))
+        .write(&who, &edit(Some(2), vec![set("web.replicas", json!(2))]))
         .unwrap();
     let error = store
-        .edit(&who, &edit(Some(2), vec![set("web.replicas", json!(4))]))
+        .write(&who, &edit(Some(2), vec![set("web.replicas", json!(4))]))
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details, json!({ "revision": 3 }));
@@ -394,9 +394,9 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
     let url = fresh_url(&dir);
     let who = actor("org");
     let first = ConfigStore::open(&url, backend::key()).unwrap();
-    first.create_project(&who, &create_project("shop")).unwrap();
+    first.write(&who, &create_project("shop")).unwrap();
     first
-        .create_service(&who, &create_service("svc-web", "web", "nginx:1"))
+        .write(&who, &create_service("svc-web", "web", "nginx:1"))
         .unwrap();
     // Two handles on one file: two CLI processes editing the same Environment.
     let second = ConfigStore::open(&url, backend::key()).unwrap();
@@ -404,14 +404,14 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
         let replicas = scope.spawn(|| {
             for n in 2..12 {
                 first
-                    .edit(&who, &edit(None, vec![set("web.replicas", json!(n))]))
+                    .write(&who, &edit(None, vec![set("web.replicas", json!(n))]))
                     .unwrap();
             }
         });
         let command = scope.spawn(|| {
             for n in 0..10 {
                 second
-                    .edit(
+                    .write(
                         &who,
                         &edit(
                             None,
@@ -433,7 +433,7 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
 fn a_failed_edit_writes_none_of_its_changes() {
     let (store, who) = shop();
     let error = store
-        .edit(
+        .write(
             &who,
             &edit(
                 None,
@@ -514,12 +514,12 @@ fn wrong_paths_and_values_name_the_fix() {
     ];
     for (change, code) in cases {
         let error = store
-            .edit(&who, &edit(None, vec![change.clone()]))
+            .write(&who, &edit(None, vec![change.clone()]))
             .unwrap_err();
         assert_eq!(error.code, code, "{change:?}: {error:?}");
     }
     let error = store
-        .edit(&who, &edit(None, vec![set("web.cpuLimit", json!(65))]))
+        .write(&who, &edit(None, vec![set("web.cpuLimit", json!(65))]))
         .unwrap_err();
     assert_eq!(
         error.details,
@@ -530,14 +530,14 @@ fn wrong_paths_and_values_name_the_fix() {
         })
     );
     let error = store
-        .edit(&who, &edit(None, vec![set("api.replicas", json!(2))]))
+        .write(&who, &edit(None, vec![set("api.replicas", json!(2))]))
         .unwrap_err();
     assert_eq!(
         error.details,
         json!({ "did_you_mean": null, "valid_children": ["web"] })
     );
     let error = store
-        .edit(&who, &edit(None, vec![set("wbe.replicas", json!(2))]))
+        .write(&who, &edit(None, vec![set("wbe.replicas", json!(2))]))
         .unwrap_err();
     assert_eq!(error.details["did_you_mean"], "web");
 }
@@ -567,7 +567,7 @@ fn malformed_ids_and_names_are_refused_without_echo() {
 #[test]
 fn names_resolve_within_one_organization() {
     let (store, who) = shop();
-    store.create_project(&who, &create_project("blog")).unwrap();
+    store.write(&who, &create_project("blog")).unwrap();
     let query = Query::Environment(EnvironmentQuery::default());
     let error = store.read(&who, &query).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Ambiguous);
@@ -583,7 +583,7 @@ fn names_resolve_within_one_organization() {
 
     let mut duplicate = create_service("svc-api", "web", "nginx:1");
     duplicate.environment.project = Some(ProjectName::parse("shop").unwrap());
-    let error = store.create_service(&who, &duplicate).unwrap_err();
+    let error = store.write(&who, &duplicate).unwrap_err();
     assert_eq!(
         error.code,
         RpcErrorCode::Conflict,
@@ -594,9 +594,9 @@ fn names_resolve_within_one_organization() {
 #[test]
 fn environments_are_created_in_a_named_project_and_addressed_by_name() {
     let (store, who) = shop();
-    store.create_project(&who, &create_project("blog")).unwrap();
+    store.write(&who, &create_project("blog")).unwrap();
     store
-        .create_environment(
+        .write(
             &who,
             &create_environment("env-staging", Some("shop"), "staging"),
         )
@@ -609,11 +609,11 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
         path: None,
         all: true,
     };
-    let view = store.environment(&who, &query).unwrap();
+    let view = store.read(&who, &query).unwrap();
     assert!(view.settings.is_empty(), "web lives in production only");
 
     query.environment.environment = Some(EnvironmentName::parse("preview").unwrap());
-    let error = store.environment(&who, &query).unwrap_err();
+    let error = store.read(&who, &query).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(
         error.details,
@@ -625,13 +625,13 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
 fn project_and_environment_names_never_clash_across_projects() {
     let store = open();
     let who = actor("org");
-    store.create_project(&who, &create_project("a-b")).unwrap();
-    store.create_project(&who, &create_project("a")).unwrap();
+    store.write(&who, &create_project("a-b")).unwrap();
+    store.write(&who, &create_project("a")).unwrap();
     store
-        .create_environment(&who, &create_environment("env-c", Some("a-b"), "c"))
+        .write(&who, &create_environment("env-c", Some("a-b"), "c"))
         .unwrap();
     store
-        .create_environment(&who, &create_environment("env-b-c", Some("a"), "b-c"))
+        .write(&who, &create_environment("env-b-c", Some("a"), "b-c"))
         .unwrap();
 }
 
@@ -653,7 +653,7 @@ fn the_wire_and_typed_forms_agree() {
     };
     assert_eq!(view.environment, created.environment);
     assert_eq!(
-        store.create_project(&who, &create_project("shop")).unwrap(),
+        store.write(&who, &create_project("shop")).unwrap(),
         created,
         "a typed replay of a wire create"
     );
