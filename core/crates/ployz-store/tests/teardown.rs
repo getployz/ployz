@@ -22,6 +22,11 @@ use serde_json::json;
 
 mod backend;
 
+/// A node by its name: `SERVICE`, or `volumes.VOLUME`.
+fn node(name: &str) -> ployz_store::NodeName {
+    ployz_store::NodeName::parse(name).unwrap()
+}
+
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
@@ -323,7 +328,7 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
             id: EnvironmentId::parse(uuid(7)).unwrap(),
             from: at("production"),
             name: EnvironmentName::parse("fix").unwrap(),
-            copy: vec!["web".into()],
+            copy: vec![node("web")],
             live: Vec::new(),
             setup: Vec::new(),
             keep: false,
@@ -397,7 +402,7 @@ fn a_branch_goes_before_its_parent_and_an_unknown_removal_keeps_it() {
                 id: EnvironmentId::parse(uuid(7)).unwrap(),
                 from: at("production"),
                 name: EnvironmentName::parse("fix").unwrap(),
-                copy: vec!["web".into()],
+                copy: vec![node("web")],
                 live: Vec::new(),
                 setup: Vec::new(),
                 keep: false,
@@ -491,7 +496,7 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
                 id: EnvironmentId::parse(uuid(7)).unwrap(),
                 from: at("production"),
                 name: EnvironmentName::parse("fix").unwrap(),
-                copy: vec!["web".into()],
+                copy: vec![node("web")],
                 live: Vec::new(),
                 setup: Vec::new(),
                 keep: false,
@@ -615,7 +620,7 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
                 id: EnvironmentId::parse(uuid(7)).unwrap(),
                 from: at("production"),
                 name: EnvironmentName::parse("next").unwrap(),
-                copy: vec!["web".into()],
+                copy: vec![node("web")],
                 live: Vec::new(),
                 setup: Vec::new(),
                 keep: false,

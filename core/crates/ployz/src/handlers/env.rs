@@ -547,8 +547,8 @@ fn branch(root: &ArgMatches) -> Result<(), Error> {
             environment: from,
         },
         name,
-        copy: nodes("copy"),
-        live: nodes("live"),
+        copy: node_names(&nodes("copy"))?,
+        live: node_names(&nodes("live"))?,
         setup,
         keep: matches.get_flag("keep"),
         fix,
@@ -792,7 +792,7 @@ fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Erro
             _ => say!("Moved {from} → {into}."),
         }
         if !moved.staged.is_empty() {
-            say!("Staged: {}", moved.staged.join(", "));
+            say!("Staged: {}", joined(&moved.staged));
         }
         if let Some(close) = &out.close {
             say!("Close the Branch when done: {close}");
@@ -859,7 +859,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             branch.parent
         );
         if !result.staged.is_empty() {
-            say!("Staged: {}", result.staged.join(", "));
+            say!("Staged: {}", joined(&result.staged));
         }
         for live in &branch.live {
             match &live.owner {
@@ -946,7 +946,7 @@ fn pr(root: &ArgMatches) -> Result<(), Error> {
             .unwrap_or_default(),
         enabled,
         start_from,
-        copy: list("copy"),
+        copy: list("copy").map(|names| node_names(&names)).transpose()?,
         setup,
         remove_on_close: matches.get_one::<bool>("remove-on-close").copied(),
         include_bots: matches.get_one::<bool>("bots").copied(),
@@ -997,7 +997,7 @@ fn pr(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
             if !plan.copy.is_empty() {
-                words.push(format!("also copies {}", plan.copy.join(", ")));
+                words.push(format!("also copies {}", joined(&plan.copy)));
             }
             for setup in &plan.setup {
                 words.push(format!("then {}: {}", setup.service, setup.command));
@@ -1011,4 +1011,21 @@ fn pr(root: &ArgMatches) -> Result<(), Error> {
             say!("  {}: {}", plan.repository, words.join(" · "));
         }
     })
+}
+
+/// Nodes by name: `SERVICE`, or `volumes.VOLUME`.
+fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
+    Ok(names
+        .iter()
+        .map(|name| ployz_store::NodeName::parse(name.as_str()))
+        .collect::<Result<_, _>>()?)
+}
+
+/// Items as one line of text.
+fn joined<T: ToString>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }

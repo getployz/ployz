@@ -14,6 +14,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
 
 /// Create a Volume, optionally mounted into Services.
@@ -63,9 +64,9 @@ pub struct VolumeStaged {
     pub environment: EnvironmentSummary,
     /// What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
     /// gained or lost as `SERVICE.mounts.NAME`.
-    pub staged: Vec<String>,
+    pub staged: Vec<SettingPath>,
     /// What took effect at once: never anything here.
-    pub immediate: Vec<String>,
+    pub immediate: Vec<SettingPath>,
 }
 
 /// A Volume as results name it.
@@ -101,10 +102,13 @@ pub(crate) fn create_volume(
             name: create.name.to_string(),
         };
         environment.working.volumes.push(node.clone());
-        let mut staged = vec![whole(&create.name)];
+        let mut staged = vec![SettingPath::volume(&create.name)];
         for mount in &create.mounts {
             if attach(&mut environment, &mount.service, &create.name, &mount.path)? {
-                staged.push(path(&mount.service, &create.name));
+                staged.push(SettingPath::at(
+                    &mount.service,
+                    Target::Mount(create.name.clone()),
+                ));
             }
         }
         scope::save_working(tx, &mut environment)?;
@@ -128,14 +132,16 @@ pub(crate) fn remove_volume(
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let volume = summary(environment.volume(&remove.volume)?)?;
-    let mut staged = vec![whole(&volume.name)];
+    let mut staged = vec![SettingPath::volume(&volume.name)];
     for service in &mut environment.working.services {
         let before = service.volume_attachments.len();
         service
             .volume_attachments
             .retain(|mount| mount.volume_resource_id != volume.id.as_str());
         if service.volume_attachments.len() != before {
-            staged.push(format!("{}.mounts.{}", service.slug, volume.name));
+            let name =
+                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
         }
     }
     environment
@@ -200,12 +206,4 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
         id: VolumeId::parse(node.resource_id.as_str()).map_err(|_| error::corrupt("Volume ID"))?,
         name: VolumeName::parse(node.name.as_str()).map_err(|_| error::corrupt("Volume name"))?,
     })
-}
-
-fn whole(volume: &VolumeName) -> String {
-    format!("volumes.{volume}")
-}
-
-fn path(service: &ServiceName, volume: &VolumeName) -> String {
-    format!("{service}.mounts.{volume}")
 }

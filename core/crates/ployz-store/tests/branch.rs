@@ -19,6 +19,16 @@ use serde_json::{Value, json};
 
 mod backend;
 
+/// Items as their text, to compare with literals.
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
+/// A node by its name: `SERVICE`, or `volumes.VOLUME`.
+fn node(name: &str) -> ployz_store::NodeName {
+    ployz_store::NodeName::parse(name).unwrap()
+}
+
 fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
@@ -115,7 +125,7 @@ fn branch(name: &str, from: &str, copy: &[&str]) -> CreateBranch {
         .unwrap(),
         from: at(from),
         name: EnvironmentName::parse(name).unwrap(),
-        copy: copy.iter().map(|name| (*name).to_owned()).collect(),
+        copy: copy.iter().map(|name| node(name)).collect(),
         live: Vec::new(),
         setup: Vec::new(),
         keep: false,
@@ -266,7 +276,7 @@ fn a_branch_of_an_undeployed_parent_copies_what_it_uses_with_secrets_and_credent
     );
 
     // The Parent runs nothing, so web brings db and db its Volume, all under fresh ids.
-    assert_eq!(made.staged, ["db", "volumes.data", "web"]);
+    assert_eq!(texts(&made.staged), ["db", "web", "volumes.data"]);
     let copied = services(&store, &who, "fix-web");
     assert_eq!(
         copied
@@ -407,9 +417,9 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
     let mut create = branch("fix-web", "production", &["web"]);
-    create.live = vec!["db".into()];
+    create.live = vec![node("db")];
     let made = store.create_branch(&who, &create).unwrap();
-    assert_eq!(made.staged, ["web"]);
+    assert_eq!(texts(&made.staged), ["web"]);
     let production = EnvironmentName::parse("production").unwrap();
     assert_eq!(
         made.branch.live,
@@ -432,7 +442,7 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
         &[("web.env.DB_HOST", json!("${{ db.PLOYZ_PRIVATE_DOMAIN }}"))],
     );
     let mut wrong = branch("other", "production", &["web"]);
-    wrong.live = vec!["data".into()];
+    wrong.live = vec![node("volumes.data")];
     assert_eq!(
         code(store.create_branch(&who, &wrong)),
         RpcErrorCode::InvalidArgument
@@ -567,7 +577,7 @@ fn an_own_copy_of_a_live_node_brings_an_empty_copy_of_its_volume() {
         expect: None,
     };
     let copied: Branched = store.copy_node(&who, &copy).unwrap();
-    assert_eq!(copied.staged, ["db", "volumes.data"]);
+    assert_eq!(texts(&copied.staged), ["db", "volumes.data"]);
     assert!(copied.branch.live.is_empty());
     let db = id_of(&store, &who, "fix-web", "db");
     assert_ne!(db, uuid(4));
@@ -622,7 +632,7 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
         RpcErrorCode::InvalidArgument
     );
     fix.fix = Some(failed.clone());
-    fix.copy = vec!["data".into()];
+    fix.copy = vec![node("volumes.data")];
     assert_eq!(
         code(store.create_branch(&who, &fix)),
         RpcErrorCode::InvalidArgument
@@ -631,7 +641,7 @@ fn a_failed_deployment_is_fixed_on_a_branch_and_the_parent_stays() {
     // Named none: it copies the Services the Deployment didn't apply.
     fix.copy = Vec::new();
     let made = store.create_branch(&who, &fix).unwrap();
-    assert_eq!(made.staged, ["web"]);
+    assert_eq!(texts(&made.staged), ["web"]);
     assert_eq!(values(&store, &who, "fix", "web")["image"], "web:2");
     assert_eq!(values(&store, &who, "production", "web")["image"], "web:3");
 }
@@ -819,7 +829,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
             ),
         )
         .unwrap();
-    assert_eq!(saved.staged, ["web"]);
+    assert_eq!(texts(&saved.staged), ["web"]);
     assert_eq!(saved.branch.unwrap().environment.name.as_str(), "fix-web");
     let web = values(&store, &who, "production", "web");
     assert_eq!(
@@ -932,8 +942,8 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
     let plan = |copy: &[&str], preset: Option<&str>| {
         let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
             from: at("production"),
-            focus: vec!["web".to_owned()],
-            copy: copy.iter().map(|name| (*name).to_owned()).collect(),
+            focus: vec![node("web")],
+            copy: copy.iter().map(|name| node(name)).collect(),
             preset: preset.map(|preset| serde_json::from_value(json!(preset)).unwrap()),
         });
         let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
@@ -982,7 +992,7 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
             &who,
             &ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
                 from: at("production"),
-                copy: vec!["nope".to_owned()],
+                copy: vec![node("nope")],
                 ..Default::default()
             })
         )),

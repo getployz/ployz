@@ -20,6 +20,11 @@ use serde_json::{Value, json};
 
 mod backend;
 
+/// Items as their text, to compare with literals.
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
 const MERGE: &str = "3333333333333333333333333333333333333333";
 
 fn uuid(n: u8) -> String {
@@ -441,7 +446,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     let taken = store
         .move_changes(&who, &take(Some("web.env.MODE")))
         .unwrap();
-    assert_eq!(taken.staged, ["web"]);
+    assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
     assert_eq!(taken.conditional_save.unwrap().state, SaveState::Landed);
     assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));

@@ -64,7 +64,7 @@ pub use removal::{RemovedVolume, VolumeLoss};
 pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
-pub use settings::{Apply, SettingPath};
+pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,

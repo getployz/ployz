@@ -243,6 +243,10 @@ impl GitSetting {
                 .or_else(|| value.get("previousName"))
                 .cloned()
                 .unwrap_or(Value::Null),
+            // Never its ID or access: only its name.
+            Self::Repository if value.is_object() => {
+                value.get("repository").cloned().unwrap_or(Value::Null)
+            }
             Self::Repository
             | Self::RootDir
             | Self::BuildMethod

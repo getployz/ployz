@@ -21,6 +21,11 @@ use serde_json::{Value, json};
 
 mod backend;
 
+/// Items as their text, to compare with literals.
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
+
 const VOLUME: &str = "00000000-0000-4000-8000-000000000005";
 const DOCKER_VOLUME: &str = "shop-production_vol-00000000-0000-4000-8000-000000000005";
 
@@ -64,7 +69,7 @@ fn shop() -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
-    assert_eq!(created.staged, ["volumes.data", "web.mounts.data"]);
+    assert_eq!(texts(&created.staged), ["volumes.data", "web.mounts.data"]);
     (store, who)
 }
 
@@ -303,7 +308,7 @@ fn an_undeployed_volume_is_removed_without_servers() {
             },
         )
         .unwrap();
-    assert_eq!(removed.staged, ["volumes.data", "web.mounts.data"]);
+    assert_eq!(texts(&removed.staged), ["volumes.data", "web.mounts.data"]);
     assert!(listed(&store, &who).is_empty());
     assert!(
         diff(&store, &who)

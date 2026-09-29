@@ -30,6 +30,7 @@ use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::NodeName;
 use crate::storage::Tx;
 use crate::{Actor, Trusted, review, teardown};
 
@@ -107,7 +108,7 @@ pub struct SetPrPlan {
     pub start_from: Option<EnvironmentName>,
     /// What else each copies from it, by name; the repository's Services always are.
     #[serde(default)]
-    pub copy: Option<Vec<String>>,
+    pub copy: Option<Vec<NodeName>>,
     /// Commands to run in its Own Copies before they first deploy.
     #[serde(default)]
     pub setup: Option<Vec<SetupCommand>>,
@@ -147,7 +148,7 @@ pub struct PrPlan {
     pub enabled: bool,
     /// None until picked, or once that Environment is gone.
     pub start_from: Option<EnvironmentName>,
-    pub copy: Vec<String>,
+    pub copy: Vec<NodeName>,
     pub setup: Vec<SetupCommand>,
     pub remove_on_close: bool,
     pub include_bots: bool,
@@ -392,7 +393,11 @@ pub(crate) fn plans(
             copy: stored
                 .copy
                 .iter()
-                .filter_map(|lineage| named(lineage))
+                .filter_map(|lineage| {
+                    start
+                        .as_ref()
+                        .and_then(|start| branch::node_of(&start.working, lineage))
+                })
                 .collect(),
             setup: stored
                 .setup
@@ -812,17 +817,17 @@ fn create(
 ) -> Result<Option<AutoDeployed>, RpcError> {
     let working = &start.working;
     let ours = |source: &ServiceSource| matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id);
-    let mut copy: Vec<String> = working
+    let mut copy: Vec<NodeName> = working
         .services
         .iter()
         .filter(|service| ours(&service.config.source))
-        .map(|service| service.slug.clone())
+        .filter_map(|service| branch::node_of(working, &service.lineage_id))
         .collect();
     if copy.is_empty() {
         return Ok(None);
     }
     for lineage in &plan.copy {
-        if let Some(name) = branch::name_of(working, lineage)
+        if let Some(name) = branch::node_of(working, lineage)
             && !copy.contains(&name)
         {
             copy.push(name);
@@ -833,11 +838,12 @@ fn create(
         .iter()
         .filter_map(|setup| {
             // Setup Commands for Services it doesn't copy are left out.
-            let name = branch::name_of(working, &setup.lineage)?;
-            copy.contains(&name).then(|| {
+            let Some(NodeName::Service(service)) = branch::node_of(working, &setup.lineage) else {
+                return None;
+            };
+            copy.contains(&NodeName::Service(service.clone())).then(|| {
                 Ok(SetupCommand {
-                    service: ServiceName::parse(name)
-                        .map_err(|_| error::corrupt("Service name"))?,
+                    service,
                     command: setup.command.clone(),
                 })
             })
