@@ -1,15 +1,14 @@
 import { useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { BranchPreset, PlannedNode } from "@ployz/sdk";
+import type { BranchPreset } from "@ployz/sdk";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
 import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { branchSetupCommands, ownLineages, type BranchPlan } from "#/modules/config-store/branch-picks";
+import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
 import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
-import { planOf } from "#/modules/config-store/store-branches";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
@@ -39,27 +38,15 @@ function useStorePicking(newBranch: { focus: string | null } | null): PickingVie
   const result = useBranchPlan(params.organizationSlug, newBranch ? branchPlanQuery(store, state.focus, state.picks) : null);
   const view = result?.ok ? result.value : null;
   if (!newBranch || !view) return null;
-  const plan = planOf(view);
-  const byName = new Map(view.nodes.map((node) => [node.name, node]));
-  const own = ownLineages(plan);
-  const asPlanNode = (node: PlannedNode, role: PlannedNode["role"]): BranchPlan["nodes"][number] => role === "own"
-    ? { lineageId: node.name, nodeType: node.kind, role, because: "picked" }
-    : { lineageId: node.name, nodeType: node.kind, role };
+  const own = ownLineages(view);
   return {
     parent: { name: view.from.name },
-    plan,
+    plan: view,
     presets: view.presets.map((preset) => ({ preset })),
     fromPr: new Set(),
     // Copied because something needs it, or used live from further up than the Parent: clicking changes nothing.
-    fixed: (node) => (node.role === "own" && node.because !== "picked")
-      || (node.role === "live" && (byName.get(node.lineageId)?.owner ?? view.from.name) !== view.from.name),
-    liveOwner: (name) => ({ ownsData: byName.get(name)?.data ?? false }),
-    ownerName: (name) => byName.get(name)?.owner ?? view.from.name,
+    fixed: (node) => (node.role === "own" && node.because !== "picked") || (node.role === "live" && (node.owner ?? view.from.name) !== view.from.name),
     setPreset: (preset) => setState((current) => ({ ...current, picks: { preset } })),
-    toggled: (name) => {
-      const node = byName.get(name);
-      return node && asPlanNode(node, node.toggled);
-    },
     toggle: (name) => {
       const on = !own.includes(name);
       setState((current) => ({
