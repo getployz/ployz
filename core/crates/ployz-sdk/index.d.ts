@@ -1,6 +1,4 @@
 import type {
-  BuildGrantEnded,
-  BuildGrantMinted,
   ConfigCommand,
   ConfigQuery,
   ConfigTrusted,
@@ -20,8 +18,6 @@ import type {
   DeployIntent,
   DeployOutcome,
   DeployPreview,
-  EndBuildGrantRequest,
-  MintBuildGrantRequest,
   VolumeRemoval,
   ExecutionError,
   ImageCleanupReport,
@@ -156,13 +152,6 @@ export type BuildOptions = WatchOptions & {
   readonly startWithinMs?: number;
 };
 
-/** The one Git Service's frozen deployment, the commit to build, and its latest receipt, if any. */
-export type OutsideBuildInput = { deployment: PreparationInput["deployment"]; commit: string; receipt?: BuildReceipt };
-/** `reuse`: the receipt is for this commit and `machine_name` still holds an image every placement runs. `build`: these platforms. */
-export type OutsideBuild =
-  | { kind: "reuse"; receipt: BuildReceipt; machine_name: string }
-  | { kind: "build"; platforms: string[] };
-
 /** `queued`: not admitted within `startWithinMs`, withdrawn; nothing started. */
 export type BuildOutcome = { kind: "queued" } | { kind: "built"; receipt: BuildReceipt };
 
@@ -179,12 +168,8 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
-/** Fingerprints a build of these pinned commits and uploads would carry, keyed by Service; no source needed. */
-export declare function buildFingerprints(input: Pick<PreparationInput, "deployment" | "uploads"> & { source_commits: Record<string, string> }): Record<string, string>;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
-/** The tag a Build Grant push retains `digest` under in `repository`, as Image Cleanup knows it. */
-export declare function buildGrantTag(repository: string, digest: string): string;
 export declare function applyAll(
   namespace: Namespace,
   specs: readonly RequestedServiceSpec[],
@@ -201,8 +186,6 @@ export declare class Client {
   prepare(input: PreparationInput, options?: WatchOptions): RunningPreparation;
   /** One Image Build. `input` holds exactly one Git Service with its checkout and commit; its receipt is a reuse hint. */
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
-  /** What a Builder outside the Cluster does for the one Git Service in `deployment` at `commit`; never builds. */
-  outsideBuild(input: OutsideBuildInput): Promise<OutsideBuild>;
   /** Sets `label`'s slot to a fresh key; resolves to its secret `ployz1:` Management Capability. */
   setManagementClient(label: string): Promise<string>;
   clearManagementClient(label: string): Promise<void>;
@@ -214,10 +197,6 @@ export declare class Client {
   publishCertificateMaterial(
     request: PublishCertificateMaterialRequest,
   ): Promise<CertificateMaterialPublished>;
-  /** Mint a Build Grant on this Machine; `grant` is secret and goes only to the pusher. Not retried. */
-  mintBuildGrant(request: MintBuildGrantRequest): Promise<BuildGrantMinted>;
-  /** Idempotent. `pushed` is the digest this Machine verified; not_found once the grant expired. */
-  endBuildGrant(request: EndBuildGrantRequest): Promise<BuildGrantEnded>;
   readonly runtime: {
     watch(options?: WatchOptions): AsyncIterable<RuntimeWatchView>;
     logs(options?: LogOptions): AsyncIterable<LogEvent>;

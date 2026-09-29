@@ -426,10 +426,7 @@ impl Run {
         &self,
         work: impl FnOnce(&ConfigStore) -> Result<T, RpcError> + Send + 'static,
     ) -> Result<T, RpcError> {
-        let store = Arc::clone(&self.store);
-        tokio::task::spawn_blocking(move || work(&store))
-            .await
-            .map_err(|_| internal("A Config Store call stopped unexpectedly"))?
+        super::store_call(&self.store, work).await
     }
 }
 

@@ -47,6 +47,10 @@ function volume(machine, name) {
 }
 
 (async () => {
+  // Malformed input is refused before any Server is dialed.
+  await expectRpc(() => sdk.observeVolumes("not connections", ["data"]), "invalid_argument");
+  await expectRpc(() => sdk.observeVolumes(connectionsFor(machineId), ["Not A Volume!"]), "invalid_argument");
+
   if (typeof sdk.Client.prototype.removeVolumes !== "function") {
     throw new Error("Client.removeVolumes must be a method");
   }
