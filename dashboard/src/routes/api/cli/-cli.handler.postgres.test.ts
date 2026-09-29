@@ -7,6 +7,8 @@ import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { InngestClient } from "#/modules/inngest/client";
 import { member, organizationToken, session } from "#/modules/identity/tables";
 import { asTestDouble } from "#/lib/test-double";
@@ -20,6 +22,7 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { fakeGithubApi } from "#/test/fake-github";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
@@ -31,6 +34,11 @@ const hostedPolar: PolarService = {
   createCheckout: () => Effect.succeed({ url: "https://polar.test/checkout" }),
   createCustomerPortal: () => Effect.succeed({ customerPortalUrl: "https://polar.test/portal" }),
 };
+
+/** GitHub: the private acme/web (through installation 7) has branches main and dev. */
+const github = fakeGithubApi({
+  "https://api.github.com/repos/acme/web/branches?per_page=100&page=1": [{ name: "main" }, { name: "dev" }],
+});
 
 const encryption = makeSecretEncryption("fixture-server-access-encryption-1234567890");
 
@@ -93,6 +101,7 @@ const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test", plo
     Layer.succeed(Polar, polar),
     Layer.succeed(InngestClient, new Inngest({ id: "cli-test" })),
     Layer.succeed(SecretEncryption, encryption),
+    Layer.succeed(GithubApi, github.service),
     ployz,
   );
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
@@ -111,6 +120,15 @@ type Reply = {
   readonly unreachable?: ReadonlyArray<string>;
   readonly servers?: { readonly confirmed: ReadonlyArray<string>; readonly unconfirmed: ReadonlyArray<string> };
   readonly signed_out?: { readonly id: string };
+  readonly linked?: boolean;
+  readonly ready?: boolean;
+  readonly install_url?: string;
+  readonly installations?: ReadonlyArray<{ readonly id: number; readonly account: string; readonly repositories: number }>;
+  readonly repositories?: ReadonlyArray<{ readonly repository: string; readonly installation: number }>;
+  readonly branches?: ReadonlyArray<string>;
+  readonly access?: string;
+  readonly disconnected?: { readonly id: number; readonly account: string };
+  readonly uninstall_url?: string;
   readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
 
@@ -411,6 +429,45 @@ it.live(
         yield* database.drizzle.delete(member).where(eq(member.organizationId, alice.organization.id));
         yield* retireServerAccess();
         assert.isFalse(laterServer.slots.has(serverAccessLabel(third.id)));
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "github lists the caller's installations and a readable repository's branches, and disconnects one",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer({ mode: "self_hosted" });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const empty = yield* cli("GET", "github", alice);
+        assert.deepInclude(empty.json, { linked: false, ready: false, installations: [], repositories: [] });
+        assert.match(empty.json.install_url ?? "", /^https:\/\/github\.com\/apps\/.+\/installations\/new$/);
+
+        const database = yield* Database;
+        const [row] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, alice.organization.id));
+        const userId = row?.userId ?? assert.fail("no member");
+        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubRepositoryCache).values({
+          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
+        });
+        const connected = yield* cli("GET", "github", alice);
+        assert.deepInclude(connected.json, { ready: true });
+        assert.deepStrictEqual(connected.json.installations?.map(({ id, account, repositories }) => ({ id, account, repositories })),
+          [{ id: 7, account: "acme", repositories: 1 }]);
+
+        const branches = yield* cli("GET", "github/branches?repository=ACME/web", alice);
+        assert.deepInclude(branches.json, { access: "installation", branches: ["dev", "main"] });
+        assert.strictEqual((yield* cli("GET", "github/branches?repository=acme/secret", alice)).status, 404);
+
+        const removed = yield* cli("DELETE", "github/7", alice);
+        assert.deepStrictEqual(removed.json.disconnected, { id: 7, account: "acme" });
+        assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
+        assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
+        assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
       }).pipe(Effect.provide(layer));
     }),
   60_000,
