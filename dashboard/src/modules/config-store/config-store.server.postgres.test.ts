@@ -1,0 +1,160 @@
+import { testConfigEnvironment } from "#/test/config-environment";
+import { assert, it } from "@effect/vitest";
+import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
+import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
+import { Inngest } from "inngest";
+import { Polar } from "#/modules/billing/polar-provider.server";
+import { handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { InngestClient } from "#/modules/inngest/client";
+import { Auth, AuthLive } from "#/server/auth.server";
+import { AppConfig } from "#/server/config.server";
+import { DatabaseLive } from "#/server/database.server";
+import { encodePublicError, statusForPublicError } from "#/server/public-error";
+import { postgresTestDatabase } from "#/test/postgres";
+
+const origin = "http://localhost:3000";
+
+/** Cloud with the Config Store on its own database, as it runs while dark. */
+const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string; readonly storeless?: true } = {}) {
+  const cloud = yield* postgresTestDatabase;
+  const store = yield* postgresTestDatabase;
+  const base = { ...testConfigEnvironment(), NODE_ENV: overrides.NODE_ENV ?? "test", DATABASE_URL: cloud.url.href };
+  const env = overrides.storeless === true ? base : { ...base, CONFIG_STORE_URL: store.url.href };
+  const provider = ConfigProvider.fromEnv({ env });
+  const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
+  const services = Layer.mergeAll(
+    configLayer,
+    DatabaseLive.pipe(Layer.provide(configLayer)),
+    Layer.succeed(Polar, { mode: "self_hosted" }),
+    Layer.succeed(InngestClient, new Inngest({ id: "config-store-test" })),
+  );
+  return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
+});
+
+/** The fields these tests read from Store results and refusals. */
+type Reply = {
+  readonly written?: string;
+  readonly view?: string;
+  readonly staged?: ReadonlyArray<string>;
+  readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
+  readonly error?: { readonly code: string; readonly details: { readonly revision?: number } | null };
+};
+
+/** One CLI request; `json` is the Store's result, or its refusal under `error`. */
+const request = Effect.fn(function* (path: string, cookie: string | undefined, body: Body | undefined, method = "POST") {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (cookie !== undefined) headers.set("cookie", cookie);
+  const init: RequestInit = { method, headers };
+  if (method === "POST") init.body = JSON.stringify(body);
+  const exit = yield* Effect.exit(handleConfigRequest(new Request(`${origin}/api/config/${path}`, init)));
+  if (Exit.isFailure(exit)) {
+    const empty: Reply = {};
+    return { status: statusForPublicError(encodePublicError(Cause.squash(exit.cause))), json: empty };
+  }
+  const text = yield* Effect.promise(() => exit.value.text());
+  // SAFETY: test-only view of the Store's JSON; assertions check every field read.
+  return { status: exit.value.status, json: JSON.parse(text) as Reply };
+});
+
+const signUp = Effect.fn(function* (name: string) {
+  const auth = yield* Auth;
+  const response = yield* auth.handler(new Request(`${origin}/api/auth/sign-up/email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "user-agent": "ployz-cli/0.0.0" },
+    body: JSON.stringify({ email: `${name}@example.test`, name, password: "correct-horse-battery-staple" }),
+  }));
+  assert.strictEqual(response.status, 200);
+  return response.headers.get("set-cookie")?.split(";", 1)[0] ?? assert.fail("no session cookie");
+});
+
+/** What the CLI sends, plus one command the Store never takes over HTTPS. */
+type Body = ConfigQuery | ConfigCommand | { readonly command: "claim"; readonly deployment: string };
+
+const PROJECT = "00000000-0000-4000-8000-000000000001";
+const ENVIRONMENT = "00000000-0000-4000-8000-000000000002";
+const SERVICE = "00000000-0000-4000-8000-000000000003";
+const here = { project: null, environment: null };
+const shop: ConfigCommand = { command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT };
+const web: ConfigCommand = {
+  command: "create_service", id: SERVICE as ServiceId, environment: here, name: "web", image: "nginx:1",
+};
+const get = (path: string | null): ConfigQuery => ({ query: "environment", environment: here, path });
+
+it.live(
+  "the CLI reads and writes its own Organization's Config Store over HTTPS",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+
+        assert.strictEqual((yield* request("write", undefined, shop)).status, 401);
+
+        const created = yield* request("write", alice, shop);
+        assert.strictEqual(created.status, 200);
+        assert.strictEqual(created.json.written, "project");
+        // A retried create replays; the same ID with another body conflicts.
+        assert.deepStrictEqual((yield* request("write", alice, shop)).json, created.json);
+        const reused = yield* request("write", alice, { ...shop, name: "blog" });
+        assert.strictEqual(reused.status, 409);
+        assert.strictEqual(reused.json.error?.code, "conflict");
+
+        assert.strictEqual((yield* request("write", alice, web)).status, 200);
+        const edited = yield* request("write", alice, {
+          command: "edit", environment: here, expect: 2, changes: [{ op: "set", path: "web.replicas", value: "3" }],
+        });
+        assert.deepStrictEqual(edited.json.staged, ["web.replicas"]);
+        const replicas = yield* request("read", alice, get("web.replicas"));
+        assert.deepInclude(replicas.json, { view: "environment" });
+        assert.deepStrictEqual(replicas.json.settings, [
+          { path: "web.replicas", value: 3, default: 1, apply: "staged" },
+        ]);
+
+        const stale = yield* request("write", alice, {
+          command: "edit", environment: here, expect: 2, changes: [{ op: "unset", path: "web.replicas" }],
+        });
+        assert.strictEqual(stale.status, 409);
+        assert.strictEqual(stale.json.error?.code, "conflict");
+        assert.deepStrictEqual(stale.json.error?.details, { revision: 3 });
+
+        // Another Organization sees none of it.
+        const foreign = yield* request("read", bob, get(null));
+        assert.strictEqual(foreign.status, 404);
+        assert.strictEqual(foreign.json.error?.code, "not_found");
+
+        const invalid = yield* request("write", alice, { command: "claim", deployment: "d1" });
+        assert.strictEqual(invalid.status, 422);
+        assert.strictEqual(invalid.json.error?.code, "invalid_argument");
+        assert.strictEqual((yield* request("claim", alice, get(null))).status, 404);
+        assert.strictEqual((yield* request("read", alice, undefined, "GET")).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "the Config Store stays dark in production and without its own database",
+  () =>
+    Effect.gen(function* () {
+      for (const overrides of [{ NODE_ENV: "production" }, { storeless: true as const }]) {
+        const layer = yield* cloudLayer(overrides);
+        yield* Effect.gen(function* () {
+          // Not found before any credential is looked at.
+          assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
+        }).pipe(Effect.provide(layer));
+      }
+    }),
+  60_000,
+);
+
+it.effect("the Config Store never shares the dashboard's database", () =>
+  Effect.gen(function* () {
+    const url = "postgres://postgres:postgres@127.0.0.1:5432/ployz";
+    const provider = ConfigProvider.fromEnv({
+      env: { ...testConfigEnvironment(), DATABASE_URL: url, CONFIG_STORE_URL: url },
+    });
+    const exit = yield* Effect.exit(AppConfig.make.pipe(Effect.provide(ConfigProvider.layer(provider))));
+    assert.isTrue(Exit.isFailure(exit));
+  }),
+);

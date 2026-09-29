@@ -41,6 +41,7 @@ const rawFields = {
     Config.withDefault("production"),
   ),
   databaseUrl: Config.url("DATABASE_URL"),
+  configStoreUrl: optional(Config.url("CONFIG_STORE_URL")),
   appUrl: Config.url("APP_URL"),
   port: Config.port("PORT").pipe(Config.withDefault(3000)),
   betterAuthSecret: Config.schema(NonEmptySecret, "BETTER_AUTH_SECRET"),
@@ -136,15 +137,39 @@ const resolvePolarConfiguration = Effect.fn("Config.resolvePolar")(function* (
   } as const;
 });
 
+/**
+ * The Config Store's own database. TODO(#1275): until the cutover it must be a separate database from the one
+ * the dashboard manages, so nothing the Store does can touch live authoring data.
+ */
+const resolveConfigStoreUrl = Effect.fn("Config.resolveConfigStore")(function* (
+  input: Effect.Success<typeof loadRawConfig>,
+) {
+  const store = input.configStoreUrl;
+  if (store === undefined) return undefined;
+  const database = input.databaseUrl;
+  if (!["postgres:", "postgresql:"].includes(store.protocol)) {
+    return yield* new InvalidConfiguration({ message: "CONFIG_STORE_URL must be a postgres:// URL" });
+  }
+  const sameServer = store.hostname === database.hostname && (store.port || "5432") === (database.port || "5432");
+  if (sameServer && store.pathname === database.pathname) {
+    return yield* new InvalidConfiguration({
+      message: "CONFIG_STORE_URL must name a different database than DATABASE_URL until the Config Store cutover",
+    });
+  }
+  return store;
+});
+
 const makeAppConfig = Effect.gen(function* () {
   const raw = yield* loadRawConfig;
   const polar = yield* resolvePolarConfiguration(raw);
+  const configStoreUrl = yield* resolveConfigStoreUrl(raw);
   const appUrl = raw.appUrl.href.replace(/\/$/, "");
 
   return {
     nodeEnv: raw.nodeEnv,
     app: { url: raw.appUrl, port: raw.port },
     database: { url: raw.databaseUrl },
+    configStore: { url: configStoreUrl },
     auth: {
       secret: raw.betterAuthSecret,
       trustedOrigins: raw.betterAuthTrustedOrigins,
