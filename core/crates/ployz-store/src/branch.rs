@@ -421,6 +421,8 @@ pub struct LiveNode {
     pub owner: Option<EnvironmentName>,
     /// It holds its owner's real data: a Volume, or a Service mounting one.
     pub data: bool,
+    /// The Branch's own Services whose variables reference it, by name.
+    pub used_by: Vec<String>,
 }
 
 /// A Branch after a change.
@@ -1356,6 +1358,13 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
                     .unwrap_or_else(|| lineage.clone()),
                 owner: owner.map(|ancestor| ancestor.environment.summary.name.clone()),
                 data: owner.is_some_and(|ancestor| holds_data(&ancestor.applied, lineage)),
+                used_by: branch
+                    .working
+                    .services
+                    .iter()
+                    .filter(|service| references(service, lineage))
+                    .map(|service| service.slug.clone())
+                    .collect(),
             }
         })
         .collect();
@@ -1805,6 +1814,16 @@ fn live_producers(
         producers.extend(values.producers);
     }
     Ok(producers)
+}
+
+/// Whether any of `service`'s variables reads the Service of `lineage`.
+fn references(service: &SavedServiceIntent, lineage: &str) -> bool {
+    service.variables.iter().any(|variable| {
+        matches!(&variable.value, ployz_core::config::SavedVariableValue::Template { parts }
+            if parts.iter().any(|part| matches!(part, ValuePart::Ref {
+                owner: ValuePartOwner::Service { lineage_id }, ..
+            } if lineage_id == lineage)))
+    })
 }
 
 /// Each Service lineage `intent`'s variables reference but it doesn't own, with the

@@ -2,6 +2,7 @@ import type {
   ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
+import { plural } from "#/lib/plural";
 import { settingTitle } from "./catalog";
 
 /** One changed Setting in Details. */
@@ -83,28 +84,35 @@ function shownValue(value: JsonValue): string {
   });
 }
 
+/** The statuses of a Deployment that holds, or waits for, its Environment's one run. */
+export const IN_FLIGHT = ["queued", "running", "cancelling"] as const satisfies readonly DeploymentStatus[];
+
 /** Whether a Deployment holds, or waits for, its Environment's one run. */
-export const isInFlight = (status: DeploymentStatus) => status === "queued" || status === "running" || status === "cancelling";
+export const isInFlight = (status: DeploymentStatus): status is (typeof IN_FLIGHT)[number] =>
+  IN_FLIGHT.some((inFlight) => inFlight === status);
 
 export const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
 
-/** A Deployment as its icon shows it. */
-export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "cancelled";
+/**
+ * A Deployment as its icon shows it. `unknown`: its runner vanished mid-run, so nobody knows what applied; it never
+ * reads as failed or deployed.
+ */
+export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "cancelled";
 
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
-export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "not_applied";
+export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
 export const nodeLightLabels = {
-  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", not_applied: "Not applied",
+  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not applied",
 } satisfies Record<NodeLight, string>;
 
-/** Each status in the icons' vocabulary. `unknown` (its runner vanished mid-run) needs a look, like a failure. */
+/** Each status in the icons' vocabulary. */
 export const deploymentStatusIcons = {
   queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
-  unknown: "failed", cancelled: "cancelled", superseded: "cancelled",
+  unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",
 } satisfies Record<DeploymentStatus, DeploymentLight>;
 
 export const nodeStatusLabels = {
@@ -118,7 +126,8 @@ export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || ou
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
 export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
   if (nodeApplied(outcome)) return "deployed";
-  if (outcome === "failed" || outcome === "unknown") return "failed";
+  if (outcome === "failed") return "failed";
+  if (outcome === "unknown") return "unknown";
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
   return "not_applied";
@@ -127,6 +136,18 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
 /** "every service", or the Services a targeted Deploy named. */
 export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>
   deployment.services.length === 0 ? "every service" : deployment.services.join(", ");
+
+const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
+
+/** Who admitted a Deployment (nobody for the Store's own automation), and when it was admitted, started and ended. */
+export function admission(deployment: DeploymentSummary) {
+  return {
+    by: deployment.admitted_by,
+    at: time(deployment.admitted_at),
+    started: time(deployment.started_at),
+    ended: time(deployment.ended_at),
+  };
+}
 
 /** Where an upload came from: "Uploaded by nick · abc1234 + changes". */
 export function uploadLabel(upload: UploadedSource) {
@@ -168,7 +189,6 @@ export function previewLines(preview: JsonValue | null): string[] | null {
   const { operations, would_remove, volumes_to_create, warnings } = decoded.value;
   const counts = new Map<string, number>();
   for (const { service_name } of operations) counts.set(service_name ?? "Environment", (counts.get(service_name ?? "Environment") ?? 0) + 1);
-  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
   return [
     operations.length === 0 ? "Nothing to change" : `${plural(operations.length, "operation")}: ${[...counts].map(([name, n]) => `${name} ${n}`).join(", ")}`,
     ...(volumes_to_create.length ? [`Creates ${plural(volumes_to_create.length, "volume")}`] : []),

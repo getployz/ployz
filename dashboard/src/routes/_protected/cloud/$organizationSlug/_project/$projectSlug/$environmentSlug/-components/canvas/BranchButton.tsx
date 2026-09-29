@@ -3,7 +3,7 @@ import { GitBranchIcon } from "lucide-react";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { cn } from "#/lib/utils";
 import { plural } from "#/lib/plural";
-import { branchQuery, saveQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { branchQuery, saveQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 /**
@@ -14,8 +14,7 @@ import { ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../e
 export function BranchButton() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const branch = useStoreView(params.organizationSlug, branchQuery(store));
-  const save = useStoreView(params.organizationSlug, saveQuery(store));
+  const [branch, save] = useStoreViews(params.organizationSlug, [branchQuery(store), saveQuery(store)] as const);
   if (!branch.ok) return null;
   const toSave = save.ok ? save.value.rows.length : 0;
   const status = toSave ? `${toSave} to save` : branch.value.update.length ? plural(branch.value.update.length, "update") : "Up to date";

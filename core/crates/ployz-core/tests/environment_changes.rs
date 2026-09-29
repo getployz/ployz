@@ -3,7 +3,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::config_request;
+use ployz_core::config::project_environment_changes;
 use serde_json::{Value, json};
 
 fn service(replicas: u8) -> Value {
@@ -27,7 +27,10 @@ fn input(
 }
 
 fn project(value: Value) -> Value {
-    config_request(json!({"operation":"project_changes","value":value})).unwrap()
+    serde_json::to_value(
+        project_environment_changes(serde_json::from_value(value).unwrap()).unwrap(),
+    )
+    .unwrap()
 }
 
 #[test]

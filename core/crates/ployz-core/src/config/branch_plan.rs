@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{ConfigError, EnvironmentNodeType, SavedEnvironmentIntent};
-use crate::Namespace;
 
 /// A starting selection: every preset derives its picks from the focus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -224,23 +223,4 @@ fn close_over<'a>(links: &[(&'a str, &'a str)], mut step: impl FnMut(&'a str, &'
         .iter()
         .fold(false, |changed, (user, used)| step(user, used) | changed)
     {}
-}
-
-/// Admit a Branch's Namespace namespace under the runtime's Namespace rule.
-///
-/// # Errors
-/// Returns ConfigError saying why the name would fail at deploy.
-pub fn check_branch_name(name: &str) -> Result<Namespace, ConfigError> {
-    let why = if name.is_empty() {
-        "Namespace is empty"
-    } else if name.len() > 63 {
-        "Namespace is longer than 63 characters"
-    } else {
-        match Namespace::parse(name) {
-            Ok(name) if name.is_reserved() => "Namespace is reserved for the system Namespace",
-            Ok(name) => return Ok(name),
-            Err(_) => "Namespace must be a lowercase DNS label",
-        }
-    };
-    Err(ConfigError::at("namespace", why))
 }

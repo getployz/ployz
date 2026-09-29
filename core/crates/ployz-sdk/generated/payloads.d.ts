@@ -1413,7 +1413,11 @@ owner: EnvironmentName | null,
 /**
  * It holds its owner's real data: a Volume, or a Service mounting one.
  */
-data: boolean, };
+data: boolean,
+/**
+ * The Branch's own Services whose variables reference it, by name.
+ */
+used_by: Array<string>, };
 
 export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
 
@@ -2002,8 +2006,6 @@ export type PruneTarget = { machine_id: MachineId,
 repository: string, };
 
 export type PublicIpUpdate = { "action": "keep" } | { "action": "remove" } | { "action": "set", "value": string };
-
-export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
 
 export type Publish = {
 /**

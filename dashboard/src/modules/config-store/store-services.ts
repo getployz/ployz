@@ -37,7 +37,8 @@ export function newServiceName(source: NewServiceSource, services: readonly Serv
 }
 
 /** The command that creates a Service from a source, with the id the caller minted. */
-export function createServiceCommand(id: string, environment: EnvironmentRef, name: string, source: NewServiceSource): ConfigCommand {
+export function createServiceCommand(id: string, environment: EnvironmentRef, name: string, source: NewServiceSource):
+  ConfigCommand & { command: "create_service" | "create_git_service" } {
   // SAFETY: a Service id is a UUID the caller mints; the Store checks it.
   const serviceId = id as ServiceId;
   return source.type === "git"

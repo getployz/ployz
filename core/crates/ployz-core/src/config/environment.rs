@@ -288,15 +288,3 @@ pub fn canonicalize_environment_intent(
     }
     intent
 }
-
-/// Decode one authored variable and validate its identity and value evidence.
-///
-/// # Errors
-/// Returns ConfigError for malformed identity, an empty key or fingerprint, or unsupported sealed data.
-pub fn parse_saved_variable(value: Value) -> Result<SavedVariableIntent, ConfigError> {
-    let variable: SavedVariableIntent = serde_json::from_value(value)
-        .map_err(|_| ConfigError::at("variable", "Invalid authored variable"))?;
-    unique(std::iter::once(variable.id.as_str()), "variable.id", true)?;
-    validate_variables(std::slice::from_ref(&variable))?;
-    Ok(variable)
-}
