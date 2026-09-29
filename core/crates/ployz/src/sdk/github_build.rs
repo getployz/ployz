@@ -368,6 +368,7 @@ pub async fn github_finish(
                     );
                     let receipt = BuildReceipt {
                         fingerprint: grant.fingerprint.clone(),
+                        content: None,
                         machine_id: grant.machine,
                         image: ployz_build::BuiltImage {
                             reference: pushed.to_string(),

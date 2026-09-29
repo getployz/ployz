@@ -967,7 +967,54 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let mut newer = upload.clone();
     newer.digest = "e".repeat(64);
     with(3, Some(newer)).unwrap();
-    assert_eq!(retry(&store, &who, 4, 1).unwrap().upload, Some(upload));
+    assert_eq!(retry(&store, &who, 4, 1).unwrap().upload, Some(upload.clone()));
+    // Another Environment of the Project without its own receipt borrows this one;
+    // preparation reuses it only if its fingerprint matches.
+    let staging = EnvironmentRef {
+        project: None,
+        environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
+    };
+    store
+        .create_environment(
+            &who,
+            &ployz_store::CreateEnvironment {
+                id: EnvironmentId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
+                project: None,
+                name: ployz_store::EnvironmentName::parse("staging").unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000098").unwrap(),
+                environment: staging.clone(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    store
+        .admit(
+            &who,
+            &Admit {
+                id: id(5),
+                environment: staging,
+                services: Vec::new(),
+                version: None,
+                upload: Some(upload),
+                retry: None,
+                remove: false,
+                accept_volume_loss: Vec::new(),
+            },
+            &ployz_store::Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.claim(&id(5), &a).unwrap().receipts[&ServiceName::parse("app").unwrap()],
+        receipt
+    );
 }
 
 #[test]

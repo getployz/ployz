@@ -570,7 +570,7 @@ async fn build(
     .await
     .map_err(|error| crate::sdk::preparation_error(error, cancel.is_cancelled()))?;
     let (plan, retained) = prepared.into_parts();
-    let receipts = preparation::receipts(&captured.fingerprints, &retained)
+    let receipts = preparation::receipts(&captured.fingerprints, &captured.contents, &retained)
         .into_iter()
         .map(|(name, receipt)| {
             (
