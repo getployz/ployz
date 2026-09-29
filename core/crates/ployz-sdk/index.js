@@ -82,18 +82,6 @@ class Client {
     return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
-  outsideBuild(input) {
-    return withRpcError(this._inner.outsideBuild(input));
-  }
-
-  mintBuildGrant(request) {
-    return withRpcError(this._inner.mintBuildGrant(request));
-  }
-
-  endBuildGrant(request) {
-    return withRpcError(this._inner.endBuildGrant(request));
-  }
-
   prepare(input, options = {}) {
     return wrapProgress(() => this._inner.prepare(input), options.signal, wrapPreview);
   }
@@ -354,13 +342,7 @@ module.exports = {
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
-  buildFingerprints: (input) => {
-    try { return native.buildFingerprints(input); } catch (error) { throwRpcError(error); }
-  },
   ployzVersion: () => native.ployzVersion(),
-  buildGrantTag: (repository, digest) => {
-    try { return native.buildGrantTag(repository, digest); } catch (error) { throwRpcError(error); }
-  },
   connect,
   Client,
   RpcError,

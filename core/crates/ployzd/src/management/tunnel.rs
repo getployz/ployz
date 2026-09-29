@@ -43,11 +43,12 @@ pub(super) async fn serve(
         () = &mut revoked => return connection.close(REVOKED, b"revoked"),
         () = shutdown.cancelled() => return connection.close(VarInt::from_u32(0), b"shutdown"),
         opened = tokio::time::timeout(OPEN_TIMEOUT, open(&connection, &record)) => opened
-            .unwrap_or_else(|_| Err("the tunnel did not open in time".into())),
+            .unwrap_or(Err(TunnelError::Timeout)),
     };
     let (mut tcp, mut stream) = match opened {
         Ok(opened) => opened,
         Err(reason) => {
+            let reason = reason.to_string();
             return connection.close(VarInt::from_u32(TUNNEL_FAILED), reason.as_bytes());
         }
     };
@@ -67,38 +68,57 @@ pub(super) async fn serve(
 
 type TunnelStream = tokio::io::Join<iroh::endpoint::RecvStream, iroh::endpoint::SendStream>;
 
+/// Why a tunnel didn't open; the client reads it as the close reason.
+#[derive(Debug, thiserror::Error)]
+enum TunnelError {
+    #[error("the tunnel did not open in time")]
+    Timeout,
+    #[error("no tunnel stream: {0}")]
+    Stream(#[from] iroh::endpoint::ConnectionError),
+    #[error("tunnel header: {0}")]
+    Header(std::io::Error),
+    #[error("the tunnel target is not an ip:port address")]
+    Target,
+    #[error("this Machine is not in a Cluster")]
+    NoCluster,
+    #[error("{target} is outside the Cluster network {network}")]
+    Outside { target: SocketAddr, network: String },
+    #[error("{target} refused the connection: {error}")]
+    Refused {
+        target: SocketAddr,
+        error: std::io::Error,
+    },
+    #[error("tunnel acknowledgement: {0}")]
+    Acknowledgement(std::io::Error),
+}
+
 /// Read the target, check it is in the Cluster network, dial it and acknowledge.
 async fn open(
     connection: &Connection,
     record: &LocalMachineRecord,
-) -> Result<(TcpStream, TunnelStream), String> {
-    let (mut send, mut recv) = connection
-        .accept_bi()
-        .await
-        .map_err(|error| format!("no tunnel stream: {error}"))?;
-    let length = recv
-        .read_u8()
-        .await
-        .map_err(|error| format!("tunnel header: {error}"))?;
+) -> Result<(TcpStream, TunnelStream), TunnelError> {
+    let (mut send, mut recv) = connection.accept_bi().await?;
+    let length = recv.read_u8().await.map_err(TunnelError::Header)?;
     let mut target = vec![0; usize::from(length)];
     recv.read_exact(&mut target)
         .await
-        .map_err(|error| format!("tunnel header: {error}"))?;
+        .map_err(|error| TunnelError::Header(std::io::Error::other(error)))?;
     let target = std::str::from_utf8(&target)
         .ok()
         .and_then(|target| target.parse::<SocketAddr>().ok())
-        .ok_or("the tunnel target is not an ip:port address")?;
-    let network = record
-        .cluster_network()
-        .ok_or("this Machine is not in a Cluster")?;
+        .ok_or(TunnelError::Target)?;
+    let network = record.cluster_network().ok_or(TunnelError::NoCluster)?;
     if !matches!(target, SocketAddr::V4(address) if network.contains(address.ip())) {
-        return Err(format!("{target} is outside the Cluster network {network}"));
+        return Err(TunnelError::Outside {
+            target,
+            network: network.to_string(),
+        });
     }
     let tcp = TcpStream::connect(target)
         .await
-        .map_err(|error| format!("{target} refused the connection: {error}"))?;
+        .map_err(|error| TunnelError::Refused { target, error })?;
     send.write_u8(TUNNEL_OPEN)
         .await
-        .map_err(|error| format!("tunnel acknowledgement: {error}"))?;
+        .map_err(TunnelError::Acknowledgement)?;
     Ok((tcp, tokio::io::join(recv, send)))
 }

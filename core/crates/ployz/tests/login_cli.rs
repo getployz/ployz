@@ -156,6 +156,8 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
     assert!(!String::from_utf8_lossy(&finished.stdout).contains("session-token"));
 
     let signed_out = ployz(&config, &["logout", "--json"]);
+    // A Server hasn't confirmed its Clear yet: the result is partial.
+    assert_eq!(signed_out.status.code(), Some(3));
     assert_eq!(
         json_of(&signed_out),
         json!({

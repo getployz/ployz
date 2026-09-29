@@ -55,6 +55,9 @@ pub struct NamespaceQuery {
 pub struct NamespaceView {
     pub environment: EnvironmentSummary,
     pub namespace: ployz_core::Namespace,
+    /// Each Service's runtime name (its Private DNS name), by the name it has now:
+    /// a renamed Service's containers keep the name it was created with.
+    pub services: std::collections::BTreeMap<ServiceName, ServiceName>,
 }
 
 /// One page of an Environment's Deployments, newest first.
@@ -139,9 +142,19 @@ pub(crate) fn namespace(
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let services = environment
+        .working
+        .services
+        .iter()
+        .filter_map(|service| {
+            let name = ServiceName::parse(service.slug.as_str()).ok()?;
+            Some((name, service.config.private_dns.clone()))
+        })
+        .collect();
     Ok(NamespaceView {
         environment: environment.summary,
         namespace,
+        services,
     })
 }
 

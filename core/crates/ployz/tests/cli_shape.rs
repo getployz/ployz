@@ -491,3 +491,26 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
         }
     }
 }
+
+#[test]
+fn a_patch_excludes_a_secret_or_an_env_file() {
+    let parse = |args: &[&str]| {
+        ployz::cli::command()
+            .try_get_matches_from([&["ployz", "set", "web"][..], args].concat())
+            .is_ok()
+    };
+    assert!(!parse(&["--patch", "{}", "--from-env-file", ".env"]));
+    assert!(!parse(&["--patch", "{}", "--secret"]));
+    assert!(parse(&["--from-env-file", ".env", "--secret"]));
+}
+
+#[test]
+fn up_resets_only_a_server_it_adds() {
+    let parse = |args: &[&str]| {
+        ployz::cli::command()
+            .try_get_matches_from([&["ployz", "up"][..], args].concat())
+            .is_ok()
+    };
+    assert!(parse(&["--server", "root@203.0.113.1", "--reset"]));
+    assert!(!parse(&["--reset"]));
+}

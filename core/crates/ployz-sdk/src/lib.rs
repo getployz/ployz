@@ -235,38 +235,6 @@ impl Client {
         )
     }
 
-    /// Mint a Build Grant on this Machine for one image push into a repository.
-    ///
-    /// # Errors
-    /// Returns malformed input, transport failures, or the Machine's refusal.
-    #[napi]
-    pub async fn mint_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request = serde_json::from_value(request).map_err(invalid_argument)?;
-        to_json(
-            &self
-                .inner
-                .mint_build_grant(request)
-                .await
-                .map_err(rpc_to_napi)?,
-        )
-    }
-
-    /// End a Build Grant and read the digest this Machine received under it.
-    ///
-    /// # Errors
-    /// Returns malformed input, transport failures, or `not_found` for an expired grant.
-    #[napi]
-    pub async fn end_build_grant(&self, request: serde_json::Value) -> Result<serde_json::Value> {
-        let request = serde_json::from_value(request).map_err(invalid_argument)?;
-        to_json(
-            &self
-                .inner
-                .end_build_grant(request)
-                .await
-                .map_err(rpc_to_napi)?,
-        )
-    }
-
     /// Describe the entry Machine contract.
     ///
     /// # Errors
@@ -333,20 +301,6 @@ impl Client {
         Ok(BuildHandle {
             inner: self.inner.build(input, start_within).map_err(rpc_to_napi)?,
         })
-    }
-
-    /// What a Builder outside the Cluster does for the one Git Service in
-    /// `input.deployment` at `input.commit`: reuse `input.receipt`, whose image a
-    /// Machine still holds, or build the platforms its placements run.
-    ///
-    /// # Errors
-    /// Returns a generated [`RpcError`] JSON payload for a closed session,
-    /// invalid input, transport failure, or an unbuildable architecture.
-    #[napi]
-    pub async fn outside_build(&self, input: serde_json::Value) -> Result<serde_json::Value> {
-        let input = serde_json::from_value(input).map_err(invalid_argument)?;
-        let outside = self.inner.outside_build(input).await.map_err(rpc_to_napi)?;
-        serde_json::to_value(outside).map_err(invalid_argument)
     }
 
     /// Calculate a Deploy Preview for a Deploy Intent without executing it.
@@ -775,50 +729,11 @@ pub fn allocate_enrollment(
     to_json(&assignment)
 }
 
-/// Fingerprints a build of these pinned commits and uploads would carry, without
-/// any source. Input: `{deployment, source_commits, uploads?}` as in preparation.
-///
-/// # Errors
-/// Rejects an invalid deployment or a commit for a non-Git Service.
-#[napi]
-pub fn build_fingerprints(input: serde_json::Value) -> Result<serde_json::Value> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Input {
-        deployment: serde_json::Value,
-        source_commits: std::collections::BTreeMap<ployz_core::ServiceName, String>,
-        #[serde(default)]
-        uploads: std::collections::BTreeMap<ployz_core::ServiceName, String>,
-    }
-    let input: Input = serde_json::from_value(input).map_err(invalid_argument)?;
-    to_json(
-        &sdk::expected_fingerprints(input.deployment, input.source_commits, input.uploads)
-            .map_err(rpc_to_napi)?,
-    )
-}
-
 /// The ployz version fingerprints cover; a GitHub runner installs exactly this one.
 #[napi]
 #[must_use]
 pub fn ployz_version() -> String {
     sdk::VERSION.to_owned()
-}
-
-/// The tag a Build Grant push retains `digest` under in `repository`, as Image
-/// Cleanup knows it: `repository:ployz-sha256-<hex>`.
-///
-/// # Errors
-/// Rejects a repository or digest a Build Grant could not have pushed.
-#[napi]
-pub fn build_grant_tag(repository: String, digest: String) -> Result<String> {
-    let repository =
-        ployz_core::BuildGrantRepository::parse(repository).map_err(invalid_argument)?;
-    let digest = ployz_core::ImageDigest::parse(digest).map_err(invalid_argument)?;
-    Ok(format!(
-        "{repository}:{}{}",
-        ployz_core::RETAINED_DIGEST_TAG_PREFIX,
-        digest.hex()
-    ))
 }
 
 /// Cancellable Container log reader.

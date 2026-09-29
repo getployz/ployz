@@ -23,7 +23,7 @@ pub(crate) enum Credential {
 }
 
 impl Credential {
-    fn cloud(&self) -> &str {
+    pub(crate) fn cloud(&self) -> &str {
         match self {
             Self::Device(signed_in) => &signed_in.cloud,
             Self::Token { cloud, .. } => cloud,
@@ -60,6 +60,42 @@ pub(crate) async fn credential(
         cloud: cloud_origin(&cloud),
         token: Secret::new(token),
     })
+}
+
+/// [`credential`] from `PLOYZ_TOKEN` and `PLOYZ_CLOUD_URL`: the one way commands
+/// pick what they act with.
+///
+/// # Errors
+///
+/// Returns the stored sign-in's [`LoginError`] when there is no token.
+pub(crate) async fn from_env(store: &CredentialStore) -> Result<Credential, LoginError> {
+    use crate::cli::env;
+    credential(
+        store,
+        std::env::var(env::TOKEN).ok(),
+        std::env::var(env::CLOUD_URL).ok(),
+    )
+    .await
+}
+
+/// The Organization `credential` acts in: the device's, or the token's own.
+///
+/// # Errors
+///
+/// Returns a Cloud failure.
+pub(crate) async fn acting_in(credential: &Credential) -> Result<Organization, LoginError> {
+    match credential {
+        Credential::Device(signed_in) => Ok(signed_in.organization.clone()),
+        Credential::Token { .. } => organizations(credential)
+            .await?
+            .into_iter()
+            .find(|entry| entry.current)
+            .map(|entry| Organization {
+                id: entry.id,
+                slug: entry.slug,
+            })
+            .ok_or(LoginError::TokenRefused),
+    }
 }
 
 /// One Organization the credential may act in.

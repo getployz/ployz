@@ -9,8 +9,8 @@ use ployz_store::{
 };
 use serde_json::json;
 
-use super::env::{accepted, confirmed, inventory, take_off, unfinished};
 use super::store::{self, Store, failed, mint, store};
+use super::teardown::{accepted, confirmed, inventory, take_off, unfinished};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::cloud_account::StoreCallError;
@@ -50,12 +50,11 @@ pub(crate) fn command() -> Command {
         ))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "new" => (new, Supported),
-        "ls" => (ls, Supported),
-        "rm" => (rm, Supported),
+        "new" => new,
+        "ls" => ls,
+        "rm" => rm,
         _ => return None,
     })
 }

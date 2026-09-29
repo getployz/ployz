@@ -296,7 +296,7 @@ impl MachineOperations for Client {
                 grace_period_seconds,
             },
             &MachineTarget::from(machine_id),
-            stop_rpc_timeout(grace_period_seconds),
+            stop_rpc_timeout(grace_period_seconds, 1),
         )
         .await
         .map(|_| ())

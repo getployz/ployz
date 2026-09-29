@@ -616,10 +616,9 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "reset" => (reset, Supported),
+        "reset" => reset,
         _ => return None,
     })
 }
@@ -635,20 +634,21 @@ fn reset(root: &ArgMatches) -> Result<(), Error> {
     }
     let store = crate::cloud_login::CredentialStore::beside(&config_path(matches)?);
     runtime()?.block_on(async {
-        let signed_in = crate::cloud_login::signed_in(&store).await?;
-        let _: serde_json::Value = signed_in
-            .post(
-                "/api/cli/cloud/reset",
-                &serde_json::json!({
-                    "organizationSlug": signed_in.organization.slug,
-                    "confirmedFounderStoppedOrErased": true,
-                }),
-            )
-            .await?;
-        crate::output::say!("Reset the founding of {}", signed_in.organization.slug);
-        crate::output::emit(
-            &serde_json::json!({ "reset": true, "organization": signed_in.organization }),
+        // PLOYZ_TOKEN or this device's sign-in, as every Cloud command: one Organization.
+        let credential = crate::cloud_account::from_env(&store).await?;
+        let organization = crate::cloud_account::acting_in(&credential).await?;
+        let _: serde_json::Value = crate::cloud_account::call(
+            &credential,
+            reqwest::Method::POST,
+            "cloud/reset",
+            Some(&serde_json::json!({
+                "organizationSlug": organization.slug,
+                "confirmedFounderStoppedOrErased": true,
+            })),
         )
+        .await?;
+        crate::output::say!("Reset the founding of {}", organization.slug);
+        crate::output::emit(&serde_json::json!({ "reset": true, "organization": organization }))
     })
 }
 

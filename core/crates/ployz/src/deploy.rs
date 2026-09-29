@@ -20,7 +20,7 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{ApplyError, Outcome, apply_requested, execute};
+pub(crate) use apply::{Outcome, apply_requested};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{

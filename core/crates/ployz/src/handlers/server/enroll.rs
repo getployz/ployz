@@ -9,13 +9,14 @@ use std::time::Duration;
 
 use clap::{ArgMatches, Command};
 use ipnet::Ipv4Net;
-use ployz_core::{CloudEnrollToken, RpcErrorCode, StorageChoice};
+use ployz_core::{CloudEnrollToken, MachineId, RpcErrorCode, StorageChoice};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{base, env, positional, switch, value};
-use crate::cloud_login::{self, CredentialStore, SignedIn};
+use crate::cloud_account::{self, Credential};
+use crate::cloud_login::{CredentialStore, LoginError, Organization};
 use crate::output::say;
 
 const DEFAULT_CLOUD: &str = "ployz.dev";
@@ -77,23 +78,48 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     }
     let store = CredentialStore::beside(&config_path(matches)?);
     let runtime = runtime()?;
-    let signed_in = runtime.block_on(cloud_login::signed_in(&store))?;
+    // PLOYZ_TOKEN or this device's sign-in, as every Cloud command: one Organization.
+    let acting = runtime.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        let organization = cloud_account::acting_in(&credential).await?;
+        Ok::<_, LoginError>(Acting {
+            credential,
+            organization,
+        })
+    })?;
     if let Some(enrollment) = matches.get_one::<String>("wait") {
-        return runtime.block_on(wait_joined(&signed_in, enrollment));
+        return runtime.block_on(wait_joined(&acting, enrollment));
     }
-    let minted: Minted = runtime.block_on(signed_in.post(
-        "/api/cli/servers/enroll",
-        &json!({ "organizationSlug": signed_in.organization.slug }),
-    ))?;
+    let minted: Minted = runtime.block_on(acting.post("servers/enroll", json!({})))?;
     if matches.get_flag("command") {
-        return runtime.block_on(paste(&signed_in, &minted));
+        return runtime.block_on(paste(&acting, &minted));
     }
     drop(runtime);
     super::super::cloud::enroll(
         root,
         CloudEnrollToken::parse(minted.token)?,
-        &signed_in.cloud,
+        acting.credential.cloud(),
     )
+}
+
+/// What a Cloud enrollment acts with, and the Organization it enrolls into.
+struct Acting {
+    credential: Credential,
+    organization: Organization,
+}
+
+impl Acting {
+    /// POST `/api/cli/PATH` with `body` plus this Organization's slug.
+    async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        mut body: serde_json::Value,
+    ) -> Result<T, LoginError> {
+        if let Some(object) = body.as_object_mut() {
+            object.insert("organizationSlug".into(), json!(self.organization.slug));
+        }
+        cloud_account::call(&self.credential, reqwest::Method::POST, path, Some(&body)).await
+    }
 }
 
 /// A fresh enrollment token Cloud issued to this device's Organization.
@@ -114,8 +140,8 @@ struct PendingReport<'a> {
     next: String,
 }
 
-async fn paste(signed_in: &SignedIn, minted: &Minted) -> Result<(), Error> {
-    let line = pasted_command(&minted.token, &signed_in.cloud);
+async fn paste(acting: &Acting, minted: &Minted) -> Result<(), Error> {
+    let line = pasted_command(&minted.token, acting.credential.cloud());
     if crate::output::json() {
         return crate::output::emit(&PendingReport {
             status: "pending",
@@ -130,7 +156,7 @@ async fn paste(signed_in: &SignedIn, minted: &Minted) -> Result<(), Error> {
         minted.expires_at
     );
     say!("Waiting for the Server to join...");
-    wait_joined(signed_in, &minted.id).await
+    wait_joined(acting, &minted.id).await
 }
 
 /// One line that installs exactly this CLI's release, so the Server speaks the same enrollment.
@@ -153,14 +179,16 @@ enum Enrollment {
     Expired,
     Joined {
         #[serde(rename = "machineId")]
-        machine_id: String,
+        machine_id: MachineId,
     },
 }
 
-async fn wait_joined(signed_in: &SignedIn, enrollment: &str) -> Result<(), Error> {
-    let body = json!({ "organizationSlug": signed_in.organization.slug, "id": enrollment });
+async fn wait_joined(acting: &Acting, enrollment: &str) -> Result<(), Error> {
     loop {
-        match signed_in.post("/api/cli/servers/enrollment", &body).await? {
+        match acting
+            .post("servers/enrollment", json!({ "id": enrollment }))
+            .await?
+        {
             Enrollment::Pending => tokio::time::sleep(JOIN_POLL).await,
             Enrollment::Expired => {
                 return Err(Error::detailed(
@@ -172,7 +200,7 @@ async fn wait_joined(signed_in: &SignedIn, enrollment: &str) -> Result<(), Error
             Enrollment::Joined { machine_id } => {
                 say!("Server {machine_id} joined");
                 return crate::output::emit(
-                    &json!({ "status": "joined", "machine_id": machine_id }),
+                    &json!({ "server": { "id": machine_id }, "status": "joined" }),
                 );
             }
         }

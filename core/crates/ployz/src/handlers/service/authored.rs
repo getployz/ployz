@@ -2,14 +2,13 @@
 //! Every change is staged in Working State until a Deploy ships it.
 
 use clap::{ArgMatches, Command};
-use ployz_core::ServiceName;
 use ployz_store::{
     CreateGitService, CreateService, RemoveService, RenameService, ServiceId, ServiceQuery,
     ServiceStaged, ServicesQuery,
 };
 
 use super::super::store::{self, Next};
-use super::super::{Error, leaf_matches, required};
+use super::super::{Error, leaf_matches};
 use crate::cli::{positional, value};
 use crate::output::{self, say};
 
@@ -110,8 +109,11 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                 "{}\t{}\t{}\t{}",
                 listing.service.name,
                 listing.service.private_dns,
-                json_word(&listing.source),
-                listing.change.as_ref().map_or("-".to_owned(), json_word)
+                crate::handlers::store::word(&listing.source),
+                listing
+                    .change
+                    .as_ref()
+                    .map_or("-".to_owned(), crate::handlers::store::word)
             );
         }
     })
@@ -132,9 +134,12 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         let service = &view.service.service;
         say!("Service {} ({})", service.name, service.id);
         say!("Private DNS: {}", service.private_dns);
-        say!("Source: {}", json_word(&view.service.source));
+        say!(
+            "Source: {}",
+            crate::handlers::store::word(&view.service.source)
+        );
         if let Some(change) = &view.service.change {
-            say!("Next Deploy: {}", json_word(change));
+            say!("Next Deploy: {}", crate::handlers::store::word(change));
         }
         for (setting, value) in &view.values {
             say!("{setting}={value}");
@@ -200,17 +205,4 @@ fn staged(matches: &ArgMatches, result: &ServiceStaged, what: &str) -> Result<()
     })
 }
 
-fn service_name(matches: &ArgMatches, arg: &str) -> Result<ServiceName, Error> {
-    // Core's name error quotes the value; a rejected value is never echoed.
-    ServiceName::parse(required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
-    })
-}
-
-/// A unit enum variant as the word its JSON uses.
-fn json_word(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
+use crate::handlers::store::service_name;

@@ -7,12 +7,11 @@
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::ServiceName;
 use ployz_store::{
-    CreateVolume, Mount, RemoveVolume, VolumeId, VolumeName, VolumeQuery, VolumeStaged,
-    VolumesQuery,
+    CreateVolume, Mount, RemoveVolume, VolumeId, VolumeQuery, VolumeStaged, VolumesQuery,
 };
 
 use super::store::{self, Next};
-use super::{Error, leaf_matches, required};
+use super::{Error, leaf_matches};
 use crate::cli::{base, positional, value};
 use crate::failure::USAGE_EXIT;
 use crate::output::{self, say};
@@ -47,13 +46,12 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "add" => (add, Supported),
-        "inspect" => (inspect, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
+        "add" => add,
+        "inspect" => inspect,
+        "ls" => list,
+        "rm" => remove,
         _ => return None,
     })
 }
@@ -118,7 +116,10 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
                     mounts.join(",")
                 },
                 if listing.deployed { "yes" } else { "no" },
-                listing.change.as_ref().map_or("-".to_owned(), json_word)
+                listing
+                    .change
+                    .as_ref()
+                    .map_or("-".to_owned(), super::store::word)
             );
         }
     })
@@ -141,7 +142,7 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
         say!("Volume {} ({})", listing.volume.name, listing.volume.id);
         say!("Deployed: {}", if listing.deployed { "yes" } else { "no" });
         if let Some(change) = &listing.change {
-            say!("Next Deploy: {}", json_word(change));
+            say!("Next Deploy: {}", super::store::word(change));
         }
         for mount in &listing.mounts {
             say!("Mounted by {} at {}", mount.service, mount.path);
@@ -175,17 +176,4 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
     })
 }
 
-fn volume_name(matches: &ArgMatches, arg: &str) -> Result<VolumeName, Error> {
-    VolumeName::parse(required(matches, arg)?).map_err(|_| {
-        Error::usage("Expected a Volume name: lowercase letters, digits and -, like data")
-            .with_exit(USAGE_EXIT)
-    })
-}
-
-/// A unit enum variant as the word its JSON uses.
-fn json_word(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
+use super::store::volume_name;
