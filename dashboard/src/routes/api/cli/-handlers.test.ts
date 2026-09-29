@@ -9,7 +9,7 @@ import { publicErrorResponse, Unauthorized } from "#/server/public-error";
 
 const signedIn = "00000000-0000-4000-8000-000000000001";
 
-function call(body: unknown, options: { nodeEnv?: string; bearer?: boolean } = {}) {
+function call(body: Record<string, string | boolean>, options: { nodeEnv?: string; bearer?: boolean } = {}) {
   const config = Layer.succeed(AppConfig, asTestDouble<AppConfig["Service"]>()({ nodeEnv: options.nodeEnv ?? "test" }));
   const auth = Layer.succeed(Auth, asTestDouble<AuthService>()({
     resolveActor: () => options.bearer === false ? Effect.fail(new Unauthorized()) : Effect.succeed({ userId: signedIn }),
