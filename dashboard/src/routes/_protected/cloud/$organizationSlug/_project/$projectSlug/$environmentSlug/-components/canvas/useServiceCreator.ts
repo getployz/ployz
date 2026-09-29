@@ -27,7 +27,7 @@ export function useCreateStoreService(organizationSlug: string) {
     const id = crypto.randomUUID();
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
     const name = newServiceName(source, listed?.ok ? listed.value.services : []);
-    const { isPersisted } = writer.create(createServiceCommand(id, target.store, name, source));
+    const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
     return { service: { id }, persisted: isPersisted.promise };
   };
 }

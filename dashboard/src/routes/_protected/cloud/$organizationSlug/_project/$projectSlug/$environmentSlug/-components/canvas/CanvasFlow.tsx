@@ -207,8 +207,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDeploy={actions.deploy}
         onPublish={actions.publish}
         onDiscardAll={() => actions.discard(null)}
-        onDiscardNode={(group) => void actions.discard(group.nodeName)}
-        onDiscardRow={(_, path) => void actions.discard(path)}
+        onDiscardNode={(group) => actions.discard(group.nodeName)}
+        onDiscardRow={(_, path) => actions.discard(path)}
         active={deployments.filter((deployment) => isInFlight(deployment.status))}
         notes={storeHintNotes(diff, groups)}
         waiting={waiting}

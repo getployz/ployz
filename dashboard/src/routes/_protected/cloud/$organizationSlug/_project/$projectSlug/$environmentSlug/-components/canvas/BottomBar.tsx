@@ -30,7 +30,7 @@ type BottomBarProps = {
   canPublish: boolean;
   onDeploy: () => void;
   onPublish: () => void;
-  onDiscardAll: () => Promise<boolean>;
+  onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
@@ -83,20 +83,10 @@ export function BottomBar({
     onDeploy();
   }
 
-  // A second Discard all queued behind the first would find nothing to discard and fail, so clicks while one saves are
-  // ignored. The ref guards re-entry; the state only renders both Discard buttons disabled.
-  const discardingRef = useRef(false);
-  const [discarding, setDiscarding] = useState(false);
-  async function discardAll() {
-    if (discardingRef.current) return;
-    discardingRef.current = true;
-    setDiscarding(true);
-    try {
-      if (await onDiscardAll()) setOpen(false);
-    } finally {
-      discardingRef.current = false;
-      setDiscarding(false);
-    }
+  // Discard shows at once and saves in the background, so the review closes with it.
+  function discardAll() {
+    setOpen(false);
+    onDiscardAll();
   }
 
   function openReview() {
@@ -143,7 +133,7 @@ export function BottomBar({
           <MoreVerticalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" side="top" className="w-auto">
-          <DropdownMenuItem variant="destructive" disabled={discarding || !groups.some((group) => group.canDiscard)} onClick={() => void discardAll()}>
+          <DropdownMenuItem variant="destructive" disabled={!groups.some((group) => group.canDiscard)} onClick={discardAll}>
             Discard all changes
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -167,7 +157,7 @@ export function BottomBar({
     groups, totalChanges, canDeploy: deployable, canPublish,
     onClose: () => setOpen(false), onDeploy: deploy,
     onPublish: () => { setOpen(false); onPublish(); },
-    onDiscardAll: () => void discardAll(), discarding,
+    onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
     ...notes,
   };

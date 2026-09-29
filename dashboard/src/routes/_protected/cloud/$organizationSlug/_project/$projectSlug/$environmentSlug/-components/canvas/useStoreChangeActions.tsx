@@ -52,15 +52,9 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     }
   }
 
-  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything); resolves whether it did. */
-  async function discard(path: string | null) {
-    try {
-      await writer.commit({ command: "discard", environment, path, version }).isPersisted.promise;
-      return true;
-    } catch {
-      // The writer toasted it and refetched the review.
-      return false;
-    }
+  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything): gone at once, a refusal brings it back. */
+  function discard(path: string | null) {
+    writer.commit({ command: "discard", environment, path, version });
   }
 
   return {

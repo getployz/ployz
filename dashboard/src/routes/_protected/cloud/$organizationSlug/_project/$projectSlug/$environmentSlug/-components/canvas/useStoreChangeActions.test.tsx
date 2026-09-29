@@ -29,7 +29,7 @@ function Deploy() {
   const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={deploy}>Deploy now</button>
-    <button type="button" onClick={() => void discard("web.replicas")}>Discard replicas</button>
+    <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     {dialog}
   </>;
 }

@@ -1,8 +1,8 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigCommand, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery, NamespaceQuery,
-  ProjectsQuery, RemovalsQuery, ServiceListing, ServicesQuery, VolumeListing, VolumesQuery,
+  ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -80,7 +80,7 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
   });
 }
 
-function queryOf(query: Query): ConfigQuery | null {
+export function queryOf(query: Query): ConfigQuery | null {
   const [prefix, , , , config] = query.queryKey;
   // SAFETY: every `store-view` key is built by storeViewOptions, with its ConfigQuery last.
   return prefix === "store-view" ? config as ConfigQuery : null;
@@ -125,28 +125,6 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
     if (revision !== undefined && (latest === null || revision > latest)) latest = revision;
   }
   return latest;
-}
-
-/**
- * Lists a node being created in its Environment's cached `services` or `volumes` view, as the Store will once the
- * create commits; the writer's refetch after the commit (or its refusal) replaces the guess. Nothing cached, nothing
- * to show it in.
- */
-export function listOptimistically(scope: CollectionScope, organizationSlug: string,
-  command: ConfigCommand & { command: "create_service" | "create_git_service" | "create_volume" }) {
-  if (command.command === "create_volume") {
-    const volume: VolumeListing = { id: command.id, name: command.name, mounts: [], deployed: false, change: "create" };
-    scope.queryClient.setQueryData(storeViewOptions(organizationSlug, scope, volumesQuery(command.environment)).queryKey,
-      (old) => old?.ok ? { ok: true as const, value: { ...old.value, volumes: [...old.value.volumes, volume] } } : old);
-    return;
-  }
-  const { id, environment, name } = command;
-  const service: ServiceListing = {
-    id, name, private_dns: name, change: "create",
-    source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
-  };
-  scope.queryClient.setQueryData(storeViewOptions(organizationSlug, scope, servicesQuery(environment)).queryKey,
-    (old) => old?.ok ? { ok: true as const, value: { ...old.value, services: [...old.value.services, service] } } : old);
 }
 
 /** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
