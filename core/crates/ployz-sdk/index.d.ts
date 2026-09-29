@@ -7,6 +7,7 @@ import type {
   ConfigView,
   ConfigWritten,
   DeploymentSummary,
+  GitSource,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -261,12 +262,23 @@ export interface ConfigStore {
   read(organization: string, query: ConfigQuery): Promise<ConfigView>;
   /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
+  /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
+  deploymentSources(deployment: string): Promise<GitSource[]>;
   /**
-   * Cloud's worker only: claim the queued Deployment as `runner`, deploy it on one of `connections` and record its
-   * outcome. Its secrets and evidence stay in Rust; it resolves to the summary, or rejects `conflict` when this runner
-   * has nothing to run.
+   * Cloud's worker only: pin the commits it resolved, by runtime Service name. A pinned commit never changes; resolves
+   * to every source with its pin, or rejects `conflict` once the Deployment was replaced, cancelled or ended.
    */
-  runDeployment(organization: string, deployment: string, runner: string, connections: Connection[]): Promise<DeploymentSummary>;
+  pinSources(deployment: string, commits: Record<string, string>): Promise<GitSource[]>;
+  /**
+   * Cloud's worker only: claim the queued Deployment as `runner`, build its Git Services from `checkouts` (directories
+   * by runtime Service name, at their pinned commits), deploy it on one of `connections` and record its outcome.
+   * `sourceFailure` says why Cloud could not read the sources: it is recorded as why nothing ran. Its secrets and
+   * evidence stay in Rust; it resolves to the summary, or rejects `conflict` when this runner has nothing to run.
+   */
+  runDeployment(
+    organization: string, deployment: string, runner: string, connections: Connection[],
+    checkouts?: Record<string, string>, sourceFailure?: string,
+  ): Promise<DeploymentSummary>;
   /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
   abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
 }

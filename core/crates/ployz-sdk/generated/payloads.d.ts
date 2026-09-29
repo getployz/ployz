@@ -141,7 +141,35 @@ expires_in_seconds: number, };
 
 export type BuildGrantRepository = string;
 
+export type BuildLogQuery = { deployment: DeploymentId,
+/**
+ * The Service it built.
+ */
+service: ServiceName, };
+
+export type BuildLogView = { deployment: DeploymentId, log: string,
+/**
+ * The Service's name when admitted.
+ */
+service: string, commit: string, status: BuildStatus,
+/**
+ * Why it failed.
+ */
+message: string | null, };
+
 export type BuildMethod = "dockerfile" | "railpack";
+
+export type BuildStatus = "pending" | "building" | "built" | "reused" | "failed";
+
+export type BuildView = {
+/**
+ * The Service's name when admitted.
+ */
+service: string, commit: string, status: BuildStatus,
+/**
+ * Why it failed.
+ */
+message: string | null, };
 
 export type ByteQuantity = number;
 
@@ -209,7 +237,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -219,7 +247,7 @@ export type ConfigTrusted = {
  */
 repositories: Array<AuthorizedRepository>, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView;
 
 export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary;
 
@@ -469,7 +497,11 @@ nodes: Array<NodeOutcome>,
 /**
  * The Deploy Preview its runner prepared, with environment values removed.
  */
-preview: JsonValue | null, outcome: Outcome | null, id: DeploymentId,
+preview: JsonValue | null, outcome: Outcome | null,
+/**
+ * Its Git Services' builds, once their commits are pinned.
+ */
+builds: Array<BuildView>, id: DeploymentId,
 /**
  * Counts from 1 within its Environment.
  */
@@ -729,6 +761,40 @@ export type ExecutionError = { "type": "machine", action: MachineAction, error: 
 export type ExtraHost = string;
 
 export type FailedOperation<E> = { "type": "operation", operation: DeployOperation, error: E, } | { "type": "replacement", operation: ReplacementOperation, error: E, compensation: ReplacementCompensation<E>, };
+
+export type GitSource = {
+/**
+ * Its runtime Service name.
+ */
+service: ServiceName,
+/**
+ * The GitHub repository, as `owner/name`.
+ */
+repository: string,
+/**
+ * GitHub's ID for it.
+ */
+repository_id: number,
+/**
+ * How Cloud reads it.
+ */
+access: ServiceGitAccess,
+/**
+ * The branch it follows; none once it was disconnected.
+ */
+branch: string | null,
+/**
+ * The directory it builds from, inside the repository.
+ */
+root_dir: string,
+/**
+ * Its Dockerfile, relative to `root_dir`, when it builds from one.
+ */
+dockerfile_path: string | null,
+/**
+ * The commit it builds; none until pinned.
+ */
+commit: string | null, };
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 

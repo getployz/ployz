@@ -3,6 +3,7 @@
 //! [`Command`], each in one transaction; in-process callers use the typed method
 //! for each, which runs the same code. Storage is its only I/O.
 
+mod build;
 pub mod catalog;
 mod command;
 mod deployment;
@@ -21,6 +22,7 @@ mod variables;
 
 use ployz_core::RpcError;
 
+pub use build::{BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource};
 pub use command::*;
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
@@ -325,5 +327,41 @@ impl ConfigStore {
     ) -> Result<DeploymentSummary, RpcError> {
         self.storage
             .write(|tx| deployment::record(tx, deployment, runner, evidence))
+    }
+
+    /// The Git Services Deployment `deployment` builds, each with its pinned commit,
+    /// if any: what Cloud reads from GitHub for its runner. In-process only.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, or a storage error.
+    pub fn sources(&self, deployment: &DeploymentId) -> Result<Vec<GitSource>, RpcError> {
+        self.storage.read(|tx| build::sources(tx, deployment))
+    }
+
+    /// Pin the commit each Git Service of Deployment `deployment` builds, by runtime
+    /// Service name, as Cloud resolved it from its branch. A pinned commit never
+    /// changes: a pin for a Service already pinned is ignored. Returns every source
+    /// with its pin. In-process only.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the Deployment was replaced, cancelled or ended,
+    /// `invalid_argument` for a Service it doesn't build or a malformed commit, or a
+    /// storage error.
+    pub fn pin(
+        &self,
+        deployment: &DeploymentId,
+        commits: &std::collections::BTreeMap<ployz_core::ServiceName, String>,
+    ) -> Result<Vec<GitSource>, RpcError> {
+        self.storage.write(|tx| build::pin(tx, deployment, commits))
+    }
+
+    /// One Git build of a Deployment, with its log.
+    ///
+    /// # Errors
+    /// As [`Self::read`]; `not_found` for a Deployment of another Organization or a
+    /// Service it didn't build.
+    pub fn build_log(&self, who: &Actor, query: &BuildLogQuery) -> Result<BuildLogView, RpcError> {
+        self.storage
+            .read(|tx| deployment::build_log(tx, who, query))
     }
 }
