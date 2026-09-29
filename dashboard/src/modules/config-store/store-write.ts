@@ -56,7 +56,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
    * Runs `work` in the Environment's queue, then waits for `refresh` so the committed state shows before the
    * pending edit's overlay goes. Failure toasts, refetches the Environment's views (the rollback), and rejects.
    */
-  function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>, expects: boolean) {
+  function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>,
+    expects: boolean, handled: readonly string[] = []) {
     const observer = new MutationObserver<T, Error, Change[]>(queryClient, {
       mutationKey,
       scope: { id: `store:${organizationSlug}:${key}` },
@@ -67,8 +68,9 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       },
       onError: async (error) => {
         // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
-        // `confirmation_required` is a question for the caller to put to the user, not a failure.
-        if (!(error instanceof StoreRefused && error.code === "confirmation_required")) {
+        // `confirmation_required` is a question for the caller to put to the user, not a failure; so is any refusal
+        // the caller says it handles.
+        if (!(error instanceof StoreRefused && (error.code === "confirmation_required" || handled.includes(error.code)))) {
           toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
         }
         await refetchEnvironmentViews(queryClient, organizationSlug, key);
@@ -90,13 +92,13 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     /**
      * A command whose outcome matters before the page moves on (publish, discard, deploy). One naming an Environment
      * runs after that Environment's pending edits, and it persists once every Store view of the Organization has
-     * refetched. A refusal toasts here and rejects with `StoreRefused`. UI that awaits it is a listed command in
-     * the boundary test; creates need not wait, because the caller mints the new id.
+     * refetched. A refusal toasts here, unless its code is one the caller `handles`, and rejects with `StoreRefused`.
+     * UI that awaits it is a listed command in the boundary test; creates need not wait, because the caller mints the new id.
      */
-    commit(command: ConfigCommand): { isPersisted: { promise: Promise<ConfigWritten> } } {
+    commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       const promise = queued(key, ["store-command", organizationSlug, key], [], () => send(command),
-        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false);
+        () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), false, handles);
       return observeFailure({ isPersisted: { promise } });
     },
   };

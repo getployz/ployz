@@ -21,6 +21,7 @@ import {
   provideServerAccess,
   retireCredentialServerAccess,
 } from "#/modules/machines/server-access.server";
+import { refusal } from "#/modules/config-store/config-store.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { AppConfig } from "#/server/config.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
@@ -52,8 +53,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   switch (route) {
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
-    case "DELETE organizations/:id":
-      return yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
+    case "DELETE organizations/:id": {
+      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
+      return removal.ok ? removal.value : refusal(removal.refusal);
+    }
     case "GET tokens":
       return {
         ...(yield* listCredentials(caller)),

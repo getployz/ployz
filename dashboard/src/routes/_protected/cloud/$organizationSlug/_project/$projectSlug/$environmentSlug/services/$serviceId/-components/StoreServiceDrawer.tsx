@@ -147,7 +147,7 @@ export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
             </nav>
           </TabsContent>
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
-            <ContainerLogs selection={{ organizationSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
+            <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
           </TabsContent>
           <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
             <div className="h-full overflow-y-auto pr-1 pb-8">
