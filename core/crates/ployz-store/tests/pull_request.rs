@@ -344,7 +344,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .read(
             &who,
             &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&opened.admitted[0].deployment.id),
+                id: opened.admitted[0].deployment.id.clone(),
             },
         )
         .unwrap();
@@ -416,7 +416,7 @@ fn a_late_open_never_restores_a_closed_pull_request() {
     let cancelled = store.read(
         &who,
         &ployz_store::DeploymentQuery {
-            id: ToOwned::to_owned(&opened.admitted[0].deployment.id),
+            id: opened.admitted[0].deployment.id.clone(),
         },
     );
     assert!(cancelled.is_err(), "deleted with its Environment");

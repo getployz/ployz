@@ -235,12 +235,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         json!(plan),
         json!(
             store
-                .read(
-                    &who(),
-                    &ployz_store::DeploymentQuery {
-                        id: ToOwned::to_owned(&two)
-                    }
-                )
+                .read(&who(), &ployz_store::DeploymentQuery { id: two.clone() })
                 .unwrap()
         ),
         json!(store.read(&who(), &DeploymentsQuery::default()).unwrap()),

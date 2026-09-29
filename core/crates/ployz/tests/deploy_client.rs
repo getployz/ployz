@@ -1000,12 +1000,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let summary = run("cloud-run-1").await.unwrap();
     assert_eq!(summary.status, DeploymentStatus::Applied);
     let view = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
         .unwrap();
     assert!(
         view.nodes
@@ -1019,12 +1014,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     assert_eq!(duplicate.code, ployz_core::RpcErrorCode::Conflict);
     assert_eq!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id)
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
             .unwrap()
             .deployment
             .status,
@@ -1056,12 +1046,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         Ok(Default::default()),
     ));
     while store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&second),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: second.clone() })
         .unwrap()
         .preview
         .is_none()
@@ -1369,12 +1354,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     .unwrap();
     assert_eq!(summary.status, DeploymentStatus::Failed);
     let Some(Outcome::NotExecuted { reason, .. }) = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
         .unwrap()
         .outcome
     else {

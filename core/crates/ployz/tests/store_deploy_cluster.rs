@@ -472,12 +472,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             .await
             .unwrap();
             store
-                .read(
-                    &who,
-                    &ployz_store::DeploymentQuery {
-                        id: ToOwned::to_owned(&id),
-                    },
-                )
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
                 .unwrap()
         }
     };
@@ -637,12 +632,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             .await
             .unwrap();
             store
-                .read(
-                    &who,
-                    &ployz_store::DeploymentQuery {
-                        id: ToOwned::to_owned(&id),
-                    },
-                )
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
                 .unwrap()
         }
     };

@@ -380,12 +380,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         )
         .unwrap();
     let view = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&first),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: first.clone() })
         .unwrap();
     assert_eq!(
         json!(view.builds),

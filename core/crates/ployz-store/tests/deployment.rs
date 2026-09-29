@@ -153,12 +153,7 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 
 fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
     store
-        .read(
-            who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(n)),
-            },
-        )
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
         .unwrap()
         .nodes
         .into_iter()
@@ -219,12 +214,7 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     );
     assert!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id(1))
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap()
             .preview
             .is_some()
@@ -267,12 +257,7 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     store.record(&id(1), &a, partial).unwrap();
     assert_eq!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id(1))
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap()
             .deployment
             .status,
@@ -336,12 +321,7 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     assert_eq!((second.number, second.saved), (2, Revision(2)));
     assert_eq!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id(1))
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap()
             .deployment
             .status,
@@ -362,12 +342,7 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
     admit(&store, &who, 2, &[], None).unwrap();
     store.claim(&id(2), &runner("runner-b")).unwrap();
     let replaced = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(1)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
     assert_eq!(replaced.deployment.status, DeploymentStatus::Unknown);
     assert!(
@@ -388,12 +363,7 @@ fn cancel(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, 
 
 fn status(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentStatus {
     store
-        .read(
-            who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(n)),
-            },
-        )
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
         .unwrap()
         .deployment
         .status
@@ -510,12 +480,7 @@ fn a_runner_that_stops_before_preparing_executed_nothing() {
     store.claim(&id(1), &a).unwrap();
     store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
     let view = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(1)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     assert!(matches!(
@@ -617,12 +582,7 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(claimed.intent, frozen);
     assert_eq!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id(3))
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id(3) })
             .unwrap()
             .namespace
             .as_str(),
@@ -630,12 +590,7 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     );
     // A cancelled Deployment can be retried too, with its own Saved revision.
     let newer = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(2)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap()
         .deployment
         .saved;
@@ -801,12 +756,7 @@ fn deployments_page_newest_first_within_the_organization() {
     assert_eq!(code(bad_limit), RpcErrorCode::InvalidArgument);
     let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(
-        code(store.read(
-            &stranger,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(1))
-            }
-        )),
+        code(store.read(&stranger, &ployz_store::DeploymentQuery { id: id(1) })),
         RpcErrorCode::NotFound
     );
 }
@@ -1015,12 +965,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     );
     assert_eq!(
         store
-            .read(
-                &who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(&id(1))
-                }
-            )
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
             .unwrap()
             .deployment
             .upload,
@@ -1101,12 +1046,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         .record(&id(2), &a, RunEvidence::UploadNeeded(vec![app.clone()]))
         .unwrap();
     let view = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(2)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     assert_eq!(view.builds.len(), 1);

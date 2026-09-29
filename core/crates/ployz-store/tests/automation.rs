@@ -138,7 +138,7 @@ fn deployed(store: &ConfigStore, who: &Actor, automated: &Automated) -> Vec<(Vec
                 .read(
                     who,
                     &ployz_store::DeploymentQuery {
-                        id: ToOwned::to_owned(&summary.id),
+                        id: summary.id.clone(),
                     },
                 )
                 .unwrap();
