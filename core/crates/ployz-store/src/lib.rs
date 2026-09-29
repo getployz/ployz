@@ -308,9 +308,8 @@ impl ConfigStore {
         deployment: &DeploymentId,
         runner: &RunnerId,
         evidence: RunEvidence,
-    ) -> Result<Written, RpcError> {
+    ) -> Result<DeploymentSummary, RpcError> {
         self.storage
             .write(|tx| deployment::record(tx, deployment, runner, evidence))
-            .map(Written::Deployment)
     }
 }
