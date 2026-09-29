@@ -189,19 +189,19 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     let (code, refused) = attempt(
         address,
         &store,
-        &["env", "rm", "staging", "--confirm", "staging"],
+        &["env", "rm", "staging", "--confirm", "shop/staging"],
     );
     assert_eq!(code, Some(1), "{refused}");
     assert_eq!(
         refused["error"]["details"]["next"],
-        json!("ployz env rm staging --confirm staging --accept-volume-loss cache")
+        json!("ployz env rm staging --confirm shop/staging --accept-volume-loss cache")
     );
     let removed = ployz(&[
         "env",
         "rm",
         "staging",
         "--confirm",
-        "staging",
+        "shop/staging",
         "--accept-volume-loss",
         "cache",
     ]);

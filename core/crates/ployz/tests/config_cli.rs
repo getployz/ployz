@@ -458,11 +458,16 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(unconfirmed["details"]["services"], json!(["web"]));
         assert_eq!(
             unconfirmed["details"]["next"],
-            json!("ployz env rm production --confirm production")
+            json!("ployz env rm production --confirm shop/production")
+        );
+        failed(
+            store,
+            &["env", "rm", "production", "--confirm", "production"],
+            2,
         );
         let default = error(
             store,
-            &["env", "rm", "production", "--confirm", "production"],
+            &["env", "rm", "production", "--confirm", "shop/production"],
         );
         assert_eq!(default["code"], json!("conflict"));
         assert_eq!(
@@ -475,7 +480,7 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         // Nothing of production ever ran, so it goes without a Server.
         let removed = ok(
             store,
-            &["env", "rm", "production", "--confirm", "production"],
+            &["env", "rm", "production", "--confirm", "shop/production"],
         );
         assert_eq!(removed["environment"]["name"], json!("production"));
         assert_eq!(removed["deployment"], json!(null));
@@ -684,7 +689,7 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(take["code"], json!("not_found"));
         assert_eq!(
             saved["close"],
-            json!("ployz env rm fix-web --confirm fix-web")
+            json!("ployz env rm fix-web --confirm shop/fix-web")
         );
         assert_eq!(
             ok(store, &["get", "web.image"])["settings"][0]["value"],

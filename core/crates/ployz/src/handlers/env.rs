@@ -57,15 +57,15 @@ pub(crate) fn command() -> Command {
                 "Remove an Environment. If anything of it ran, a removal Deployment \
                          takes it off the Servers first, deleting its deployed Volumes once \
                          each is accepted by name; then its configuration and history go. \
-                         Type its name with --confirm; without it the command fails with \
+                         Type PROJECT/ENV with --confirm; without it the command fails with \
                          confirmation_required, naming what goes and the exact retry.",
             )
             .arg(positional("name", true))
             .arg(project_arg())
             .arg(
                 value("confirm", None)
-                    .value_name("ENV")
-                    .help("The Environment's name, typed to confirm its removal"),
+                    .value_name("PROJECT/ENV")
+                    .help("PROJECT/ENV, typed to confirm the Environment's removal"),
             )
             .arg(crate::cli::volume_acceptance()),
         ))
@@ -322,9 +322,12 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     };
     let store = store(root)?;
     let words = ["env", "rm", name.as_str()];
-    let mut again = vec!["env", "rm", name.as_str(), "--confirm", name.as_str()];
-    if !confirmed(matches, name.as_str(), "Environment")? {
-        return Err(unconfirmed(matches, &store, &at, &again)?);
+    let inventory = inventory(matches, &store, &at)?;
+    // Typed where it is: PROJECT/ENV.
+    let typed = format!("{}/{name}", inventory.environment.project);
+    let mut again = vec!["env", "rm", name.as_str(), "--confirm", typed.as_str()];
+    if !confirmed(matches, &typed, "Environment")? {
+        return Err(unconfirmed(matches, inventory, &again));
     }
     let events = deploy::open_events(matches)?;
     let remove = RemoveEnvironment {
@@ -368,15 +371,9 @@ pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
-fn unconfirmed(
-    matches: &ArgMatches,
-    store: &Store,
-    at: &EnvironmentRef,
-    again: &[&str],
-) -> Result<Error, Error> {
-    let inventory = inventory(matches, store, at)?;
+fn unconfirmed(matches: &ArgMatches, inventory: Inventory, again: &[&str]) -> Error {
     let retry = store::next(matches, again);
-    Ok(Error::detailed(
+    Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Removing Environment {} deletes its configuration, history and every Service \
@@ -389,7 +386,7 @@ fn unconfirmed(
             "volumes": inventory.volumes,
             "next": retry,
         }),
-    ))
+    )
 }
 
 /// What removing an Environment deletes: its Services and Volumes, by name.
@@ -772,7 +769,8 @@ fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Erro
     let close = match (&moved.branch, verb, at_merge) {
         (Some(branch), "save", None) if !branch.kept => {
             let name = branch.environment.name.as_str();
-            Some(scoped(&["env", "rm", name, "--confirm", name]))
+            let typed = format!("{}/{name}", branch.environment.project);
+            Some(scoped(&["env", "rm", name, "--confirm", &typed]))
         }
         _ => None,
     };
