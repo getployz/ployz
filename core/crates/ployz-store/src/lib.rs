@@ -10,6 +10,7 @@ mod error;
 mod git;
 mod id;
 mod query;
+mod removal;
 mod review;
 mod scope;
 mod sealing;
@@ -28,11 +29,12 @@ pub use deployment::{
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
 pub use query::*;
-pub use review::{DiffView, NodeChange};
+pub use removal::{RemovedVolume, VolumeLoss};
+pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, SettingPath};
-pub use trusted::Trusted;
+pub use trusted::{Trusted, VolumeObservation};
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -235,11 +237,71 @@ impl ConfigStore {
     }
 
     /// [`Command::Admit`]: publish if needed, then freeze and queue a Deployment.
+    /// `trusted` carries what the Servers hold when the Deploy removes deployed
+    /// Volumes; never pass caller-supplied evidence.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `confirmation_required` when it deletes data not
+    /// accepted by name, `unavailable` when the evidence of that data is missing.
+    pub fn admit(
+        &self,
+        who: &Actor,
+        admit: &Admit,
+        trusted: &Trusted,
+    ) -> Result<DeploymentSummary, RpcError> {
+        self.storage
+            .write(|tx| command::admit(tx, who, admit, trusted))
+    }
+
+    /// [`Command::CreateVolume`].
     ///
     /// # Errors
     /// As [`write`](Self::write).
-    pub fn admit(&self, who: &Actor, admit: &Admit) -> Result<DeploymentSummary, RpcError> {
-        self.storage.write(|tx| command::admit(tx, who, admit))
+    pub fn create_volume(
+        &self,
+        who: &Actor,
+        create: &CreateVolume,
+    ) -> Result<VolumeStaged, RpcError> {
+        self.storage
+            .write(|tx| command::create_volume(tx, who, create))
+    }
+
+    /// [`Command::RemoveVolume`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn remove_volume(
+        &self,
+        who: &Actor,
+        remove: &RemoveVolume,
+    ) -> Result<VolumeStaged, RpcError> {
+        self.storage
+            .write(|tx| command::remove_volume(tx, who, remove))
+    }
+
+    /// [`Query::Volumes`]: an Environment's Volumes.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn volumes(&self, who: &Actor, query: &VolumesQuery) -> Result<VolumesView, RpcError> {
+        self.storage.read(|tx| query::volumes(tx, who, query))
+    }
+
+    /// [`Query::Volume`]: one Volume.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn volume(&self, who: &Actor, query: &VolumeQuery) -> Result<VolumeView, RpcError> {
+        self.storage.read(|tx| query::volume(tx, who, query))
+    }
+
+    /// [`Query::Removals`]: the deployed Volumes a full Deploy would remove, so the
+    /// caller knows which Docker Volumes to observe before admitting it.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn removals(&self, who: &Actor, query: &RemovalsQuery) -> Result<RemovalsView, RpcError> {
+        self.storage.read(|tx| query::removals(tx, who, query))
     }
 
     /// [`Command::Cancel`].

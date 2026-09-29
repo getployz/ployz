@@ -14,7 +14,7 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
     ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
-    ServiceId, ServiceQuery, ServicesQuery, SettingPath, View,
+    ServiceId, ServiceQuery, ServicesQuery, SettingPath, Trusted, View,
 };
 use serde_json::{Value, json};
 
@@ -81,7 +81,9 @@ fn admit(
                 .map(|name| ServiceName::parse(*name).unwrap())
                 .collect(),
             version,
+            accept_volume_loss: Vec::new(),
         },
+        &Trusted::default(),
     )
 }
 
@@ -132,10 +134,13 @@ fn preview(services: &[&str]) -> DeployPreview {
 }
 
 fn succeeded(services: &[&str]) -> RunEvidence {
-    RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "success",
-        "completed": services.iter().map(|service| operation(service)).collect::<Vec<_>>()
-    }))))
+    RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "success",
+            "completed": services.iter().map(|service| operation(service)).collect::<Vec<_>>()
+        }))),
+        removed: Vec::new(),
+    }
 }
 
 fn outcome(value: Value) -> DeployOutcome<ExecutionError> {
@@ -235,11 +240,14 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         code(store.record(&id(1), &a, succeeded(&["web"]))),
         RpcErrorCode::InvalidArgument
     );
-    let partial = RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "failed", "completed": [operation("web")],
-        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-        "unexecuted": []
-    }))));
+    let partial = RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
     store.record(&id(1), &a, partial).unwrap();
     assert_eq!(
         store.deployment(&who, &id(1)).unwrap().deployment.status,
@@ -386,11 +394,14 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
         DeploymentStatus::Cancelling
     );
     // Its runner stops it partway and records what ran.
-    let stopped = RunEvidence::Executed(Box::new(outcome(json!({
-        "type": "failed", "completed": [operation("web")],
-        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
-        "unexecuted": []
-    }))));
+    let stopped = RunEvidence::Executed {
+        outcome: Box::new(outcome(json!({
+            "type": "failed", "completed": [operation("web")],
+            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "unexecuted": []
+        }))),
+        removed: Vec::new(),
+    };
     store.record(&id(1), &a, stopped).unwrap();
     assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
     assert_eq!(

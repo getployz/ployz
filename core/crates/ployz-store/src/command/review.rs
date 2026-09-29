@@ -150,10 +150,10 @@ fn restore(
     let saved_node = config(saved);
     if matches!(
         path.target(),
-        Some(Target::Variable(_) | Target::Exported(_))
+        Some(Target::Variable(_) | Target::Exported(_) | Target::Mount(_))
     ) {
         return Err(error::invalid(
-            "Discard a variable with its Service",
+            "Discard a variable or mount with its Service",
             json!({ "example": format!("ployz discard {}", path.service()) }),
         ));
     }

@@ -1,7 +1,9 @@
 //! Resolving which Project and Environment a request means, and loading and saving
 //! an Environment's Working State document.
 
-use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, parse_environment_intent};
+use ployz_core::config::{
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, parse_environment_intent,
+};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -9,7 +11,7 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
-use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
+use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision, VolumeName};
 use crate::storage::Tx;
 
 /// Which Environment a request addresses. An omitted Project means the
@@ -77,6 +79,34 @@ impl Environment {
             .services
             .get_mut(index)
             .expect("position is in bounds"))
+    }
+}
+
+impl Environment {
+    /// The Volume named `name` in Working State.
+    pub(crate) fn volume(&self, name: &VolumeName) -> Result<&SavedVolumeIntent, RpcError> {
+        self.working
+            .volumes
+            .iter()
+            .find(|volume| volume.name == name.as_str())
+            .ok_or_else(|| {
+                let names = self
+                    .working
+                    .volumes
+                    .iter()
+                    .map(|volume| volume.name.as_str())
+                    .collect::<Vec<_>>();
+                error::not_found(
+                    format!(
+                        "No Volume named {name} in Environment {}",
+                        self.summary.name
+                    ),
+                    json!({
+                        "did_you_mean": error::did_you_mean(name.as_str(), names.iter().copied()),
+                        "valid_children": names,
+                    }),
+                )
+            })
     }
 }
 
