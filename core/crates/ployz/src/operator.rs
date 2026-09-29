@@ -13,7 +13,7 @@ use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
     ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, OpaquePayload,
+    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
     ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,
 };
@@ -151,6 +151,8 @@ pub enum OperatorError {
     NoContainersOnMachines { service: ServiceSelector },
     #[error("no Machines found")]
     NoMachines,
+    #[error("no Service is running")]
+    NoServices,
     #[error("selected Machine disappeared from the snapshot")]
     SnapshotStale,
     #[error("unsupported Machine log service {service:?}; {expected}")]
@@ -415,9 +417,12 @@ pub async fn open_exec(
     })
 }
 
+/// Open log streams for `args`; none means every Service in `namespace`, or in the
+/// whole Cluster without one.
 pub async fn open_service_logs(
     client: &mut Client,
     args: &[ServiceArg],
+    namespace: Option<&Namespace>,
     machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     cancellation: CancellationToken,
@@ -430,6 +435,25 @@ pub async fn open_service_logs(
         .collect::<HashSet<_>>();
     let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
+    let every;
+    let args = if args.is_empty() {
+        every = services
+            .iter()
+            .filter(|service| {
+                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+            })
+            .map(|service| ServiceArg {
+                service: ServiceSelector::from(&service.identity),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        if every.is_empty() {
+            return Err(OperatorError::NoServices);
+        }
+        every.as_slice()
+    } else {
+        args
+    };
     let mut inputs = Vec::new();
     for arg in args {
         let service = select_service(&services, &arg.service)?;

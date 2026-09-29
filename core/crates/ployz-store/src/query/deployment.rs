@@ -40,6 +40,22 @@ pub struct PlanView {
     pub unresolved: Vec<String>,
 }
 
+/// Where an Environment runs on the Servers.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+}
+
+/// The Namespace an Environment's containers carry: fixed at its first Deployment,
+/// else the one its first Deployment would take.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NamespaceView {
+    pub environment: EnvironmentSummary,
+    pub namespace: ployz_core::Namespace,
+}
+
 /// One page of an Environment's Deployments, newest first.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -93,6 +109,19 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         namespace,
         changes,
         unresolved: vec!["operations".to_owned()],
+    })
+}
+
+pub(crate) fn namespace(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &NamespaceQuery,
+) -> Result<NamespaceView, RpcError> {
+    let environment = scope::environment(tx, who, &query.environment)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    Ok(NamespaceView {
+        environment: environment.summary,
+        namespace,
     })
 }
 

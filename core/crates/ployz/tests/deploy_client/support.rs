@@ -59,6 +59,8 @@ pub(super) struct DeployService {
     advertise_observations: bool,
     exec_exit: Option<i32>,
     hold_health: bool,
+    start_error: Option<RpcError>,
+    listing_failures: Vec<MachineId>,
 }
 
 impl DeployService {
@@ -82,6 +84,8 @@ impl DeployService {
             advertise_observations: false,
             exec_exit: None,
             hold_health: false,
+            start_error: None,
+            listing_failures: Vec::new(),
         }
     }
 
@@ -105,6 +109,8 @@ impl DeployService {
             advertise_observations: false,
             exec_exit: None,
             hold_health: false,
+            start_error: None,
+            listing_failures: Vec::new(),
         }
     }
 
@@ -128,6 +134,21 @@ impl DeployService {
 
     pub(super) fn with_exec_exit(mut self, code: i32) -> Self {
         self.exec_exit = Some(code);
+        self
+    }
+
+    pub(super) fn fail_starts(mut self, message: &str) -> Self {
+        self.start_error = Some(RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: message.into(),
+            details: Value::Null,
+        });
+        self
+    }
+
+    /// `machine_id` answers every container listing with an error.
+    pub(super) fn fail_listing_on(mut self, machine_id: MachineId) -> Self {
+        self.listing_failures.push(machine_id);
         self
     }
 
@@ -292,6 +313,13 @@ impl MachineRpc for DeployService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         let machine_id = machine_from_metadata(&request)?;
+        if self.listing_failures.contains(&machine_id) {
+            return encoded(RpcResponse::from(RpcError {
+                code: RpcErrorCode::Unavailable,
+                message: "listing failed".into(),
+                details: Value::Null,
+            }));
+        }
         encoded(RpcResponse::from(ContainerList {
             containers: self
                 .listed_containers
@@ -418,6 +446,9 @@ impl MachineRpc for DeployService {
         else {
             return Err(Status::invalid_argument("expected start_container"));
         };
+        if let Some(error) = &self.start_error {
+            return encoded(RpcResponse::from(error.clone()));
+        }
         encoded(RpcResponse::from(ployz_core::ContainerChanged {
             container_id: start.container_id,
         }))
@@ -922,11 +953,22 @@ pub(super) fn running_container(
     machine: &MachineObservation,
     spec: &RequestedServiceSpec,
 ) -> ployz_core::ContainerObservation {
+    running_container_in(machine, spec, "app", '1')
+}
+
+/// A running Container of `spec` in `namespace`, its ID `id` repeated.
+pub(super) fn running_container_in(
+    machine: &MachineObservation,
+    spec: &RequestedServiceSpec,
+    namespace: &str,
+    id: char,
+) -> ployz_core::ContainerObservation {
+    let namespace = Namespace::parse(namespace).unwrap();
     let mut spec = spec.clone();
     spec.set_volume_graph(
         spec.volume_graph()
             .clone()
-            .scope_to_namespace(&Namespace::parse("app").unwrap())
+            .scope_to_namespace(&namespace)
             .unwrap(),
     )
     .unwrap();
@@ -940,11 +982,11 @@ pub(super) fn running_container(
         )
         .expect("volume graph is scoped");
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
-        container_id: ContainerId::parse("1".repeat(64)).unwrap(),
+        container_id: ContainerId::parse(id.to_string().repeat(64)).unwrap(),
         display_name: format!("{}-1", spec.name),
         created_at_unix_nanos: 0,
         machine_id: machine.machine.id,
-        namespace: Namespace::parse("app").unwrap(),
+        namespace,
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::NotConfigured,
