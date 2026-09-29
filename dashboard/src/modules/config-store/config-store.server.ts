@@ -1,9 +1,10 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigView, ConfigWritten } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, ConfigView, ConfigWritten } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Data, Effect, Option, Redacted, Schema } from "effect";
+import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
@@ -127,25 +128,33 @@ function refusal(error: StoreRefusal) {
 }
 
 /**
- * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. A write first gathers the
- * trusted GitHub evidence its repository Services need. Anything else (the Store failing to open, a broken binding)
- * is a defect.
+ * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. It first gathers the
+ * trusted evidence the call needs: GitHub's for repository Services, and what Cloud observes of domains. Anything
+ * else (the Store failing to open, a broken binding) is a defect.
  */
 export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
   const store = yield* cloudStore;
   const read = (query: ConfigQuery) => store.read(organizationId, query);
-  const trusted = call.operation === "write"
+  const git = call.operation === "write"
     ? yield* gatherGitEvidence(organizationId, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(call.command)), read).pipe(
       Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
     )
-    : undefined;
-  if (trusted === null) {
+    : { repositories: [] };
+  if (git === null) {
     return { ok: false, refusal: { code: "unavailable", message: "GitHub didn't answer; retry.", details: null } } satisfies StoreResult<never>;
   }
+  const domains = yield* gatherDomainEvidence(organizationId, call, read).pipe(
+    Effect.catchTag("HostedDnsError", () => Effect.succeed(null)),
+  );
+  if (domains === null) {
+    const refusal = { code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null };
+    return { ok: false, refusal } satisfies StoreResult<never>;
+  }
+  const trusted: ConfigTrusted = { ...git, domains };
   return yield* Effect.tryPromise({
     try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
       const value = call.operation === "read"
-        ? await read(call.query)
+        ? await store.read(organizationId, call.query, trusted)
         : await store.write(organizationId, call.command, trusted);
       return { ok: true, value };
     },
