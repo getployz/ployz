@@ -622,6 +622,12 @@ impl From<LoginError> for Failure {
             LoginError::AwaitingApproval { .. } => {
                 (RpcErrorCode::Unauthenticated, Some("ployz login --wait"))
             }
+            LoginError::TokenRefused => (RpcErrorCode::Unauthenticated, Some("ployz token new")),
+            LoginError::NotMember(_) => (RpcErrorCode::Unauthenticated, Some("ployz org ls")),
+            LoginError::TokenBound | LoginError::NoBilling(_) => (RpcErrorCode::Unsupported, None),
+            LoginError::UnknownOrganization(_) => (RpcErrorCode::NotFound, Some("ployz org ls")),
+            LoginError::UnknownCredential(_) => (RpcErrorCode::NotFound, Some("ployz token ls")),
+            LoginError::AlreadyPro => (RpcErrorCode::Conflict, Some("ployz billing manage")),
         };
         let details = next.map_or(Value::Null, |next| serde_json::json!({ "next": next }));
         Self::detailed(code, error.to_string(), details)
