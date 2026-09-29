@@ -94,6 +94,17 @@ export const storeEditKey = (organizationSlug: string, key: string) => ["store-e
 /** A patch's value: Settings by name. The Store refuses any other shape. */
 const decodePatch = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.MutableJson));
 
+const isObject = (value: JsonValue): value is { [key: string]: JsonValue } =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A value as reads show it: a secret (a variable's, a registry credential) is `{"secret": true}`, never its plaintext. */
+function shown(value: JsonValue): JsonValue {
+  return isObject(value) && "secret" in value ? { secret: true } : value;
+}
+
+/** A variable's path, `SERVICE.env.KEY`: a set may add it, and `{"value", "exported"}` writes both of its rows. */
+const VARIABLE_PATH = /^[^.]+\.env\.[^.]+$/u;
+
 /** Applies edits not yet committed over an Environment view, in order: what the user sees while saves run. */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
@@ -102,16 +113,25 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
   const assign = (path: string, value: (row: EnvironmentView["settings"][number]) => JsonValue) => {
     const row = settings.find((candidate) => candidate.path === path);
     if (!row) return;
-    row.value = value(row);
+    row.value = shown(value(row));
     // `values` exists only on a one-Service view, so the row found is that Service's.
     const setting = path.split(".")[1];
-    if (values && setting) {
+    if (values && setting && setting !== "env") {
       if (row.value === null) delete values[setting];
       else values[setting] = row.value;
     }
   };
+  const setVariable = (path: string, value: JsonValue) => {
+    const write = isObject(value) && !("secret" in value) ? value : { value };
+    for (const [at, next, fallback] of [[path, write["value"], null], [`${path}.exported`, write["exported"], false]] as const) {
+      if (next === undefined) continue;
+      if (!settings.some((row) => row.path === at)) settings.push({ path: at, value: fallback, default: fallback, apply: "staged" });
+      assign(at, () => next);
+    }
+  };
   for (const change of changes) {
-    if (change.op === "set") assign(change.path, () => change.value);
+    if (change.op === "set" && VARIABLE_PATH.test(change.path)) setVariable(change.path, change.value);
+    else if (change.op === "set") assign(change.path, () => change.value);
     else if (change.op === "unset") assign(change.path, (row) => row.default);
     else {
       const patch = decodePatch(change.value);

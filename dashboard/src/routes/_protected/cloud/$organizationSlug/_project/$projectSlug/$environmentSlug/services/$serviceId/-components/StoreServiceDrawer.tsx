@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from "react";
-import { redirect, useLoaderData } from "@tanstack/react-router";
+import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, Trash2Icon } from "lucide-react";
-import type { EnvironmentRef, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
+import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
@@ -16,10 +17,12 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
+import { StoreServiceVariablesTab } from "./ServiceVariablesTab";
 import type { ServiceRouteParams } from "./useServiceDrawerState";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
@@ -42,6 +45,9 @@ const OPTION_LABELS = new Map([
   ["dockerfile", "Dockerfile"],
 ]);
 
+const SERVICE_ROUTE_FROM = "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId";
+const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug/services/$serviceId";
+
 /** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) => {
@@ -62,6 +68,8 @@ export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
   const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
   const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
   const writer = useStoreWriter(organizationSlug);
+  const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
+  const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
   // Removed while open (a staged removal of a new Service, or from the CLI): back to the canvas.
   if (!service) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
@@ -110,18 +118,32 @@ export function StoreServiceDrawer({ params }: { params: ServiceRouteParams }) {
           onRename={(name) => writer.commit({ command: "rename_service", environment: store, service: service.name, name })}
         />
       </CanvasInspectorHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pr-5 pb-8">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 pt-3 **:data-[slot=field-group]:gap-4">
-          {SERVICE_SETTINGS_SECTIONS.flatMap((section) => {
-            const body = bodies[section.id];
-            return body ? [(
-              <ServiceSettingsSection key={section.id} id={section.id} title={section.label} description={section.description}
-                variant={section.id === "danger" ? "danger" : "default"}>
-                {body}
-              </ServiceSettingsSection>
-            )] : [];
-          })}
-        </div>
+      <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        {/* TODO(#1273): Deployments and Logs tabs. */}
+        <Tabs value={tab === "variables" ? "variables" : "settings"}
+          onValueChange={(value) => { void navigate({ search: (prev) => ({ ...prev, tab: value === "variables" ? "variables" : "settings" }), replace: true }); }}
+          className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
+            <TabsTrigger value="settings">Settings</TabsTrigger>
+            <TabsTrigger value="variables">Variables</TabsTrigger>
+          </TabsList>
+          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
+            <div className="h-full overflow-y-auto pr-1 pb-8">
+              <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">
+                {SERVICE_SETTINGS_SECTIONS.flatMap((section) => {
+                  const body = bodies[section.id];
+                  return body ? [(
+                    <ServiceSettingsSection key={section.id} id={section.id} title={section.label} description={section.description}
+                      variant={section.id === "danger" ? "danger" : "default"}>
+                      {body}
+                    </ServiceSettingsSection>
+                  )] : [];
+                })}
+              </div>
+            </div>
+          </TabsContent>
+          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} />
+        </Tabs>
       </div>
     </div>
   );
@@ -220,11 +242,39 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           </ItemActions>
         </Item>
       </Field>
-      {kind === "repository" ? <><StoreSettingField state={state} name="branch" /><StoreSettingField state={state} name="rootDir" /></> : null}
+      {kind === "repository" ? <><StoreSettingField state={state} name="branch" /><StoreSettingField state={state} name="rootDir" /></> : <StoreRegistryCredentials state={state} image={value} />}
       <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
       <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
         onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
     </FieldGroup>
+  );
+}
+
+/**
+ * A private image's pull credentials. A new secret replaces the stored one at once; turning them off is staged and
+ * keeps the stored secret, which Restore turns back on. Reads show only that there is one.
+ */
+function StoreRegistryCredentials({ state, image }: { state: StoreService; image: string }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const row = state.rows.get("registryCredential");
+  if (!row) return null;
+  const path = `${state.service.name}.registryCredential`;
+  const edit = (change: Change) => writer.edit({ environment: state.environment, changes: [change] });
+  const change = state.changes.get("registryCredential");
+  const configured = row.value !== null;
+  const shown = (value: JsonValue) => value === null ? "None" : "Configured";
+  return (
+    <RegistryCredentialsField
+      label={serviceSetting("registryCredential").title}
+      image={image}
+      configured={configured}
+      username={null}
+      changed={change !== undefined}
+      baselineValue={change ? shown(change.before) : undefined}
+      onSet={({ username, secret }) => edit({ op: "set", path, value: username === null ? { secret } : { username, secret } })}
+      onClear={() => edit({ op: "unset", path })}
+      onRestore={!configured && change?.before != null ? () => edit({ op: "set", path, value: { secret: true } }) : undefined}
+    />
   );
 }
 
