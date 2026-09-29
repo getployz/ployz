@@ -49,7 +49,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
-            crate::output::warning!("{line}");
+            eprintln!("{line}");
         }
         let Some(confirmation) = super::super::data_loss::confirm_removal(
             root, &client, &observed, &format!("Remove Machine ({})", selected.id),
@@ -70,14 +70,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         say!("Removed Machine {} ({}) membership", selected.name, selected.id);
         if let Some(reason) = &reset_failure {
-            crate::output::warning!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
+            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
             for loss in &observed.data_loss {
                 say!("Volume data was not erased by reset: {loss}");
             }
         }
         if !replicated_services.is_empty() {
-            crate::output::warning!(
+            eprintln!(
                 "WARNING: Replicated Services may now be under-replicated: {}. Replicas are not re-placed automatically.",
                 replicated_services
                     .iter()

@@ -263,11 +263,7 @@ fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
     assert!(message(&json).contains("no contexts"), "{json}");
 
     let (code, json, stderr) = run_json(&["volume", "ls", "--json", "--no-such-flag"]);
-    assert_eq!(
-        code,
-        Some(i32::from(ployz::failure::USAGE_EXIT)),
-        "{stderr}"
-    );
+    assert_eq!(code, Some(2), "{stderr}");
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "invalid_argument",
@@ -289,7 +285,7 @@ fn json_without_a_command_is_the_version_or_an_error() {
     }
 
     let (code, json, _) = run_json(&["--json"]);
-    assert_eq!(code, Some(i32::from(ployz::failure::USAGE_EXIT)));
+    assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "invalid_argument",

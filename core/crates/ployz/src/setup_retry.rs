@@ -59,8 +59,8 @@ pub(crate) async fn run_expecting<C, T, E: Display>(
             Ok(Err(error)) => {
                 if last.is_none() {
                     match expected {
-                        Some(Expected(notice)) => crate::output::warning!("{notice}"),
-                        None => crate::output::warning!(
+                        Some(Expected(notice)) => eprintln!("{notice}"),
+                        None => eprintln!(
                             "{operation}: {error}; retrying for up to {}s. Check outbound firewall access if this connection is blocked.",
                             deadline.saturating_duration_since(Instant::now()).as_secs()
                         ),

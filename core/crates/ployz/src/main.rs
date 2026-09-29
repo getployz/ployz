@@ -1,4 +1,4 @@
-#![deny(clippy::print_stdout, clippy::print_stderr)]
+#![deny(clippy::print_stdout)]
 
 use std::{io::IsTerminal, process::ExitCode};
 

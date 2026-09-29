@@ -63,7 +63,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 }
             });
             if let Some(warning) = warning {
-                crate::output::warning!("{warning}");
+                eprintln!("{warning}");
             }
             finished
         })

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{self, Write},
+    io,
 };
 
 use clap::ArgMatches;
@@ -167,7 +167,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .collect();
             let volume = inspected(volumes, &name, &gaps)?;
             if volume.is_none() {
-                crate::output::warning!(
+                eprintln!(
                     "Docker Volume {} was not found on the Machines that answered; not checked: {}",
                     name.as_str().escape_debug(),
                     crate::failure::partial_failure_details(&result)
@@ -366,7 +366,6 @@ fn select_create_machine(
                 crate::output::say!("  {}. {}", index + 1, machine.machine.name);
             }
             crate::output::say_inline!("> ");
-            io::stdout().flush()?;
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
             let input = input.trim();
@@ -390,10 +389,10 @@ fn select_create_machine(
 
 fn report_failures<T>(result: &PartialResult<T, RpcError>) {
     for failure in &result.failures {
-        crate::output::warning!("{}: {}", failure.machine_id, failure.error.message);
+        eprintln!("{}: {}", failure.machine_id, failure.error.message);
     }
     for machine_id in &result.omissions {
-        crate::output::warning!("{machine_id}: no terminal response");
+        eprintln!("{machine_id}: no terminal response");
     }
 }
 
@@ -412,25 +411,24 @@ fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bo
 
 fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in volume_failures(result) {
-        crate::output::warning!("{failure}");
+        eprintln!("{failure}");
     }
 }
 
 fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in &result.failures {
-        crate::output::warning!(
+        eprintln!(
             "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
-            failure.machine_id,
-            failure.error.message
+            failure.machine_id, failure.error.message
         );
     }
     for machine_id in &result.omissions {
-        crate::output::warning!(
+        eprintln!(
             "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
         );
     }
     for failure in volume_failures(result) {
-        crate::output::warning!("WARNING: {failure}; this Volume will not be removed");
+        eprintln!("WARNING: {failure}; this Volume will not be removed");
     }
 }
 

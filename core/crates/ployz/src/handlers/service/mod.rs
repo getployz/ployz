@@ -49,10 +49,9 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                         service.hook_containers.len()
                     );
                     if counts.unknown > 0 {
-                        crate::output::warning!(
+                        eprintln!(
                             "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity,
-                            counts.unknown
+                            service.identity, counts.unknown
                         );
                     }
                 }
@@ -582,12 +581,9 @@ async fn apply_service_action(
             }
         }
         for failure in outcomes.failures {
-            crate::output::warning!(
+            eprintln!(
                 "WARNING: {} failed for {} on {}: {}",
-                action,
-                failure.error.container_id,
-                failure.machine_id,
-                failure.error.error.message
+                action, failure.error.container_id, failure.machine_id, failure.error.error.message
             );
             container_failures.push(ContainerFailure {
                 machine_id: failure.machine_id,
@@ -612,9 +608,7 @@ async fn apply_service_action(
         )
         .await?;
     if !live.containers.all_targets_succeeded() {
-        crate::output::warning!(
-            "WARNING: the Service selection came from a partial Live Observation"
-        );
+        eprintln!("WARNING: the Service selection came from a partial Live Observation");
         partial = true;
     }
     Ok(ServiceActionOutcome {
@@ -698,7 +692,7 @@ fn stop_options(
 
 fn print_observation_warning(live: &LiveServices<RpcError>) {
     for line in observation_warning_lines(live) {
-        crate::output::warning!("{line}");
+        eprintln!("{line}");
     }
 }
 

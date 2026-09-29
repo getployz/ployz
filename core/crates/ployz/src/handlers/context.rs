@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    path::Path,
-};
+use std::{io, path::Path};
 
 use clap::ArgMatches;
 use serde::Serialize;
@@ -198,7 +195,7 @@ fn prompt<'a>(
 ) -> Result<usize, Error> {
     if !output::interactive() {
         return Err(Error::usage(format!(
-            "cannot {title} interactively without a terminal"
+            "cannot {title} interactively without a terminal; pass the context name: ployz ctx use <context-name>"
         )));
     }
     let choices = choices.collect::<Vec<_>>();
@@ -212,7 +209,6 @@ fn prompt<'a>(
         crate::output::say!("  {}. {choice}{marker}", index + 1);
     }
     crate::output::say_inline!("> ");
-    io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let index = if input.trim().is_empty() {

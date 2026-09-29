@@ -250,8 +250,8 @@ fn connect_code(error: &ConnectError) -> RpcErrorCode {
             last: Some(last), ..
         } => connect_code(last),
         ConnectError::Join(_) => RpcErrorCode::Internal,
-        ConnectError::IdentityMismatch { .. }
-        | ConnectError::Attempt(_)
+        ConnectError::IdentityMismatch { .. } => RpcErrorCode::Unauthenticated,
+        ConnectError::Attempt(_)
         | ConnectError::EntryNotReady
         | ConnectError::Io(_)
         | ConnectError::Dial(_)
@@ -505,14 +505,14 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         }) => ExitCode::from(code),
         // A printed result stays the one stdout object; what failed after it is partial.
         Err(error) if crate::output::emitted() => {
-            crate::output::warning!("{error}");
+            eprintln!("{error}");
             ExitCode::from(PARTIAL_EXIT)
         }
         Err(error) => {
             if crate::output::json() {
                 crate::output::error(&error.report());
             } else {
-                crate::output::warning!("{error}");
+                eprintln!("{error}");
             }
             match error.inner {
                 Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),

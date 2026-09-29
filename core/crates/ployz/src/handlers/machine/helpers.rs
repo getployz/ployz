@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    sync::Arc,
-};
+use std::{io, sync::Arc};
 
 use clap::ArgMatches;
 use ployz_core::{
@@ -283,7 +280,6 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
         "Volume data will not be erased, but will lose access through the current cluster."
     );
     crate::output::say_inline!("Type yes to confirm, or press Enter to cancel: ");
-    io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;
     if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {

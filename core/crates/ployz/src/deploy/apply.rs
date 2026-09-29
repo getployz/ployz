@@ -1,7 +1,4 @@
-use std::{
-    io::{self, Write},
-    num::NonZeroU32,
-};
+use std::{io, num::NonZeroU32};
 
 use ployz_core::{
     DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, ProjectName,
@@ -315,7 +312,7 @@ fn progress_signature(event: &DeployEvent) -> String {
 
 fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
-        crate::output::warning!("WARNING: {warning}");
+        eprintln!("WARNING: {warning}");
     }
 }
 
@@ -326,7 +323,6 @@ async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool,
         ));
     }
     crate::output::say_inline!("{prompt}");
-    io::stdout().flush()?;
     let input =
         crate::cancellation::read_line(cancellation, io::BufReader::new(io::stdin())).await?;
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
