@@ -6,7 +6,7 @@ import { withMutationResult } from "#/server/mutation-result.server";
 import { slugifySegment } from "#/utils/slug";
 import { getDuplicateEnvironmentNodeNameMessage, isEnvironmentNodeNameTaken, resolveUniqueEnvironmentNodeName } from "./environment-node-names";
 import { environmentDesignFields } from "./fields";
-import { listEnvironmentNodeNameIdentities, requireEnvironmentForActorById } from "./authoring-repository.server";
+import { listEnvironmentNodeNameIdentities, requireEnvironmentForActorById, requireOrganizationForActor } from "./authoring-repository.server";
 import { createResourceIdentity, getVolumeResource, upsertResourceCanvasPosition } from "./resource-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import type { CreateVolumeResourceInput, DeleteVolumeResourceInput, UpdateEnvironmentResourceCanvasPositionInput, UpdateVolumeResourceInput } from "./resources";
@@ -61,7 +61,8 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   actor: Actor,
   input: UpdateEnvironmentResourceCanvasPositionInput,
 ) {
-  yield* requireEnvironmentForActorById(actor, input);
-  // Positions are presentation: a Config Store Volume is placed before the Store creates it.
-  return yield* withMutationResult(upsertResourceCanvasPosition({ ...input, resourceType: "volume" }));
+  // Positions are presentation, kept by Organization: a Config Store Volume is placed before the Store creates it, in
+  // an Environment only the Store knows.
+  const organization = yield* requireOrganizationForActor(actor, input.organizationSlug);
+  return yield* withMutationResult(upsertResourceCanvasPosition({ ...input, organizationId: organization.id, resourceType: "volume" }));
 });

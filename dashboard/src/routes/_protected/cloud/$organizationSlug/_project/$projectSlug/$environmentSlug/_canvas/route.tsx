@@ -5,6 +5,7 @@ import {
   type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { prefetchActiveBuildTails, prefetchFromOrgStore } from "#/collections/route-data";
+import { storeEnabled } from "#/modules/config-store/store.contract";
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import {
   EnvironmentCanvasScene,
@@ -24,7 +25,9 @@ export const Route = createFileRoute(
   },
   // The canvas and every panel over it (the deployment list among them) show the bottom bar, whose running attempt, like
   // the list's active rows, reads its build tail.
-  loader: ({ params, context }) => prefetchFromOrgStore(context, params.organizationSlug, () => [prefetchActiveBuildTails(context, params)]),
+  // Over the Config Store the Environment's loader prefetched its Deployments instead.
+  loader: ({ params, context }) => storeEnabled ? undefined
+    : prefetchFromOrgStore(context, params.organizationSlug, () => [prefetchActiveBuildTails(context, params)]),
   errorComponent: CanvasError,
   component: CanvasLayout,
 });

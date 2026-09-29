@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, queryOptions, useMutationState, useQueries, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery, DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery,
-  EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery, VolumesQuery,
+  EnvironmentRef, EnvironmentsQuery, EnvironmentView, JsonValue, ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
@@ -199,6 +199,21 @@ export function domainsQuery(environment: EnvironmentRef): { query: "domains" } 
 /** An Environment's Volumes with where Services mount them: the canvas's Volumes and their links. */
 export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } & VolumesQuery {
   return { query: "volumes", environment };
+}
+
+/** The Organization's Projects, each with its Default Environment and its Environments' names. */
+export function projectsQuery(): { query: "projects" } & ProjectsQuery {
+  return { query: "projects" };
+}
+
+/** A Project's Environments: which is the Default, each Branch's Parent, and any removal from the Servers. */
+export function environmentsQuery(project: string): { query: "environments" } & EnvironmentsQuery {
+  return { query: "environments", project };
+}
+
+/** The Volumes whose data taking the Environment off the Servers deletes. */
+export function removalsQuery(environment: EnvironmentRef): { query: "removals" } & RemovalsQuery {
+  return { query: "removals", environment, remove: true };
 }
 
 /** One Deployment: its Node Outcomes, builds, recorded Deploy Preview and outcome. */

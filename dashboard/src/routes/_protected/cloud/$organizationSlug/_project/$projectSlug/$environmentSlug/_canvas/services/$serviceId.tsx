@@ -20,12 +20,11 @@ export const Route = createFileRoute(
   // Switching tabs navigates, so the Deployments tab's first page starts as it opens. SSR renders it.
   loaderDeps: ({ search }) => ({ tab: search.tab }),
   loader: async ({ params, context, deps }) => {
-    const environment = await requireEnvironment(context, params);
     if (storeEnabled) {
-      // TODO(#1267): route params become the Store names.
       await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug }));
       return;
     }
+    const environment = await requireEnvironment(context, params);
     if (deps.tab !== "deployments") return;
     await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));
   },

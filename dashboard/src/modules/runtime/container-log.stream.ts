@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, mergeContainerHistory, remainingHistory, type ContainerLogRow } from "./container-log.collection";
 
-export type ContainerLogSelection = { organizationSlug: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
+export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
 /**
  * `opened`: the server has answered once, so an empty log means no output rather than not loaded yet.

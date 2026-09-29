@@ -15,7 +15,7 @@ export function ProjectCard({
   runtimeStatus,
 }: {
   name: string;
-  environment: { name: string; namespace: string; services: { id: string; slug: string; config: { source: ServiceSource } }[] } | null;
+  environment: { name: string; namespace: string; services: { id: string; slug: string; config: { source: Pick<ServiceSource, "type"> } }[] } | null;
   runtimeServices: readonly RuntimeServiceRecord[];
   runtimeStatus: RuntimeLensStatus;
 }) {
