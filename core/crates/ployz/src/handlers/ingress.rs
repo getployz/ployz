@@ -1,6 +1,8 @@
 //! CLI handlers for neutral Ingress Proxy operations.
 
-use clap::ArgMatches;
+use clap::{ArgMatches, Command};
+
+use crate::cli::{base, many, switch, value};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
 
@@ -32,5 +34,25 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             )
             .await,
         )
+    })
+}
+
+pub(crate) fn command() -> Command {
+    base("ingress", "Manage the Ingress Proxy")
+        .arg_required_else_help(true)
+        .subcommand(
+            base("deploy", "Deploy the Ingress Proxy")
+                .arg(value("image", None))
+                .arg(many("constraint", None))
+                .arg(switch("recreate", None))
+                .arg(switch("skip-health", None)),
+        )
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::Supported;
+    Some(match path {
+        "deploy" => (deploy, Supported),
+        _ => return None,
     })
 }

@@ -6,16 +6,16 @@ use clap_complete::{Shell, generate};
 
 use crate::failure::{Failure, USAGE_EXIT};
 
-mod build;
-mod cloud;
-mod context;
+pub(crate) mod build;
+pub(crate) mod cloud;
+pub(crate) mod context;
 mod data_loss;
-mod ingress;
-mod machine;
+pub(crate) mod ingress;
+pub(crate) mod machine;
 mod operator;
-mod project;
-mod service;
-mod volume;
+pub(crate) mod project;
+pub(crate) mod service;
+pub(crate) mod volume;
 
 #[doc(hidden)]
 pub use cloud::enroll_with_installer as cloud_enroll_with_installer;
@@ -213,61 +213,32 @@ where
     })
 }
 
-type Handler = fn(&ArgMatches) -> Result<(), Error>;
+pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 /// Whether a command prints a `--json` result. Refused: a terminal session, a
 /// tunnel, shell code, or the Cloud runner's own fixed JSON.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Json {
+pub(crate) enum Json {
     Supported,
     Refused,
 }
 
-/// Each command's handler and its `--json` support, declared together.
+/// Each command's handler and its `--json` support: each group module declares
+/// its own subcommands.
 fn handler_for(path: &str) -> Option<(Handler, Json)> {
-    use Json::{Refused, Supported};
-    let entry: (Handler, Json) = match path {
-        "completion" => (completion, Refused),
-        "ingress deploy" => (ingress::deploy, Supported),
-        "ctx ls" => (context::list, Supported),
-        "ctx rm" => (context::remove, Supported),
-        "ctx use" => (context::select, Supported),
-        "build" => (build::build, Refused),
-        "cloud enroll" => (cloud::enroll, Supported),
-        "machine add" => (machine::add, Supported),
-        "machine init" => (machine::init, Supported),
-        "machine build-cache-clear" => (machine::clear_build_cache, Supported),
-        "machine inspect" => (machine::inspect, Supported),
-        "machine logs" => (operator::machine_logs, Supported),
-        "machine ls" => (machine::list, Supported),
-        "machine rm" => (machine::remove, Supported),
-        "machine update" => (machine::update, Supported),
-        "machine upgrade" => (machine::upgrade, Supported),
-        "project ls" => (project::list, Supported),
-        "project rm" => (project::remove, Supported),
-        "service exec" => (operator::exec, Refused),
-        "service inspect" => (service::inspect, Supported),
-        "service logs" => (operator::service_logs, Supported),
-        "service ls" => (service::list, Supported),
-        "service proxy" => (operator::proxy, Refused),
-        "service ps" => (service::processes, Supported),
-        "service rm" => (service::remove, Supported),
-        "service scale" => (service::scale, Supported),
-        "service start" => (
-            |root| service::change(root, ployz_core::ContainerAction::Start),
-            Supported,
-        ),
-        "service stop" => (
-            |root| service::change(root, ployz_core::ContainerAction::Stop),
-            Supported,
-        ),
-        "volume create" => (volume::create, Supported),
-        "volume inspect" => (volume::inspect, Supported),
-        "volume ls" => (volume::list, Supported),
-        "volume rm" => (volume::remove, Supported),
-        _ => return None,
-    };
-    Some(entry)
+    let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
+    match (group, rest) {
+        ("build", "") => Some((build::build, Json::Refused)),
+        ("completion", "") => Some((completion, Json::Refused)),
+        ("cloud", rest) => cloud::handler(rest),
+        ("ctx", rest) => context::handler(rest),
+        ("ingress", rest) => ingress::handler(rest),
+        ("machine", rest) => machine::handler(rest),
+        ("project", rest) => project::handler(rest),
+        ("service", rest) => service::handler(rest),
+        ("volume", rest) => volume::handler(rest),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

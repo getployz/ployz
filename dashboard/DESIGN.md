@@ -133,7 +133,7 @@ The system explicitly rejects verbose infrastructure administration, self-hostin
 
 - Nearly achromatic at rest, with warm pink reserved for staged intent.
 - Compact Geist typography and familiar controls built for repeated daily use.
-- Core-owned evidence and Cloud-owned product context presented without blurring authority.
+- Runtime evidence and authored product context presented without blurring authority.
 - Autosaved changes remain visible from edited field through diff and deployment.
 - Tonal layering and borders establish structure; shadows indicate real elevation.
 
@@ -283,11 +283,11 @@ Guard what can't come back, never the verb.
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Publish puts configuration in Saved State without deploying; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 ### Deployments
 
-Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
+Deployments are a place, not a mode of the canvas. Each Deployment has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
 
 - While the page is open, the canvas lights up what the attempt changed: those nodes show their Node Outcome and the rest dim. Nodes it removed, or that were deleted since, appear only in the page's list.
 - The page's header places the attempt: its message, what triggered it and who, the Git branch and commit, the status, the duration and the age. Its actions follow the status.
@@ -328,7 +328,7 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 - **Do** use neutral ink and white for ordinary action hierarchy.
 - **Do** carry Intent Pink from changed field through resource, diff, and Apply Changes without gaps.
 - **Do** keep normal runtime state visually quiet and raise only timely, actionable evidence.
-- **Do** distinguish Cloud-owned product context from core-owned runtime truth, especially when testimony is stale or missing.
+- **Do** distinguish authored product context from runtime truth, especially when testimony is stale or missing.
 - **Do** prevent invalid states upstream so Deploy is a confident final action.
 - **Do** use compact Geist typography, familiar controls, and complete interaction states.
 - **Do** pair every semantic color with text, iconography, shape, or placement that communicates the same meaning.
