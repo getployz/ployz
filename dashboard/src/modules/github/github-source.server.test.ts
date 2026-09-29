@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import { afterEach, expect, it } from "vitest";
 import { mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,8 +65,11 @@ it("keeps an upload's permission bits, which its digest covers, past the umask; 
   const chunks = async function* () { yield new Uint8Array(await response.arrayBuffer()); };
   const previous = process.umask(0o077);
   try {
-    const root = await extractUploadedSource(chunks(), await workspace(), new AbortController().signal);
-    const mode = async (name: string) => (await stat(path.join(root, name))).mode & 0o777;
-    expect([await mode("."), await mode("bin"), await mode("bin/run"), await mode(".gitmodules")]).toEqual([0o775, 0o500, 0o775, 0o664]);
+    const modes = await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const root = yield* extractUploadedSource(chunks());
+      const mode = async (name: string) => (await stat(path.join(root, name))).mode & 0o777;
+      return yield* Effect.promise(async () => [await mode("."), await mode("bin"), await mode("bin/run"), await mode(".gitmodules")]);
+    })));
+    expect(modes).toEqual([0o775, 0o500, 0o775, 0o664]);
   } finally { process.umask(previous); }
 });

@@ -70,11 +70,20 @@ export async function extractGithubSource(response: Response, directory: string,
 }
 
 /**
- * An uploaded source's gzipped tar, `chunks`, extracted into `directory` under the same limits and checks as a
- * repository's, keeping each entry's permission bits, which its content digest covers. Resolves to its root.
+ * An uploaded source's gzipped tar, `chunks`, extracted into a directory that lasts until the scope closes, under the
+ * same limits and checks as a repository's, keeping each entry's permission bits, which its content digest covers.
+ * Resolves to its root; a malformed upload fails as `GithubSourceError`.
  */
-export const extractUploadedSource = (chunks: AsyncIterable<Uint8Array>, directory: string, signal: AbortSignal) =>
-  extractSourceArchive(chunks, directory, signal, { limits: SOURCE_LIMITS, uploaded: true });
+export const extractUploadedSource = Effect.fn("Github.extractUploadedSource")(function* (chunks: AsyncIterable<Uint8Array>) {
+  const directory = yield* Effect.acquireRelease(
+    Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-upload-")), catch: () => new GithubSourceError({ message: "Could not create the upload's workspace." }) }),
+    (directory) => Effect.promise(() => removeExtractedSource(directory)),
+  );
+  return yield* Effect.tryPromise({
+    try: (signal) => extractSourceArchive(chunks, directory, signal, { limits: SOURCE_LIMITS, uploaded: true }),
+    catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Cloud couldn't read this Deployment's upload. Upload it again." }),
+  });
+});
 
 // The source is streamed to disk. Validate the complete archive before extraction,
 // including entries preceding a later symlink, rather than trusting archive order.

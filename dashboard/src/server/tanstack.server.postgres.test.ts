@@ -1,4 +1,5 @@
 import { testConfigEnvironment } from "#/test/config-environment";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createClientRpc } from "@tanstack/react-start/client-rpc";
@@ -8,6 +9,7 @@ import { Inngest } from "inngest";
 import { Client } from "pg";
 import { createServer } from "vite";
 import { expect, it } from "vitest";
+import { cloudStore } from "#/modules/config-store/config-store.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
@@ -80,7 +82,7 @@ it(
         return value;
       }).pipe(Effect.provide(authLayer));
 
-      const organizationSlug = yield* Effect.promise(async () => {
+      const organization = yield* Effect.promise(async () => {
         const database = new Client({ connectionString: testDatabase.url.href });
         await database.connect();
         try {
@@ -95,11 +97,20 @@ it(
             "insert into environment (organization_id, project_id, name, namespace, intent) values ($1, $2, $3, $4, $5)",
             [organization.id, project.rows[0]?.id, "SSR production", "ssr-production", emptyEnvironmentIntent("ssr-production")],
           );
-          return organization.slug;
+          return organization;
         } finally {
           await database.end();
         }
       });
+      const organizationSlug = organization.slug;
+      // The canvas reads the Environment's Services and Settings from the Config Store.
+      yield* Effect.gen(function* () {
+        const store = yield* cloudStore;
+        yield* Effect.promise(async () => {
+          await store.write(organization.id, { command: "create_project", id: randomUUID(), name: "ssr-project", default_environment: randomUUID() });
+          await store.write(organization.id, { command: "create_environment", id: randomUUID(), project: "ssr-project", name: "ssr-production" });
+        });
+      }).pipe(Effect.provide(Layer.merge(configLayer, databaseLayer)));
 
       yield* Effect.promise(async () => {
         const previousDatabaseUrl = process.env["DATABASE_URL"];
