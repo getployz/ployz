@@ -3,7 +3,7 @@
 //! (each Store gets its own new database).
 #![allow(dead_code, reason = "each suite uses what it needs")]
 
-use ployz_store::ConfigStore;
+use ployz_store::{ConfigStore, SealingKey};
 
 /// A new, empty Store database, shared by every handle opened on the URL.
 pub fn fresh_url(dir: &tempfile::TempDir) -> String {
@@ -21,7 +21,12 @@ pub fn fresh_url(dir: &tempfile::TempDir) -> String {
 /// A new, empty Store.
 pub fn open() -> ConfigStore {
     if std::env::var_os("PLOYZ_STORE_TEST_POSTGRES").is_none() {
-        return ConfigStore::open("sqlite::memory:").unwrap();
+        return ConfigStore::open("sqlite::memory:", key()).unwrap();
     }
-    ConfigStore::open(&fresh_url(&tempfile::tempdir().unwrap())).unwrap()
+    ConfigStore::open(&fresh_url(&tempfile::tempdir().unwrap()), key()).unwrap()
+}
+
+/// The key every test Store seals with.
+pub fn key() -> SealingKey {
+    SealingKey::new(b"test-encryption-secret").unwrap()
 }

@@ -9,7 +9,8 @@ use ployz_store::{
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited,
     EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId,
     PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query, RemoveService,
-    RenameService, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery, ServicesView, Trusted,
+    RenameService, SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
+    ServicesView, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -225,7 +226,16 @@ pub(crate) fn store_at(config: &std::path::Path) -> Result<Store, Error> {
         let actor = Actor {
             organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
         };
-        return Ok(Store::Local(ConfigStore::open(&url)?, actor));
+        // The hidden test mode keeps its sealing key beside its database.
+        let key = match url
+            .strip_prefix("sqlite:")
+            .filter(|path| *path != ":memory:")
+        {
+            Some(path) => format!("{path}.key").into(),
+            None => config.with_file_name("store.key"),
+        };
+        let key = SealingKey::from_file(&key)?;
+        return Ok(Store::Local(ConfigStore::open(&url, key)?, actor));
     }
     let credentials = CredentialStore::beside(config);
     let token = std::env::var(env::TOKEN).ok();

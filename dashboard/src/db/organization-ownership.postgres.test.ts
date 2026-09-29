@@ -39,7 +39,7 @@ let harness: PostgresTestHarness;
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
   // The Config Store's tables live in Cloud's database once Cloud opens the Store.
-  await storeAt(harness.databaseUrl, harness.database);
+  await storeAt(harness.databaseUrl, harness.database, "test-encryption-secret");
 }, 60_000);
 
 afterAll(async () => {

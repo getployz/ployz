@@ -16,7 +16,7 @@ use crate::error;
 use crate::id::Revision;
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{ServiceSetting, SettingPath};
+use crate::settings::{ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
 
 /// Put Working State in Saved State without deploying it.
@@ -148,6 +148,15 @@ fn restore(
     };
     let head_node = config(Some(&head));
     let saved_node = config(saved);
+    if matches!(
+        path.target(),
+        Some(Target::Variable(_) | Target::Exported(_))
+    ) {
+        return Err(error::invalid(
+            "Discard a variable with its Service",
+            json!({ "example": format!("ployz discard {}", path.service()) }),
+        ));
+    }
     let field = path.setting().map(ServiceSetting::field);
     // A new node's Setting resets to its Introduction, and stays unpublished.
     let introduction = field.is_some() && head_node.is_none();

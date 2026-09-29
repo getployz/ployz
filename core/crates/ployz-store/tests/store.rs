@@ -388,13 +388,13 @@ fn concurrent_blind_edits_to_different_settings_all_survive() {
     let dir = tempfile::tempdir().unwrap();
     let url = fresh_url(&dir);
     let who = actor("org");
-    let first = ConfigStore::open(&url).unwrap();
+    let first = ConfigStore::open(&url, backend::key()).unwrap();
     first.create_project(&who, &create_project("shop")).unwrap();
     first
         .create_service(&who, &create_service("svc-web", "web", "nginx:1"))
         .unwrap();
     // Two handles on one file: two CLI processes editing the same Environment.
-    let second = ConfigStore::open(&url).unwrap();
+    let second = ConfigStore::open(&url, backend::key()).unwrap();
     std::thread::scope(|scope| {
         let replicas = scope.spawn(|| {
             for n in 2..12 {
@@ -643,6 +643,8 @@ fn the_wire_and_typed_forms_agree() {
 
 #[test]
 fn only_postgres_and_sqlite_urls_open() {
-    let error = ConfigStore::open("mysql://localhost/store").err().unwrap();
+    let error = ConfigStore::open("mysql://localhost/store", backend::key())
+        .err()
+        .unwrap();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 }
