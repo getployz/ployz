@@ -341,7 +341,8 @@ export function useSavesInto(organizationSlug: string, project: string, environm
     if (!data?.ok || !data.value.pull_request) return [];
     const { number } = data.value.pull_request;
     return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
-      destination.name === environment && destination.save?.standing ? [{ number, changes: destination.save.changes }] : []));
+      destination.name === environment && destination.save?.standing
+        ? [{ number, changes: destination.save.changes, environment: pr.environment.name }] : []));
   });
 }
 

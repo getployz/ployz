@@ -14,7 +14,7 @@ import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabe
 import { plural } from "#/lib/plural";
 import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
+import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 
@@ -38,7 +38,7 @@ type BottomBarProps = {
   /** Details' notes from merged pull requests. */
   notes: Pick<ReviewProps, "noteFor" | "after">;
   /** Changes open pull requests saved here, going live when each merges. */
-  waiting?: ReadonlyArray<{ number: number; changes: number }>;
+  waiting?: ReadonlyArray<{ number: number; changes: number; environment: string }>;
   /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
   noServers?: boolean;
 };
@@ -153,7 +153,12 @@ export function BottomBar({
     <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
       title={waiting.map(({ number }) => `PR #${number}`).join(", ")}
       detail={waiting.map(({ number, changes }) => goLiveWhen(changes, number)).join(" · ")}>
-      {null}
+      {waiting.slice(0, 1).map(({ environment }) => (
+        <Link key={environment} to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: environment }}
+          className={buttonVariants({ variant: "outline" })}>
+          Open {environment}
+        </Link>
+      ))}
     </Row>
   ) : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
