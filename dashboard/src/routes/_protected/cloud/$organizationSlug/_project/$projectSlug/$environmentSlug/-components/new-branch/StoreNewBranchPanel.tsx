@@ -9,7 +9,8 @@ import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
 import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
-import { branchPlanQuery, environmentsQuery, useBranchPlan, useStoreView } from "#/modules/config-store/store-view.queries";
+import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
+import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
@@ -77,7 +78,11 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const taken = new Set(listing.ok ? listing.value.environments.map((environment) => environment.name) : []);
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
-  const [setupCommands, setSetupCommands] = useState<SetupCommand[]>([]);
+  // Until edited, the setup the Project's PR plans run in Branches of this Environment: they seed the same data.
+  const [edited, setSetupCommands] = useState<SetupCommand[] | null>(null);
+  const plans = useCachedStoreView(params.organizationSlug, prPlansQuery(params.projectSlug));
+  const setupCommands = edited ?? (plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug
+    ? plan.setup.map((setup) => ({ lineageId: setup.service, command: setup.command })) : []) : []);
   const [pending, setPending] = useState<"deploy" | "create" | null>(null);
   if (!picking) return null;
 
