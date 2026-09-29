@@ -2,13 +2,20 @@ import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq, sql } from "drizzle-orm";
+import * as tar from "tar";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember, handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember, cloudStore, handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
+import { uploadChunk } from "#/modules/config-store/tables";
+import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
@@ -433,6 +440,79 @@ it.live(
         const checked = yield* request("read", alice, { query: "domain", environment: here, domain: "web" });
         assert.strictEqual(checked.json.domain?.hostname, hostname);
         assert.deepStrictEqual(sent.map((event) => event.name), ["cluster-domain/sync.requested"]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped),
+  60_000,
+);
+
+/** A gzipped tar of a source directory, as `ployz deploy --upload` sends it: everything under `source/`. */
+const sourceArchive = Effect.promise(async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "upload-test-"));
+  await mkdir(path.join(root, "source"));
+  await writeFile(path.join(root, "source", "Dockerfile"), "FROM scratch\n");
+  const chunks: Buffer[] = [];
+  for await (const chunk of tar.c({ gzip: true, cwd: root, portable: true }, ["source"])) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks);
+});
+
+const upload = Effect.fn(function* (deploymentId: string, cookie: string, body: Buffer) {
+  const response = yield* handleConfigRequest(new Request(`${origin}/api/config/upload/${deploymentId}`, {
+    method: "POST", headers: { cookie, "content-type": "application/gzip" }, body: new Blob([new Uint8Array(body)]),
+  }));
+  // SAFETY: test-only view of Cloud's JSON; assertions check every field read.
+  return { status: response.status, json: (yield* Effect.promise(() => response.json())) as Reply };
+});
+
+it.live(
+  "an upload belongs to the one Deployment it was sent for, names its uploader, and goes once that Deployment ends",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      vi.spyOn(inngest, "send").mockResolvedValue({ ids: [] });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        yield* request("write", alice, shop);
+        yield* request("write", alice, {
+          command: "create_service", id: SERVICE as ServiceId, environment: here, name: "app", image: null,
+        });
+        const [first, second] = ["00000000-0000-4000-8000-000000000201", "00000000-0000-4000-8000-000000000202"];
+        const archive = yield* sourceArchive;
+        assert.strictEqual((yield* upload(first, alice, archive)).status, 200);
+        assert.strictEqual((yield* upload(second, alice, archive)).status, 200);
+        // Written once, and never shared: not again, and not by another Organization.
+        const again = yield* upload(first, alice, archive);
+        assert.strictEqual(again.status, 409);
+        assert.strictEqual(again.json.error?.code, "conflict");
+        assert.strictEqual((yield* upload(first, bob, archive)).status, 409);
+        const { id: organizationId } = (yield* resolveCaller(new Headers({ cookie: alice }))).organization;
+        const store = yield* cloudStore;
+        const tooBig = yield* receiveUpload(store, organizationId, "00000000-0000-4000-8000-000000000203",
+          new Blob([archive]).stream(), archive.length - 1);
+        assert.strictEqual(tooBig?.code, "invalid_argument");
+
+        // Cloud, not the caller, names who uploaded it.
+        const admitted = yield* request("write", alice, {
+          command: "admit", id: first, environment: here, services: [], version: null, retry: null,
+          upload: { digest: "d".repeat(64), base: null, uploader: "mallory" },
+        });
+        assert.strictEqual(admitted.status, 200);
+        const view = yield* Effect.promise(() => store.read(organizationId, { query: "deployment", id: first }));
+        expect(view).toMatchObject({ upload: { digest: "d".repeat(64), uploader: "alice" } });
+        assert.strictEqual((yield* upload(first, alice, archive)).status, 409);
+
+        const { drizzle } = yield* Database;
+        const held = (deploymentId: string) => drizzle.select().from(uploadChunk).where(eq(uploadChunk.deploymentId, deploymentId))
+          .pipe(Effect.map((rows) => rows.length));
+        // Kept while it may still run, so a replaced worker finds it.
+        yield* releaseUpload(store, organizationId, first);
+        assert.strictEqual(yield* held(first), 1);
+        const ran = yield* runStoreDeployment({ organizationId, environmentId: ENVIRONMENT, deploymentId: first }, "cloud-test");
+        // No Server is enrolled: its upload was read, and nothing ran.
+        expect(ran).toMatchObject({ ran: { id: first, status: "failed" } });
+        assert.strictEqual(yield* held(first), 0);
+        assert.strictEqual(yield* held(second), 1);
       }).pipe(Effect.provide(layer));
     }).pipe(Effect.scoped),
   60_000,

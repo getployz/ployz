@@ -304,7 +304,7 @@ domains: ConfigDomainEvidence,
 /**
  * Who Cloud authenticated for this write: an admitted upload records them.
  */
-uploader: string | null, };
+uploader?: string | null, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView;
 
@@ -1937,7 +1937,7 @@ base: UploadBase | null,
  * Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
  * caller sends. Provenance only.
  */
-uploader: string | null, };
+uploader?: string | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 

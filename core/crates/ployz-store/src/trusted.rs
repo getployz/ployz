@@ -20,5 +20,6 @@ pub struct Trusted {
     pub domains: DomainEvidence,
     /// Who Cloud authenticated for this write: an admitted upload records them.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub uploader: Option<String>,
 }

@@ -2,12 +2,14 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigTrusted, ConfigView, ConfigWritten } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Data, Effect, Option, Redacted, Schema } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { user } from "#/modules/identity/tables";
+import { receiveUpload } from "#/modules/config-store/upload.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createConfigDeploymentAdmittedEvent, createConfigDeploymentStartedEvent } from "#/modules/inngest/events";
@@ -129,12 +131,20 @@ function refusal(error: StoreRefusal) {
   });
 }
 
+/** Who admitted an upload, as the Deployment's provenance names them: the signed-in user's name, else email. */
+const uploaderFor = Effect.fn("ConfigStore.uploaderFor")(function* (call: StoreCall, userId: string) {
+  if (call.operation !== "write" || call.command.command !== "admit" || !call.command.upload) return undefined;
+  const { drizzle } = yield* Database;
+  const [row] = yield* drizzle.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
+  return row === undefined ? undefined : row.name || row.email;
+});
+
 /**
- * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. It first gathers the
- * trusted evidence the call needs: GitHub's for repository Services, and what Cloud observes of domains. Anything
- * else (the Store failing to open, a broken binding) is a defect.
+ * One Store read or write by user `userId` as `organizationId`: the answer, or the Store's refusal verbatim. It first
+ * gathers the trusted evidence the call needs: GitHub's for repository Services, what Cloud observes of domains, and
+ * who admits an upload. Anything else (the Store failing to open, a broken binding) is a defect.
  */
-export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
+export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, userId: string, call: StoreCall) {
   const store = yield* cloudStore;
   const read = (query: ConfigQuery) => store.read(organizationId, query);
   const git = call.operation === "write"
@@ -152,7 +162,8 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     const refusal = { code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null };
     return { ok: false, refusal } satisfies StoreResult<never>;
   }
-  const trusted: ConfigTrusted = { ...git, domains };
+  const uploader = yield* uploaderFor(call, userId).pipe(Effect.orDie);
+  const trusted: ConfigTrusted = { ...git, domains, uploader: uploader ?? null };
   return yield* Effect.tryPromise({
     try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
       const value = call.operation === "read"
@@ -181,26 +192,34 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
 
 /**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
- * Organization. Nothing else of the Store is reachable over HTTPS.
+ * Organization. `POST /api/config/upload/<Deployment ID>` keeps a gzipped tar of the source a Deployment the CLI
+ * admits next builds from. Nothing else of the Store is reachable over HTTPS.
  */
 export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
   const config = yield* AppConfig;
   // TODO(#1275): dark in production until the Config Store cutover.
   if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
-  if (request.method !== "POST" || (operation !== "read" && operation !== "write")) {
+  const upload = /^upload\/([^/]+)$/.exec(operation)?.[1];
+  if (request.method !== "POST" || (operation !== "read" && operation !== "write" && upload === undefined)) {
     return yield* new NotFound({ message: "Not found." });
   }
   // Telemetry only: the CLI names a detected coding agent; nothing else reads it.
   yield* Effect.annotateCurrentSpan("ployz.agent", request.headers.get("x-ployz-agent") ?? "none");
   const caller = yield* resolveCaller(request.headers);
+  if (upload !== undefined) {
+    const refused = yield* receiveUpload(yield* cloudStore, caller.organization.id, decodeURIComponent(upload), request.body);
+    return refused === undefined
+      ? Response.json({ uploaded: decodeURIComponent(upload) }, { headers: { "cache-control": "no-store" } })
+      : refusal(refused);
+  }
   const input: unknown = yield* Effect.tryPromise({
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
   // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
-  const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation, command: input as ConfigCommand };
-  const result = yield* callStore(caller.organization.id, call);
+  const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation: "write", command: input as ConfigCommand };
+  const result = yield* callStore(caller.organization.id, caller.userId, call);
   return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
 });
 
@@ -216,5 +235,5 @@ export const callStoreAsMember = Effect.fn("ConfigStore.callAsMember")(function*
   if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
-  return yield* callStore(organization.id, call);
+  return yield* callStore(organization.id, actor.userId, call);
 });

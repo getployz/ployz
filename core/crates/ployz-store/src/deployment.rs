@@ -116,6 +116,7 @@ pub struct UploadedSource {
     /// Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
     /// caller sends. Provenance only.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub uploader: Option<String>,
 }
 

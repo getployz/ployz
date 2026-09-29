@@ -326,8 +326,8 @@ async function openConfigStore(url, sealingSecret) {
     write: (organization, command, trusted) => withRpcError(store.write(organization, command, trusted)),
     deploymentSources: (deployment) => withRpcError(store.deploymentSources(deployment)),
     pinSources: (deployment, commits) => withRpcError(store.pinSources(deployment, commits)),
-    runDeployment: (organization, deployment, runner, connections, checkouts, sourceFailure, upload) =>
-      withRpcError(store.runDeployment(organization, deployment, runner, connections, checkouts, sourceFailure, upload)),
+    runDeployment: (organization, deployment, runner, connections, sources) =>
+      withRpcError(store.runDeployment(organization, deployment, runner, connections, sources)),
     abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
   };
 }

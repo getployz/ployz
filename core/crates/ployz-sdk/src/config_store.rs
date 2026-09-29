@@ -4,12 +4,13 @@
 //! operations are never bound here without their own caller checks: Cloud's worker
 //! runs a Deployment in one call, so its secrets and evidence never reach JavaScript.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{Actor, DeploymentId, OrganizationId, RunEvidence, RunnerId};
 use tokio::sync::Semaphore;
 
@@ -124,12 +125,12 @@ impl ConfigStore {
 
     /// Run the Organization's queued Deployment `deployment` as `runner` on one of
     /// `connections` (`Connection[]`), and resolve to its summary once its outcome is
-    /// recorded. Its Git Services build from `checkouts` (`{runtime Service name:
-    /// directory}`) at their pinned commits, and its uploaded Services from `upload`,
-    /// the directory Cloud extracted its upload to (without it, they reuse a usable
-    /// image or need a new upload); `source_failure` says why Cloud could not read
-    /// them, and is recorded as the reason nothing ran. Only Cloud's worker calls
-    /// this. It takes as long as its builds and Deploy do.
+    /// recorded. Its Git Services build from `sources.checkouts` (`{runtime Service
+    /// name: directory}`) at their pinned commits, and its uploaded Services from
+    /// `sources.upload`, the directory Cloud extracted its upload to (without it, they
+    /// reuse a usable image or need a new upload); `sources.failure` says why Cloud
+    /// could not read them, and is recorded as the reason nothing ran. Only Cloud's
+    /// worker calls this. It takes as long as its builds and Deploy do.
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
@@ -140,23 +141,30 @@ impl ConfigStore {
         deployment: String,
         runner: String,
         connections: serde_json::Value,
-        checkouts: Option<serde_json::Value>,
-        source_failure: Option<String>,
-        upload: Option<String>,
+        sources: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        #[derive(Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Sources {
+            #[serde(default)]
+            checkouts: BTreeMap<ServiceName, std::path::PathBuf>,
+            upload: Option<std::path::PathBuf>,
+            failure: Option<String>,
+        }
         let who = actor(organization)?;
         let (deployment, runner) = ids(deployment, runner)?;
         let connections = serde_json::from_value(connections)
             .map_err(|_| invalid_argument("invalid management connections"))?;
-        let checkouts = match source_failure {
+        let sources: Sources = sources
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| invalid_argument("Expected checkouts, upload and failure"))?
+            .unwrap_or_default();
+        let checkouts = match sources.failure {
             Some(reason) => Err(reason),
             None => Ok(ployz::sdk::Sources {
-                checkouts: checkouts
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|_| invalid_argument("Expected checkouts by Service name"))?
-                    .unwrap_or_default(),
-                upload: upload.map(Into::into),
+                checkouts: sources.checkouts,
+                upload: sources.upload,
             }),
         };
         let summary = ployz::sdk::run_deployment(
