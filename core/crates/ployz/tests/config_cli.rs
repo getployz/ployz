@@ -566,6 +566,63 @@ fn an_agent_branches_an_environment_without_servers() {
         assert_eq!(unkept["immediate"], json!(["kept"]));
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
+
+        // Save: review, then move the picked change into production with its version.
+        ok(store, &["set", "web.image=web:2", "--env", "fix-web"]);
+        let plan = ok(store, &["env", "save", "--plan", "--env", "fix-web"]);
+        assert_eq!(plan["into"]["name"], json!("production"));
+        assert_eq!(
+            plan["rows"],
+            json!([{ "row": "web.image", "conflict": false, "choice": null, "from": "web:2", "into": "web:1" }])
+        );
+        let version = plan["version"].as_str().unwrap();
+        assert_eq!(
+            plan["next"],
+            json!(format!("ployz env save --version {version} --env fix-web"))
+        );
+        let stale = error(
+            store,
+            &["env", "save", "--env", "fix-web", "--version", "0:0"],
+        );
+        assert_eq!(
+            stale["details"]["next"],
+            json!("ployz env save --plan --env fix-web")
+        );
+        failed(
+            store,
+            &[
+                "env",
+                "save",
+                "--env",
+                "fix-web",
+                "--only",
+                "web.image=maybe",
+            ],
+            2,
+        );
+        let saved = ok(
+            store,
+            &[
+                "env",
+                "save",
+                "--env",
+                "fix-web",
+                "--only",
+                "web.image",
+                "--version",
+                version,
+            ],
+        );
+        assert_eq!(saved["staged"], json!(["web"]));
+        assert_eq!(saved["next"], json!("ployz deploy --env production"));
+        assert_eq!(
+            saved["close"],
+            json!("ployz env rm fix-web --confirm fix-web")
+        );
+        assert_eq!(
+            ok(store, &["get", "web.image"])["settings"][0]["value"],
+            json!("web:2")
+        );
     }
 }
 

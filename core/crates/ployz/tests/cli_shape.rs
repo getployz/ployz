@@ -56,6 +56,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env new",
             "env pr",
             "env rm",
+            "env save",
             "env shutdown",
             "env update",
             "exec",
