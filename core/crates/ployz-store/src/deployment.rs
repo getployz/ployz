@@ -968,10 +968,9 @@ pub(crate) fn receipts(
         &[environment.as_str().into()],
     )? {
         let service = ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?;
-        if !receipts.contains_key(&service) {
-            let receipt =
-                serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?;
-            receipts.insert(service, receipt);
+        if let std::collections::btree_map::Entry::Vacant(entry) = receipts.entry(service) {
+            entry
+                .insert(serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?);
         }
     }
     Ok(receipts)
