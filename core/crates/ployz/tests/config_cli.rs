@@ -637,6 +637,22 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         let shown = ok(store, &["deployment", "show", &id]);
         assert_eq!(shown["id"], json!(id));
         assert_eq!(shown.get("next"), None);
+
+        // `status` says what is deploying, or what needs attention.
+        let status = ok(store, &["status"]);
+        let show = json!(format!("ployz deployment show {id}"));
+        assert_eq!(status["next"], show);
+        match store {
+            Target::Local(_) => {
+                assert_eq!(status["deploying"], json!([]));
+                assert_eq!(status["attention"][0]["reason"], json!("deployment_failed"));
+                assert_eq!(status["attention"][0]["deployment"], json!(id));
+            }
+            Target::Cloud { .. } => {
+                assert_eq!(status["deploying"][0]["id"], json!(id));
+                assert_eq!(status["attention"], json!([]));
+            }
+        }
         let listed = ok(store, &["deployment", "ls", "--limit", "1"]);
         assert_eq!(listed["deployments"][0]["id"], json!(id));
         assert_eq!(listed["next_cursor"], Value::Null);
