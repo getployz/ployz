@@ -1,4 +1,4 @@
-import type { DashboardReviewNodeChange } from "#/modules/environment-design/environment-change-set";
+import type { ReviewNodeChange } from "@ployz/sdk/config";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import {
   getServiceDeploymentDiffRows,
@@ -23,7 +23,7 @@ export type ServiceDeploymentDiffState = {
 };
 
 /** Field states for the drawer, read off the node's change group; the Environment Change Set decides what it compares against. */
-export function getServiceDeploymentDiffState(change: DashboardReviewNodeChange | null): ServiceDeploymentDiffState {
+export function getServiceDeploymentDiffState(change: ReviewNodeChange | null): ServiceDeploymentDiffState {
   const rows = (change?.settings ?? []).map((row) => ({
     ...row,
     ...presentSettingChange("service", row.path, row.before, row.after),

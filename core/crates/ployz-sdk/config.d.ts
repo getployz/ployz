@@ -28,7 +28,7 @@ export function destructivePublicationMismatch(value: { expected: { serviceIds: 
 export function canonicalWorkingReview(value: unknown): string;
 export function parsePublicationBasis(value: unknown): import('./generated/payloads').PublicationBasis;
 export function reusePublication(input: { policy: 'always_create' | 'reuse_latest_if_equivalent'; current: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown }; latest: { intent: import('./generated/payloads').SavedEnvironmentIntent; volumeDeletionAuthorizations: unknown } | null }): boolean;
-export function lowerDeployment(value: { projectName: string; selected?: import('./generated/payloads').ServiceAttempt[]; dependencies?: import('./generated/payloads').DeployIntent['dependencies']; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
+export function lowerDeployment(value: { projectName: string; selected?: import('./generated/payloads').ServiceAttempt[]; /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */ lineages?: Record<string, string>; snapshots: readonly { serviceId?: string; config: ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[]; volumes?: readonly { volumeResourceId: string }[] }): import('./generated/payloads').DeployIntent;
 
 export function redactEnvironmentIntent(value: import('./generated/payloads').SavedEnvironmentIntent): import('./generated/payloads').SavedEnvironmentIntent;
 

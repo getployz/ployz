@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { servicePublicDomain } from "#/modules/environment-design/managed-service-exports";
 import { Effect } from "effect";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
-import { resolveVariableParts, type ResolvedVariableProducer } from "#/modules/environment-design/variable-resolution";
+import { resolveVariables, type VariableProducer } from "@ployz/sdk/config";
 import type { ServiceDeploymentConfig } from "#/modules/environment-design/services";
 import type { SecretEncryptionService } from "#/utils/encrypted-secret.server";
 import { Validation } from "#/server/public-error";
@@ -41,16 +41,18 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
     });
   }
 
-  const producers: ResolvedVariableProducer[] = [];
+  const toProducer = (owner: EnvironmentSnapshotVariableProducer, key: string, value: VariableProducer["value"]): VariableProducer =>
+    ({ ownerId: owner.ownerId, owner: { scope: "service", lineageId: owner.ownerLineageId }, key, value });
+  const producers: VariableProducer[] = [];
   for (const snapshot of snapshots) {
     const domain = servicePublicDomain(snapshot.config, clusterDomain);
     if (!domain) continue;
     envByServiceId.set(snapshot.serviceId, { PLOYZ_PUBLIC_DOMAIN: domain });
     const owner = frozenProducers?.find((producer) => producer.ownerScope === "service" && producer.ownerId === snapshot.serviceId);
-    if (owner) producers.push({ ...owner, key: "PLOYZ_PUBLIC_DOMAIN", value: { kind: "literal", value: domain } });
+    if (owner) producers.push(toProducer(owner, "PLOYZ_PUBLIC_DOMAIN", { kind: "literal", value: domain }));
   }
-  for (const producer of frozenProducers ?? []) {
-    const frozenValue = producer.value;
+  for (const frozen of frozenProducers ?? []) {
+    const frozenValue = frozen.value;
     const value = frozenValue.kind === "secret"
       ? {
           kind: "secret" as const,
@@ -63,10 +65,7 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
           }),
         }
       : frozenValue;
-    producers.push({
-      ...producer,
-      value,
-    });
+    producers.push(toProducer(frozen, frozen.key, value));
   }
 
   for (const snapshot of snapshots) {
@@ -80,10 +79,13 @@ export const getResolvedDeployEnvBySnapshotConfig = Effect.fn(
         if (value.parts) {
           const parts = value.parts;
           const resolved = yield* Effect.try({
-            try: () => resolveVariableParts(parts, snapshot.serviceId, producers),
+            try: () => resolveVariables({ parts, selfOwnerId: snapshot.serviceId, producers }),
             catch: (cause) => new Validation({ message: cause instanceof Error ? cause.message : "Variable resolution inputs are invalid." }),
           });
-          env[key] = resolved;
+          if (resolved.status === "cycle") {
+            return yield* new Validation({ message: `Circular variable reference: ${resolved.path.join(" -> ")}` });
+          }
+          env[key] = resolved.value;
         } else {
           env[key] = value.value;
         }
