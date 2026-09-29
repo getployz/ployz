@@ -9,6 +9,7 @@ import { useCollectionScope } from "./use-collection-scope";
 import { organizationKeys } from "#/modules/environment-design/workspace.queries";
 import { refetchEnvironmentChangeStates } from "#/modules/deployments/environment-change-state.queries";
 import { invalidateDeploymentHistory } from "#/modules/deployments/deployment-history.queries";
+import { refetchStoreViews } from "#/modules/config-store/store-view.queries";
 
 const orgChangesEventSchema = Schema.Struct({ collections: Schema.Array(changeNameSchema) });
 const decodeOrgChangesEvent = Schema.decodeUnknownOption(Schema.fromJsonString(orgChangesEventSchema));
@@ -31,6 +32,9 @@ const refetches = {
     refetchEnvironmentChangeStates(organizationSlug, scope);
     invalidateDeploymentHistory(organizationSlug, scope);
   },
+  store_project: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_project"),
+  store_environment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_environment"),
+  store_deployment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_deployment"),
 } satisfies Record<ChangeName, Refetch>;
 
 export function applyOrganizationChanges(names: readonly ChangeName[], organizationSlug: string, scope: CollectionScope) {

@@ -1,0 +1,126 @@
+// @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import type { ConfigWritten, EnvironmentView } from "@ployz/sdk";
+import type { ReactNode } from "react";
+import { toast } from "sonner";
+import { afterEach, expect, it, vi } from "vitest";
+import * as scopes from "#/collections/use-collection-scope";
+import * as functions from "./store.functions";
+import type { StoreResult } from "./store.contract";
+import { environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
+import { editStoreEnvironment } from "./store-write";
+
+afterEach(() => vi.restoreAllMocks());
+
+const ref = { project: "shop", environment: "production" };
+
+function view(revision: number, replicas: number, values?: EnvironmentView["values"]): EnvironmentView {
+  return {
+    environment: { id: "env", project: "shop", name: "production", revision },
+    settings: [
+      { path: "web.replicas", value: replicas, default: 1, apply: "staged" },
+      { path: "web.startCommand", value: "serve", default: null, apply: "staged" },
+    ],
+    values,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((yes) => { resolve = yes; });
+  return { promise, resolve };
+}
+
+/** A Store holding `web` in shop/production, and a tab showing its Settings. */
+function setup(initial: EnvironmentView) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue(scope);
+  const store = { current: initial };
+  vi.spyOn(functions, "readStoreViewServerFn").mockImplementation(async () =>
+    // SAFETY: the mock answers the one query these tests read.
+    ({ ok: true, value: { view: "environment", ...store.current } }) as never);
+  const write = vi.spyOn(functions, "writeStoreServerFn");
+  const query = environmentSettingsQuery(ref);
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, query).queryKey, { ok: true, value: { view: "environment", ...initial } });
+  const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+  const shown = renderHook(() => useStoreView("acme", query), { wrapper });
+  const replicas = () => {
+    const result = shown.result.current;
+    return result.ok ? result.value.settings.find((row) => row.path === "web.replicas")?.value : undefined;
+  };
+  return { scope, store, write, replicas };
+}
+
+const edited = (revision: number): StoreResult<ConfigWritten> =>
+  ({ ok: true, value: { written: "edited", environment: { id: "env", project: "shop", name: "production", revision }, staged: ["web.replicas"], immediate: [] } });
+const replicas = (value: number) => [{ op: "set" as const, path: "web.replicas", value }];
+
+it("shows an edit at once, saves edits in order against the newest revision, and keeps them once committed", async () => {
+  const test = setup(view(2, 1));
+  const first = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => first.promise).mockImplementationOnce(async () => {
+    test.store.current = view(4, 5);
+    return edited(4);
+  });
+
+  let one!: ReturnType<typeof editStoreEnvironment>;
+  let two!: ReturnType<typeof editStoreEnvironment>;
+  act(() => { one = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(3) }); });
+  await waitFor(() => expect(test.replicas()).toBe(3));
+  act(() => { two = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(5) }); });
+  await waitFor(() => expect(test.replicas()).toBe(5));
+  // The second waits for the first: one queue per Environment.
+  expect(test.write).toHaveBeenCalledTimes(1);
+  expect(test.write.mock.calls[0]?.[0]).toEqual({ data: { organizationSlug: "acme", command: { command: "edit", environment: ref, expect: 2, changes: replicas(3) } } });
+
+  test.store.current = view(3, 3);
+  first.resolve(edited(3));
+  await one.isPersisted.promise;
+  await two.isPersisted.promise;
+  // It expects the revision its own first save produced.
+  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { expect: 3 } } });
+  expect(test.replicas()).toBe(5);
+});
+
+it("undoes an edit the Store refuses as a conflict and shows what changed elsewhere", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  const refused = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => refused.promise);
+
+  let edit!: ReturnType<typeof editStoreEnvironment>;
+  act(() => { edit = editStoreEnvironment("acme", test.scope, { environment: ref, changes: replicas(3) }); });
+  await waitFor(() => expect(test.replicas()).toBe(3));
+  // The CLI moved Working State before this tab heard about it.
+  test.store.current = view(3, 7);
+  refused.resolve({ ok: false, refusal: { code: "conflict", message: "Working State moved", details: { revision: 3 } } });
+  await expect(edit.isPersisted.promise).rejects.toMatchObject({ code: "conflict", details: { revision: 3 } });
+  await waitFor(() => expect(test.replicas()).toBe(7));
+  expect(error).toHaveBeenCalledWith("Changed elsewhere, so this edit was undone. You're seeing the latest now.");
+});
+
+it("applies pending set, unset and patch changes over a view, and its one-Service values", () => {
+  const shown = withPendingChanges(view(1, 1, { replicas: 1, startCommand: "serve" }), [
+    { op: "set", path: "web.replicas", value: 4 },
+    { op: "unset", path: "web.startCommand" },
+    { op: "patch", path: "web", value: { replicas: 6 } },
+    { op: "set", path: "web.unknown", value: 1 },
+  ]);
+  expect(shown.settings.map((row) => row.value)).toEqual([6, null]);
+  expect(shown.values).toEqual({ replicas: 6 });
+});
+
+it("refetches only the views a changed Store table family backs", () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "session", userId: "user" };
+  const settings = storeViewOptions("acme", scope, environmentSettingsQuery(ref)).queryKey;
+  const diff = storeViewOptions("acme", scope, { query: "diff", environment: ref }).queryKey;
+  const deployments = storeViewOptions("acme", scope, { query: "deployments", environment: ref, limit: null, cursor: null }).queryKey;
+  for (const key of [settings, diff, deployments]) queryClient.setQueryData<unknown>(key, { ok: true, value: {} });
+
+  refetchStoreViews("acme", scope, "store_deployment");
+  const invalidated = (key: readonly unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
+  expect([invalidated(settings), invalidated(diff), invalidated(deployments)]).toEqual([false, true, true]);
+});
