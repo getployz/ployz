@@ -4,7 +4,7 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
+    Actor, AddDomain, Admit, BuildOrderQuery, BuildOrderView, SetBuildOrder, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
     CreateEnvironment, CreateGitService, CreateProject, CreateService, DeploymentId,
     DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView,
     DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView,
@@ -182,6 +182,19 @@ impl Store {
     pub(crate) fn cancel(&self, cancel: &Cancel) -> Result<DeploymentSummary, StoreCallError> {
         let request = Command::Cancel(cancel.clone());
         self.call("write", &request, |store, who| store.cancel(who, cancel))
+    }
+
+    pub(crate) fn build_order(&self) -> Result<BuildOrderView, StoreCallError> {
+        let request = Query::BuildOrder(BuildOrderQuery::default());
+        self.call("read", &request, |store, who| store.build_order(who))
+    }
+
+    pub(crate) fn set_build_order(
+        &self,
+        set: &SetBuildOrder,
+    ) -> Result<BuildOrderView, StoreCallError> {
+        let request = Command::SetBuildOrder(set.clone());
+        self.call("write", &request, |store, who| store.set_build_order(who, set))
     }
 
     pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {

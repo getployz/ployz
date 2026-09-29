@@ -61,6 +61,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "logout",
             "logs",
             "org",
+            "org build-order",
             "org ls",
             "org use",
             "project",

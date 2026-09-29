@@ -1425,3 +1425,23 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
         }
     }
 }
+
+#[test]
+fn an_agent_reads_and_sets_the_build_order_at_once() {
+    for store in &targets() {
+        let auto = ok(store, &["org", "build-order"]);
+        assert_eq!(auto["build_order"], Value::Null);
+        assert_eq!(auto["builders"], json!(["github", "servers"]));
+        assert!(auto.get("immediate").is_none());
+
+        let set = ok(store, &["org", "build-order", "servers-only"]);
+        assert_eq!(set["build_order"], "servers-only");
+        assert_eq!(set["builders"], json!(["servers"]));
+        assert_eq!(set["immediate"], true);
+        assert_eq!(ok(store, &["org", "build-order"])["build_order"], "servers-only");
+
+        assert_eq!(ok(store, &["org", "build-order", "auto"])["build_order"], Value::Null);
+        let (code, _) = ployz(Some(store), &["org", "build-order", "gitlab-first"]);
+        assert_eq!(code, Some(2));
+    }
+}
