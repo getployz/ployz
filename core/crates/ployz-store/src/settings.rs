@@ -195,10 +195,15 @@ impl ServiceSetting {
         }
         let value = self.coerce(value);
         if self == Self::Image {
-            let ServiceSource::Image { credentials, .. } = &config.source else {
-                return Err(self.invalid("this Service does not run an image"));
+            // An empty Service takes an image as its source.
+            let credentials = match &config.source {
+                ServiceSource::Image { credentials, .. } => credentials.clone(),
+                ServiceSource::Empty { .. } => ServiceImageCredentials::None,
+                ServiceSource::Git { .. } => {
+                    return Err(self.invalid("this Service builds from a repository"));
+                }
             };
-            config.source = image_source(self.decode(value)?, credentials.clone())?;
+            config.source = image_source(self.decode(value)?, credentials)?;
             return Ok(());
         }
         let value = self.validated(self.name(), value)?;
@@ -327,6 +332,14 @@ impl SettingPath {
 
     pub(crate) const fn setting(&self) -> Option<ServiceSetting> {
         self.setting
+    }
+
+    /// The path of `service` as a whole.
+    pub(crate) fn whole(service: &ServiceName) -> Self {
+        Self {
+            service: service.clone(),
+            setting: None,
+        }
     }
 
     /// The path of one Setting of `service`.

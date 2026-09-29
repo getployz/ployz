@@ -115,9 +115,51 @@ impl ConfigStore {
         &self,
         who: &Actor,
         create: &CreateService,
-    ) -> Result<ServiceCreated, RpcError> {
+    ) -> Result<ServiceStaged, RpcError> {
         self.storage
             .write(|tx| command::create_service(tx, who, create))
+    }
+
+    /// [`Command::RenameService`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn rename_service(
+        &self,
+        who: &Actor,
+        rename: &RenameService,
+    ) -> Result<ServiceStaged, RpcError> {
+        self.storage
+            .write(|tx| command::rename_service(tx, who, rename))
+    }
+
+    /// [`Command::RemoveService`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn remove_service(
+        &self,
+        who: &Actor,
+        remove: &RemoveService,
+    ) -> Result<ServiceStaged, RpcError> {
+        self.storage
+            .write(|tx| command::remove_service(tx, who, remove))
+    }
+
+    /// [`Query::Services`]: an Environment's Services.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn services(&self, who: &Actor, query: &ServicesQuery) -> Result<ServicesView, RpcError> {
+        self.storage.read(|tx| query::services(tx, who, query))
+    }
+
+    /// [`Query::Service`]: one Service.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn service(&self, who: &Actor, query: &ServiceQuery) -> Result<ServiceView, RpcError> {
+        self.storage.read(|tx| query::service(tx, who, query))
     }
 
     /// [`Command::Edit`].

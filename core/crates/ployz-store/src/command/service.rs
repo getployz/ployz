@@ -1,7 +1,11 @@
-//! Creating Services. A new Service is staged in Working State, and its Node
-//! Introduction is captured in the same transaction and never changes after.
+//! A Service's lifecycle in Working State: create, rename and remove, each staged
+//! until a Deploy. A new Service's Node Introduction is captured in the same
+//! transaction and never changes after. Its Private DNS name is fixed at creation:
+//! a rename changes only the name paths and results address it by.
 
-use ployz_core::config::{SavedServiceIntent, ServiceImageCredentials, parse_service_config};
+use ployz_core::config::{
+    SavedServiceIntent, ServiceImageCredentials, ServiceSource, parse_service_config,
+};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -15,7 +19,8 @@ use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
 
-/// Create a Service that runs `image`. Its name is its Private DNS name.
+/// Create a Service that runs `image`, or an empty one to give a source later. Its
+/// name is also its Private DNS name, which a rename keeps.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateService {
@@ -26,20 +31,46 @@ pub struct CreateService {
     pub environment: EnvironmentRef,
     /// Its name, unique in the Environment.
     pub name: ServiceName,
-    /// The container image it runs.
-    pub image: String,
+    /// The container image it runs; none creates an empty Service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
-/// The new Service, staged in Working State until a Deploy.
+/// Rename a Service. Its Private DNS name, and references to it, stay as they are.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-pub struct ServiceCreated {
-    /// The Service.
+#[serde(deny_unknown_fields)]
+pub struct RenameService {
+    /// The Environment it is in.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// Its current name.
+    pub service: ServiceName,
+    /// Its new name, unique in the Environment.
+    pub name: ServiceName,
+}
+
+/// Remove a Service from Working State. It keeps running until a Deploy removes it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveService {
+    /// The Environment it is in.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// Its name.
+    pub service: ServiceName,
+}
+
+/// A Service created, renamed or removed in Working State, staged until a Deploy.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ServiceStaged {
+    /// The Service, as it is named after the change.
     pub service: ServiceSummary,
-    /// The Environment, at its revision after the create.
+    /// The Environment, at its revision after the change.
     pub environment: EnvironmentSummary,
-    /// Every Setting of the new Service, waiting for a Deploy.
+    /// What waits for a Deploy: every Setting of a new Service, or the Service itself
+    /// for a rename or removal. Empty when nothing changed.
     pub staged: Vec<SettingPath>,
-    /// Settings that took effect at once: none for a new Service.
+    /// What took effect at once: never anything here.
     pub immediate: Vec<SettingPath>,
 }
 
@@ -48,15 +79,17 @@ pub struct ServiceCreated {
 pub struct ServiceSummary {
     /// Its durable identity.
     pub id: ServiceId,
-    /// Its name, also its Private DNS name.
+    /// Its name, which Setting paths address it by.
     pub name: ServiceName,
+    /// Its Private DNS name, fixed at creation.
+    pub private_dns: ServiceName,
 }
 
 pub(crate) fn create_service(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateService,
-) -> Result<ServiceCreated, RpcError> {
+) -> Result<ServiceStaged, RpcError> {
     let command = Command::CreateService(create.clone());
     replayable(tx, who, &command, |tx| insert_service(tx, who, create))
 }
@@ -65,18 +98,16 @@ fn insert_service(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateService,
-) -> Result<ServiceCreated, RpcError> {
+) -> Result<ServiceStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
-    if environment.service(&create.name).is_ok() {
-        return Err(error::conflict(
-            format!(
-                "Environment {} already has a Service named {}",
-                environment.summary.name, create.name
-            ),
-            json!({ "service": create.name }),
-        ));
-    }
-    let source = image_source(create.image.clone(), ServiceImageCredentials::None)?;
+    refuse_taken(&environment, &create.name, None)?;
+    let source = match &create.image {
+        Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
+        None => ServiceSource::Empty {
+            version: 1,
+            root_dir: "/".to_owned(),
+        },
+    };
     let config = parse_service_config(json!({
         "version": 2,
         "source": source,
@@ -118,17 +149,95 @@ fn insert_service(
                 .into(),
         ],
     )?;
-    Ok(ServiceCreated {
-        service: ServiceSummary {
-            id: create.id.clone(),
-            name: create.name.clone(),
-        },
+    Ok(ServiceStaged {
+        service: summary(&node)?,
         environment: environment.summary,
         staged: ServiceSetting::ALL
             .into_iter()
             .map(|setting| SettingPath::of(&create.name, setting))
             .collect(),
         immediate: Vec::new(),
+    })
+}
+
+pub(crate) fn rename_service(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    rename: &RenameService,
+) -> Result<ServiceStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &rename.environment)?;
+    let id = environment.service(&rename.service)?.id.clone();
+    let changed = rename.name != rename.service;
+    if changed {
+        refuse_taken(&environment, &rename.name, Some(&id))?;
+        environment.service_mut(&rename.service)?.slug = rename.name.to_string();
+        scope::save_working(tx, &mut environment)?;
+    }
+    let service = summary(environment.service(&rename.name)?)?;
+    Ok(ServiceStaged {
+        staged: staged(changed, &service.name),
+        service,
+        environment: environment.summary,
+        immediate: Vec::new(),
+    })
+}
+
+pub(crate) fn remove_service(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    remove: &RemoveService,
+) -> Result<ServiceStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &remove.environment)?;
+    let service = summary(environment.service(&remove.service)?)?;
+    environment
+        .working
+        .services
+        .retain(|node| node.id != service.id.as_str());
+    scope::save_working(tx, &mut environment)?;
+    Ok(ServiceStaged {
+        staged: staged(true, &service.name),
+        service,
+        environment: environment.summary,
+        immediate: Vec::new(),
+    })
+}
+
+/// A name is taken by another Service's name or Private DNS name: either would make
+/// `name` address two Services.
+fn refuse_taken(
+    environment: &scope::Environment,
+    name: &ServiceName,
+    except: Option<&str>,
+) -> Result<(), RpcError> {
+    let taken = environment.working.services.iter().any(|service| {
+        Some(service.id.as_str()) != except
+            && (service.slug == name.as_str() || service.config.private_dns == *name)
+    });
+    if taken {
+        return Err(error::conflict(
+            format!(
+                "Environment {} already has a Service named {name}",
+                environment.summary.name
+            ),
+            json!({ "service": name }),
+        ));
+    }
+    Ok(())
+}
+
+fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
+    if changed {
+        vec![SettingPath::whole(name)]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {
+    Ok(ServiceSummary {
+        id: ServiceId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
+        name: ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service name"))?,
+        private_dns: node.config.private_dns.clone(),
     })
 }
 
@@ -166,7 +275,7 @@ mod tests {
                     id: ServiceId::parse(uuid(3)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse("web").unwrap(),
-                    image: "nginx:1".into(),
+                    image: Some("nginx:1".into()),
                 },
             )
             .unwrap();

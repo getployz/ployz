@@ -7,10 +7,10 @@
 
 use ployz_core::RpcError;
 use ployz_core::config::{
-    ChangeSetInput, ReviewComparisonRole, ReviewLifecycleKind, ReviewNodeIdentity,
-    ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent, ServiceSettingChange,
-    canonicalize_environment_intent, compile_environment_intent, parse_environment_intent,
-    project_environment_changes,
+    ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
+    ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent,
+    ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
+    parse_environment_intent, project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -99,7 +99,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .map(|service| service.slug.clone())
             .unwrap_or_default()
     };
-    let view = DiffView {
+    let mut view = DiffView {
         environment: environment.summary.clone(),
         version: format!(
             "{}:{}:{}",
@@ -141,7 +141,47 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             })
             .collect(),
     };
+    renames(&mut view, &environment.working, &head.intent);
     Ok(Review { view, saved, head })
+}
+
+/// Core compares Settings only, so a Service renamed since Head gets its name row
+/// here: a rename changes nothing else, yet only a Deploy ships it.
+fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEnvironmentIntent) {
+    for service in &working.services {
+        let Some(before) = head
+            .services
+            .iter()
+            .find(|deployed| deployed.id == service.id && deployed.slug != service.slug)
+        else {
+            continue;
+        };
+        let row = ServiceSettingChange {
+            path: format!("{}.name", service.slug),
+            kind: ChangeKind::Update,
+            before: json!(before.slug),
+            after: json!(service.slug),
+            can_restore: true,
+        };
+        view.total_count += 1;
+        match view
+            .changes
+            .iter_mut()
+            .find(|change| change.node.id == service.id)
+        {
+            Some(change) => change.settings.insert(0, row),
+            None => view.changes.push(NodeChange {
+                node: ReviewNodeIdentity {
+                    node_type: EnvironmentNodeType::Service,
+                    id: service.id.clone(),
+                },
+                name: service.slug.clone(),
+                lifecycle: ReviewLifecycleKind::Update,
+                comparison: Some(ReviewComparisonRole::Head),
+                settings: vec![row],
+            }),
+        }
+    }
 }
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh one.
