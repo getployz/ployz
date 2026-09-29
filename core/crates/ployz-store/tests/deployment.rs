@@ -10,7 +10,7 @@ use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
+    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
     RemoveService, RenameService, Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery,
@@ -334,6 +334,143 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
         code(store.record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))),
         RpcErrorCode::Conflict
     );
+}
+
+fn cancel(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, RpcError> {
+    store.cancel(who, &Cancel { deployment: id(n) })
+}
+
+fn status(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentStatus {
+    store.deployment(who, &id(n)).unwrap().deployment.status
+}
+
+#[test]
+fn a_cancelled_queued_deployment_never_runs() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let other = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    assert_eq!(code(cancel(&store, &other, 1)), RpcErrorCode::NotFound);
+    assert_eq!(
+        cancel(&store, &who, 1).unwrap().status,
+        DeploymentStatus::Cancelled
+    );
+    // Cancelling again changes nothing; its runner finds nothing to run.
+    assert_eq!(
+        cancel(&store, &who, 1).unwrap().status,
+        DeploymentStatus::Cancelled
+    );
+    assert_eq!(
+        code(store.claim(&id(1), &runner("runner-a"))),
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::NotApplied),
+            ("api".to_owned(), NodeStatus::NotApplied)
+        ]
+    );
+    assert_eq!(changed(&store, &who), ["web", "api"]);
+}
+
+#[test]
+fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    assert_eq!(
+        cancel(&store, &who, 1).unwrap().status,
+        DeploymentStatus::Cancelling
+    );
+    // Its runner stops it partway and records what ran.
+    let stopped = RunEvidence::Executed(Box::new(outcome(json!({
+        "type": "failed", "completed": [operation("web")],
+        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+        "unexecuted": []
+    }))));
+    store.record(&id(1), &a, stopped).unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Cancelled);
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Applied),
+            ("api".to_owned(), NodeStatus::NotApplied)
+        ]
+    );
+    assert_eq!(changed(&store, &who), ["api"]);
+}
+
+#[test]
+fn a_runner_that_loses_track_after_preparing_leaves_the_outcome_unknown() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    // Its step is retried: it may have executed, so nothing replays.
+    let retried = store.claim(&id(1), &a).unwrap_err();
+    assert_eq!(retried.code, RpcErrorCode::Conflict);
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Unknown);
+    assert!(
+        nodes(&store, &who, 1)
+            .iter()
+            .all(|(_, outcome)| *outcome == NodeStatus::Unknown)
+    );
+    assert_eq!(
+        code(store.record(&id(1), &a, succeeded(&["web", "api"]))),
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(changed(&store, &who), ["web", "api"]);
+
+    // Abandoned after preparing: unknown too.
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Unknown);
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+}
+
+#[test]
+fn a_runner_that_stops_before_preparing_executed_nothing() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    // Only its owner may abandon it, once it claimed it.
+    assert_eq!(
+        code(store.record(&id(1), &a, RunEvidence::Abandoned)),
+        RpcErrorCode::Conflict
+    );
+    store.claim(&id(1), &a).unwrap();
+    store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
+    let view = store.deployment(&who, &id(1)).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert!(matches!(
+        view.outcome,
+        Some(ployz_store::Outcome::NotExecuted { .. })
+    ));
+
+    // Abandoning after an outcome changes nothing.
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store.record(&id(2), &a, succeeded(&["web", "api"])).unwrap();
+    store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Applied);
+    // An ended Deployment can't be cancelled.
+    assert_eq!(code(cancel(&store, &who, 2)), RpcErrorCode::Conflict);
 }
 
 #[test]
