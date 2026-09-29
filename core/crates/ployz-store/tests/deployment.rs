@@ -14,7 +14,7 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
     ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
-    ServiceId, ServiceQuery, ServicesQuery, SettingPath, View,
+    ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, View,
 };
 use serde_json::{Value, json};
 
@@ -81,6 +81,7 @@ fn admit(
                 .map(|name| ServiceName::parse(*name).unwrap())
                 .collect(),
             version,
+            retry: None,
         },
     )
 }
@@ -470,6 +471,178 @@ fn a_runner_that_stops_before_preparing_executed_nothing() {
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Applied);
     // An ended Deployment can't be cancelled.
     assert_eq!(code(cancel(&store, &who, 2)), RpcErrorCode::Conflict);
+}
+
+fn retry(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    source: u8,
+) -> Result<DeploymentSummary, RpcError> {
+    store.admit(
+        who,
+        &Admit {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            retry: Some(id(source)),
+        },
+    )
+}
+
+fn start(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, RpcError> {
+    store.start(who, &Start { deployment: id(n) })
+}
+
+/// Deployment `n` claimed by `runner-a`, which fails `api` after applying `web`.
+fn fail_api(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
+    let a = runner("runner-a");
+    let intent = store.claim(&id(n), &a).unwrap().intent;
+    store
+        .record(&id(n), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    let failed = RunEvidence::Executed(Box::new(outcome(json!({
+        "type": "failed", "completed": [operation("web")],
+        "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+        "unexecuted": []
+    }))));
+    store.record(&id(n), &a, failed).unwrap();
+    intent
+}
+
+#[test]
+fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
+    let (store, who) = shop();
+    let first = admit(&store, &who, 1, &[], None).unwrap();
+    let frozen = fail_api(&store, 1);
+    // A newer Saved revision, admitted and cancelled before it ran.
+    set_replicas(&store, &who, "web", 3);
+    admit(&store, &who, 2, &[], None).unwrap();
+    cancel(&store, &who, 2).unwrap();
+
+    let retried = retry(&store, &who, 3, 1).unwrap();
+    assert_eq!(
+        (
+            retried.number,
+            retried.status,
+            retried.saved,
+            retried.services
+        ),
+        (3, DeploymentStatus::Queued, first.saved, first.services)
+    );
+    // Replaying it is idempotent; its ID with another source is not.
+    assert_eq!(retry(&store, &who, 3, 1).unwrap().number, 3);
+    assert_eq!(code(retry(&store, &who, 3, 2)), RpcErrorCode::Conflict);
+    // The failed one keeps its Node Outcomes; the retry targets every node again.
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Applied),
+            ("api".to_owned(), NodeStatus::NotApplied)
+        ]
+    );
+    assert!(
+        nodes(&store, &who, 3)
+            .iter()
+            .all(|(_, outcome)| *outcome == NodeStatus::Pending)
+    );
+    let claimed = store.claim(&id(3), &runner("runner-b")).unwrap();
+    assert_eq!(claimed.intent, frozen);
+    assert_eq!(
+        store.deployment(&who, &id(3)).unwrap().namespace.as_str(),
+        "shop-production"
+    );
+    // A cancelled Deployment can be retried too, with its own Saved revision.
+    let newer = store.deployment(&who, &id(2)).unwrap().deployment.saved;
+    assert_ne!(newer, first.saved);
+    assert_eq!(retry(&store, &who, 4, 2).unwrap().saved, newer);
+}
+
+#[test]
+fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
+    let (store, who) = shop();
+    let other = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    admit(&store, &who, 1, &[], None).unwrap();
+    // It names the Environment: nothing else may.
+    let narrowed = store.admit(
+        &who,
+        &Admit {
+            id: id(9),
+            environment: EnvironmentRef::default(),
+            services: vec![ServiceName::parse("web").unwrap()],
+            version: None,
+            retry: Some(id(1)),
+        },
+    );
+    assert_eq!(code(narrowed), RpcErrorCode::InvalidArgument);
+    assert_eq!(code(retry(&store, &other, 9, 1)), RpcErrorCode::NotFound);
+    assert_eq!(code(retry(&store, &who, 9, 8)), RpcErrorCode::NotFound);
+    // Queued, running or cancelling: not ended yet.
+    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    cancel(&store, &who, 1).unwrap();
+    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
+    // Its runner finished before it saw the cancel: it applied, so nothing to retry.
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(status(&store, &who, 1), DeploymentStatus::Applied);
+    assert_eq!(code(retry(&store, &who, 9, 1)), RpcErrorCode::Conflict);
+    // A superseded one never ran: deploy again instead.
+    admit(&store, &who, 2, &[], None).unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Superseded);
+    assert_eq!(code(retry(&store, &who, 9, 2)), RpcErrorCode::Conflict);
+    // A refused retry queued nothing, and an accepted one supersedes what's queued.
+    fail_api(&store, 3);
+    assert_eq!(retry(&store, &who, 9, 3).unwrap().number, 4);
+    assert_eq!(status(&store, &who, 3), DeploymentStatus::Failed);
+    admit(&store, &who, 5, &[], None).unwrap();
+    retry(&store, &who, 6, 3).unwrap();
+    assert_eq!(status(&store, &who, 5), DeploymentStatus::Superseded);
+    assert_eq!(status(&store, &who, 9), DeploymentStatus::Superseded);
+}
+
+#[test]
+fn only_a_queued_deployment_starts() {
+    let (store, who) = shop();
+    let other = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    admit(&store, &who, 1, &[], None).unwrap();
+    assert_eq!(code(start(&store, &other, 1)), RpcErrorCode::NotFound);
+    // Starting changes nothing: a runner still claims it.
+    assert_eq!(
+        start(&store, &who, 1).unwrap().status,
+        DeploymentStatus::Queued
+    );
+    assert_eq!(
+        start(&store, &who, 1).unwrap().status,
+        DeploymentStatus::Queued
+    );
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    assert_eq!(code(start(&store, &who, 1)), RpcErrorCode::Conflict);
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(code(start(&store, &who, 1)), RpcErrorCode::Conflict);
+    admit(&store, &who, 2, &[], None).unwrap();
+    admit(&store, &who, 3, &[], None).unwrap();
+    assert_eq!(code(start(&store, &who, 2)), RpcErrorCode::Conflict);
+    cancel(&store, &who, 3).unwrap();
+    assert_eq!(code(start(&store, &who, 3)), RpcErrorCode::Conflict);
 }
 
 #[test]

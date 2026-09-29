@@ -323,23 +323,10 @@ pub(crate) fn admit(
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
     let environment_id = environment.as_str();
-    tx.execute(
-        "UPDATE config_deployment SET status = 'superseded' \
-         WHERE environment_id = ?1 AND status = 'queued'",
-        &[environment_id.into()],
-    )?;
-    let number = tx
-        .query(
-            "SELECT COALESCE(MAX(number), 0) FROM config_deployment WHERE environment_id = ?1",
-            &[environment_id.into()],
-        )?
-        .first()
-        .ok_or_else(|| error::corrupt("Deployment number"))?
-        .int(0)?
-        + 1;
+    let number = queue(tx, environment)?;
     let summary = DeploymentSummary {
         id: id.clone(),
-        number: u64::try_from(number).map_err(|_| error::corrupt("Deployment number"))?,
+        number,
         status: DeploymentStatus::Queued,
         saved,
         services: services.to_vec(),
@@ -354,7 +341,9 @@ pub(crate) fn admit(
             id.as_str().into(),
             who.organization.as_str().into(),
             environment_id.into(),
-            number.into(),
+            i64::try_from(number)
+                .map_err(|_| error::corrupt("Deployment number"))?
+                .into(),
             revision_param(saved)?.into(),
             json_text(&summary.services).as_str().into(),
             json_text(&frozen.nodes).as_str().into(),
@@ -363,6 +352,101 @@ pub(crate) fn admit(
         ],
     )?;
     Ok(summary)
+}
+
+/// Supersede `environment`'s queued Deployment, if any, and number the next one.
+fn queue(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<u64, RpcError> {
+    tx.execute(
+        "UPDATE config_deployment SET status = 'superseded' \
+         WHERE environment_id = ?1 AND status = 'queued'",
+        &[environment.as_str().into()],
+    )?;
+    let number = tx
+        .query(
+            "SELECT COALESCE(MAX(number), 0) FROM config_deployment WHERE environment_id = ?1",
+            &[environment.as_str().into()],
+        )?
+        .first()
+        .ok_or_else(|| error::corrupt("Deployment number"))?
+        .int(0)?;
+    u64::try_from(number + 1).map_err(|_| error::corrupt("Deployment number"))
+}
+
+/// Queue Deployment `id` shipping exactly what `source` froze: its Saved revision,
+/// targets and Namespace, whatever was saved since. Only a Deployment that ended
+/// without applying can be retried: failed, unknown or cancelled.
+pub(crate) fn retry(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &DeploymentId,
+    source: &DeploymentId,
+) -> Result<DeploymentSummary, RpcError> {
+    owned(tx, who, source)?;
+    let stored = locked(tx, source)?;
+    match stored.summary.status {
+        DeploymentStatus::Failed | DeploymentStatus::Unknown | DeploymentStatus::Cancelled => {}
+        DeploymentStatus::Applied => {
+            return Err(error::conflict(
+                "This Deployment applied, so there is nothing to retry",
+                json!({ "deployment": source }),
+            ));
+        }
+        DeploymentStatus::Queued | DeploymentStatus::Running | DeploymentStatus::Cancelling => {
+            return Err(error::conflict(
+                "This Deployment hasn't ended: cancel it or wait before retrying it",
+                json!({ "deployment": source }),
+            ));
+        }
+        DeploymentStatus::Superseded => return Err(superseded(source)),
+    }
+    let number = queue(tx, &stored.environment)?;
+    // Every frozen column comes from the source, so a retry never re-reads authored state.
+    tx.execute(
+        "INSERT INTO config_deployment \
+         (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
+          namespace, run) \
+         SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
+          nodes, namespace, ?3 \
+         FROM config_deployment WHERE id = ?4",
+        &[
+            id.as_str().into(),
+            i64::try_from(number)
+                .map_err(|_| error::corrupt("Deployment number"))?
+                .into(),
+            json_text(&Run::default()).as_str().into(),
+            source.as_str().into(),
+        ],
+    )?;
+    Ok(DeploymentSummary {
+        id: id.clone(),
+        number,
+        status: DeploymentStatus::Queued,
+        runner: None,
+        ..stored.summary
+    })
+}
+
+/// A queued Deployment of `who`'s Organization, checked that a runner may still
+/// claim it. Nothing changes: the caller hands it to a runner.
+pub(crate) fn start(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &DeploymentId,
+) -> Result<DeploymentSummary, RpcError> {
+    owned(tx, who, id)?;
+    let stored = locked(tx, id)?;
+    match stored.summary.status {
+        DeploymentStatus::Queued => Ok(stored.summary),
+        DeploymentStatus::Running | DeploymentStatus::Cancelling => Err(error::conflict(
+            "This Deployment is already running",
+            json!({ "deployment": id }),
+        )),
+        DeploymentStatus::Superseded => Err(superseded(id)),
+        DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Unknown
+        | DeploymentStatus::Cancelled => Err(ended(id)),
+    }
 }
 
 /// The Namespace `environment` deploys into: fixed at its first admission, so renames
@@ -456,12 +540,7 @@ pub(crate) fn claim(
         DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Ok(Err(owned_elsewhere(id)));
         }
-        DeploymentStatus::Superseded => {
-            return Ok(Err(error::conflict(
-                "A newer Deployment replaced this one before it started",
-                json!({ "deployment": id }),
-            )));
-        }
+        DeploymentStatus::Superseded => return Ok(Err(superseded(id))),
         DeploymentStatus::Applied
         | DeploymentStatus::Failed
         | DeploymentStatus::Unknown
@@ -500,13 +579,7 @@ pub(crate) fn cancel(
     who: &Actor,
     id: &DeploymentId,
 ) -> Result<DeploymentSummary, RpcError> {
-    let owned = tx.query(
-        "SELECT id FROM config_deployment WHERE id = ?1 AND organization_id = ?2",
-        &[id.as_str().into(), who.organization.as_str().into()],
-    )?;
-    if owned.is_empty() {
-        return Err(missing(id));
-    }
+    owned(tx, who, id)?;
     let mut stored = locked(tx, id)?;
     stored.summary.status = match stored.summary.status {
         DeploymentStatus::Queued => DeploymentStatus::Cancelled,
@@ -919,6 +992,25 @@ fn json_text(value: &impl Serialize) -> String {
 
 fn missing(id: &DeploymentId) -> RpcError {
     error::not_found(format!("No Deployment {id}"), json!({}))
+}
+
+/// `not_found` unless Deployment `id` belongs to `who`'s Organization.
+fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT id FROM config_deployment WHERE id = ?1 AND organization_id = ?2",
+        &[id.as_str().into(), who.organization.as_str().into()],
+    )?;
+    if rows.is_empty() {
+        return Err(missing(id));
+    }
+    Ok(())
+}
+
+fn superseded(id: &DeploymentId) -> RpcError {
+    error::conflict(
+        "A newer Deployment replaced this one before it started",
+        json!({ "deployment": id }),
+    )
 }
 
 fn owned_elsewhere(id: &DeploymentId) -> RpcError {

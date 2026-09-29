@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use admit::{Admit, Cancel};
-pub(crate) use admit::{admit, cancel};
+pub use admit::{Admit, Cancel, Start};
+pub(crate) use admit::{admit, cancel, start};
 pub(crate) use edit::edit;
 pub use edit::{Change, Edit, Edited};
 pub use project::{
@@ -54,8 +54,11 @@ pub enum Command {
     Publish(Publish),
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard),
-    /// Freeze Saved State into a queued Deployment, publishing Working State first.
+    /// Freeze Saved State into a queued Deployment, publishing Working State first,
+    /// or queue again what an ended Deployment froze.
     Admit(Admit),
+    /// Hand a queued Deployment to a runner now.
+    Start(Start),
     /// Cancel a queued or running Deployment.
     Cancel(Cancel),
 }
@@ -77,6 +80,7 @@ impl Command {
             | Self::RemoveService(_)
             | Self::Publish(_)
             | Self::Discard(_)
+            | Self::Start(_)
             | Self::Cancel(_) => Vec::new(),
         }
     }
@@ -103,7 +107,7 @@ pub enum Written {
     Published(Published),
     /// Changes were discarded.
     Discarded(Discarded),
-    /// A Deployment admitted or cancelled, or what its runner recorded.
+    /// A Deployment admitted, started or cancelled, or what its runner recorded.
     Deployment(crate::DeploymentSummary),
 }
 
@@ -133,6 +137,7 @@ pub(crate) fn run(
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
         Command::Admit(request) => admit(tx, who, request).map(Written::Deployment),
+        Command::Start(request) => start(tx, who, request).map(Written::Deployment),
         Command::Cancel(request) => cancel(tx, who, request).map(Written::Deployment),
     }
 }
