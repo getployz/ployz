@@ -10,6 +10,7 @@ mod error;
 mod git;
 mod id;
 mod query;
+mod registry;
 mod review;
 mod scope;
 mod sealing;
