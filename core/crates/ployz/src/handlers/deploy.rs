@@ -161,17 +161,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    let accept = matches
-        .get_many::<String>("accept-volume-loss")
-        .into_iter()
-        .flatten()
-        .map(|name| {
-            VolumeName::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected Volume names: lowercase letters, digits and -")
-                    .with_exit(USAGE_EXIT)
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let accept = super::env::accepted(matches)?;
     let request = Request {
         environment: environment(matches)?,
         services,
@@ -238,6 +228,7 @@ pub(super) fn upload_and_ship(
                 with_refresh_hint(error, matches, "diff"),
                 matches,
                 &services,
+                source.as_deref(),
             );
             failed(matches, &["deploy"])(error)
         })?;
@@ -642,6 +633,7 @@ fn with_retry(
     error: StoreCallError,
     matches: &ArgMatches,
     services: &[ServiceName],
+    source: Option<&Path>,
 ) -> StoreCallError {
     let version = match &error {
         StoreCallError::Refused(error) => error
@@ -652,8 +644,17 @@ fn with_retry(
             .to_owned(),
         StoreCallError::Cloud(_) => String::new(),
     };
+    // A retry uploads again: `up` does, as does the hidden `deploy --upload`.
+    let source = source.and_then(Path::to_str);
+    let up = source.is_some() && matches.try_get_one::<String>("upload").is_err();
+    if up {
+        return accepting(error, matches, &["up"]);
+    }
     let mut words = vec!["deploy"];
     words.extend(services.iter().map(ServiceName::as_str));
+    if let Some(source) = source {
+        words.extend(["--upload", source]);
+    }
     words.extend(["--expect-version", version.as_str()]);
     accepting(error, matches, &words)
 }
@@ -995,13 +996,34 @@ mod tests {
             message: "This Deploy permanently deletes the data of data".into(),
             details: serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }),
         };
-        let StoreCallError::Refused(error) =
-            with_retry(StoreCallError::Refused(refused), leaf_matches(&root), &[])
-        else {
+        let StoreCallError::Refused(error) = with_retry(
+            StoreCallError::Refused(refused.clone()),
+            leaf_matches(&root),
+            &[],
+            None,
+        ) else {
             panic!("a refusal stays a refusal");
         };
         let retry = "ployz deploy --expect-version 3:1:0.1 --accept-volume-loss data --env staging";
         assert_eq!(error.details.get("next"), Some(&serde_json::json!(retry)));
         assert!(error.message.ends_with(&format!("Retry: {retry}")));
+        // `up` uploads again, accepting the loss.
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "up", "--env", "staging"])
+            .unwrap();
+        let StoreCallError::Refused(error) = with_retry(
+            StoreCallError::Refused(refused),
+            leaf_matches(&root),
+            &[],
+            Some(Path::new("/src/app")),
+        ) else {
+            panic!("a refusal stays a refusal");
+        };
+        assert_eq!(
+            error.details.get("next"),
+            Some(&serde_json::json!(
+                "ployz up --accept-volume-loss data --env staging"
+            ))
+        );
     }
 }

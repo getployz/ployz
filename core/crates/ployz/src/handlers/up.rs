@@ -35,6 +35,7 @@ pub(crate) fn command() -> Command {
             .value_hint(ValueHint::Hostname)
             .help("First add this Server over SSH, as `ployz server add` does; the first founds the Cluster"),
     )
+    .arg(crate::cli::volume_acceptance())
 }
 
 #[derive(Serialize)]
@@ -89,7 +90,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             services: Vec::new(),
             version: None,
             source: Some(directory),
-            accept: Vec::new(),
+            accept: super::env::accepted(matches)?,
         },
         events,
     )?;
