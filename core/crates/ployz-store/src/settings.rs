@@ -192,6 +192,10 @@ impl ServiceSetting {
     pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
         match self {
             Self::Image => matches!(config.source, ServiceSource::Image { .. }),
+            // A Service without a source builds from uploads, with the same build Settings.
+            Self::Git(
+                GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
+            ) => !matches!(config.source, ServiceSource::Image { .. }),
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
             Self::CpuLimit
             | Self::MaxRetries
