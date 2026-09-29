@@ -473,7 +473,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
                         version: None,
-                        upload: upload.then(|| UploadedSource {
+                        upload: upload.then_some(UploadedSource {
                             digest,
                             base: None,
                             uploader: None,

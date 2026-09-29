@@ -90,9 +90,12 @@ pub async fn run_deployment(
         run.store(move |store| store.claim(&deployment, &runner))
             .await?
     };
-    let checkouts = match checkouts {
-        Ok(checkouts) => checkouts,
-        Err(reason) => return run.not_executed(reason).await,
+    let targets = match checkouts
+        .map_err(Unbuilt::Failed)
+        .and_then(|sources| targets(&claimed, sources))
+    {
+        Ok(targets) => targets,
+        Err(unbuilt) => return run.unbuilt(unbuilt).await,
     };
     if connections.is_empty() {
         return run
@@ -104,7 +107,7 @@ pub async fn run_deployment(
         Ok(session) => session,
         Err(error) => return run.not_executed(error.message).await,
     };
-    let recorded = run.execute(&session, claimed, checkouts).await;
+    let recorded = run.execute(&session, claimed, targets).await;
     session.close().await;
     recorded
 }
@@ -121,15 +124,11 @@ impl Run {
         &self,
         session: &Session,
         claimed: Claimed,
-        sources: Sources,
+        targets: Vec<Target>,
     ) -> Result<DeploymentSummary, RpcError> {
-        let prepared = if claimed.sources.is_empty() && claimed.uploads.is_empty() {
+        let prepared = if targets.is_empty() {
             session.preview(claimed.intent).await
         } else {
-            let targets = match targets(&claimed, sources) {
-                Ok(targets) => targets,
-                Err(unbuilt) => return self.unbuilt(unbuilt).await,
-            };
             match self.build(session, &claimed, &targets).await? {
                 Ok(receipts) => self.prepare(session, claimed, targets, receipts).await,
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
