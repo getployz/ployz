@@ -18,4 +18,7 @@ pub struct Trusted {
     /// What Cloud observed of the Organization's public domains and traffic.
     #[serde(default)]
     pub domains: DomainEvidence,
+    /// Who Cloud authenticated for this write: an admitted upload records them.
+    #[serde(default)]
+    pub uploader: Option<String>,
 }
