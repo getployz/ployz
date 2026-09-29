@@ -3,7 +3,7 @@ use ployz_core::{
     InspectRequest, JoinRequest, LocalMachinePhase, Machine, MachineName, RegisterRequest, op,
 };
 
-use super::super::{connect_client, runtime};
+use super::super::{connect_context, runtime};
 use super::{ConnectionOptions, helpers, target};
 use serde_json::json;
 
@@ -37,7 +37,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         if !no_install {
             crate::provisioning::provision(matches, storage).await?;
         }
-        let mut entry = connect_client(matches, options.context()).await?;
+        let mut entry = connect_context(matches, options.context()).await?;
         let snapshot = crate::enrollment::observe_enrollment(&mut entry).await?;
         let mut target_client = if no_install {
             helpers::connect_direct(matches, &connection).await?
@@ -64,7 +64,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .any(|machine| machine.id == token.id && machine.public_key == token.public_key);
         if details.phase != LocalMachinePhase::Uninitialized && !resuming {
-            helpers::confirm(yes, "Reset the Machine before adding it to this Cluster?")?;
+            helpers::confirm(yes, "Reset the Server before adding it to this Cluster?")?;
             helpers::reset(&mut target_client).await?;
             target_client = helpers::reconnect_direct(matches, &connection).await?;
             token = target_client
@@ -111,7 +111,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
         runtime.block_on(helpers::wait_direct_participating(
             matches,
             &connection,
-            "added Machine did not become ready",
+            "added Server did not become ready",
         ))?;
 
         let catch_up = runtime.block_on(async {
@@ -130,11 +130,11 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
         })
     })();
-    output::emit_committed(json!({ "machine": assigned }), follow_up)
+    output::emit_committed(json!({ "server": assigned }), follow_up)
 }
 
 fn added_machine_line(assigned: &Machine) -> String {
-    format!("Added Machine {} ({})", assigned.name, assigned.id)
+    format!("Added Server {} ({})", assigned.name, assigned.id)
 }
 
 #[cfg(test)]
@@ -146,9 +146,9 @@ mod tests {
 
     #[test]
     fn add_timeout_surfaces_the_docker_network_recovery() {
-        let message = helpers::readiness_timeout_message("added Machine did not become ready");
+        let message = helpers::readiness_timeout_message("added Server did not become ready");
 
-        assert!(message.contains("added Machine did not become ready"));
+        assert!(message.contains("added Server did not become ready"));
         assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
     }
 
@@ -157,7 +157,7 @@ mod tests {
         let assigned = assigned_machine("edge", 'a');
         assert_eq!(
             added_machine_line(&assigned),
-            "Added Machine edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
+            "Added Server edge (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"
         );
     }
 

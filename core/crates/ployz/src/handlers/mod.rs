@@ -15,7 +15,6 @@ mod data_loss;
 pub(crate) mod env;
 pub(crate) mod ingress;
 pub(crate) mod login;
-pub(crate) mod machine;
 mod operator;
 pub(crate) mod project;
 pub(crate) mod server;
@@ -152,6 +151,14 @@ async fn connect_client(
     matches: &ArgMatches,
     context: Option<&str>,
 ) -> Result<crate::connect::Client, Error> {
+    server::connect(matches, context).await
+}
+
+/// The explicit connection, the selected context, or the local daemon; never Cloud.
+async fn connect_context(
+    matches: &ArgMatches,
+    context: Option<&str>,
+) -> Result<crate::connect::Client, Error> {
     Ok(crate::connect::connect_with_ssh_timeout(
         &config_path(matches)?,
         matches.get_one::<String>("connect").map(String::as_str),
@@ -243,7 +250,6 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("ingress", rest) => ingress::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
-        ("machine", rest) => machine::handler(rest),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("server", rest) => server::handler(rest),
@@ -361,11 +367,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_update_rejects_an_invalid_machine_name_before_connecting() {
+    fn server_set_rejects_an_invalid_server_name_before_connecting() {
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "machine", "update", "vultr1", "--name", "BAD NAME"])
+            .try_get_matches_from(["ployz", "server", "set", "vultr1", "--name", "BAD NAME"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),

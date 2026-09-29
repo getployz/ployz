@@ -251,6 +251,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 crate::context::ConnectionSource::Context(name) => name.as_str(),
                 crate::context::ConnectionSource::Direct => "direct connection",
                 crate::context::ConnectionSource::LocalSocket => "local socket",
+                crate::context::ConnectionSource::Cloud => "Cloud",
             };
             say!(
                 "Remove volumes\nContext: {context}\nBased on what the connected machine can see; other machines may have additional resources.\nPermanently delete these volumes and their data ({}):",

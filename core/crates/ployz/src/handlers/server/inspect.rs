@@ -30,7 +30,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 .collect::<Vec<_>>();
             let mut gaps = Gaps::default();
             gaps.extend(&storage.failures, &storage.omissions);
-            let finished = output::finish_fanout("machines", &listed, &gaps, || {
+            let finished = output::finish_fanout("servers", &listed, &gaps, || {
                 say!(
                     "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
                 );
@@ -79,10 +79,10 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
     match count {
         0 => None,
         1 => Some(format!(
-            "WARNING: 1 Machine runs a daemon version different from CLI {cli_version}."
+            "WARNING: 1 Server runs a daemon version different from CLI {cli_version}."
         )),
         count => Some(format!(
-            "WARNING: {count} Machines run daemon versions different from CLI {cli_version}."
+            "WARNING: {count} Servers run daemon versions different from CLI {cli_version}."
         )),
     }
 }
@@ -106,8 +106,8 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> String {
 pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let selector = MachineTarget::parse(
         leaf_matches(root)
-            .get_one::<String>("machine")
-            .ok_or_else(|| Error::usage("machine is required"))?,
+            .get_one::<String>("server")
+            .ok_or_else(|| Error::usage("server is required"))?,
     )?;
     with_client(root, |client| {
         Box::pin(async move {
@@ -133,7 +133,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => None,
                 Err(error) => return Err(error.into()),
             };
-            output::show(&json!({ "machine": details, "upgrade": upgrade }))
+            output::show(&json!({ "server": details, "upgrade": upgrade }))
         })
     })
 }

@@ -81,7 +81,7 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
-    let initial_policy = super::machine::enrollment_policy(matches)?;
+    let initial_policy = super::server::enrollment_policy(matches)?;
     let url = cloud_enroll::enroll_url(cloud_url, &token);
     let requested_name = matches
         .get_one::<String>("name")
@@ -166,7 +166,7 @@ async fn enroll_current_identity(
     let machine_token = client
         .call_repeatable::<op::MachineToken>(MachineTokenRequest::default(), None)
         .await?;
-    let name = crate::handlers::machine::machine_name(requested_name, &machine_token)?;
+    let name = crate::handlers::server::machine_name(requested_name, &machine_token)?;
     let identity = EnrollIdentity::from_machine_token(
         name.clone(),
         &machine_token,
@@ -216,7 +216,7 @@ where
         )
         .await?;
         client = provision_storage(matches, client, join.storage, install).await?;
-        crate::handlers::machine::join(
+        crate::handlers::server::join(
             &mut client,
             JoinRequest {
                 registration: join.registration,
@@ -241,7 +241,7 @@ where
     crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
     crate::output::emit_committed(
-        serde_json::json!({ "machine": assigned, "founded": false }),
+        serde_json::json!({ "server": assigned, "founded": false }),
         catch_up.map_err(|error| {
             Error::coded(
                 error.code(),
@@ -328,7 +328,7 @@ where
             )
             .await?;
             client = provision_storage(matches, client, storage, install).await?;
-            let initialized = crate::handlers::machine::initialize(
+            let initialized = crate::handlers::server::initialize(
                 &mut client,
                 InitializeRequest {
                     initial_policy,
@@ -375,8 +375,8 @@ where
         &pairing.secret,
     )
     .await?;
-    crate::output::say!("Initialised Machine {} ({})", machine.name, machine.id);
-    crate::output::emit(&serde_json::json!({ "machine": machine, "founded": true }))
+    crate::output::say!("Initialised Server {} ({})", machine.name, machine.id);
+    crate::output::emit(&serde_json::json!({ "server": machine, "founded": true }))
 }
 
 /// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.
@@ -484,7 +484,7 @@ async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
         {
             connection = connection.with_ssh_key_file(key)?;
         }
-        return super::machine::connect_direct(matches, &connection).await;
+        return super::server::connect_direct(matches, &connection).await;
     }
     let config = crate::context::expand_home(std::path::Path::new(
         matches
@@ -549,8 +549,8 @@ async fn ensure_uninitialized(
                 .to_owned(),
         ));
     }
-    crate::handlers::machine::confirm(yes, "Reset the Machine before joining this Cluster?")?;
-    crate::handlers::machine::reset(&mut client).await?;
+    crate::handlers::server::confirm(yes, "Reset the Machine before joining this Cluster?")?;
+    crate::handlers::server::reset(&mut client).await?;
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,
@@ -593,7 +593,7 @@ async fn wait_phase(
         Error::unavailable(if participating {
             format!(
                 "{}: {error}",
-                crate::handlers::machine::readiness_timeout_message(timeout_message)
+                crate::handlers::server::readiness_timeout_message(timeout_message)
             )
         } else {
             error.to_string()

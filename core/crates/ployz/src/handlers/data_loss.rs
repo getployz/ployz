@@ -31,6 +31,7 @@ pub(super) fn confirm_removal(
         ConnectionSource::Context(name) => name.as_str(),
         ConnectionSource::Direct => "direct connection",
         ConnectionSource::LocalSocket => "local socket",
+        ConnectionSource::Cloud => "Cloud",
     };
     say!("{operation}: {}\nContext: {context}", targets.join(" "));
     let retry = retry_args(root, client.connection_source());
@@ -40,7 +41,13 @@ pub(super) fn confirm_removal(
         targets,
         ConfirmationOptions {
             volume_effect,
-            yes: leaf.get_flag("yes"),
+            // A typed `--confirm` stands in for `--yes`.
+            yes: leaf.try_get_one::<bool>("yes").ok().flatten() == Some(&true)
+                || leaf
+                    .try_get_one::<String>("confirm")
+                    .ok()
+                    .flatten()
+                    .is_some(),
             tty: output::interactive(),
         },
         &retry,
@@ -49,29 +56,25 @@ pub(super) fn confirm_removal(
     )
 }
 
-fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
+pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
     let mut args = vec!["ployz".into()];
     let mut leaf = root;
     while let Some((name, child)) = leaf.subcommand() {
         args.push(name.into());
         leaf = child;
     }
-    for id in ["service", "volume-name"] {
+    for id in ["service", "volume-name", "server"] {
         args.extend(string_values(leaf, id));
     }
-    // Machine is positional for machine rm, but a selector flag for volume rm.
     for machine in string_values(leaf, "machine") {
-        if super::command_path(root).starts_with("volume ") {
-            args.push("--machine".into());
-        }
-        args.push(machine);
+        args.extend(["--machine".into(), machine]);
     }
     for id in ["volumes", "no-reset", "force"] {
         if leaf.try_get_one::<bool>(id).ok().flatten() == Some(&true) {
             args.push(format!("--{id}"));
         }
     }
-    for id in ["connect", "ployz-config", "namespace"] {
+    for id in ["connect", "ployz-config", "namespace", "confirm"] {
         if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
             args.extend([format!("--{id}"), value.clone()]);
         }

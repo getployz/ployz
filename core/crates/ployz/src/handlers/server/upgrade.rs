@@ -71,7 +71,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<MachineRelease>("version")
         .cloned()
         .ok_or_else(|| Error::usage("upgrade version is required"))?;
-    let selectors = string_values(matches, "machine");
+    let selectors = string_values(matches, "server");
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
@@ -96,7 +96,7 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
                                 MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
                                     RpcErrorCode::Internal,
                                     format!(
-                                        "Machine {} upgrade was interrupted; {}",
+                                        "Server {} upgrade was interrupted; {}",
                                         machine.name,
                                         journal_hint(attempt_id)
                                     ),
@@ -139,7 +139,7 @@ async fn selected_machines(
         let machine = super::remove::select_machine(&visible, selector)?;
         if !ids.insert(machine.id) {
             return Err(Error::usage(format!(
-                "Machine {} was selected more than once",
+                "Server {} was selected more than once",
                 machine.name
             )));
         }
@@ -223,24 +223,24 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
     } = attempt;
     match outcome {
         MachineUpgradeOutcome::Accepted => say!(
-            "Machine {machine}: upgrade {attempt_id} accepted for {target}; {}",
+            "Server {machine}: upgrade {attempt_id} accepted for {target}; {}",
             journal_hint(*attempt_id)
         ),
         MachineUpgradeOutcome::Running { stage } => say!(
-            "Machine {machine}: upgrade {attempt_id} is {} for {target}; {}",
+            "Server {machine}: upgrade {attempt_id} is {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
         MachineUpgradeOutcome::Succeeded { version } => {
-            say!("Machine {machine}: upgrade {attempt_id} succeeded; running version {version}")
+            say!("Server {machine}: upgrade {attempt_id} succeeded; running version {version}")
         }
         MachineUpgradeOutcome::Failed { stage, error } => say!(
-            "Machine {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
+            "Server {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
         MachineUpgradeOutcome::Interrupted { stage } => say!(
-            "Machine {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
+            "Server {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
@@ -261,7 +261,7 @@ fn unattempted_lines<'a>(
         .into_iter()
         .map(|machine| {
             format!(
-                "Machine {} ({}): upgrade unattempted after {} ({})",
+                "Server {} ({}): upgrade unattempted after {} ({})",
                 machine.name, machine.id, after.name, after.id
             )
         })
@@ -278,7 +278,7 @@ fn uncertain(
     error: impl std::fmt::Display,
 ) -> Error {
     Error::unavailable(format!(
-        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
+        "Server {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,
         machine.id,
@@ -288,7 +288,7 @@ fn uncertain(
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
     Error::unavailable(format!(
-        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
+        "Server {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz server inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,
         OBSERVATION_TIMEOUT.as_secs() / 60,
@@ -342,7 +342,7 @@ mod tests {
             request: Some(Err(crate::setup_retry::Error::Permanent(
                 ConnectError::Remote(RpcError {
                     code: RpcErrorCode::Conflict,
-                    message: "a Machine upgrade or mutation is active".into(),
+                    message: "a Server upgrade or mutation is active".into(),
                     details: Value::Null,
                 }),
             ))),
@@ -388,7 +388,7 @@ mod tests {
 
         assert!(error.contains("outcome is uncertain"), "{error}");
         assert!(error.contains(attempt_id.as_str()), "{error}");
-        assert!(error.contains("ployz machine inspect"), "{error}");
+        assert!(error.contains("ployz server inspect"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 
@@ -448,7 +448,7 @@ mod tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "handlers::machine::upgrade::tests::daemon_restart_during_the_upgrade_is_waited_out",
+                "handlers::server::upgrade::tests::daemon_restart_during_the_upgrade_is_waited_out",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -545,9 +545,9 @@ mod tests {
         assert_eq!(
             first,
             [
-                "Machine b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-                "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
-                "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+                "Server b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+                "Server c (cccccccccccccccccccccccccccccccc): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
+                "Server d (dddddddddddddddddddddddddddddddd): upgrade unattempted after a (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)",
             ]
         );
 
@@ -555,8 +555,8 @@ mod tests {
         assert_eq!(
             middle,
             [
-                "Machine c (cccccccccccccccccccccccccccccccc): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
-                "Machine d (dddddddddddddddddddddddddddddddd): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+                "Server c (cccccccccccccccccccccccccccccccc): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
+                "Server d (dddddddddddddddddddddddddddddddd): upgrade unattempted after b (bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb)",
             ]
         );
     }

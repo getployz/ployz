@@ -35,7 +35,6 @@ pub fn command() -> Command {
         .subcommand(handlers::ingress::command())
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
-        .subcommand(handlers::machine::command())
         .subcommand(handlers::account::org_command())
         .subcommand(handlers::server::command())
         .subcommand(handlers::service::command())
@@ -189,30 +188,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_rm_no_reset_help_says_when_to_skip_reset() {
-        let help = super::command()
-            .find_subcommand("machine")
-            .expect("machine")
-            .find_subcommand("rm")
-            .expect("rm")
-            .get_arguments()
-            .find(|arg| arg.get_id() == "no-reset")
-            .expect("no-reset")
-            .get_help()
-            .map(ToString::to_string)
-            .expect("help text");
-        assert_eq!(
-            help,
-            "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable"
-        );
-    }
-
-    #[test]
     fn removal_acceptance_requires_explicit_repeatable_volume_flags() {
         for args in [
             vec![
                 "ployz",
-                "machine",
+                "server",
                 "rm",
                 "worker",
                 "--accept-volume-loss",
@@ -233,7 +213,7 @@ mod tests {
         for args in [
             vec![
                 "ployz",
-                "machine",
+                "server",
                 "rm",
                 "worker",
                 "--no-reset",
@@ -244,46 +224,6 @@ mod tests {
         ] {
             assert!(super::command().try_get_matches_from(args).is_err());
         }
-    }
-
-    #[test]
-    fn machine_rm_takes_data_loss_names_as_arguments_and_yes_still_parses() {
-        let matches = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "rm",
-                "worker",
-                "--accept-volume-loss",
-                "data",
-                "--accept-volume-loss",
-                "logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = matches
-            .subcommand_matches("machine")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["data", "logs"]
-        );
-        let yes_only = super::command()
-            .try_get_matches_from(["ployz", "machine", "rm", "worker", "--yes"])
-            .unwrap();
-        let rm = yes_only
-            .subcommand_matches("machine")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert!(rm.get_flag("yes"));
-        assert!(rm.get_many::<String>("accept-volume-loss").is_none());
     }
 
     #[test]
