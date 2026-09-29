@@ -20,6 +20,7 @@ async fn rejected_admission_does_not_poll_deferred_local_admission() {
             &machine,
             ContainerRequest {
                 deployment_id: None,
+                registry_auth: None,
                 creation_key: None,
                 kind: ContainerKind::ServiceContainer,
                 namespace: &namespace,

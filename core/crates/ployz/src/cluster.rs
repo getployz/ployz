@@ -56,6 +56,9 @@ pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60)
 #[derive(Clone)]
 pub struct Client {
     pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
+    /// Pull credentials by Service for the Deploy this client executes.
+    pub(crate) registry_auth:
+        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
     channel: Channel,
     connection: Connection,
     source: ConnectionSource,
@@ -77,6 +80,7 @@ impl Client {
     ) -> Self {
         Self {
             deployment_id: None,
+            registry_auth: std::collections::BTreeMap::new(),
             channel,
             connection,
             source,
@@ -774,6 +778,7 @@ impl Client {
                 creation_key,
                 kind,
                 namespace,
+                registry_auth: None,
                 resolved_spec,
             },
             &MachineTarget::from(&machine_id),

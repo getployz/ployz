@@ -30,6 +30,8 @@ pub(crate) struct ContainerRequest<'spec, Storage, Admission> {
     /// Optional identity of this currently existing creation.
     pub(crate) creation_key: Option<&'spec str>,
     pub(crate) deployment_id: Option<&'spec ployz_core::DeploymentLogId>,
+    /// Credentials for pulling a private image, used for this pull only.
+    pub(crate) registry_auth: Option<&'spec ployz_core::RegistryAuth>,
     /// Whether this is a long-running Service Container or a Pre-deploy Hook.
     pub(crate) kind: ContainerKind,
     /// Namespace that owns the resulting container.
@@ -58,6 +60,7 @@ impl ContainerRuntime {
             ContainerRequest {
                 creation_key: None,
                 deployment_id: None,
+                registry_auth: None,
                 kind,
                 namespace,
                 spec,
@@ -86,6 +89,7 @@ impl ContainerRuntime {
         let ContainerRequest {
             creation_key,
             deployment_id,
+            registry_auth,
             kind,
             namespace,
             spec,
@@ -123,8 +127,16 @@ impl ContainerRuntime {
         )
         .map_err(E::from)?;
         admission.await?;
-        self.prepare_and_create(machine, kind, namespace, spec, creation_key, deployment_id)
-            .await
+        self.prepare_and_create(
+            machine,
+            kind,
+            namespace,
+            spec,
+            creation_key,
+            deployment_id,
+            registry_auth,
+        )
+        .await
             .map_err(E::from)
     }
 
@@ -136,6 +148,7 @@ impl ContainerRuntime {
         spec: &ResolvedServiceSpec,
         creation_key: Option<&str>,
         deployment_id: Option<&ployz_core::DeploymentLogId>,
+        registry_auth: Option<&ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
         let reserved_name =
             creation_key.map(|key| creation_name(&machine.id, namespace, kind, key));
@@ -160,6 +173,7 @@ impl ContainerRuntime {
             &self.docker.client,
             &spec.container.image,
             spec.container.pull_policy,
+            registry_auth,
         )
         .await?;
         let mut config_operation = self.specs.config_operation().await;

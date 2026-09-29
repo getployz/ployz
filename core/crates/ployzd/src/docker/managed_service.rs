@@ -106,7 +106,7 @@ impl ManagedService {
         let Engine::Host(docker) = &self.engine else {
             unreachable!()
         };
-        prepare_image(docker, self.image, PullPolicy::Missing).await?;
+        prepare_image(docker, self.image, PullPolicy::Missing, None).await?;
         docker
             .create_container(
                 Some(
@@ -124,7 +124,7 @@ impl ManagedService {
         let Engine::Endpoint(docker) = &self.engine else {
             unreachable!()
         };
-        prepare_image(&docker.client, self.image, PullPolicy::Missing).await?;
+        prepare_image(&docker.client, self.image, PullPolicy::Missing, None).await?;
         docker
             .create_container(
                 Some(

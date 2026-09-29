@@ -291,6 +291,9 @@ pub struct CreateContainerRequest {
     pub kind: ContainerKind,
     pub namespace: Namespace,
     pub resolved_spec: ResolvedServiceSpec,
+    /// Credentials for pulling the image; used for this pull only, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_auth: Option<crate::RegistryAuth>,
 }
 
 /// Exactly one update to a labelled Management Client slot: set it or clear it.

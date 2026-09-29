@@ -1433,6 +1433,7 @@ fn volume_and_container_commands_keep_machine_local_inputs_exact() {
         creation_key: Some("deploy/slot-1".into()),
         kind: ContainerKind::ServiceContainer,
         namespace: Namespace::parse("shop").unwrap(),
+        registry_auth: None,
         resolved_spec: spec.clone(),
     });
     assert_eq!(request.encode().unwrap().decode_request().unwrap(), request);

@@ -89,12 +89,20 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
+        registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
         // Once admitted, caller cancellation must not let reset overtake a Docker request.
         let (local, namespace, spec) = (self.clone(), namespace.clone(), spec.clone());
         self.finish_mutation(async move {
             local
-                .create_container_admitted(kind, &namespace, &spec, creation_key, deployment_id)
+                .create_container_admitted(
+                    kind,
+                    &namespace,
+                    &spec,
+                    creation_key,
+                    deployment_id,
+                    registry_auth,
+                )
                 .await
         })
         .await
@@ -301,6 +309,7 @@ impl LocalMachine {
         spec: &ResolvedServiceSpec,
         creation_key: Option<String>,
         deployment_id: Option<ployz_core::DeploymentLogId>,
+        registry_auth: Option<ployz_core::RegistryAuth>,
     ) -> Result<ContainerCreated, Error> {
         let containers = self.containers.as_ref().ok_or(Error::DockerUnavailable)?;
         let record = self.record();
@@ -317,6 +326,7 @@ impl LocalMachine {
                 ContainerRequest {
                     creation_key: creation_key.as_deref(),
                     deployment_id: deployment_id.as_ref(),
+                    registry_auth: registry_auth.as_ref(),
                     kind,
                     namespace,
                     spec,
@@ -373,6 +383,7 @@ mod tests {
                 &spec,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -390,7 +401,7 @@ mod tests {
             ContainerKind::PreDeployHook,
         ] {
             let error = local
-                .create_container(kind, &namespace, &spec, None, None)
+                .create_container(kind, &namespace, &spec, None, None, None)
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains("accept"), "{error}");
@@ -433,6 +444,7 @@ mod tests {
                 &ingress,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap_err();
@@ -442,6 +454,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 &Namespace::system(),
                 &ingress,
+                None,
                 None,
                 None,
             )
@@ -497,6 +510,7 @@ mod tests {
                             &spec,
                             None,
                             None,
+                            None,
                         )
                         .await
                 }
@@ -527,7 +541,8 @@ mod tests {
                         &namespace,
                         &spec,
                         None,
-                        None
+                        None,
+                        None,
                     )
                     .await,
                 Err(LocalMachineError::NotParticipating)
@@ -562,7 +577,8 @@ mod tests {
                     &namespace,
                     &spec,
                     None,
-                    None
+                    None,
+                    None,
                 )
                 .await,
             Err(LocalMachineError::NotParticipating)
@@ -598,6 +614,7 @@ mod tests {
                 ContainerKind::ServiceContainer,
                 &namespace,
                 &spec,
+                None,
                 None,
                 None,
             )
@@ -664,7 +681,8 @@ mod tests {
                     &namespace,
                     &spec,
                     None,
-                    None
+                    None,
+                    None,
                 )
                 .await,
             Err(LocalMachineError::NotParticipating)
