@@ -6,7 +6,7 @@ import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import type { StoreRefusal } from "./store.contract";
-import { cachedRevision, environmentKey, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
+import { cachedRevision, environmentKey, listOptimistically, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
 
 /** A Store refusal thrown to a write's caller: `code` and `details` as the Store gave them. */
 export class StoreRefused extends Error {
@@ -105,6 +105,14 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * rejects with `StoreRefused`.
      * UI that awaits it is a listed command in the boundary test; creates need not wait, because the caller mints the new id.
      */
+    /**
+     * Creates a Service or Volume with the id the caller minted: listed at once in the Environment's cached view,
+     * saved in the background, and gone again (with a toast) if the Store refuses it.
+     */
+    create(command: ConfigCommand & { command: "create_service" | "create_git_service" | "create_volume" }) {
+      listOptimistically(scope, organizationSlug, command);
+      return this.commit(command);
+    },
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.

@@ -1,9 +1,11 @@
 import { useServerFn } from "@tanstack/react-start";
-import { usePacedMutations, throttleStrategy } from "@tanstack/react-db";
+import { createOptimisticAction, usePacedMutations, throttleStrategy } from "@tanstack/react-db";
+import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import { type OnNodeDrag } from "@xyflow/react";
 import { getCanvasPositionsCollection } from "#/collections/collections";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
+import { canvasPositionKey, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
 import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
 import type { CanvasResourceNode, CanvasResourceType } from "./types";
 
@@ -123,4 +125,27 @@ export async function persistCanvasPositionBatch(
   if (committed.length) await collection.writeCommitted(committed);
   const failure = results.find((result) => result.status === "rejected");
   if (failure) throw failure.reason;
+}
+
+/**
+ * Places a node the user is creating where they put it: shown at once, saved in the background, and back to a free
+ * spot (with a toast) if the save fails.
+ */
+export function usePlaceNewNode(organizationSlug: string) {
+  const collection = getCanvasPositionsCollection(organizationSlug, useCollectionScope());
+  const updatePosition = useServerFn(updateCanvasPositionServerFn);
+  const place = createOptimisticAction<Omit<UpdateCanvasPositionInput, "organizationSlug">>({
+    onMutate: (input) => {
+      const now = new Date();
+      // ponytail: the organization id is Cloud's to fill; nothing reads it before the saved row replaces this one.
+      collection.insert({ ...input, id: crypto.randomUUID(), organizationId: "", x: Math.round(input.x), y: Math.round(input.y),
+        createdAt: now, updatedAt: now });
+    },
+    mutationFn: (input) => persistCanvasPositionBatch([updatePosition({ data: { ...input, organizationSlug,
+      x: Math.round(input.x), y: Math.round(input.y) } })], collection),
+  });
+  return (input: Omit<UpdateCanvasPositionInput, "organizationSlug">) => {
+    place(input).isPersisted.promise.catch((error: Error) =>
+      toast.error(toErrorMessage(error, "The new node's place couldn't be saved.")));
+  };
 }

@@ -42,7 +42,6 @@ const SPINNER_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection.tsx": "reset in flight",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout or portal opening",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/add-server-dialog.tsx": "command mint in flight",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/VolumeCreatorDialog.tsx": "create in flight",
   "routes/_public/-components/LoginPanel.tsx": "sign-in in flight",
   "routes/device.tsx": "device approval in flight",
 };
@@ -78,18 +77,17 @@ const HOOK_FILES_NOT_COMMANDS = {
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */
 const COMMAND_FILES = {
-  "components/service-create-command.tsx": "the server assigns a new project's, service's, or volume's id and slug, and the page navigates to it",
+  "components/service-create-command.tsx": "the server assigns a new project's id and slug, and its canvas can't show the new Service before the Store has it",
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
+  "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then waits on each removal Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, a Deploy that deletes Volume data asks the user first, and Discard all closes the review once it discarded",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "optimistic over the plan until the Store answers; a refused Start from moves the panel back over the canvas it was on",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StorePullRequestNews.tsx": "Save for the merge seals values on the server and changes the pull request's check on GitHub, an external service",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage; over the Store the dialog stays open until the name is accepted",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "Save rewrites the Parent and closing a Branch is destructive; the page leaves the Branch once either lands",
 };
@@ -231,6 +229,12 @@ describe("data boundaries", () => {
               if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
+            }
+            // A save's promise handed on (to a helper that awaits it) waits for it too; `.catch` only rolls back.
+            if (isUi && isPropertyAccessExpression(node) && node.name.text === "promise"
+              && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted"
+              && !(isPropertyAccessExpression(node.parent) && node.parent.name.text === "catch")) {
+              awaitingUi.add(relative(SRC, source.fileName));
             }
             // Chaining .then or .finally on a save waits for it just as `await` does.
             if (isUi && isCallExpression(node) && isPropertyAccessExpression(node.expression)

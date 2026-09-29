@@ -20,7 +20,7 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -62,12 +62,13 @@ function CanvasWithData() {
   const scope = useCollectionScope();
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId, organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(ref)));
-  const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(ref)));
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(ref)));
-  const volumes = requireView(useStoreView(organizationSlug, volumesQuery(ref)));
-  // Refused unless this is a Branch.
-  const branch = useStoreView(organizationSlug, branchQuery(ref));
+  // The branch view is refused unless this is a Branch.
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref)] as const);
+  const services = requireView(servicesResult);
+  const settings = requireView(settingsResult);
+  const diff = requireView(diffResult);
+  const volumes = requireView(volumesResult);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({

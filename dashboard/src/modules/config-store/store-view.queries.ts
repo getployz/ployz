@@ -1,9 +1,10 @@
-import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
-  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
+  BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigCommand, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
   DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery,
-  ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
+  ProjectsQuery, RemovalsQuery, ServiceListing, ServicesQuery, VolumeListing, VolumesQuery,
 } from "@ployz/sdk";
+import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
@@ -125,8 +126,32 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
   return latest;
 }
 
+/**
+ * Lists a node being created in its Environment's cached `services` or `volumes` view, as the Store will once the
+ * create commits; the writer's refetch after the commit (or its refusal) replaces the guess. Nothing cached, nothing
+ * to show it in.
+ */
+export function listOptimistically(scope: CollectionScope, organizationSlug: string,
+  command: ConfigCommand & { command: "create_service" | "create_git_service" | "create_volume" }) {
+  if (command.command === "create_volume") {
+    const volume: VolumeListing = { id: command.id, name: command.name, mounts: [], deployed: false, change: "create" };
+    scope.queryClient.setQueryData(storeViewOptions(organizationSlug, scope, volumesQuery(command.environment)).queryKey,
+      (old) => old?.ok ? { ok: true as const, value: { ...old.value, volumes: [...old.value.volumes, volume] } } : old);
+    return;
+  }
+  const { id, environment, name } = command;
+  const service: ServiceListing = {
+    id, name, private_dns: name, change: "create",
+    source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
+  };
+  scope.queryClient.setQueryData(storeViewOptions(organizationSlug, scope, servicesQuery(environment)).queryKey,
+    (old) => old?.ok ? { ok: true as const, value: { ...old.value, services: [...old.value.services, service] } } : old);
+}
+
 /** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
 export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
+
+const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
 
 /**
  * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
@@ -143,7 +168,7 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
     if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
     if (!row) continue;
     const value = change.op === "set" ? change.value : row.default;
-    row.value = typeof value === "object" && value !== null && !Array.isArray(value) && "secret" in value ? { secret: true } : value;
+    row.value = isSecret(value) ? { secret: true } : value;
   }
   return { ...view, settings };
 }
@@ -263,21 +288,37 @@ export function requireView<T>(result: StoreResult<T>): T {
   return result.value;
 }
 
+/** A fresh read of one Store view as a step of a user command (what a removal deletes, before confirming). */
+export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
+  return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
+}
+
 /**
- * Reads one Store view, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this tab's
- * pending edits over the committed one; a failed save drops its edit, which is the rollback.
+ * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this
+ * tab's pending edits over the committed one; a failed save drops its edit, which is the rollback.
  */
-export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
-  const result = useSuspenseQuery(storeViewOptions(organizationSlug, useCollectionScope(), query)).data;
-  const key = "environment" in query ? environmentKey(query.environment) : "";
+export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizationSlug: string, queries: Qs):
+  { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> } {
+  const scope = useCollectionScope();
+  const results = useSuspenseQueries({ queries: queries.map((query) => storeViewOptions(organizationSlug, scope, query)) });
   const pending = useMutationState({
-    filters: { mutationKey: storeEditKey(organizationSlug, key), status: "pending" },
-    // SAFETY: store-write.ts files only `Change[]` variables under this key.
-    select: (mutation) => mutation.state.variables as Change[],
+    filters: { mutationKey: ["store-edit", organizationSlug], status: "pending" },
+    // SAFETY: store-write.ts files only `Change[]` variables under `storeEditKey`, whose last part is the Environment.
+    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: mutation.state.variables as Change[] }),
   });
-  if (!result.ok || result.value.view !== "environment" || pending.length === 0) return result;
-  // SAFETY: an `environment` view answers an `environment` query.
-  return { ok: true, value: withPendingChanges(result.value as EnvironmentView, pending.flat()) as StoreViewOf<Q> };
+  // SAFETY: each result answers the query at its index with the view of the same name.
+  return results.map(({ data: result }, index) => {
+    const query = queries[index];
+    if (!result.ok || result.value.view !== "environment" || !query || !("environment" in query)) return result;
+    const key = environmentKey(query.environment);
+    const changes = pending.flatMap((edit) => edit.key === key ? edit.changes : []);
+    return changes.length === 0 ? result : { ok: true, value: withPendingChanges(result.value, changes) };
+  }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
+}
+
+/** Reads one Store view; see `useStoreViews`. */
+export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
+  return useStoreViews(organizationSlug, [query] as const)[0];
 }
 
 /**

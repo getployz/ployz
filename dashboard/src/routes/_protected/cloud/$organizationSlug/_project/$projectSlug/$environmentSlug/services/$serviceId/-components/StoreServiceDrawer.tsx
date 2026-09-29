@@ -12,7 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { DNS_LABEL_RULE, isDnsLabel, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
-import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
@@ -69,9 +69,10 @@ function nameSchema(service: ServiceListing, services: readonly ServiceListing[]
 export function StoreServiceDrawer({ params }: { params: { organizationSlug: string; projectSlug: string; environmentSlug: string; serviceId: string } }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(store))).services;
-  const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const views = useStoreViews(organizationSlug, [servicesQuery(store), environmentSettingsQuery(store), diffQuery(store)] as const);
+  const services = requireView(views[0]).services;
+  const settings = requireView(views[1]);
+  const diff = requireView(views[2]);
   const writer = useStoreWriter(organizationSlug);
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });

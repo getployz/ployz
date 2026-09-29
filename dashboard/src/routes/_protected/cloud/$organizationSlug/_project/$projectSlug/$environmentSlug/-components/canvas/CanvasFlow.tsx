@@ -176,9 +176,7 @@ export function CanvasFlow({
         open={volumeCreator.creatorOpen}
         onOpenChange={volumeCreator.setCreatorOpen}
         position={volumeCreator.creatorPosition}
-        onCreate={async (input) => {
-          await volumeCreator.createVolume(input);
-        }}
+        onCreate={volumeCreator.createVolume}
       />
     </>
   );

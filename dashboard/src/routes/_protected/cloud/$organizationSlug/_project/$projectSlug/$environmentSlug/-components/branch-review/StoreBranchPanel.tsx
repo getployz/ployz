@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, EnvironmentRef, MoveView } from "@ployz/sdk";
+import type { BranchView, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
+import type { StoreResult } from "#/modules/config-store/store.contract";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
@@ -14,7 +15,7 @@ import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { ItemGroup } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
-import { branchQuery, environmentsQuery, saveQuery, updateQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
+import { branchQuery, environmentsQuery, saveQuery, updateQuery, useStoreDeployments, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
 import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -34,20 +35,24 @@ type Params = { organizationSlug: string; projectSlug: string; environmentSlug: 
 export function StoreBranchPanel() {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const branch = useStoreView(params.organizationSlug, branchQuery(store));
-  return branch.ok ? <BranchPanel params={params} store={store} branch={branch.value} /> : (
+  // Read together; off a Branch the Store refuses all but the listing.
+  const [branch, save, update, listing] = useStoreViews(params.organizationSlug,
+    [branchQuery(store), saveQuery(store), updateQuery(store), environmentsQuery(params.projectSlug)] as const);
+  if (branch.ok) return <BranchPanel params={params} store={store} branch={branch.value} save={save} update={update} listing={listing} />;
+  return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}><span className="font-medium">{params.environmentSlug}</span></CanvasInspectorHeader>
-      <Empty><EmptyDescription>Only branches have this panel.</EmptyDescription></Empty>
+      {/* The Store says "not a Branch" as invalid_argument; anything else is a failure to show as it is. */}
+      <Empty><EmptyDescription>{branch.refusal.code === "invalid_argument" ? "Only branches have this panel." : branch.refusal.message}</EmptyDescription></Empty>
     </div>
   );
 }
 
-function BranchPanel({ params, store, branch }: { params: Params; store: EnvironmentRef; branch: BranchView }) {
+function BranchPanel({ params, store, branch, save, update, listing }: {
+  params: Params; store: EnvironmentRef; branch: BranchView;
+  save: StoreResult<MoveView>; update: StoreResult<MoveView>; listing: StoreResult<EnvironmentsView>;
+}) {
   const writer = useStoreWriter(params.organizationSlug);
-  const save = useStoreView(params.organizationSlug, saveQuery(store));
-  const update = useStoreView(params.organizationSlug, updateQuery(store));
-  const listing = useStoreView(params.organizationSlug, environmentsQuery(params.projectSlug));
   const me = listing.ok ? listing.value.environments.find((environment) => environment.name === branch.environment.name) : undefined;
   const closing = useStoreBranchClose(params, store, branch);
   const [asking, setAsking] = useState(false);

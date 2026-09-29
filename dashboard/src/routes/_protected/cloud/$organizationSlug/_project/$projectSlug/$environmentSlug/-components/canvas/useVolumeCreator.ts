@@ -1,10 +1,7 @@
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
-import { getCanvasPositionsCollection } from "#/collections/collections";
-import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
+import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { createVolumeCommand } from "#/modules/config-store/store-volumes";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { slugifySegment } from "#/utils/slug";
@@ -22,9 +19,8 @@ export function useVolumeCreator(
   environmentId: string,
   getViewportCenter: () => FlowPosition,
 ) {
-  const collectionScope = useCollectionScope();
   const flow = useReactFlow<CanvasResourceNode>();
-  const place = useServerFn(updateCanvasPositionServerFn);
+  const place = usePlaceNewNode(params.organizationSlug);
   const writer = useStoreWriter(params.organizationSlug);
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const [creatorOpen, setCreatorOpen] = useState(false);
@@ -67,16 +63,14 @@ export function useVolumeCreator(
     });
   }
 
-  async function createVolume(input: {
+  /** On the canvas at once, saved in the background; a refused create goes again with a toast. */
+  function createVolume(input: {
     name: string;
     position: FlowPosition;
   }) {
     const id = crypto.randomUUID();
-    // Placed first, so it appears where it was put rather than jumping there.
-    const placed = await place({ data: { organizationSlug: params.organizationSlug, environmentId, resourceType: "volume", resourceId: id,
-      x: Math.round(input.position.x), y: Math.round(input.position.y) } });
-    await getCanvasPositionsCollection(params.organizationSlug, collectionScope).writeCommitted(placed.data);
-    await writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data")).isPersisted.promise;
+    place({ environmentId, resourceType: "volume", resourceId: id, ...input.position });
+    writer.create(createVolumeCommand(id, store, slugifySegment(input.name) || "data"));
   }
 
   return {
