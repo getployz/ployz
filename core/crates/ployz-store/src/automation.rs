@@ -20,14 +20,14 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::command::Admit;
-use crate::deployment::{self, DeploymentSummary};
+use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
+use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, build, domain, registry};
+use crate::{Actor, Trusted, build, domain, registry};
 
 /// An observation Cloud made of GitHub. Never caller testimony: only Cloud's worker
 /// passes one, in-process.
@@ -128,14 +128,15 @@ pub(crate) fn system(
     tx: &mut dyn Tx,
     organization: &OrganizationId,
     event: &SystemEvent,
+    trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
-    let who = Actor {
-        organization: organization.clone(),
-    };
+    let who = Actor::system(organization.clone());
     match event {
-        SystemEvent::BranchHead(head) => branch_head(tx, &who, head),
-        SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite),
-        SystemEvent::PullRequest(pull) => crate::pull_request::pull_request(tx, &who, pull),
+        SystemEvent::BranchHead(head) => branch_head(tx, &who, head, trusted),
+        SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite, trusted),
+        SystemEvent::PullRequest(pull) => {
+            crate::pull_request::pull_request(tx, &who, pull, trusted)
+        }
         SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep),
     }
 }
@@ -162,7 +163,12 @@ pub(crate) fn head(
     })
 }
 
-fn branch_head(tx: &mut dyn Tx, who: &Actor, event: &BranchHead) -> Result<Automated, RpcError> {
+fn branch_head(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    event: &BranchHead,
+    trusted: &Trusted,
+) -> Result<Automated, RpcError> {
     let branch = crate::git::valid_branch(&event.branch)?;
     for commit in event.base.iter().chain(&event.head).chain(&event.merged) {
         commit_sha(commit)?;
@@ -260,13 +266,19 @@ fn branch_head(tx: &mut dyn Tx, who: &Actor, event: &BranchHead) -> Result<Autom
             &environment,
             &push,
             (Select::Changed(changed), &saves),
+            trusted,
             &mut automated,
         )?;
     }
     Ok(automated)
 }
 
-fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Automated, RpcError> {
+fn check_suite(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    event: &CheckSuite,
+    trusted: &Trusted,
+) -> Result<Automated, RpcError> {
     commit_sha(&event.head)?;
     let repository_id = repository(event.repository_id)?;
     let suite = i64::try_from(event.suite)
@@ -313,7 +325,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
             EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
         let services: Vec<String> =
             serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("waiting deploy"))?;
-        let saves: Vec<String> =
+        let saves: Vec<ConditionalSaveId> =
             serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("waiting deploy"))?;
         let push = Push {
             repository_id: event.repository_id,
@@ -326,6 +338,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
             &environment,
             &push,
             (Select::Services(&services), &saves),
+            trusted,
             &mut automated,
         )?;
     }
@@ -353,15 +366,20 @@ fn deploy(
     who: &Actor,
     environment: &EnvironmentId,
     push: &Push<'_>,
-    (select, saves): (Select<'_>, &[String]),
+    (select, saves): (Select<'_>, &[ConditionalSaveId]),
+    trusted: &Trusted,
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
-    match admit(tx, who, environment, push, select, saves) {
+    match admit(tx, who, environment, push, (select, saves), trusted) {
         Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
             environment: environment.clone(),
-            deployment,
+            deployment: *deployment,
         }),
         Ok(Some(Deploy::Waiting)) => automated.waiting.push(environment.clone()),
+        Ok(Some(Deploy::NoServers)) => automated.skipped.push(Skipped {
+            environment: environment.clone(),
+            reason: crate::trusted::NO_SERVERS.to_owned(),
+        }),
         Ok(None) => {}
         // One Environment that can't deploy never holds back the others.
         Err(error)
@@ -381,8 +399,10 @@ fn deploy(
 }
 
 enum Deploy {
-    Admitted(DeploymentSummary),
+    Admitted(Box<DeploymentSummary>),
     Waiting,
+    /// It would deploy, but no Server could run it.
+    NoServers,
 }
 
 fn admit(
@@ -390,8 +410,8 @@ fn admit(
     who: &Actor,
     id: &EnvironmentId,
     push: &Push<'_>,
-    select: Select<'_>,
-    saves: &[String],
+    (select, saves): (Select<'_>, &[ConditionalSaveId]),
+    trusted: &Trusted,
 ) -> Result<Option<Deploy>, RpcError> {
     let mut environment = scope::lock_id(tx, who, id)?;
     // Where nothing deploys, what the push carries saves now.
@@ -400,8 +420,14 @@ fn admit(
             .iter()
             .try_for_each(|save| crate::conditional_save::land(tx, who, save, environment))
     };
-    // Off (shut down or being removed) or closing: a push leaves it be.
-    if crate::pull_request::closing(tx, id)? || crate::teardown::removing(tx, id)?.is_some() {
+    // Closing, or being removed: a push leaves it be. A shut-down PR Environment
+    // (its removal applied) comes back on: the push deploys all of it again.
+    let removing = crate::teardown::removing(tx, id)?;
+    let shut_down = removing
+        .as_ref()
+        .is_some_and(|removal| removal.status == DeploymentStatus::Applied)
+        && crate::pull_request::of(tx, id)?.is_some();
+    if crate::pull_request::closing(tx, id)? || (removing.is_some() && !shut_down) {
         land(tx, &mut environment)?;
         return Ok(None);
     }
@@ -441,14 +467,14 @@ fn admit(
         push.branch.into(),
     ];
     let [environment_param, repository_param, branch_param] = key;
-    if selected.is_empty() {
+    if selected.is_empty() || trusted.runnable().is_err() {
         tx.execute(
             "DELETE FROM config_waiting_deploy \
              WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3",
             &key,
         )?;
         land(tx, &mut environment)?;
-        return Ok(None);
+        return Ok((!selected.is_empty()).then_some(Deploy::NoServers));
     }
     if wait && !passed(tx, who, push)? {
         let services: Vec<&str> = selected.iter().map(|service| service.id.as_str()).collect();
@@ -522,11 +548,14 @@ fn admit(
             details: json!({}),
         });
     }
-    let names = selected
-        .iter()
-        .map(|service| ServiceName::parse(service.slug.as_str()))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| error::corrupt("Service name"))?;
+    let names = match shut_down {
+        true => Vec::new(),
+        false => selected
+            .iter()
+            .map(|service| ServiceName::parse(service.slug.as_str()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| error::corrupt("Service name"))?,
+    };
     let pins: BTreeMap<ServiceName, String> = selected
         .iter()
         .map(|service| (service.config.private_dns.clone(), push.head.to_owned()))
@@ -540,7 +569,7 @@ fn admit(
         &names,
         namespace,
         cluster_domain.as_ref(),
-        // A targeted Deploy removes nothing, so it deletes no Volume data.
+        // A targeted Deploy removes nothing; a shut-down one has nothing left to remove.
         &[],
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
@@ -556,7 +585,7 @@ fn admit(
     };
     let summary = deployment::admit(tx, who, &request, id, saved.revision, &frozen)?;
     build::pin(tx, &request.id, &pins)?;
-    Ok(Some(Deploy::Admitted(summary)))
+    Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
 /// Whether every check suite of the pushed commit completed and passed; false

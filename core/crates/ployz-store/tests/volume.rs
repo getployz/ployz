@@ -12,10 +12,10 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    DeploymentId, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef,
-    Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery, RemoveVolume,
-    RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName,
-    VolumeObservation, VolumeQuery, VolumesQuery,
+    DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery,
+    EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery,
+    RemoveVolume, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -27,9 +27,7 @@ const DOCKER_VOLUME: &str = "shop-production_vol-00000000-0000-4000-8000-0000000
 /// A store with Project `shop`, Service `web` and Volume `data` mounted at `/data`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -102,12 +100,33 @@ fn id(n: u8) -> DeploymentId {
     DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap()
 }
 
+/// Admit Deployment `n` of every Service. Accepting losses confirms them as a person
+/// would: with the version the refusal that listed them handed back.
 fn admit(
     store: &ConfigStore,
     who: &Actor,
     n: u8,
     accept: &[&str],
     observed: Option<VolumeObservation>,
+) -> Result<(), RpcError> {
+    match admit_at(store, who, n, accept, observed.clone(), None) {
+        Err(refused)
+            if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired =>
+        {
+            let version = refused.details["version"].as_str().unwrap().to_owned();
+            admit_at(store, who, n, accept, observed, Some(version))
+        }
+        admitted => admitted,
+    }
+}
+
+fn admit_at(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    accept: &[&str],
+    observed: Option<VolumeObservation>,
+    version: Option<String>,
 ) -> Result<(), RpcError> {
     store
         .admit(
@@ -116,7 +135,7 @@ fn admit(
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
-                version: None,
+                version,
                 upload: None,
                 retry: None,
                 remove: false,
@@ -314,7 +333,7 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
     assert!(
         view.nodes
             .iter()
-            .all(|node| node.outcome == NodeStatus::Applied)
+            .all(|node| node.outcome == NodeStatus::Deployed)
     );
     assert!(listed(&store, &who)[0].deployed);
 
@@ -385,10 +404,8 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     let refused = admit(&store, &who, 2, &[], Some(observed(&['a', 'b']))).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
     assert_eq!(refused.details["accept"], json!(["data"]));
-    assert_eq!(
-        refused.details["version"],
-        json!(diff(&store, &who).version)
-    );
+    let bound = refused.details["version"].as_str().unwrap().to_owned();
+    assert!(bound.starts_with(&format!("{}:", diff(&store, &who).version)));
     assert_eq!(
         refused.details["volumes"][0]["deletes"]
             .as_array()
@@ -396,6 +413,26 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
             .len(),
         2
     );
+    // The confirmation binds the exact holders: by name alone it asks again with
+    // the same version; once a Server holds it that the confirmation didn't name,
+    // with a new one.
+    let again = |version: Option<&String>, holders: &[char]| {
+        admit_at(
+            &store,
+            &who,
+            2,
+            &["data"],
+            Some(observed(holders)),
+            version.cloned(),
+        )
+        .unwrap_err()
+    };
+    let by_name = again(None, &['a', 'b']);
+    assert_eq!(by_name.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(by_name.details["version"], json!(bound));
+    let new_holder = again(Some(&bound), &['a', 'b', 'c']);
+    assert_eq!(new_holder.code, RpcErrorCode::ConfirmationRequired);
+    assert_ne!(new_holder.details["version"], json!(bound));
     assert_eq!(
         code(admit(
             &store,
@@ -422,13 +459,30 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     };
     let claimed = run(&store, 2, vec![removal(failed)]);
     assert_eq!(claimed.deletes, [held('a')]);
-    // A deletion that failed keeps the Volume deployed and staged for removal.
+    // A deletion that failed keeps the Volume deployed and staged for removal: the
+    // Deployment failed, and its Node Outcome says the Volume did.
     assert!(listed(&store, &who)[0].deployed);
+    let failed = store.deployment(&who, &id(2)).unwrap();
+    assert_eq!(failed.deployment.status, DeploymentStatus::Failed);
+    let data = failed
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .unwrap();
+    assert_eq!(data.outcome, NodeStatus::Failed);
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
     run(&store, 3, vec![removal(VolumeRemovalOutcome::Removed)]);
     assert!(listed(&store, &who).is_empty());
     assert!(diff(&store, &who).changes.is_empty());
+    let removed = store.deployment(&who, &id(3)).unwrap();
+    assert_eq!(removed.deployment.status, DeploymentStatus::Applied);
+    let data = removed
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .unwrap();
+    assert_eq!(data.outcome, NodeStatus::Removed);
 }
 
 #[test]

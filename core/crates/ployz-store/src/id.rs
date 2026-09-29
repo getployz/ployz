@@ -80,6 +80,11 @@ fn is_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+/// Who acts, as Cloud names them: 1–255 characters, none a control character.
+fn is_principal(value: &str) -> bool {
+    (1..=255).contains(&value.chars().count()) && !value.chars().any(char::is_control)
+}
+
 /// A public hostname: a lowercase DNS name of at least two labels.
 fn is_hostname(value: &str) -> bool {
     value.contains('.') && ployz_core::IngressHost::parse(value).is_ok()
@@ -116,6 +121,10 @@ store_string!(
     VolumeName, "a Volume name: lowercase letters, digits and -", is_name
 );
 store_string!(
+    /// A Conditional Save's identity, minted by the Store when a PR Environment saves.
+    ConditionalSaveId, "a Conditional Save ID (a UUID)", is_uuid
+);
+store_string!(
     /// A Deployment's durable identity, minted by the caller that admits it.
     DeploymentId, "a Deployment ID (a UUID)", is_uuid
 );
@@ -130,6 +139,12 @@ store_string!(
 store_string!(
     /// An Environment's name, unique in its Project: a lowercase DNS label.
     EnvironmentName, "an Environment name: lowercase letters, digits and -", is_name
+);
+
+store_string!(
+    /// Who acts, as Cloud authenticated them: a member's name or an access token's.
+    /// Deployments record who admitted them by it.
+    Principal, "a principal of 1-255 characters", is_principal
 );
 
 store_string!(

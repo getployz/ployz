@@ -112,13 +112,6 @@ pub struct ProjectRemoved {
     pub environments: Vec<EnvironmentName>,
 }
 
-/// Forget an Organization's configuration once it has no Project: what it
-/// created, what Cloud observed of its repositories, and its Build Order. Cloud's own Organization
-/// removal runs it; it isn't reachable over HTTPS.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct RemoveOrganization {}
-
 /// The Organization whose configuration the Store forgot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct OrganizationRemoved {
@@ -210,20 +203,14 @@ pub(crate) fn remove(
 /// The Deployment through which `environment` may still run on the Servers: one
 /// in flight, or the last that ran unless it was a removal that applied. None
 /// when nothing ever ran or its removal applied.
-fn on_servers(
+pub(crate) fn on_servers(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    let history = deployment::history(tx, environment, i64::MAX)?;
-    if let Some(running) = history
-        .iter()
-        .find(|deployment| deployment.status.in_flight())
-    {
-        return Ok(Some(running.clone()));
+    if let Some(running) = deployment::in_flight(tx, environment)? {
+        return Ok(Some(running));
     }
-    Ok(history
-        .into_iter()
-        .find(|deployment| deployment.runner.is_some())
+    Ok(deployment::last_ran(tx, environment)?
         .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
 }
 

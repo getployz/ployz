@@ -35,7 +35,7 @@ pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, S
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved,
-    PlannedNode, PlannedRole, SetupCommand, When,
+    PickChoice, PlannedNode, PlannedRole, Save, SetupCommand, Take, Update, When,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -46,7 +46,7 @@ pub use command::*;
 pub use conditional_save::{ConditionalSave, Landed, PendingSaves, PullRequestHint, SaveState};
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
-    RunEvidence, UploadBase, UploadedSource,
+    RunEvidence, Unclaimed, UploadBase, UploadedSource,
 };
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, Domain, DomainAction,
@@ -68,7 +68,7 @@ pub use settings::{Apply, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveOrganization, RemoveProject, SetDefaultEnvironment,
+    RemoveEnvironment, RemoveProject, SetDefaultEnvironment,
 };
 pub use trusted::{Trusted, VolumeObservation};
 
@@ -77,6 +77,20 @@ pub use trusted::{Trusted, VolumeObservation};
 pub struct Actor {
     /// The Organization whose configuration it reads and writes.
     pub organization: OrganizationId,
+    /// Who acts, as Cloud authenticated them; none for the Store's own automation
+    /// and the hidden local Store.
+    pub principal: Option<Principal>,
+}
+
+impl Actor {
+    /// The Store's own automation in `organization`: nobody in particular.
+    #[must_use]
+    pub const fn system(organization: OrganizationId) -> Self {
+        Self {
+            organization,
+            principal: None,
+        }
+    }
 }
 
 /// One Config Store over one database.
@@ -270,12 +284,20 @@ impl ConfigStore {
         self.storage.read(|tx| query::diff(tx, who, query))
     }
 
-    /// [`Command::Publish`].
+    /// [`Command::Publish`]. `trusted` carries what the Servers hold when it
+    /// publishes the removal of deployed Volumes; never pass caller-supplied evidence.
     ///
     /// # Errors
-    /// As [`write`](Self::write).
-    pub fn publish(&self, who: &Actor, publish: &Publish) -> Result<Published, RpcError> {
-        self.storage.write(|tx| command::publish(tx, who, publish))
+    /// As [`write`](Self::write); `confirmation_required` when it publishes the loss of
+    /// data not accepted, `unavailable` when the evidence of that data is missing.
+    pub fn publish(
+        &self,
+        who: &Actor,
+        publish: &Publish,
+        trusted: &Trusted,
+    ) -> Result<Published, RpcError> {
+        self.storage
+            .write(|tx| command::publish(tx, who, publish, trusted))
     }
 
     /// [`Command::Discard`].
@@ -502,6 +524,16 @@ impl ConfigStore {
             .write(|tx| deployment::record(tx, deployment, runner, evidence))
     }
 
+    /// Every queued Deployment no runner claimed, admitted before `before` (Unix
+    /// seconds), oldest first, across Organizations: Cloud's sweep dispatches each
+    /// again, as its first dispatch may have been lost. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn unclaimed(&self, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
+        self.storage.read(|tx| deployment::unclaimed(tx, before))
+    }
+
     /// The Git Services Deployment `deployment` builds, each with its pinned commit,
     /// if any: what Cloud reads from GitHub for its runner. In-process only.
     ///
@@ -529,7 +561,9 @@ impl ConfigStore {
     }
 
     /// Apply what Cloud observed of GitHub: a branch's head or a check suite's result,
-    /// admitting the auto-deploys they call for. In-process only: never exposed over HTTPS.
+    /// admitting the auto-deploys they call for. `trusted` says how many Servers the
+    /// Organization has: none skips every auto-deploy. In-process only: never exposed
+    /// over HTTPS.
     ///
     /// # Errors
     /// Returns `conflict` when a [`BranchHead`]'s base is no longer the Store's head
@@ -539,9 +573,10 @@ impl ConfigStore {
         &self,
         organization: &OrganizationId,
         event: &SystemEvent,
+        trusted: &Trusted,
     ) -> Result<Written, RpcError> {
         self.storage
-            .write(|tx| automation::system(tx, organization, event))
+            .write(|tx| automation::system(tx, organization, event, trusted))
             .map(Written::Automated)
     }
 
@@ -572,9 +607,7 @@ impl ConfigStore {
         repository_id: u64,
         branch: &str,
     ) -> Result<PendingSaves, RpcError> {
-        let who = Actor {
-            organization: organization.clone(),
-        };
+        let who = Actor::system(organization.clone());
         self.storage
             .read(|tx| conditional_save::pending(tx, &who, repository_id, branch))
     }
@@ -686,10 +719,12 @@ impl ConfigStore {
             .write(|tx| teardown::remove_project(tx, who, remove))
     }
 
-    /// [`Command::RemoveOrganization`].
+    /// Forget an Organization's configuration once it has no Project: what it
+    /// created, what Cloud observed of its repositories, and its Build Order. Cloud's
+    /// own Organization removal runs it. In-process only: no command reaches it.
     ///
     /// # Errors
-    /// As [`write`](Self::write); `conflict` while the Organization has a Project.
+    /// Returns `conflict` while the Organization has a Project, or a storage error.
     pub fn remove_organization(&self, who: &Actor) -> Result<OrganizationRemoved, RpcError> {
         self.storage
             .write(|tx| teardown::remove_organization(tx, who))

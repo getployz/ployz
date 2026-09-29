@@ -1,7 +1,7 @@
 //! Evidence Cloud gathers outside the Store and passes in-process with a write. It is
 //! never caller testimony: `read` and `write` over HTTPS carry none, only what Cloud found.
 
-use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId};
+use ployz_core::{DockerVolumeId, DockerVolumeName, MachineId, RpcError};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -23,16 +23,30 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub volumes: Option<VolumeObservation>,
-    /// Who Cloud authenticated for this write: an admitted upload records them.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub uploader: Option<String>,
-    /// How many Servers the Organization has enrolled, when Cloud counted them for an
-    /// admission; none when nobody counted.
+    /// How many Servers the Organization has, as Cloud counts them: a Deployment is
+    /// admitted only when one could run it. None when the caller can't count them,
+    /// such as the hidden local Store, which runs its Deployments itself.
     #[serde(default)]
     #[ts(optional)]
     pub servers: Option<u32>,
 }
+
+impl Trusted {
+    /// Refuse to admit a Deployment no Server could run.
+    pub(crate) fn runnable(&self) -> Result<(), RpcError> {
+        match self.servers {
+            Some(0) => Err(crate::error::unobserved(
+                NO_SERVERS,
+                serde_json::json!({ "next": "ployz server add" }),
+            )),
+            Some(_) | None => Ok(()),
+        }
+    }
+}
+
+/// Why nothing deploys in an Organization without Servers.
+pub(crate) const NO_SERVERS: &str =
+    "This Organization has no Server to run a Deployment: add one first";
 
 /// What the Servers answered when asked which of `sought` they hold. It is relative
 /// to the observer: a Server that did not answer is named, never assumed empty.

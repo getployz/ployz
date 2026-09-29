@@ -122,11 +122,15 @@ fn numbered(sql: &str) -> String {
 }
 
 fn bind<'a>(params: &'a [Param<'_>]) -> Vec<&'a (dyn ToSql + Sync)> {
+    const NULL_TEXT: &Option<String> = &None;
+    const NULL_INT: &Option<i64> = &None;
     params
         .iter()
         .map(|param| match param {
             Param::Text(value) => value as &(dyn ToSql + Sync),
             Param::Int(value) => value as &(dyn ToSql + Sync),
+            Param::NullText => NULL_TEXT as &(dyn ToSql + Sync),
+            Param::NullInt => NULL_INT as &(dyn ToSql + Sync),
         })
         .collect()
 }

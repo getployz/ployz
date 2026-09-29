@@ -455,7 +455,10 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
 
 /// "uploaded by nick, base abc1234 + changes": where an upload came from.
 fn provenance(upload: &UploadedSource) -> String {
-    let who = upload.uploader.as_deref().unwrap_or("this device");
+    let who = upload
+        .uploader
+        .as_ref()
+        .map_or("this device", ployz_store::Principal::as_str);
     let digest = upload.digest.get(..12).unwrap_or(&upload.digest);
     match &upload.base {
         Some(base) => format!(

@@ -26,9 +26,7 @@ const SERVICE: &str = "00000000-0000-4000-8000-000000000003";
 
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -267,7 +265,9 @@ fn a_git_service_round_trips_get_edit_publish() {
             &Publish {
                 environment: EnvironmentRef::default(),
                 version: Some(diff.version),
+                accept_volume_loss: Vec::new(),
             },
+            &Trusted::default(),
         )
         .unwrap();
     assert!(published.saved.0 >= 1);
@@ -412,9 +412,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         (log.build.status, log.build.message.as_deref()),
         (BuildStatus::Failed, Some("npm ci failed"))
     );
-    let stranger = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     let query = BuildLogQuery {
         deployment: first.clone(),
         service: ServiceName::parse("web").unwrap(),

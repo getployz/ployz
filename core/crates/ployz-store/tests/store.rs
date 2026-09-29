@@ -18,9 +18,7 @@ mod backend;
 use backend::{fresh_url, open};
 
 fn actor(organization: &str) -> Actor {
-    Actor {
-        organization: OrganizationId::parse(organization).unwrap(),
-    }
+    Actor::system(OrganizationId::parse(organization).unwrap())
 }
 
 /// A fixed UUID per label, so replays reuse IDs.
@@ -123,6 +121,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
         paths(&created.staged),
         [
             "web.cpuLimit",
+            "web.healthcheck",
             "web.image",
             "web.maxRetries",
             "web.memLimit",
@@ -138,6 +137,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
         serde_json::to_value(&view.settings).unwrap(),
         json!([
             { "path": "web.cpuLimit", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.healthcheck", "value": null, "default": null, "apply": "staged" },
             { "path": "web.image", "value": "nginx:1", "default": null, "apply": "staged" },
             { "path": "web.maxRetries", "value": 10, "default": 10, "apply": "staged" },
             { "path": "web.memLimit", "value": null, "default": null, "apply": "staged" },
@@ -173,7 +173,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.environment(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 9);
+    assert_eq!(all.settings.len(), 10);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -456,10 +456,14 @@ fn wrong_paths_and_values_name_the_fix() {
     let error = SettingPath::parse("web.replica").unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details["did_you_mean"], "replicas");
+    // The closest Setting's type and an example, so the fix needs no second read.
+    assert_eq!(error.details["expected"]["type"], "integer");
+    assert_eq!(error.details["example"], 3);
     assert_eq!(
         error.details["valid_children"],
         json!([
             "cpuLimit",
+            "healthcheck",
             "image",
             "maxRetries",
             "memLimit",
@@ -520,7 +524,7 @@ fn wrong_paths_and_values_name_the_fix() {
         error.details,
         json!({
             "setting": "cpuLimit",
-            "expected": { "type": "number", "exclusiveMinimum": 0, "maximum": 64 },
+            "expected": { "type": "number", "exclusiveMinimum": 0, "maximum": 64.0 },
             "example": 0.5,
         })
     );

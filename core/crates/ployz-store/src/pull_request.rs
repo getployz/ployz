@@ -214,7 +214,7 @@ pub struct Destination {
 /// A PR Environment's Conditional Save into one Destination.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DestinationSave {
-    pub id: String,
+    pub id: crate::ConditionalSaveId,
     /// False once the PR Environment or the target branch changed since: save again.
     pub standing: bool,
     /// How many changes it holds.
@@ -595,6 +595,7 @@ pub(crate) fn pull_request(
     tx: &mut dyn Tx,
     who: &Actor,
     event: &PullRequest,
+    trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
     validate(event)?;
     let organization = who.organization.as_str();
@@ -639,6 +640,12 @@ pub(crate) fn pull_request(
         return Ok(automated);
     }
     let current = current(tx, who, event.repository_id, event.number)?;
+    // Everything this event may touch, locked first and in ID order: its PR
+    // Environments, where their saves land, and where new ones start from.
+    let mut touched: Vec<EnvironmentId> = current.iter().map(|(id, _)| id.clone()).collect();
+    touched.extend(crate::conditional_save::involved(tx, who, event)?);
+    touched.extend(start_froms(tx, who, event.repository_id)?);
+    scope::lock_all(tx, touched)?;
     let renamed = before
         .as_ref()
         .is_some_and(|before| before.head_branch != event.head_branch);
@@ -646,6 +653,14 @@ pub(crate) fn pull_request(
         for (environment, _) in &current {
             retrack(tx, who, environment, event)?;
         }
+    }
+    // Saves were made for the old target branch's Destinations: a new target
+    // withdraws them, so retargeting back never revives an old approval.
+    let retargeted = before
+        .as_ref()
+        .is_some_and(|before| before.target_branch != event.target_branch);
+    if retargeted {
+        crate::conditional_save::withdraw(tx, who, event)?;
     }
     if !event.open {
         crate::conditional_save::settle(tx, who, event)?;
@@ -656,16 +671,38 @@ pub(crate) fn pull_request(
             }
         }
     } else {
-        open(tx, who, event, &current, &mut automated)?;
+        open(tx, who, (event, trusted), &current, &mut automated)?;
     }
     let has_environments = !current.is_empty() || !automated.admitted.is_empty();
-    if has_environments {
+    if has_environments || retargeted {
         automated.checks.push(PullRequestRef {
             repository_id: event.repository_id,
             number: event.number,
         });
     }
     Ok(automated)
+}
+
+/// The Environments PR Environments of the repository start from, as its plans say.
+fn start_froms(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: u64,
+) -> Result<Vec<EnvironmentId>, RpcError> {
+    let rows = tx.query(
+        "SELECT plan FROM config_pr_plan WHERE organization_id = ?1 AND repository_id = ?2",
+        &[
+            who.organization.as_str().into(),
+            repository(repository_id)?.into(),
+        ],
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        let plan: Stored =
+            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("PR plan"))?;
+        ids.extend(plan.start_from);
+    }
+    Ok(ids)
 }
 
 /// The pull request's PR Environments not being closed, with their Projects.
@@ -702,7 +739,7 @@ fn current(
 fn open(
     tx: &mut dyn Tx,
     who: &Actor,
-    event: &PullRequest,
+    (event, trusted): (&PullRequest, &Trusted),
     current: &[(EnvironmentId, crate::id::ProjectId)],
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
@@ -734,7 +771,14 @@ fn open(
         else {
             continue;
         };
-        match create(tx, who, &start, &plan, event) {
+        if trusted.runnable().is_err() {
+            automated.skipped.push(Skipped {
+                environment: start.summary.id.clone(),
+                reason: crate::trusted::NO_SERVERS.to_owned(),
+            });
+            continue;
+        }
+        match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, event)) {
             Ok(Some(deployed)) => automated.admitted.push(deployed),
             Ok(None) => {}
             Err(error)
@@ -837,6 +881,20 @@ fn create(
     let mut environment = scope::lock_id(tx, who, &id)?;
     environment.working = derive(environment.working, event);
     scope::save_working(tx, &mut environment)?;
+    // Copies keep their Deployment Policy, except that the repository's Services
+    // deploy on push whatever the start-from's says; wait for CI and watch paths stay.
+    for service in environment
+        .working
+        .services
+        .iter()
+        .filter(|service| ours(&service.config.source))
+    {
+        let mut policy = crate::policy::load(tx, &id, &service.id)?;
+        if !policy.auto_deploy {
+            policy.auto_deploy = true;
+            crate::policy::store(tx, who, &id, &service.id, &policy)?;
+        }
+    }
     tx.execute(
         "INSERT INTO config_pr_environment (environment_id, organization_id, repository_id, number) \
          VALUES (?1, ?2, ?3, ?4)",
@@ -982,14 +1040,12 @@ fn close(
         "UPDATE config_environment_branch SET closing = 1 WHERE environment_id = ?1",
         &[id.as_str().into()],
     )?;
-    for running in deployment::history(tx, id, i64::MAX)?
-        .into_iter()
-        .filter(|deployment| {
-            matches!(
-                deployment.status,
-                DeploymentStatus::Queued | DeploymentStatus::Running
-            )
-        })
+    // At most one Deployment of an Environment is in flight: a new one supersedes a queued one.
+    if let Some(running) = deployment::in_flight(tx, id)?
+        && matches!(
+            running.status,
+            DeploymentStatus::Queued | DeploymentStatus::Running
+        )
     {
         deployment::cancel(tx, who, &running.id)?;
     }
@@ -1005,11 +1061,7 @@ fn settle(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
-    let history = deployment::history(tx, id, i64::MAX)?;
-    if history
-        .iter()
-        .any(|deployment| deployment.status.in_flight())
-    {
+    if deployment::in_flight(tx, id)?.is_some() {
         return Ok(());
     }
     let skip = |automated: &mut Automated, error: RpcError| {
@@ -1022,12 +1074,8 @@ fn settle(
         skip(automated, error);
         return Ok(());
     }
-    let ran = history
-        .iter()
-        .find(|deployment| deployment.runner.is_some());
-    match ran {
+    match teardown::on_servers(tx, id)? {
         None => {}
-        Some(ran) if ran.remove && ran.status == DeploymentStatus::Applied => {}
         Some(ran) if ran.remove && ran.status == DeploymentStatus::Unknown => {
             skip(
                 automated,

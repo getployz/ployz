@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, ServiceSource, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
-    project_runtime_outcome,
+    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, RuntimeOutcomeProjection,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceSource,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
@@ -25,7 +25,9 @@ use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::command::Admit;
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, RunnerId};
+use crate::id::{
+    DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision, RunnerId,
+};
 use crate::registry;
 use crate::removal::VolumeLoss;
 use crate::review::{self, Head};
@@ -106,6 +108,34 @@ pub struct DeploymentSummary {
     /// Whether it removes the Environment from the Servers: it ships the empty
     /// Environment ([`NOTHING`]) and deletes the data it accepted.
     pub remove: bool,
+    /// Who admitted it, as Cloud authenticated them; none when the Store's own
+    /// automation did, or the hidden local Store.
+    pub admitted_by: Option<Principal>,
+    /// When it was admitted, in Unix seconds.
+    #[ts(type = "number")]
+    pub admitted_at: i64,
+    /// When its runner claimed it, in Unix seconds.
+    #[ts(type = "number | null")]
+    pub started_at: Option<i64>,
+    /// When it ended, in Unix seconds: its outcome recorded, or cancelled before
+    /// it ran.
+    #[ts(type = "number | null")]
+    pub ended_at: Option<i64>,
+}
+
+/// How long a runner holds a claimed Deployment without recording anything. Every
+/// record renews it; once it lapses the runner is gone and the outcome is unknown.
+pub(crate) const LEASE: i64 = 10 * 60;
+
+/// A queued Deployment no runner claimed: its dispatch may have been lost.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct Unclaimed {
+    pub organization: OrganizationId,
+    pub environment: EnvironmentId,
+    pub deployment: DeploymentId,
+    /// When it was admitted, in Unix seconds.
+    #[ts(type = "number")]
+    pub admitted_at: i64,
 }
 
 /// The Saved revision a removal ships: the empty Environment. Saved revisions count from 1.
@@ -126,7 +156,7 @@ pub struct UploadedSource {
     /// caller sends. Provenance only.
     #[serde(default)]
     #[ts(optional = nullable)]
-    pub uploader: Option<String>,
+    pub uploader: Option<Principal>,
 }
 
 /// Where an upload came from: "base abc123", plus "+ changes" when it differs from it.
@@ -183,34 +213,40 @@ pub struct NodeOutcome {
     pub outcome: NodeStatus,
 }
 
-/// A Node Outcome.
+/// A Node Outcome, or why a node has none.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeStatus {
     /// The Deployment has not recorded an outcome yet.
     Pending,
     /// Every planned operation for it completed: Applied State holds it now.
-    Applied,
-    /// Not every planned operation for it completed, so Applied State kept the old one.
-    NotApplied,
+    Deployed,
+    /// It was taken off the Servers: a removed Service, or a Volume whose data is gone.
+    Removed,
+    /// Work on it started and didn't finish, so Applied State kept the old one.
+    Failed,
+    /// An earlier failure, or cancellation, stopped the Deployment before it.
+    NotAttempted,
+    /// It needed no operation.
+    Unchanged,
     /// Its runner was lost before recording what ran.
     Unknown,
+}
+
+impl NodeStatus {
+    /// Whether Applied State holds the node as this Deployment shipped it.
+    pub(crate) const fn advances(self) -> bool {
+        matches!(self, Self::Deployed | Self::Removed)
+    }
 }
 
 /// What a Deployment's runner recorded at its end.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Outcome {
-    /// Execution ran. `summary` counts operations, without inputs or provider messages;
-    /// `confirmed` names the Services every planned operation of which completed.
-    Executed {
-        summary: Value,
-        confirmed: Vec<ServiceName>,
-        /// The Volumes it applied: every Service mounting a kept one confirmed, and
-        /// every Docker Volume of a removed one deleted.
-        #[serde(default)]
-        volumes: Vec<String>,
-    },
+    /// Execution ran. `summary` counts operations, without inputs or provider
+    /// messages; each node's Node Outcome is on the Deployment's nodes.
+    Executed { summary: Value },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
     NotExecuted {
@@ -246,6 +282,9 @@ pub enum RunEvidence {
     /// Nothing executed: these uploaded Services have no upload to build from and no
     /// usable image to reuse.
     UploadNeeded(Vec<ServiceName>),
+    /// The runner still holds the Deployment: it renews the lease and reads the
+    /// status back, which says whether it was cancelled.
+    Alive,
 }
 
 /// A claimed Deployment and the frozen Deploy Intent its runner executes.
@@ -332,9 +371,11 @@ impl Frozen {
 /// The runner's evidence so far, stored as one document.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 struct Run {
-    runner: Option<RunnerId>,
     preview: Option<Value>,
     outcome: Option<Outcome>,
+    /// Each target node's Node Outcome, by node ID, once execution ran.
+    #[serde(default)]
+    nodes: BTreeMap<String, NodeStatus>,
 }
 
 pub(crate) struct Stored {
@@ -344,10 +385,21 @@ pub(crate) struct Stored {
     cluster_domain: Option<Hostname>,
     pub(crate) nodes: Vec<TargetNode>,
     run: Run,
+    /// Until when, in Unix seconds, its runner holds it without recording anything.
+    lease: i64,
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run, upload, cluster_domain";
+     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended";
+
+/// SQL selecting Deployments that may still run: queued, or claimed by a runner
+/// whose lease holds.
+pub(crate) fn in_flight_sql() -> String {
+    format!(
+        "(status = 'queued' OR (status IN ('running', 'cancelling') AND lease > {}))",
+        now()
+    )
+}
 
 /// Freeze a Deployment of `saved`: its target nodes, checked to lower to a Deploy
 /// Intent. `services` narrows it; none targets every Service and Volume, including
@@ -592,12 +644,16 @@ pub(crate) fn admit(
         runner: None,
         upload,
         remove: saved == NOTHING,
+        admitted_by: who.principal.clone(),
+        admitted_at: now(),
+        started_at: None,
+        ended_at: None,
     };
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -617,7 +673,8 @@ pub(crate) fn admit(
                 .as_ref()
                 .map_or("", Hostname::as_str)
                 .into(),
-            now().into(),
+            summary.admitted_at.into(),
+            who.principal.as_ref().map(Principal::as_str).into(),
         ],
     )?;
     Ok(summary)
@@ -673,13 +730,14 @@ pub(crate) fn retry(
         crate::teardown::guard_removal(tx, &environment)?;
     }
     let number = queue(tx, &stored.environment)?;
+    let admitted_at = now();
     // Every frozen column comes from the source, so a retry never re-reads authored state.
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted) \
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
          SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5 \
+          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6 \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -688,7 +746,8 @@ pub(crate) fn retry(
                 .into(),
             json_text(&Run::default()).as_str().into(),
             source.as_str().into(),
-            now().into(),
+            admitted_at.into(),
+            who.principal.as_ref().map(Principal::as_str).into(),
         ],
     )?;
     // A retry builds the commits its source pinned.
@@ -704,6 +763,10 @@ pub(crate) fn retry(
         number,
         status: DeploymentStatus::Queued,
         runner: None,
+        admitted_by: who.principal.clone(),
+        admitted_at,
+        started_at: None,
+        ended_at: None,
         ..stored.summary
     })
 }
@@ -807,7 +870,7 @@ pub(crate) fn claim(
     let mut stored = locked(tx, id)?;
     match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling
-            if stored.run.runner.as_ref() == Some(runner) =>
+            if stored.summary.runner.as_ref() == Some(runner) =>
         {
             if stored.run.preview.is_some() {
                 stored.summary.status = DeploymentStatus::Unknown;
@@ -818,6 +881,8 @@ pub(crate) fn claim(
                     json!({ "deployment": id }),
                 )));
             }
+            stored.lease = now() + LEASE;
+            save(tx, &stored)?;
         }
         DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Ok(Err(owned_elsewhere(id)));
@@ -833,9 +898,11 @@ pub(crate) fn claim(
                  WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
                 &[stored.environment.as_str().into()],
             )?;
+            let started = now();
             stored.summary.status = DeploymentStatus::Running;
-            stored.run.runner = Some(runner.clone());
             stored.summary.runner = Some(runner.clone());
+            stored.summary.started_at = Some(started);
+            stored.lease = started + LEASE;
             save(tx, &stored)?;
         }
     }
@@ -957,7 +1024,10 @@ pub(crate) fn cancel(
     owned(tx, who, id)?;
     let mut stored = locked(tx, id)?;
     stored.summary.status = match stored.summary.status {
-        DeploymentStatus::Queued => DeploymentStatus::Cancelled,
+        DeploymentStatus::Queued => {
+            stored.summary.ended_at = Some(now());
+            DeploymentStatus::Cancelled
+        }
         DeploymentStatus::Running => DeploymentStatus::Cancelling,
         DeploymentStatus::Cancelling | DeploymentStatus::Cancelled => return Ok(stored.summary),
         DeploymentStatus::Superseded
@@ -978,10 +1048,22 @@ pub(crate) fn record(
     evidence: RunEvidence,
 ) -> Result<DeploymentSummary, RpcError> {
     let mut stored = locked(tx, id)?;
-    if stored.run.runner.as_ref() != Some(runner) {
+    if stored.summary.runner.as_ref() != Some(runner) {
         return Err(owned_elsewhere(id));
     }
+    // Any record while it runs shows the runner is still there.
+    if matches!(
+        stored.summary.status,
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+    ) {
+        stored.lease = now() + LEASE;
+    }
     match evidence {
+        RunEvidence::Alive => {
+            running(&stored)?;
+            save(tx, &stored)?;
+            Ok(stored.summary)
+        }
         RunEvidence::Prepared(preview) => {
             let preview = serde_json::to_value(preview)
                 .ok()
@@ -1015,23 +1097,18 @@ pub(crate) fn record(
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
             let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-            let volumes = applied_volumes(
-                &stored.nodes,
-                &saved,
-                &projection.confirmed_services,
-                success,
-                &removed,
-            );
-            let outcome = Outcome::Executed {
-                summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
-                confirmed: projection.confirmed_services,
-                volumes,
-            };
-            let status = if success {
+            let applied = applied_state(tx, &stored.environment, &saved)?;
+            let nodes = node_outcomes(&stored.nodes, &saved, &applied, &projection, &removed);
+            // A Deploy that left a Volume's data behind didn't finish: a retry removes it.
+            let status = if success && nodes.values().all(|status| *status != NodeStatus::Failed) {
                 DeploymentStatus::Applied
             } else {
                 DeploymentStatus::Failed
             };
+            let outcome = Outcome::Executed {
+                summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
+            };
+            stored.run.nodes = nodes;
             finish(tx, stored, outcome, status)
         }
         RunEvidence::Built(receipts) => {
@@ -1101,39 +1178,85 @@ pub(crate) fn record(
     }
 }
 
-/// The Volume nodes a Deployment applied. A kept Volume is applied once every
-/// targeted Service mounting it is confirmed; a removed one once the Deploy
-/// succeeded and every Docker Volume it deletes is gone.
-fn applied_volumes(
+/// Each target node's Node Outcome. A Service's comes from its operations: all
+/// completed is Deployed (Removed once it left Saved State), some ran is Failed,
+/// none ran is Not attempted, none planned is Unchanged. A kept Volume follows the
+/// targeted Services mounting it, and is Unchanged when Applied State already holds
+/// it as saved. A removed Volume is Removed once the Deploy succeeded and every
+/// Docker Volume it deletes is gone; Failed when one wasn't deleted, and Not
+/// attempted when the Deploy failed first.
+fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
-    confirmed: &[ServiceName],
-    success: bool,
+    applied: &SavedEnvironmentIntent,
+    projection: &RuntimeOutcomeProjection,
     removed: &[VolumeRemoval],
-) -> Vec<String> {
+) -> BTreeMap<String, NodeStatus> {
+    let success = matches!(
+        projection.summary,
+        ployz_core::config::RuntimeOutcomeSummary::Success { .. }
+    );
+    let service = |name: &ServiceName, kept: bool| {
+        if projection.confirmed_services.contains(name) {
+            if kept {
+                NodeStatus::Deployed
+            } else {
+                NodeStatus::Removed
+            }
+        } else if projection.failed_services.contains(name) {
+            NodeStatus::Failed
+        } else if projection.unattempted_services.contains(name) {
+            NodeStatus::NotAttempted
+        } else {
+            NodeStatus::Unchanged
+        }
+    };
     let gone = |id: &DockerVolumeId| {
         removed.iter().any(|removal| {
             removal.id == *id && matches!(removal.outcome, VolumeRemovalOutcome::Removed)
         })
     };
-    let mounting_confirmed = |volume: &str| {
-        saved.services.iter().all(|service| {
-            let mounts = service
-                .volume_attachments
-                .iter()
-                .any(|mount| mount.volume_resource_id == volume);
-            let targeted = nodes.iter().any(|node| node.id == service.id);
-            !mounts || !targeted || confirmed.contains(&service.config.private_dns)
-        })
+    let kept_volume = |volume: &SavedVolumeIntent| {
+        let mounting: Vec<NodeStatus> = saved
+            .services
+            .iter()
+            .filter(|service| {
+                nodes.iter().any(|node| node.id == service.id)
+                    && service
+                        .volume_attachments
+                        .iter()
+                        .any(|mount| mount.volume_resource_id == volume.resource_id)
+            })
+            .map(|mounting| service(&mounting.config.private_dns, true))
+            .collect();
+        if mounting.contains(&NodeStatus::Failed) {
+            NodeStatus::Failed
+        } else if mounting.contains(&NodeStatus::NotAttempted) {
+            NodeStatus::NotAttempted
+        } else if applied.volumes.contains(volume) {
+            NodeStatus::Unchanged
+        } else {
+            NodeStatus::Deployed
+        }
     };
     nodes
         .iter()
-        .filter(|node| node.service.is_none())
-        .filter(|node| match &node.deletes {
-            Some(deletes) => success && deletes.iter().all(gone),
-            None => mounting_confirmed(&node.id),
+        .map(|node| {
+            let status = match (&node.service, &node.deletes) {
+                (Some(name), _) => {
+                    service(name, saved.services.iter().any(|kept| kept.id == node.id))
+                }
+                (None, Some(_)) if !success => NodeStatus::NotAttempted,
+                (None, Some(deletes)) if deletes.iter().all(gone) => NodeStatus::Removed,
+                (None, Some(_)) => NodeStatus::Failed,
+                (None, None) => saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == node.id)
+                    .map_or(NodeStatus::Unchanged, kept_volume),
+            };
+            (node.id.clone(), status)
         })
-        .map(|node| node.id.clone())
         .collect()
 }
 
@@ -1153,14 +1276,22 @@ fn finish(
         }
         None => running(&stored)?,
     }
-    if let Outcome::Executed {
-        confirmed, volumes, ..
-    } = &outcome
-    {
+    let advanced: Vec<&TargetNode> = stored
+        .nodes
+        .iter()
+        .filter(|node| {
+            stored
+                .run
+                .nodes
+                .get(&node.id)
+                .is_some_and(|status| status.advances())
+        })
+        .collect();
+    if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-        for node in &stored.nodes {
-            let (applied, node_type) = match &node.service {
-                Some(service) if confirmed.contains(service) => (
+        for node in advanced {
+            let (applied, node_type) = match node.service {
+                Some(_) => (
                     saved
                         .services
                         .iter()
@@ -1168,7 +1299,7 @@ fn finish(
                         .map(json_text),
                     "service",
                 ),
-                None if volumes.contains(&node.id) => (
+                None => (
                     saved
                         .volumes
                         .iter()
@@ -1176,7 +1307,6 @@ fn finish(
                         .map(json_text),
                     "volume",
                 ),
-                Some(_) | None => continue,
             };
             match applied {
                 Some(applied) => tx.execute(
@@ -1205,6 +1335,7 @@ fn finish(
         (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
         _ => status,
     };
+    stored.summary.ended_at = Some(now());
     stored.run.outcome = Some(outcome);
     save(tx, &stored)?;
     Ok(stored.summary)
@@ -1228,15 +1359,17 @@ pub(crate) fn history(
     .collect()
 }
 
-/// What reviews compare Working State against: Applied State, overlaid with the
-/// target nodes of the Deployment in flight, if any. Its token changes whenever a
-/// Deployment is admitted or ends.
-pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, RpcError> {
-    let id = &environment.summary.id;
-    let mut applied = review::empty(&environment.working);
+/// Applied State: each node as its latest confirmed Deployment applied it, as one
+/// document shaped like `like`.
+pub(crate) fn applied_state(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    like: &SavedEnvironmentIntent,
+) -> Result<SavedEnvironmentIntent, RpcError> {
+    let mut applied = review::empty(like);
     for row in tx.query(
         "SELECT node, node_type FROM config_applied WHERE environment_id = ?1 ORDER BY node_id",
-        &[id.as_str().into()],
+        &[environment.as_str().into()],
     )? {
         let corrupt = |_| error::corrupt("Applied State");
         if row.text(1)? == "volume" {
@@ -1249,19 +1382,32 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
                 .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
         }
     }
+    Ok(applied)
+}
+
+/// What reviews compare Working State against: Applied State, overlaid with the
+/// target nodes of the Deployment in flight, if any. Its token changes whenever a
+/// Deployment is admitted or ends.
+pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, RpcError> {
+    let id = &environment.summary.id;
+    let applied = applied_state(tx, id, &environment.working)?;
+    let in_flight = in_flight_sql();
     let ended = tx
         .query(
-            "SELECT COUNT(*) FROM config_deployment \
-             WHERE environment_id = ?1 AND status IN ('applied', 'failed', 'unknown', 'cancelled')",
+            &format!(
+                "SELECT COUNT(*) FROM config_deployment \
+                 WHERE environment_id = ?1 AND status <> 'superseded' AND NOT {in_flight}"
+            ),
             &[id.as_str().into()],
         )?
         .first()
         .ok_or_else(|| error::corrupt("Deployment count"))?
         .int(0)?;
     let in_flight = tx.query(
-        "SELECT number, saved_revision, nodes FROM config_deployment \
-         WHERE environment_id = ?1 AND status IN ('queued', 'running', 'cancelling') \
-         ORDER BY number DESC LIMIT 1",
+        &format!(
+            "SELECT number, saved_revision, nodes FROM config_deployment \
+             WHERE environment_id = ?1 AND {in_flight} ORDER BY number DESC LIMIT 1"
+        ),
         &[id.as_str().into()],
     )?;
     let Some(row) = in_flight.first() else {
@@ -1302,6 +1448,60 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     })
 }
 
+/// `environment`'s Deployment that may still run, if any: queued, or claimed by a
+/// runner whose lease holds.
+pub(crate) fn in_flight(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    latest_where(tx, environment, &in_flight_sql())
+}
+
+/// `environment`'s latest Deployment a runner claimed: what may run on the Servers.
+pub(crate) fn last_ran(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    latest_where(tx, environment, "runner IS NOT NULL")
+}
+
+fn latest_where(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    condition: &str,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    tx.query(
+        &format!(
+            "SELECT {COLUMNS} FROM config_deployment \
+             WHERE environment_id = ?1 AND {condition} ORDER BY number DESC LIMIT 1"
+        ),
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .map(|row| stored(row).map(|stored| stored.summary))
+    .transpose()
+}
+
+/// Every queued Deployment no runner claimed that was admitted before `before`
+/// (Unix seconds), oldest first: those whose dispatch may have been lost.
+pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, RpcError> {
+    tx.query(
+        "SELECT organization_id, environment_id, id, admitted FROM config_deployment \
+         WHERE status = 'queued' AND runner IS NULL AND admitted < ?1 ORDER BY admitted, id",
+        &[before.into()],
+    )?
+    .iter()
+    .map(|row| {
+        Ok(Unclaimed {
+            organization: parse_stored(row.text(0)?)?,
+            environment: parse_stored(row.text(1)?)?,
+            deployment: parse_stored(row.text(2)?)?,
+            admitted_at: row.int(3)?,
+        })
+    })
+    .collect()
+}
+
 /// One Deployment in `who`'s Organization, with its Node Outcomes.
 pub(crate) fn view(
     tx: &mut dyn Tx,
@@ -1334,25 +1534,22 @@ pub(crate) fn view(
             node_type: node.node_type(),
             id: node.id.clone(),
             name: node.name.clone(),
-            outcome: match (&stored.run.outcome, stored.summary.status) {
-                (
-                    Some(Outcome::Executed {
-                        confirmed, volumes, ..
-                    }),
-                    _,
-                ) if node.service.as_ref().map_or_else(
-                    || volumes.contains(&node.id),
-                    |service| confirmed.contains(service),
-                ) =>
-                {
-                    NodeStatus::Applied
-                }
-                (Some(_), _)
-                | (None, DeploymentStatus::Superseded | DeploymentStatus::Cancelled) => {
-                    NodeStatus::NotApplied
-                }
+            outcome: match (stored.run.nodes.get(&node.id), stored.summary.status) {
+                (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
-                (None, _) => NodeStatus::Pending,
+                (
+                    None,
+                    DeploymentStatus::Queued
+                    | DeploymentStatus::Running
+                    | DeploymentStatus::Cancelling,
+                ) => NodeStatus::Pending,
+                (
+                    None,
+                    DeploymentStatus::Superseded
+                    | DeploymentStatus::Applied
+                    | DeploymentStatus::Failed
+                    | DeploymentStatus::Cancelled,
+                ) => NodeStatus::NotAttempted,
             },
         })
         .collect();
@@ -1423,6 +1620,12 @@ pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcEr
         "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
         &[environment.as_str().into()],
     )?;
+    // A lapsed lease reads unknown; writing it down keeps the rows saying so too.
+    tx.execute(
+        "UPDATE config_deployment SET status = 'unknown' \
+         WHERE id = ?1 AND status IN ('running', 'cancelling') AND lease <= ?2",
+        &[id.as_str().into(), now().into()],
+    )?;
     load(tx, id)
 }
 
@@ -1440,21 +1643,37 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     let json = |index: usize, what: &str| -> Result<Value, RpcError> {
         serde_json::from_str(row.text(index)?).map_err(|_| error::corrupt(what))
     };
+    let status = DeploymentStatus::ALL
+        .into_iter()
+        .find(|known| known.as_str() == status)
+        .ok_or_else(|| error::corrupt("Deployment status"))?;
+    let lease = row.int(12)?;
+    // A runner whose lease lapsed is gone: what ran is unknown.
+    let lapsed = matches!(
+        status,
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+    ) && lease <= now();
+    let status = if lapsed {
+        DeploymentStatus::Unknown
+    } else {
+        status
+    };
     Ok(Stored {
         summary: DeploymentSummary {
             id: parse_stored(row.text(0)?)?,
             number: u64::try_from(row.int(2)?).map_err(|_| error::corrupt("Deployment"))?,
-            status: DeploymentStatus::ALL
-                .into_iter()
-                .find(|known| known.as_str() == status)
-                .ok_or_else(|| error::corrupt("Deployment status"))?,
+            status,
             saved: revision(row.int(4)?)?,
             services: serde_json::from_value(json(5, "Deployment")?)
                 .map_err(|_| error::corrupt("Deployment"))?,
-            runner: None,
+            runner: row.optional_text(11)?.map(parse_stored).transpose()?,
             upload: serde_json::from_value(json(9, "Deployment upload")?)
                 .map_err(|_| error::corrupt("Deployment upload"))?,
             remove: revision(row.int(4)?)? == NOTHING,
+            admitted_by: row.optional_text(13)?.map(parse_stored).transpose()?,
+            admitted_at: row.int(14)?,
+            started_at: row.optional_int(15)?,
+            ended_at: row.optional_int(16)?,
         },
         environment: parse_stored(row.text(1)?)?,
         nodes: serde_json::from_value(json(6, "Deployment")?)
@@ -1466,20 +1685,22 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             "" => None,
             name => Some(parse_stored(name)?),
         },
-    })
-    .map(|mut stored| {
-        stored.summary.runner.clone_from(&stored.run.runner);
-        stored
+        lease,
     })
 }
 
 fn save(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
     tx.execute(
-        "UPDATE config_deployment SET status = ?1, run = ?2 WHERE id = ?3",
+        "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
+         started = ?6, ended = ?7 WHERE id = ?3",
         &[
             stored.summary.status.as_str().into(),
             json_text(&stored.run).as_str().into(),
             stored.summary.id.as_str().into(),
+            stored.summary.runner.as_ref().map(RunnerId::as_str).into(),
+            stored.lease.into(),
+            stored.summary.started_at.into(),
+            stored.summary.ended_at.into(),
         ],
     )?;
     Ok(())
@@ -1489,8 +1710,8 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     match stored.summary.status {
         DeploymentStatus::Running | DeploymentStatus::Cancelling => Ok(()),
         DeploymentStatus::Unknown => Err(error::conflict(
-            "Another runner took over this Deployment, so its outcome stays unknown. \
-             Start a new Deployment",
+            "This Deployment's runner lost it, or another took over, so its outcome stays \
+             unknown. Start a new Deployment",
             json!({ "deployment": stored.summary.id }),
         )),
         DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Cancelled => {

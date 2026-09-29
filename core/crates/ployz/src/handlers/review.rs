@@ -68,7 +68,14 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                     hint.value,
                     next(
                         matches,
-                        &["env", "save", "--take", &hint.save, "--only", &hint.row]
+                        &[
+                            "env",
+                            "save",
+                            "--take",
+                            hint.save.as_str(),
+                            "--only",
+                            &hint.row
+                        ]
                     )
                 ),
                 ployz_store::Landed::Staged => {
@@ -98,6 +105,7 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
     let publish = Publish {
         environment: environment(matches)?,
         version: matches.get_one::<String>("version").cloned(),
+        accept_volume_loss: Vec::new(),
     };
     let store = store(root)?;
     let published = store.publish(&publish).map_err(|error| {
