@@ -7,7 +7,7 @@
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
 //! destroyCluster / close, and the Config Store's openConfigStore / read / write.
-mod config_store;
+pub mod config_store;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;

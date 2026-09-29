@@ -35,15 +35,12 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let (store, actor) = store()?;
-    let Written::Environment(created) = store.write(
-        &actor,
-        ployz_store::Command::CreateEnvironment(CreateEnvironment {
+    let Written::Environment(created) =
+        store(root)?.write(ployz_store::Command::CreateEnvironment(CreateEnvironment {
             id: EnvironmentId::parse(mint())?,
             project: project(matches)?,
             name,
-        }),
-    )?
+        }))?
     else {
         unreachable!("an Environment create writes an Environment");
     };
