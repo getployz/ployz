@@ -118,7 +118,7 @@ fn diff_groups_new_services_and_compares_edits_with_their_introduction() {
     let (store, who) = shop();
     set(&store, &who, "web.replicas", json!(3));
     let view = diff(&store, &who);
-    assert_eq!(view.version, "4:0:none");
+    assert_eq!(view.version, "4:0:0.0");
     assert_eq!(view.saved, None);
     assert!(!view.published);
     assert_eq!(

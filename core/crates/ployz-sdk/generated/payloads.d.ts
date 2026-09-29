@@ -1,6 +1,16 @@
 // Generated from the Rust wire types by `cargo test -p ployz --test sdk_payloads`.
 // Do not edit.
 
+export type Admit = { id: DeploymentId, environment: EnvironmentRef,
+/**
+ * Deploy only these Services; none deploys every Service.
+ */
+services: Array<ServiceName>,
+/**
+ * Refuse with `conflict` unless this is still the latest `diff` version.
+ */
+version: string | null, };
+
 export type AdvertisedEndpoint = string;
 
 export type Apply = "staged" | "immediate";
@@ -162,7 +172,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit;
 
 export type ConfigMount = { config_name: string,
 /**
@@ -170,13 +180,13 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceCreated | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceCreated | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -356,6 +366,76 @@ remaining_bytes: number, } | { "type": "unbudgeted_disk_usage" } | { "type": "ob
  * Machine whose storage capability could not be checked.
  */
 machine_id: MachineId, } | { "type": "ingress_hostname", message: string, } | { "type": "observer_relative_hostname_conflict" } | { "type": "skipped_dependency_health", dependent: QualifiedService, dependency: QualifiedService, };
+
+export type DeploymentId = string;
+
+export type DeploymentQuery = { id: DeploymentId, };
+
+export type DeploymentStatus = "queued" | "superseded" | "running" | "applied" | "failed" | "unknown";
+
+export type DeploymentSummary = { id: DeploymentId,
+/**
+ * Counts from 1 within its Environment.
+ */
+number: number, status: DeploymentStatus,
+/**
+ * The Saved revision it ships.
+ */
+saved: Revision,
+/**
+ * The Services it targets; empty targets every Service.
+ */
+services: Array<ServiceName>,
+/**
+ * The runner that claimed it.
+ */
+runner: RunnerId | null, };
+
+export type DeploymentView = { environment: EnvironmentSummary,
+/**
+ * The runtime Namespace it deploys into.
+ */
+namespace: Namespace,
+/**
+ * Every node it targets.
+ */
+nodes: Array<NodeOutcome>,
+/**
+ * The Deploy Preview its runner prepared, with environment values removed.
+ */
+preview: JsonValue | null, outcome: Outcome | null, id: DeploymentId,
+/**
+ * Counts from 1 within its Environment.
+ */
+number: number, status: DeploymentStatus,
+/**
+ * The Saved revision it ships.
+ */
+saved: Revision,
+/**
+ * The Services it targets; empty targets every Service.
+ */
+services: Array<ServiceName>,
+/**
+ * The runner that claimed it.
+ */
+runner: RunnerId | null, };
+
+export type DeploymentsQuery = { environment: EnvironmentRef,
+/**
+ * At most this many, 1-100 [default: 20].
+ */
+limit: number | null,
+/**
+ * The `next_cursor` of the previous page.
+ */
+cursor: string | null, };
+
+export type DeploymentsView = { environment: EnvironmentSummary, deployments: Array<DeploymentSummary>,
+/**
+ * Pass as `cursor` for the next page; none on the last.
+ */
+next_cursor: string | null, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
 
@@ -862,6 +942,18 @@ comparison: ReviewComparisonRole | null,
  */
 settings: Array<ServiceSettingChange>, type: EnvironmentNodeType, id: string, };
 
+export type NodeOutcome = {
+/**
+ * The node's entity ID.
+ */
+id: string,
+/**
+ * The node's name when admitted.
+ */
+name: string, outcome: NodeStatus, };
+
+export type NodeStatus = "pending" | "applied" | "not_applied" | "unknown";
+
 export type ObservationKind = "container" | "volume";
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
@@ -900,6 +992,8 @@ status: OperationStatus, };
 
 export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
+export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>, } | { "type": "not_executed", reason: string, };
+
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
  * Targets selected by the entry Machine that produced no terminal response.
@@ -933,6 +1027,27 @@ placement_seed: number,
  * Service Names this command applies. Empty means full reconciliation.
  */
 selected: Array<ServiceAttempt>, };
+
+export type PlanQuery = { environment: EnvironmentRef,
+/**
+ * Plan only these Services; none plans every Service.
+ */
+services: Array<ServiceName>, };
+
+export type PlanView = { environment: EnvironmentSummary,
+/**
+ * Pass to `deploy --expect-version` to ship exactly this.
+ */
+version: string, namespace: Namespace,
+/**
+ * The changes of the nodes this Deploy targets.
+ */
+changes: Array<NodeChange>,
+/**
+ * What the Deployment decides from the Servers: which containers start, stop or
+ * move, and where.
+ */
+unresolved: Array<string>, };
 
 export type PortPublication = { "mode": "ingress", hostname: IngressHost, load_balancer_port: number, container_port: number, http_protocol: HttpProtocol, } | { "mode": "host", bind: HostBind, published_port: number, container_port: number, transport_protocol: TransportProtocol, };
 
@@ -1112,6 +1227,8 @@ export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "uns
 export type RttObservation = { peer_id: string, address: string, machine: MachineIdentity | null, statistics: RttStatistics, };
 
 export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
+
+export type RunnerId = string;
 
 export type RuntimeFailureKind = "machine" | "health" | "dependency_health" | "hook" | "cancelled";
 

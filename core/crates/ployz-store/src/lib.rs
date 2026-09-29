@@ -5,6 +5,7 @@
 
 pub mod catalog;
 mod command;
+mod deployment;
 mod error;
 mod id;
 mod query;
@@ -16,6 +17,10 @@ mod storage;
 use ployz_core::RpcError;
 
 pub use command::*;
+pub use deployment::{
+    Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
+    RunEvidence,
+};
 pub use id::*;
 pub use query::*;
 pub use review::{DiffView, NodeChange};
@@ -145,5 +150,73 @@ impl ConfigStore {
     /// As [`write`](Self::write).
     pub fn discard(&self, who: &Actor, discard: &Discard) -> Result<Discarded, RpcError> {
         self.storage.write(|tx| command::discard(tx, who, discard))
+    }
+
+    /// [`Command::Admit`]: publish if needed, then freeze and queue a Deployment.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn admit(&self, who: &Actor, admit: &Admit) -> Result<DeploymentSummary, RpcError> {
+        self.storage.write(|tx| command::admit(tx, who, admit))
+    }
+
+    /// What deploying would ship, from authored state alone.
+    ///
+    /// # Errors
+    /// As [`Self::read`], plus `invalid_argument` when the Environment can't deploy.
+    pub fn plan(&self, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
+        self.storage
+            .read(|tx| query::deployment::plan(tx, who, query))
+    }
+
+    /// One page of an Environment's Deployments, newest first.
+    ///
+    /// # Errors
+    /// As [`Self::read`], plus `invalid_argument` for a bad limit or cursor.
+    pub fn deployments(
+        &self,
+        who: &Actor,
+        query: &DeploymentsQuery,
+    ) -> Result<DeploymentsView, RpcError> {
+        self.storage
+            .read(|tx| query::deployment::page(tx, who, query))
+    }
+
+    /// One Deployment with its recorded Deploy Preview and Node Outcomes.
+    ///
+    /// # Errors
+    /// As [`Self::read`]; `not_found` for a Deployment of another Organization.
+    pub fn deployment(&self, who: &Actor, id: &DeploymentId) -> Result<DeploymentView, RpcError> {
+        self.storage.read(|tx| deployment::view(tx, who, id))
+    }
+
+    /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent.
+    /// In-process only: never exposed over HTTPS.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
+    /// owns it, a newer one replaced it, or it ended, or a storage error.
+    pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
+        self.storage
+            .write(|tx| deployment::claim(tx, deployment, runner))
+    }
+
+    /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes
+    /// advance Applied State. Recording the same evidence twice changes nothing.
+    /// In-process only: never exposed over HTTPS.
+    ///
+    /// # Errors
+    /// Returns `conflict` when another runner owns the Deployment or it already
+    /// recorded different evidence, `invalid_argument` for evidence that does not
+    /// match it, or a storage error.
+    pub fn record(
+        &self,
+        deployment: &DeploymentId,
+        runner: &RunnerId,
+        evidence: RunEvidence,
+    ) -> Result<Written, RpcError> {
+        self.storage
+            .write(|tx| deployment::record(tx, deployment, runner, evidence))
+            .map(Written::Deployment)
     }
 }

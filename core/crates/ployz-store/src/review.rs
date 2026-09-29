@@ -67,6 +67,7 @@ pub(crate) struct Saved {
 pub(crate) struct Head {
     pub(crate) token: String,
     pub(crate) intent: SavedEnvironmentIntent,
+    pub(crate) applied: SavedEnvironmentIntent,
 }
 
 /// A review and the bases it was computed on.
@@ -79,14 +80,14 @@ pub(crate) struct Review {
 pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Review, RpcError> {
     let id = &environment.summary.id;
     let saved = latest_saved(tx, id)?;
-    let head = head(environment);
+    let head = crate::deployment::head(tx, environment)?;
     let introductions = introductions(tx, environment)?;
     let project = |token: &str, intent: &SavedEnvironmentIntent| projection(id, token, intent);
     let changes = project_environment_changes(ChangeSetInput {
         working: project("working", &environment.working),
-        applied: project(&head.token, &head.intent),
+        applied: project("applied", &head.applied),
         saved: saved.as_ref().map(|saved| project("saved", &saved.intent)),
-        submitted: None,
+        submitted: (head.intent != head.applied).then(|| project(&head.token, &head.intent)),
         node_introductions: project("introductions", &introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
@@ -205,15 +206,6 @@ pub(crate) fn introductions(
     Ok(intent)
 }
 
-fn head(environment: &Environment) -> Head {
-    // ponytail: nothing deploys from the Store yet, so Head is empty. Deployments
-    // supply the submitted revision, else Applied State, and their token.
-    Head {
-        token: "none".to_owned(),
-        intent: empty(&environment.working),
-    }
-}
-
 fn latest_saved(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Option<Saved>, RpcError> {
     let rows = tx.query(
         "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 \
@@ -233,7 +225,7 @@ fn latest_saved(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Option<S
     }))
 }
 
-fn empty(like: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
+pub(crate) fn empty(like: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
     SavedEnvironmentIntent {
         version: like.version,
         environment_slug: like.environment_slug.clone(),
