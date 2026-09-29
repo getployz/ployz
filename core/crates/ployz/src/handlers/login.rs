@@ -1,0 +1,135 @@
+//! `ployz login` and `ployz logout`: this device's Cloud sign-in. Neither needs a Server.
+
+use clap::{ArgMatches, Command};
+use serde::Serialize;
+
+use super::{Error, config_path, leaf_matches, runtime};
+use crate::cli::{env, switch, value};
+use crate::cloud_login::{self, Account, CredentialStore, Organization, Pending, SignedIn, Start};
+use crate::output::{say, say_inline};
+
+const DEFAULT_CLOUD: &str = "ployz.dev";
+
+pub(crate) fn login_command() -> Command {
+    Command::new("login")
+        .about("Sign this device in to Ployz Cloud")
+        .long_about("Sign this device in to Ployz Cloud. Opens the approval page and waits; with --json, prints the page and code at once unless --wait is given. Run again, or with --wait, to finish a pending sign-in.")
+        .arg(
+            value("cloud-url", None)
+                .env(env::CLOUD_URL)
+                .help("Cloud to sign in to [default: the pending or signed-in Cloud, else ployz.dev]"),
+        )
+        .arg(switch("wait", None).help("Wait for approval, also with --json"))
+}
+
+pub(crate) fn logout_command() -> Command {
+    Command::new("logout").about("End this device's Ployz Cloud sign-in")
+}
+
+/// Signed-in result: who and where, never the bearer.
+#[derive(Serialize)]
+struct SignInReport<'a> {
+    status: &'static str,
+    cloud: &'a str,
+    account: &'a Account,
+    organization: &'a Organization,
+}
+
+impl<'a> SignInReport<'a> {
+    fn of(signed_in: &'a SignedIn) -> Self {
+        Self {
+            status: "signed_in",
+            cloud: &signed_in.cloud,
+            account: &signed_in.account,
+            organization: &signed_in.organization,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct PendingReport<'a> {
+    status: &'static str,
+    url: &'a str,
+    code: &'a str,
+    expires_in: u64,
+    next: &'static str,
+}
+
+pub(super) fn login(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let cloud = match matches.get_one::<String>("cloud-url") {
+        Some(cloud) => cloud.clone(),
+        None => store.cloud()?.unwrap_or_else(|| DEFAULT_CLOUD.to_owned()),
+    };
+    let wait = matches.get_flag("wait") || !crate::output::json();
+    runtime()?.block_on(async {
+        let (pending, resumed) = match cloud_login::start(&store, &cloud).await? {
+            Start::SignedIn(signed_in) => return report(&signed_in),
+            Start::Pending { pending, resumed } => (pending, resumed),
+        };
+        if !wait {
+            return crate::output::emit(&PendingReport {
+                status: "pending",
+                url: &pending.url,
+                code: &pending.code,
+                expires_in: pending.expires_in(),
+                next: "ployz login --wait",
+            });
+        }
+        announce(&pending, resumed);
+        let signed_in = cloud_login::wait(&store, pending).await?;
+        report(&signed_in)
+    })
+}
+
+fn announce(pending: &Pending, resumed: bool) {
+    say!(
+        "Open {} and confirm the code {}.",
+        pending.url,
+        pending.code
+    );
+    // Only a person at a terminal gets a browser; agents show the URL themselves.
+    if !resumed && crate::output::interactive() {
+        open_browser(&pending.url);
+    }
+    say_inline!("Waiting for approval... ");
+}
+
+fn report(signed_in: &SignedIn) -> Result<(), Error> {
+    crate::output::finish(&SignInReport::of(signed_in), || {
+        say!(
+            "Signed in to {} as {} in Organization {}.",
+            signed_in.cloud,
+            signed_in.account.email,
+            signed_in.organization.slug
+        );
+    })
+}
+
+pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
+    let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
+    let cloud = runtime()?.block_on(cloud_login::logout(&store))?;
+    crate::output::finish(
+        &serde_json::json!({ "signed_out": cloud.is_some(), "cloud": cloud }),
+        || match &cloud {
+            Some(cloud) => say!("Signed out of {cloud}."),
+            None => say!("Not signed in."),
+        },
+    )
+}
+
+fn open_browser(url: &str) {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    // Best effort: the URL is already printed.
+    let _ = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}

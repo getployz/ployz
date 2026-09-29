@@ -225,7 +225,8 @@ pub(crate) fn callback_url(cloud_url: &str, token: &CloudEnrollToken) -> String 
     format!("{}/callback", enroll_url(cloud_url, token))
 }
 
-fn cloud_origin(cloud_url: &str) -> String {
+/// `https://` + a bare host, or the URL as given; no trailing slash.
+pub(crate) fn cloud_origin(cloud_url: &str) -> String {
     let host = cloud_url.trim().trim_end_matches('/');
     if host.contains("://") {
         host.to_owned()
