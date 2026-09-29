@@ -20,9 +20,7 @@ mod backend;
 const SECRET: &str = "s3cr3t-pässwörd 🔑";
 
 fn who() -> Actor {
-    Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    }
+    Actor::system(OrganizationId::parse("org").unwrap())
 }
 
 /// Project `shop` with Services `web` and `api` in the Store at `store`.

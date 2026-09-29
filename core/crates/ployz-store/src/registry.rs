@@ -54,7 +54,7 @@ pub(crate) fn set(
     let ServiceSource::Image { credentials, .. } = &mut node.config.source else {
         return Err(SETTING.invalid("only an image Service pulls with registry credentials"));
     };
-    let stored = load(tx, &environment_id, &node.id)?;
+    let stored = sealed(tx, &environment_id, &node.id)?;
     let rotated = match (new, &stored) {
         (None, None) => {
             return Err(SETTING.invalid("it holds no credential to keep: set one with --secret"));
@@ -71,22 +71,7 @@ pub(crate) fn set(
             };
             if !unchanged {
                 let sealed = sealing.seal(&serde_json::to_string(&new).expect("JSON"));
-                tx.execute(
-                    "INSERT INTO config_registry_credential \
-                     (environment_id, service_id, organization_id, credential) \
-                     VALUES (?1, ?2, ?3, ?4) \
-                     ON CONFLICT (environment_id, service_id) \
-                     DO UPDATE SET credential = excluded.credential",
-                    &[
-                        environment_id.as_str().into(),
-                        node.id.as_str().into(),
-                        who.organization.as_str().into(),
-                        serde_json::to_string(&sealed)
-                            .expect("JSON")
-                            .as_str()
-                            .into(),
-                    ],
-                )?;
+                store(tx, who, &environment_id, &node.id, &sealed)?;
             }
             !unchanged
         }
@@ -136,7 +121,8 @@ fn input(value: &Value) -> Result<Option<Credential>, RpcError> {
     }
 }
 
-fn load(
+/// Service `service_id`'s credential in `environment`, sealed, if it has one.
+pub(crate) fn sealed(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     service_id: &str,
@@ -173,7 +159,7 @@ pub(crate) fn freeze(
         if !frozen.targets(&service.id) {
             continue;
         }
-        let sealed = load(tx, environment, &service.id)?.ok_or_else(|| {
+        let sealed = sealed(tx, environment, &service.id)?.ok_or_else(|| {
             error::conflict(
                 format!("{} has no registry credential: set one", service.slug),
                 json!({ "next": format!("ployz set {}.registryCredential --secret", service.slug) }),
@@ -184,17 +170,15 @@ pub(crate) fn freeze(
     Ok(credentials)
 }
 
-/// Give Service `to` the credential Service `from` holds, if any: a Branch's copy
-/// of a Service pulls with its source's credential until someone rotates it.
-pub(crate) fn copy(
+/// Store `sealed` as Service `service_id`'s credential in `environment`, replacing
+/// any it had.
+pub(crate) fn store(
     tx: &mut dyn Tx,
     who: &Actor,
-    (from_environment, from): (&EnvironmentId, &str),
-    (to_environment, to): (&EnvironmentId, &str),
+    environment: &EnvironmentId,
+    service_id: &str,
+    sealed: &EncryptedSecretValue,
 ) -> Result<(), RpcError> {
-    let Some(sealed) = load(tx, from_environment, from)? else {
-        return Ok(());
-    };
     tx.execute(
         "INSERT INTO config_registry_credential \
          (environment_id, service_id, organization_id, credential) \
@@ -202,10 +186,10 @@ pub(crate) fn copy(
          ON CONFLICT (environment_id, service_id) \
          DO UPDATE SET credential = excluded.credential",
         &[
-            to_environment.as_str().into(),
-            to.into(),
+            environment.as_str().into(),
+            service_id.into(),
             who.organization.as_str().into(),
-            serde_json::to_string(&sealed)
+            serde_json::to_string(sealed)
                 .expect("a sealed credential is JSON")
                 .as_str()
                 .into(),

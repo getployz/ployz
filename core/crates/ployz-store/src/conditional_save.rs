@@ -24,14 +24,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use ployz_core::RpcError;
 use ployz_core::config::{
     BranchChanges, BranchHostnames, BranchPick, BranchRole, SavedEnvironmentIntent,
-    ServiceGitBranch, ServiceSource,
+    SavedVariableIntent, SavedVariableValue, ServiceGitBranch, ServiceSource,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::branch::{self, Move, MoveQuery, MoveRow, MoveView, Moved, Moving, When};
-use crate::id::{EnvironmentId, ProjectId, Revision};
+use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, When, Way};
+use crate::id::{ConditionalSaveId, EnvironmentId, ProjectId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -40,8 +40,8 @@ use crate::{Actor, deployment, error, policy, review, teardown};
 /// A Conditional Save, as a Move answers it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConditionalSave {
-    /// Pass to [`Move::take`] to use a hint it left.
-    pub id: String,
+    /// Pass to [`Take::from`] to use a hint it left.
+    pub id: ConditionalSaveId,
     #[ts(type = "number")]
     pub pull_request: u64,
     /// The rows it holds.
@@ -74,8 +74,8 @@ pub enum Landed {
 /// A pull request's value a landed Conditional Save left in an Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestHint {
-    /// The Conditional Save: pass to [`Move::take`].
-    pub save: String,
+    /// The Conditional Save: pass to [`Take::from`].
+    pub save: ConditionalSaveId,
     #[ts(type = "number")]
     pub pull_request: u64,
     /// `NODE.path`, as a Move names it.
@@ -103,13 +103,25 @@ struct Stored {
     rows: Vec<Row>,
     /// Core's picks, sealed values included.
     picks: Vec<BranchPick>,
-    /// The PR Environment's side as saved; `provided` is the receiver's at landing.
-    landing: Moving,
+    /// The PR Environment's side as saved.
+    landing: Landing,
+    /// What its Services carry: registry credentials and Deployment Policies.
+    carried: Carried,
     /// The PR Environment.
     from: EnvironmentSummary,
     /// The Destination's Saved revision landing published.
     #[serde(default)]
     landed: Option<Revision>,
+}
+
+/// What landing compares: the PR Environment's Working State over its base, with
+/// its Parent's deployed values on offer.
+#[derive(Serialize, Deserialize)]
+struct Landing {
+    from: SavedEnvironmentIntent,
+    base: SavedEnvironmentIntent,
+    hostnames: BranchHostnames,
+    parent: Option<SavedEnvironmentIntent>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -121,6 +133,11 @@ struct Row {
     shown: MoveRow,
     #[serde(default)]
     landed: Option<Landed>,
+    /// For a secret the pull request changed that the Destination holds too: the
+    /// pull request's variable, sealed. Core never moves a secret over one the
+    /// receiver has, so it only ever lands as a hint a take stages.
+    #[serde(default)]
+    secret: Option<SavedVariableIntent>,
 }
 
 struct Found {
@@ -130,20 +147,17 @@ struct Found {
     stored: Stored,
 }
 
-/// Whether a Move is a Conditional Save: asked `at_merge`, or from a PR Environment
+/// Whether a Save is a Conditional Save: asked `at_merge`, or from a PR Environment
 /// with `when` omitted. A PR Environment never saves now.
 pub(crate) fn at_merge(
     tx: &mut dyn Tx,
     who: &Actor,
-    from: Option<&EnvironmentRef>,
+    from: &EnvironmentRef,
     when: Option<When>,
 ) -> Result<bool, RpcError> {
     if when == Some(When::AtMerge) {
         return Ok(true);
     }
-    let Some(from) = from else {
-        return Ok(false);
-    };
     let from = scope::environment(tx, who, from)?;
     let pr = pull_request::of(tx, &from.summary.id)?.is_some();
     if pr && when == Some(When::Now) {
@@ -169,16 +183,10 @@ struct Sides {
 fn sides(
     tx: &mut dyn Tx,
     who: &Actor,
-    from: Option<&EnvironmentRef>,
+    from: &EnvironmentRef,
     into: Option<&EnvironmentRef>,
     lock: bool,
 ) -> Result<Sides, RpcError> {
-    let Some(from) = from else {
-        return Err(error::invalid(
-            "Name the PR Environment to save from",
-            json!({}),
-        ));
-    };
     let pr = scope::environment(tx, who, from)?;
     let Some((repository_id, number)) = pull_request::of(tx, &pr.summary.id)? else {
         return Err(error::invalid(
@@ -228,19 +236,7 @@ fn sides(
             json!({ "valid_children": names }),
         ));
     }
-    let mut ids = [pr.summary.id.clone(), into];
-    ids.sort();
-    let mut loaded = Vec::new();
-    for id in &ids {
-        loaded.push(match lock {
-            true => scope::lock_id(tx, who, id)?,
-            false => scope::load_by_id(tx, id)?,
-        });
-    }
-    let (pr, into) = match loaded.remove(0) {
-        first if first.summary.id == pr.summary.id => (first, loaded.remove(0)),
-        first => (loaded.remove(0), first),
-    };
+    let (pr, into) = scope::load_pair(tx, who, (&pr.summary.id, &into), lock)?;
     let row = branch::row(tx, &pr.summary.id)?.ok_or_else(|| error::corrupt("Branch"))?;
     Ok(Sides {
         pr,
@@ -255,26 +251,16 @@ fn sides(
 fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
     let parent = scope::load_by_id(tx, &sides.row.parent)?;
     let applied = deployment::head(tx, &parent)?.applied;
-    let deployed = !(applied.services.is_empty() && applied.volumes.is_empty());
-    Ok(Moving {
-        source: sides.pr.summary.id.clone(),
-        branch: sides.pr.summary.id.clone(),
-        nothing: format!("Nothing to save into {}", sides.into.summary.name),
-        from: sides.pr.working.clone(),
-        base: sides.row.base.clone(),
-        parent: deployed.then_some(applied),
-        provided: branch::used_live(&sides.into.working).into_keys().collect(),
-        from_kept: false,
-        hostnames: BranchHostnames {
-            from: branch::suffix(tx, &sides.pr)?,
-            into: branch::suffix(tx, &sides.into)?,
-        },
-        update: false,
-    })
+    Moving::save(tx, &sides.pr, &sides.into, &sides.row, applied)
 }
 
-pub(crate) fn view(tx: &mut dyn Tx, who: &Actor, query: &MoveQuery) -> Result<MoveView, RpcError> {
-    let sides = sides(tx, who, query.from.as_ref(), query.into.as_ref(), false)?;
+pub(crate) fn view(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: &EnvironmentRef,
+    into: Option<&EnvironmentRef>,
+) -> Result<MoveView, RpcError> {
+    let sides = sides(tx, who, from, into, false)?;
     let moving = moving(tx, &sides)?;
     let changes = moving.compare(&sides.into.working, None)?;
     let rows = changes
@@ -296,9 +282,9 @@ pub(crate) fn save(
     tx: &mut dyn Tx,
     who: &Actor,
     sealing: &crate::SealingKey,
-    request: &Move,
+    request: &Save,
 ) -> Result<Moved, RpcError> {
-    let sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
+    let sides = sides(tx, who, &request.from, request.into.as_ref(), true)?;
     let checks = vec![PullRequestRef {
         repository_id: sides.facts.repository_id,
         number: sides.facts.number,
@@ -363,7 +349,7 @@ pub(crate) fn save(
     // Core refuses picks it couldn't land, such as a new Service's variable without it.
     moving.compare(&sides.into.working, Some(picks.clone()))?;
     let picked: BTreeSet<String> = picks.iter().map(|pick| pick.key.clone()).collect();
-    let rows: Vec<Row> = changes
+    let mut rows: Vec<Row> = changes
         .rows
         .iter()
         .filter(|row| picked.contains(&row.key.to_string()))
@@ -373,19 +359,30 @@ pub(crate) fn save(
                 into: row.into.clone(),
                 shown: branch::move_row(&moving, &sides.pr, &sides.into, row)?,
                 landed: None,
+                secret: None,
             })
         })
         .collect();
+    rows.extend(secret_hints(&moving, &sides.into));
     let names = rows.iter().map(|row| row.shown.row.clone()).collect();
+    let Way::Save { parent, .. } = moving.way else {
+        return Err(error::internal("A Conditional Save moves a Save"));
+    };
     let stored = Stored {
         rows,
         picks,
-        landing: moving,
+        carried: Carried::of(tx, &sides.pr.summary.id, &moving.from)?,
+        landing: Landing {
+            from: moving.from,
+            base: moving.base,
+            hostnames: moving.hostnames,
+            parent,
+        },
         from: sides.pr.summary.clone(),
         landed: None,
     };
     replace(tx)?;
-    let id = uuid::Uuid::new_v4().to_string();
+    let id = ConditionalSaveId::parse(uuid::Uuid::new_v4().to_string())?;
     tx.execute(
         "INSERT INTO config_conditional_save (id, organization_id, environment_id, state, \
          pr_environment_id, repository_id, number, target_branch, working_revision, merge_commit, \
@@ -418,20 +415,71 @@ pub(crate) fn save(
     })
 }
 
+/// The secrets the PR Environment changed that the Destination holds too: core
+/// moves none of them, so each is kept, sealed, to land as a hint.
+fn secret_hints(moving: &Moving, into: &Environment) -> Vec<Row> {
+    let secret = |variable: &&SavedVariableIntent| {
+        matches!(variable.value, SavedVariableValue::Secret { .. })
+    };
+    let mut rows = Vec::new();
+    for service in &moving.from.services {
+        let lineage = &service.lineage_id;
+        let Some(theirs) = into
+            .working
+            .services
+            .iter()
+            .find(|own| own.lineage_id == *lineage)
+        else {
+            continue;
+        };
+        let base = moving
+            .base
+            .services
+            .iter()
+            .find(|own| own.lineage_id == *lineage);
+        for variable in service.variables.iter().filter(secret) {
+            let fingerprint = |service: &ployz_core::config::SavedServiceIntent| {
+                service
+                    .variables
+                    .iter()
+                    .find(|own| own.key == variable.key)
+                    .map(|own| own.value_fingerprint.clone())
+            };
+            let Some(held) = fingerprint(theirs) else {
+                continue;
+            };
+            if held == variable.value_fingerprint
+                || base.and_then(fingerprint).as_ref() == Some(&variable.value_fingerprint)
+            {
+                continue;
+            }
+            let key = format!("{lineage}:variables.{}", variable.key);
+            rows.push(Row {
+                shown: MoveRow {
+                    row: moving.name(&into.working, &key),
+                    conflict: true,
+                    choice: None,
+                    from: json!({ "secret": true }),
+                    into: json!({ "secret": true }),
+                },
+                key,
+                into: Value::Null,
+                landed: None,
+                secret: Some(variable.clone()),
+            });
+        }
+    }
+    rows
+}
+
 /// Stage the picked hints (omitted: every one) of a landed Conditional Save in its
 /// Destination: the pull request's value replaces the Destination's own edit.
-pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
-    let id = request.take.as_deref().unwrap_or_default();
-    if request.from.is_some() || request.when.is_some() || request.version.is_some() {
-        return Err(error::invalid(
-            "A take names the Conditional Save, its rows and at most the Destination",
-            json!({}),
-        ));
-    }
+pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Moved, RpcError> {
+    let id = &take.from;
     let missing = || error::not_found(format!("No Conditional Save {id}"), json!({}));
     let found = load(tx, who, id)?.ok_or_else(missing)?;
     let mut into = scope::lock_id(tx, who, &found.environment)?;
-    if let Some(at) = &request.into
+    if let Some(at) = &take.into
         && scope::environment(tx, who, at)?.summary.id != into.summary.id
     {
         return Err(error::invalid(
@@ -441,6 +489,9 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
     }
     // Read again under the Destination's lock.
     let found = load(tx, who, id)?.ok_or_else(missing)?;
+    if take.version.is_some() {
+        review::check(&review::review(tx, &into)?, take.version.as_deref())?;
+    }
     let latest = review::latest_saved(tx, &into.summary.id)?.map(|saved| saved.revision);
     let gone = || {
         error::conflict(
@@ -458,31 +509,20 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
         .filter(|row| row.landed == Some(Landed::Hint))
         .collect();
     let mut chosen = BTreeSet::new();
-    match &request.picks {
+    match &take.rows {
         None => chosen.extend(hints.iter().map(|row| row.key.clone())),
         Some(asked) => {
-            for pick in asked {
-                if pick.choice.is_some() {
-                    return Err(error::invalid(
-                        format!("{}: a take lands the pull request's value", pick.row),
-                        json!({ "row": pick.row }),
-                    ));
-                }
-                let under = |name: &str| {
-                    name == pick.row
-                        || name
-                            .strip_prefix(pick.row.as_str())
-                            .is_some_and(|rest| rest.starts_with('.'))
-                };
-                let found: Vec<&&Row> = hints.iter().filter(|row| under(&row.shown.row)).collect();
+            for asked in asked {
+                let found: Vec<&&Row> = hints
+                    .iter()
+                    .filter(|row| branch::under(&row.shown.row, asked))
+                    .collect();
                 if found.is_empty() {
                     let names = hints.iter().map(|row| row.shown.row.as_str());
-                    return Err(error::not_found(
-                        format!("No hint named {} to take", pick.row),
-                        json!({
-                            "did_you_mean": error::did_you_mean(&pick.row, names.clone()),
-                            "valid_children": names.collect::<Vec<_>>(),
-                        }),
+                    return Err(error::choices(
+                        format!("No hint named {asked} to take"),
+                        asked,
+                        names,
                     ));
                 }
                 chosen.extend(found.into_iter().map(|row| row.key.clone()));
@@ -498,13 +538,22 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
         .filter(|pick| chosen.contains(&pick.key))
         .cloned()
         .collect();
-    let next = against(&stored.landing, &into.working, Some(picks.clone()))?.next;
+    let mut next = match picks.is_empty() {
+        true => into.working.clone(),
+        false => against(&stored, &into.working, Some(picks.clone()))?.next,
+    };
+    for row in stored.rows.iter().filter(|row| chosen.contains(&row.key)) {
+        if let Some(secret) = &row.secret
+            && !put_secret(&mut next, &row.key, secret)
+        {
+            return Err(gone());
+        }
+    }
     let staged = branch::land(
         tx,
         who,
         &mut into,
-        &stored.landing.source,
-        &stored.landing.from,
+        (&stored.landing.from, &stored.carried),
         next,
         &picks,
     )?;
@@ -520,7 +569,7 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
         staged,
         branch: None,
         conditional_save: Some(ConditionalSave {
-            id: id.to_owned(),
+            id: id.clone(),
             pull_request: found.number,
             rows: stored
                 .rows
@@ -531,6 +580,66 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved
         }),
         checks: Vec::new(),
     })
+}
+
+/// Give the Service of `key`'s lineage in `intent` the pull request's sealed secret,
+/// keeping the variable's identity. False when that Service or variable is gone.
+fn put_secret(intent: &mut SavedEnvironmentIntent, key: &str, secret: &SavedVariableIntent) -> bool {
+    let lineage = key.split_once(':').map_or(key, |(lineage, _)| lineage);
+    let variable = intent
+        .services
+        .iter_mut()
+        .find(|service| service.lineage_id == lineage)
+        .and_then(|service| {
+            service
+                .variables
+                .iter_mut()
+                .find(|variable| variable.key == secret.key)
+        });
+    let Some(variable) = variable else {
+        return false;
+    };
+    variable.value = secret.value.clone();
+    variable.value_fingerprint.clone_from(&secret.value_fingerprint);
+    true
+}
+
+/// The Environments the standing Conditional Saves of `event`'s pull request
+/// involve: their PR Environments and Destinations.
+pub(crate) fn involved(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    event: &PullRequest,
+) -> Result<Vec<EnvironmentId>, RpcError> {
+    let rows = tx.query(
+        "SELECT pr_environment_id, environment_id FROM config_conditional_save \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
+        &[
+            who.organization.as_str().into(),
+            pull_request::repository(event.repository_id)?.into(),
+            pull_request::number(event.number)?.into(),
+        ],
+    )?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(environment_id(row.text(0)?)?);
+        ids.push(environment_id(row.text(1)?)?);
+    }
+    Ok(ids)
+}
+
+/// Withdraw every standing Conditional Save of `event`'s pull request.
+pub(crate) fn withdraw(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Result<(), RpcError> {
+    tx.execute(
+        "DELETE FROM config_conditional_save \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing'",
+        &[
+            who.organization.as_str().into(),
+            pull_request::repository(event.repository_id)?.into(),
+            pull_request::number(event.number)?.into(),
+        ],
+    )?;
+    Ok(())
 }
 
 /// The pull request closed: each of its Conditional Saves freezes with the merge
@@ -553,7 +662,7 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
     )?;
     let mut frozen = Vec::new();
     for row in rows {
-        let id = row.text(0)?.to_owned();
+        let id = save_id(row.text(0)?)?;
         let pr = environment_id(row.text(1)?)?;
         let into = environment_id(row.text(2)?)?;
         let environment = scope::lock_id(tx, who, &pr)?;
@@ -621,7 +730,7 @@ fn wait_with(
     into: &EnvironmentId,
     event: &PullRequest,
     head: &str,
-    id: &str,
+    id: &ConditionalSaveId,
 ) -> Result<bool, RpcError> {
     let key: [crate::storage::Param<'_>; 4] = [
         into.as_str().into(),
@@ -637,9 +746,9 @@ fn wait_with(
     let Some(row) = rows.first() else {
         return Ok(false);
     };
-    let mut saves: Vec<String> =
+    let mut saves: Vec<ConditionalSaveId> =
         serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("waiting deploy"))?;
-    saves.push(id.to_owned());
+    saves.push(id.clone());
     let [environment, repository, branch, head] = key;
     tx.execute(
         "UPDATE config_waiting_deploy SET saves = ?5 \
@@ -687,8 +796,8 @@ pub(crate) fn carried(
     repository_id: u64,
     branch: &str,
     merged: &[String],
-) -> Result<BTreeMap<EnvironmentId, Vec<String>>, RpcError> {
-    let mut carried: BTreeMap<EnvironmentId, Vec<String>> = BTreeMap::new();
+) -> Result<BTreeMap<EnvironmentId, Vec<ConditionalSaveId>>, RpcError> {
+    let mut carried: BTreeMap<EnvironmentId, Vec<ConditionalSaveId>> = BTreeMap::new();
     if merged.is_empty() {
         return Ok(carried);
     }
@@ -708,7 +817,7 @@ pub(crate) fn carried(
             carried
                 .entry(environment_id(row.text(1)?)?)
                 .or_default()
-                .push(row.text(0)?.to_owned());
+                .push(save_id(row.text(0)?)?);
         }
     }
     Ok(carried)
@@ -754,7 +863,7 @@ pub(crate) fn pending(
 pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &str,
+    id: &ConditionalSaveId,
     destination: &mut Environment,
 ) -> Result<(), RpcError> {
     let Some(found) = load(tx, who, id)? else {
@@ -769,7 +878,7 @@ pub(crate) fn land(
         return delete(tx, id);
     };
     let values_in = |into: &SavedEnvironmentIntent| -> Result<BTreeMap<String, Value>, RpcError> {
-        Ok(against(&stored.landing, into, None)?
+        Ok(against(&stored, into, None)?
             .rows
             .into_iter()
             .filter(|row| matches!(row.role, BranchRole::Move { .. }))
@@ -822,7 +931,7 @@ pub(crate) fn land(
         .collect();
     let saved = match saved_picks.is_empty() {
         true => latest.intent.clone(),
-        false => against(&stored.landing, &latest.intent, Some(saved_picks.clone()))?.next,
+        false => against(&stored, &latest.intent, Some(saved_picks.clone()))?.next,
     };
 
     // 2. Working: arriving nodes as Saved has them, so their ids match; then the rest,
@@ -855,7 +964,7 @@ pub(crate) fn land(
     let next = match working_picks.is_empty() {
         true => into,
         false => {
-            let next = against(&stored.landing, &into, Some(working_picks.clone()))?.next;
+            let next = against(&stored, &into, Some(working_picks.clone()))?.next;
             with_variable_ids_of(&saved, &into, next)
         }
     };
@@ -868,19 +977,20 @@ pub(crate) fn land(
             tx,
             who,
             destination,
-            &stored.landing.source,
-            &stored.landing.from,
+            (&stored.landing.from, &stored.carried),
             next,
             &picks,
         )?;
     }
     let staged: BTreeSet<&str> = working_picks.iter().map(|pick| pick.key.as_str()).collect();
+    // A secret the Destination holds too only ever lands as a hint.
     let left: Vec<Row> = stored
         .rows
         .iter()
         .filter(|row| {
-            (in_saved.contains_key(&row.key) || in_working.contains_key(&row.key))
-                && !unchanged(&row.key)
+            row.secret.is_some()
+                || (in_saved.contains_key(&row.key) || in_working.contains_key(&row.key))
+                    && !unchanged(&row.key)
         })
         .map(|row| Row {
             landed: Some(match staged.contains(row.key.as_str()) {
@@ -893,7 +1003,7 @@ pub(crate) fn land(
     tx.execute(
         "DELETE FROM config_conditional_save \
          WHERE environment_id = ?1 AND state = 'landed' AND id <> ?2",
-        &[destination.summary.id.as_str().into(), id.into()],
+        &[destination.summary.id.as_str().into(), id.as_str().into()],
     )?;
     if left.is_empty() {
         return delete(tx, id);
@@ -902,7 +1012,7 @@ pub(crate) fn land(
     stored.landed = Some(revision);
     tx.execute(
         "UPDATE config_conditional_save SET state = 'landed', saved = ?2 WHERE id = ?1",
-        &[id.into(), document(&stored).as_str().into()],
+        &[id.as_str().into(), document(&stored).as_str().into()],
     )?;
     Ok(())
 }
@@ -928,7 +1038,7 @@ pub(crate) fn hints(
         let number = u64::try_from(row.int(1)?).map_err(|_| error::corrupt("number"))?;
         for saved in stored.rows {
             hints.push(PullRequestHint {
-                save: row.text(0)?.to_owned(),
+                save: save_id(row.text(0)?)?,
                 pull_request: number,
                 row: saved.shown.row,
                 value: saved.shown.from,
@@ -946,7 +1056,7 @@ pub(crate) fn standing_in(
     pr: &Environment,
     into: &EnvironmentId,
     target: &str,
-) -> Result<Option<(String, bool, usize)>, RpcError> {
+) -> Result<Option<(ConditionalSaveId, bool, usize)>, RpcError> {
     let rows = tx.query(
         "SELECT id, working_revision, target_branch, saved FROM config_conditional_save \
          WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
@@ -958,7 +1068,7 @@ pub(crate) fn standing_in(
     let stands =
         u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0) && row.text(2)? == target;
     Ok(Some((
-        row.text(0)?.to_owned(),
+        save_id(row.text(0)?)?,
         stands,
         parse(row.text(3)?)?.rows.len(),
     )))
@@ -966,13 +1076,25 @@ pub(crate) fn standing_in(
 
 /// Core's comparison of the saved side into `into`, with what `into` uses live.
 fn against(
-    landing: &Moving,
+    stored: &Stored,
     into: &SavedEnvironmentIntent,
     picks: Option<Vec<BranchPick>>,
 ) -> Result<BranchChanges, RpcError> {
-    let mut landing = landing.clone();
-    landing.provided = branch::used_live(into).into_keys().collect();
-    landing.compare(into, picks)
+    let landing = &stored.landing;
+    let moving = Moving {
+        source: stored.from.id.clone(),
+        branch: stored.from.id.clone(),
+        nothing: String::new(),
+        from: landing.from.clone(),
+        base: landing.base.clone(),
+        provided: branch::used_live(into).into_keys().collect(),
+        hostnames: landing.hostnames.clone(),
+        way: Way::Save {
+            parent: landing.parent.clone(),
+            from_kept: false,
+        },
+    };
+    moving.compare(into, picks)
 }
 
 /// `next` with each variable `before` lacked under the ID `saved` gave it (by
@@ -1008,11 +1130,15 @@ fn with_variable_ids_of(
     next
 }
 
-fn load(tx: &mut dyn Tx, who: &Actor, id: &str) -> Result<Option<Found>, RpcError> {
+fn load(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &ConditionalSaveId,
+) -> Result<Option<Found>, RpcError> {
     let rows = tx.query(
         "SELECT environment_id, state, number, saved FROM config_conditional_save \
          WHERE id = ?1 AND organization_id = ?2",
-        &[id.into(), who.organization.as_str().into()],
+        &[id.as_str().into(), who.organization.as_str().into()],
     )?;
     let Some(row) = rows.first() else {
         return Ok(None);
@@ -1026,18 +1152,18 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &str) -> Result<Option<Found>, RpcErro
     }))
 }
 
-fn write(tx: &mut dyn Tx, id: &str, stored: &Stored) -> Result<(), RpcError> {
+fn write(tx: &mut dyn Tx, id: &ConditionalSaveId, stored: &Stored) -> Result<(), RpcError> {
     tx.execute(
         "UPDATE config_conditional_save SET saved = ?2 WHERE id = ?1",
-        &[id.into(), document(stored).as_str().into()],
+        &[id.as_str().into(), document(stored).as_str().into()],
     )?;
     Ok(())
 }
 
-fn delete(tx: &mut dyn Tx, id: &str) -> Result<(), RpcError> {
+fn delete(tx: &mut dyn Tx, id: &ConditionalSaveId) -> Result<(), RpcError> {
     tx.execute(
         "DELETE FROM config_conditional_save WHERE id = ?1",
-        &[id.into()],
+        &[id.as_str().into()],
     )?;
     Ok(())
 }
@@ -1053,6 +1179,10 @@ fn project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<ProjectId, RpcError
             .text(0)?,
     )
     .map_err(|_| error::corrupt("Project ID"))
+}
+
+fn save_id(text: &str) -> Result<ConditionalSaveId, RpcError> {
+    ConditionalSaveId::parse(text).map_err(|_| error::corrupt("Conditional Save ID"))
 }
 
 fn environment_id(text: &str) -> Result<EnvironmentId, RpcError> {

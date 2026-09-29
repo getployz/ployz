@@ -36,9 +36,7 @@ fn at(environment: &str) -> EnvironmentRef {
 /// `main`, published.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -80,6 +78,7 @@ fn shop() -> (ConfigStore, Actor) {
             &ployz_store::Command::Publish(ployz_store::Publish {
                 environment: EnvironmentRef::default(),
                 version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -124,7 +123,7 @@ fn facts(open: bool, updated: &str) -> PullRequest {
 }
 
 fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&who.organization, &event).unwrap() else {
+    let Written::Automated(automated) = store.system(&who.organization, &event, &Trusted::default()).unwrap() else {
         panic!("a system event writes Automated")
     };
     automated
@@ -485,7 +484,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
 }
 
 #[test]
-fn a_kept_open_pull_request_stays_and_a_shut_down_one_stays_off() {
+fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
     let (store, who) = shop();
     plan(
         &store,
@@ -497,7 +496,8 @@ fn a_kept_open_pull_request_stays_and_a_shut_down_one_stays_off() {
     );
     let opened = pull(&store, &who, facts(true, "2026-09-29T10:00:00Z"));
     run(&store, &opened.admitted[0].deployment.id, &["web", "api"]);
-    // Shut down: removed from the Servers, every row kept, and a push leaves it off.
+    // Shut down: removed from the Servers, every row kept; a push turns it back on,
+    // all of it.
     let off = remove(&store, &who, "pr-5");
     run(&store, &off, &[]);
     let pushed = observe(
@@ -512,7 +512,9 @@ fn a_kept_open_pull_request_stays_and_a_shut_down_one_stays_off() {
             merged: Vec::new(),
         }),
     );
-    assert!(pushed.admitted.is_empty(), "{pushed:?}");
+    assert_eq!(pushed.admitted.len(), 1, "{pushed:?}");
+    let back = &pushed.admitted[0].deployment;
+    assert!(back.services.is_empty() && !back.remove, "{back:?}");
     let closed = pull(&store, &who, facts(false, "2026-09-29T11:00:00Z"));
     assert!(closed.closing.is_empty() && closed.removed.is_empty());
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
