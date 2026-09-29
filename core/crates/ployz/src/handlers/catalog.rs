@@ -140,7 +140,7 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
     crate::output::finish(&explanation, || {
         say!("{} — {}", explanation.explained.path, text("title"));
         say!("{}", text("description"));
-        say!("Type: {}", text("type"));
+        say!("Type: {}", type_of(schema));
         if let Some(values) = schema.get("enum") {
             say!("Allowed: {values}");
         }
@@ -150,6 +150,22 @@ pub(super) fn explain(root: &ArgMatches) -> Result<(), Error> {
         say!("Applies: {}", text("x-ployz-apply"));
         say!("Example: {}", explanation.example);
     })
+}
+
+/// A schema's type, or its alternatives' (`string or object`) when it has several.
+fn type_of(schema: &Value) -> String {
+    if let Some(kind) = schema.get("type").and_then(Value::as_str) {
+        return kind.to_owned();
+    }
+    let mut kinds: Vec<&str> = schema
+        .get("oneOf")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|alternative| alternative.get("type")?.as_str())
+        .collect();
+    kinds.dedup();
+    kinds.join(" or ")
 }
 
 /// Completes `SERVICE.SETTING`: Service names from the Store when it is reachable,
@@ -194,4 +210,17 @@ fn services() -> Vec<String> {
         Some(services)
     };
     scope().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_variable_reads_as_its_alternatives() {
+        let variable = catalog::explain("web.env.KEY").unwrap().schema;
+        assert_eq!(type_of(&variable), "string or object");
+        let replicas = catalog::explain("web.replicas").unwrap().schema;
+        assert_eq!(type_of(&replicas), "integer");
+    }
 }
