@@ -134,7 +134,14 @@ pub(in crate::handlers) async fn initialize(
         .await?;
     let name = request.name.clone();
     let initial_policy = request.initial_policy.clone();
-    match client.call_unretried::<op::Initialize>(request, None).await {
+    match client
+        .call_unretried::<op::Initialize>(
+            request,
+            None,
+            crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
+        )
+        .await
+    {
         Ok(initialized) => Ok(initialized),
         Err(error) if error.is_setup_retryable() => {
             let details = observe_mutation(
@@ -173,7 +180,11 @@ pub(in crate::handlers) async fn initialize(
 /// Check local state after an interrupted reset instead of issuing another reset.
 pub(in crate::handlers) async fn reset(client: &mut Client) -> Result<(), Error> {
     match client
-        .call_unretried::<op::Reset>(ployz_core::ResetRequest {}, None)
+        .call_unretried::<op::Reset>(
+            ployz_core::ResetRequest {},
+            None,
+            crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
+        )
         .await
     {
         Ok(_) => Ok(()),
@@ -203,7 +214,10 @@ pub(in crate::handlers) async fn join(
         accepts_ingress: assigned.accepts_ingress,
     };
     let assigned = assigned.id;
-    match client.call_unretried::<op::Join>(request, None).await {
+    match client
+        .call_unretried::<op::Join>(request, None, crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT)
+        .await
+    {
         Ok(_) => Ok(()),
         Err(error) if error.is_setup_retryable() => {
             let details = observe_mutation(client, "Join", &error, MACHINE_START_WAIT, |details| {

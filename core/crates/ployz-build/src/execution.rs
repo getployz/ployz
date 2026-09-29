@@ -107,8 +107,9 @@ pub struct HostPolicy {
     pub active_timeout: Duration,
     /// Maximum waiting attempts, excluding the active attempt.
     pub queue_capacity: usize,
-    /// Waiting budget; execution starts a separate clock after admission.
-    pub queue_timeout: Duration,
+    /// Waiting budget; execution starts a separate clock after admission. `None`
+    /// waits until admission, cancellation, or disconnect: capacity bounds the queue.
+    pub queue_timeout: Option<Duration>,
 }
 impl Default for HostPolicy {
     fn default() -> Self {
@@ -119,8 +120,8 @@ impl Default for HostPolicy {
                 .join(".ployz/build.yaml"),
             docker: "docker".into(),
             active_timeout: EXECUTION_TIMEOUT,
-            queue_capacity: 8,
-            queue_timeout: Duration::from_secs(600),
+            queue_capacity: 100,
+            queue_timeout: None,
         }
     }
 }
@@ -142,22 +143,20 @@ impl HostPolicy {
                 BuildError::Prerequisite("invalid PLOYZ_BUILD_QUEUE_CAPACITY".into())
             })?;
         }
-        for (name, value) in [
-            (
-                "PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS",
-                &mut policy.queue_timeout,
-            ),
-            (
-                "PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS",
-                &mut policy.active_timeout,
-            ),
-        ] {
-            if let Some(raw) = get(name) {
-                *value = Duration::from_secs(
+        let seconds = |name: &str| {
+            get(name)
+                .map(|raw| {
                     raw.parse()
-                        .map_err(|_| BuildError::Prerequisite(format!("invalid {name}")))?,
-                );
-            }
+                        .map(Duration::from_secs)
+                        .map_err(|_| BuildError::Prerequisite(format!("invalid {name}")))
+                })
+                .transpose()
+        };
+        if let Some(timeout) = seconds("PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS")? {
+            policy.queue_timeout = Some(timeout);
+        }
+        if let Some(timeout) = seconds("PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS")? {
+            policy.active_timeout = timeout;
         }
         policy.validate()?;
         Ok(policy)
@@ -168,8 +167,10 @@ impl HostPolicy {
     /// Capacity is 0–1024; timeouts must be positive and at most 24 hours.
     pub fn validate(&self) -> Result<(), BuildError> {
         if self.queue_capacity > 1024
-            || [self.queue_timeout, self.active_timeout]
+            || self
+                .queue_timeout
                 .iter()
+                .chain([&self.active_timeout])
                 .any(|timeout| timeout.is_zero() || *timeout > Duration::from_secs(86400))
         {
             return Err(BuildError::Prerequisite("Build policy requires queue capacity 0–1024 and positive timeouts no greater than 86400 seconds".into()));
@@ -466,8 +467,8 @@ mod tests {
     #[test]
     fn machine_policy_defaults_and_invalid_input_are_bounded() {
         let policy = HostPolicy::from_settings(|_| None).unwrap();
-        assert_eq!(policy.queue_capacity, 8);
-        assert_eq!(policy.queue_timeout, Duration::from_secs(600));
+        assert_eq!(policy.queue_capacity, 100);
+        assert_eq!(policy.queue_timeout, None);
         assert_eq!(policy.active_timeout, Duration::from_secs(1800));
         for (name, values) in [
             ("PLOYZ_BUILD_QUEUE_CAPACITY", vec!["-1", "1025", "abc"]),
@@ -495,7 +496,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(policy.queue_capacity, 0);
-        assert_eq!(policy.queue_timeout, Duration::from_secs(12));
+        assert_eq!(policy.queue_timeout, Some(Duration::from_secs(12)));
         assert_eq!(policy.active_timeout, Duration::from_secs(34));
     }
 }

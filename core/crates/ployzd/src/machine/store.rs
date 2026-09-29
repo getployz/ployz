@@ -35,8 +35,9 @@ pub struct LocalMachineStore {
     // Lock order: admission, then publication/ingress/Docker. Record mutations queue
     // on the record owner and take no lock of their own.
     // Reset waits for admitted operations, including Docker streams with no total deadline.
-    // ponytail: serialize local creates; use shared admission reads if throughput requires it.
-    pub(super) admission_lock: Arc<tokio::sync::Mutex<()>>,
+    // Exclusive for changes to the record or Service Containers; shared for image
+    // transfers, which run side by side while all exclusive work waits for them.
+    pub(super) admission_lock: Arc<tokio::sync::RwLock<()>>,
     pub(super) mutation_gate: crate::mutation::MutationGate,
 }
 
@@ -138,7 +139,7 @@ impl LocalMachineStore {
             data_dir: data_dir.clone(),
             record,
             _lock: lock,
-            admission_lock: Arc::new(tokio::sync::Mutex::new(())),
+            admission_lock: Arc::new(tokio::sync::RwLock::new(())),
             run_dir: run_dir.clone(),
             mutation_gate: crate::mutation::MutationGate::new(&run_dir, &data_dir),
         };

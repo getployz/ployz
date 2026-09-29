@@ -127,7 +127,7 @@ mod tests {
             .as_bytes();
         local.activate_management_client(key).await.unwrap();
         let remote = local.clone().with_management_client(key);
-        let lock = local.owner.admission_lock().lock_owned().await;
+        let lock = local.owner.admission_lock().write_owned().await;
         let clear = local.set_management_client(clear());
         let queued = remote.set_management_client(set());
         tokio::pin!(clear, queued);
