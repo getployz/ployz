@@ -138,6 +138,68 @@ async fn wait_for_web(
 }
 
 /// Run `ployz --json ARGS` against `store` and the Cluster at `address`; it must succeed.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn a_directory_without_git_builds_on_a_server_through_the_hidden_store() {
+    let plan = ClusterPlan::new(&format!("l3-store-upload-{}", std::process::id()), 1).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_entry().await.unwrap();
+    let address = cluster.api_socket_address(0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.db");
+    let ployz = |args: &[&str]| ployz(address, &store, args);
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(
+        source.path().join("Dockerfile"),
+        "FROM alpine:3.23.3\nCOPY payload /payload\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    std::fs::write(source.path().join("payload"), "uploaded").unwrap();
+    let upload = source.path().to_str().unwrap();
+
+    ployz(&["project", "new", "shop"]);
+    ployz(&["service", "add", "app"]);
+    ployz(&["set", "app.buildMethod=dockerfile"]);
+    let deployed = ployz(&["deploy", "--upload", upload]);
+    assert_eq!(deployed["status"], json!("applied"), "{deployed}");
+    assert_eq!(deployed["upload"]["base"], Value::Null);
+    let payload = cluster
+        .machine_shell(
+            0,
+            "docker exec $(docker ps -q --filter label=ployz.namespace=shop-production | head -1) \
+             cat /payload",
+        )
+        .unwrap();
+    assert_eq!(payload.trim(), "uploaded");
+
+    // Without the upload, a later Deployment reuses the image while its build inputs hold.
+    ployz(&["set", "app.replicas=2"]);
+    let reused = ployz(&["deploy"]);
+    assert_eq!(reused["status"], json!("applied"), "{reused}");
+    assert_eq!(reused["upload"], deployed["upload"]);
+    // A changed build input needs a new upload.
+    ployz(&["set", "app.env.MESSAGE=changed"]);
+    let (code, refused) = attempt(address, &store, &["deploy"]);
+    assert_eq!(code, Some(3), "{refused}");
+    assert_eq!(refused["outcome"]["type"], json!("not_executed"));
+    assert_eq!(refused["next"], json!("ployz deploy --upload ."));
+    let rebuilt = ployz(&["deploy", "--upload", upload]);
+    assert_eq!(rebuilt["status"], json!("applied"), "{rebuilt}");
+}
+
+fn attempt(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> (Option<i32>, Value) {
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--json", "--connect", &format!("tcp://{address}")])
+        .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
+        .env_remove("PLOYZ_PROJECT")
+        .env_remove("PLOYZ_ENV")
+        .output()
+        .unwrap();
+    let json = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    (output.status.code(), json)
+}
+
 fn ployz(address: std::net::SocketAddr, store: &Path, args: &[&str]) -> Value {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args(args)

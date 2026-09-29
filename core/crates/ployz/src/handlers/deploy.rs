@@ -152,7 +152,21 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let view = store
         .deployment(&admitted.id)
         .map_err(failed(matches, &["deploy"]))?;
-    let hint = shell_words::join(["ployz", "deployment", "show", view.deployment.id.as_str()]);
+    // A failed run that names its fix (a new upload) says so; otherwise read the Deployment.
+    let hint = ran
+        .as_ref()
+        .err()
+        .and_then(|error| {
+            error
+                .report()
+                .details
+                .get("next")?
+                .as_str()
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| {
+            shell_words::join(["ployz", "deployment", "show", view.deployment.id.as_str()])
+        });
     finish_view(&view, Some(hint))?;
     ran
 }
