@@ -157,7 +157,7 @@ cleans up after each Deploy by default and reports it as the last `images_pruned
 event; pass `imageCleanup: "manual"` to run `pruneImages(pruneTargets)` yourself.
 Cleanup never changes the Deploy Outcome.
 
-Run `ployz machine build-cache-clear` **on the execution host as its build user**
+Run `ployz server build-cache-clear` **on the execution host as its build user**
 to clear Ployz's retained builder cache. It preserves completed Docker images and
 unrelated Docker data, requires no running daemon, and refuses active or
 quarantined ownership. It does not accept a remote connection/context; use host

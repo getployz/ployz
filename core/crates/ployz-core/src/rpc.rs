@@ -1072,6 +1072,7 @@ crate::value::open_string_enum!(RpcErrorCode, Unknown {
     Conflict => "conflict",
     Internal => "internal",
     Unauthenticated => "unauthenticated",
+    ConfirmationRequired => "confirmation_required",
 });
 
 impl fmt::Display for RpcErrorCode {

@@ -810,7 +810,7 @@ export type ReviewStateProjection = { token: string, nodes: Array<ReviewNodeProj
 
 export type RpcError = { code: RpcErrorCode, message: string, details: JsonValue, };
 
-export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | string;
+export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "unsupported" | "unavailable" | "conflict" | "internal" | "unauthenticated" | "confirmation_required" | string;
 
 export type RttObservation = { peer_id: string, address: string, machine: MachineIdentity | null, statistics: RttStatistics, };
 

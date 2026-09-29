@@ -153,7 +153,7 @@ exit "$status"
     }
 
     fn clear(&self) {
-        self.shell("ployz machine build-cache-clear");
+        self.shell("ployz server build-cache-clear");
     }
 }
 

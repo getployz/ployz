@@ -15,7 +15,7 @@ use crate::output::{self, say};
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
     let matches = leaf_matches(root);
-    let selector = target(matches, "machine")?.to_owned();
+    let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     runtime()?.block_on(async {
         let mut client = connect_client(matches, options.context()).await?;
@@ -28,7 +28,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .machine_id;
         if selected.id == current && machines.len() > 1 {
             return Err(Error::conflict(
-                "the current entry Machine cannot be removed while another Machine is visible",
+                "the current entry Server cannot be removed while another Server is visible",
             ));
         }
         let observed = if no_reset {
@@ -40,10 +40,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: {}. No changes made.", selected.id, failure.error.message)));
             }
             if live.containers.omissions.contains(&selected.id) {
-                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Server {}: no terminal response. No changes made.", selected.id)));
             }
         }
         let services = services_on(&selected.id, &live);
@@ -51,8 +51,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         for line in service_warnings(&selected.name, &services) {
             eprintln!("{line}");
         }
+        typed_confirmation(root, &client, &selected, &observed, &services)?;
         let Some(confirmation) = super::super::data_loss::confirm_removal(
-            root, &client, &observed, &format!("Remove Machine ({})", selected.id),
+            root, &client, &observed, &format!("Remove Server ({})", selected.id),
             &[selected.name.to_string()], if no_reset { VolumeEffect::Preserve } else { VolumeEffect::LoseAccess },
         )? else { return Ok(()); };
         let mut reset_failure = None;
@@ -68,9 +69,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
-        say!("Removed Machine {} ({}) membership", selected.name, selected.id);
+        say!("Removed Server {} ({}) membership", selected.name, selected.id);
         if let Some(reason) = &reset_failure {
-            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
+            eprintln!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
             for loss in &observed.data_loss {
                 say!("Volume data was not erased by reset: {loss}");
@@ -89,25 +90,66 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // The removal is committed: print it before local cleanup can fail.
         output::emit(&json!({
-            "machine": selected,
+            "server": selected,
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
         }))?;
         // Cleanup failure must not leave the removed Machine named in the
         // context (#249); after the printed result it is partial, not a failed removal (#449).
-        let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
+        let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
         {
             context.drop_machine(&selected.id);
-            config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
+            config.save().map_err(|error| Error::warned("local context cleanup failed after Server removal", error))?;
         }
         if reset_failure.is_some() {
             return Err(Error::partial());
         }
         Ok::<_, Error>(())
     })
+}
+
+/// `--confirm` must name the Server exactly. Without it, fail with `confirmation_required`,
+/// naming what goes and the one command that removes it.
+fn typed_confirmation(
+    root: &ArgMatches,
+    client: &crate::connect::Client,
+    selected: &Machine,
+    observed: &ployz_core::ObservedDataLoss,
+    services: &[QualifiedService],
+) -> Result<(), Error> {
+    match leaf_matches(root).get_one::<String>("confirm") {
+        Some(typed) if typed == selected.name.as_str() => Ok(()),
+        Some(typed) => Err(Error::usage(format!(
+            "--confirm {} does not match Server {}. No changes made.",
+            typed.escape_debug(),
+            selected.name
+        ))),
+        None => {
+            let mut retry = super::super::data_loss::retry_args(root, client.connection_source());
+            retry.extend(["--confirm".into(), selected.name.to_string()]);
+            let volumes = observed.data_loss.iter().map(|loss| loss.name());
+            for name in volumes.collect::<std::collections::BTreeSet<_>>() {
+                retry.extend(["--accept-volume-loss".into(), name.to_owned()]);
+            }
+            let retry = shell_words::join(retry);
+            Err(Error::detailed(
+                RpcErrorCode::ConfirmationRequired,
+                format!(
+                    "Removing Server {} needs its name typed. No changes made.\nRetry: {retry}",
+                    selected.name
+                ),
+                json!({
+                    "server": { "id": selected.id, "name": selected.name },
+                    "services": services,
+                    "data_loss": observed.data_loss,
+                    "next": retry,
+                }),
+            ))
+        }
+    }
 }
 
 pub(super) fn select_machine(
@@ -117,12 +159,12 @@ pub(super) fn select_machine(
     let selector = MachineTarget::parse(selector)?;
     match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
         NameMatches::None => Err(Error::not_found(format!(
-            "Machine {} was not found",
+            "Server {} was not found",
             selector.as_str().escape_debug()
         ))),
         NameMatches::One(machine) => Ok(machine.clone()),
         matches @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-            "Machine name {} is ambiguous: {}",
+            "Server name {} is ambiguous: {}",
             selector.as_str().escape_debug(),
             matches
                 .iter()
@@ -163,7 +205,7 @@ fn service_warnings(machine: &MachineName, services: &[QualifiedService]) -> Vec
         return Vec::new();
     }
     vec![format!(
-        "WARNING: Machine {machine} is running Services: {}",
+        "WARNING: Server {machine} is running Services: {}",
         services
             .iter()
             .map(ToString::to_string)
@@ -222,7 +264,7 @@ mod tests {
                     QualifiedService::parse("app/web").unwrap(),
                 ],
             ),
-            vec!["WARNING: Machine ams1 is running Services: app/api, app/web".to_owned()]
+            vec!["WARNING: Server ams1 is running Services: app/api, app/web".to_owned()]
         );
     }
 
@@ -230,12 +272,12 @@ mod tests {
     fn unreachable_removal_names_no_reset() {
         let error = RpcError {
             code: RpcErrorCode::Unavailable,
-            message: "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
+            message: "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond".into(),
             details: Value::Null,
         };
         assert_eq!(
             machine_removal_refusal(error).to_string(),
-            "Machine aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
+            "Server aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa did not respond; use --no-reset to remove it from the Cluster without resetting"
         );
     }
 
@@ -243,12 +285,12 @@ mod tests {
     fn other_data_loss_errors_keep_their_message() {
         let error = RpcError {
             code: RpcErrorCode::NotFound,
-            message: "Machine \"gone\" was not found".into(),
+            message: "Server \"gone\" was not found".into(),
             details: Value::Null,
         };
         assert_eq!(
             machine_removal_refusal(error).to_string(),
-            "Machine \"gone\" was not found"
+            "Server \"gone\" was not found"
         );
     }
 

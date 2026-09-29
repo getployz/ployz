@@ -26,8 +26,10 @@ async fn machine_removal_reports_complete_and_partial_results() {
                 &format!("tcp://{address}"),
                 "--ployz-config",
                 config.to_str().unwrap(),
-                "machine",
+                "server",
                 "rm",
+                "one",
+                "--confirm",
                 "one",
                 "--accept-volume-loss",
                 "data",
@@ -47,7 +49,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
         assert!(erased.lock().unwrap().is_empty());
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stdout.contains("Removed Machine one"), "{stdout}");
+        assert!(stdout.contains("Removed Server one"), "{stdout}");
         assert!(
             stdout.contains(
                 "Volumes losing access through the cluster (1). Their data will not be erased:"
@@ -60,7 +62,7 @@ async fn machine_removal_reports_complete_and_partial_results() {
         );
         if invalid_config {
             assert!(
-                stderr.contains("local context cleanup failed after Machine removal"),
+                stderr.contains("local context cleanup failed after Server removal"),
                 "{stderr}"
             );
         }
@@ -92,8 +94,10 @@ async fn machine_reset_refuses_failed_service_observation_before_mutation() {
         .args([
             "--connect",
             &format!("tcp://{address}"),
-            "machine",
+            "server",
             "rm",
+            "one",
+            "--confirm",
             "one",
             "--accept-volume-loss",
             "data",
@@ -108,5 +112,52 @@ async fn machine_reset_refuses_failed_service_observation_before_mutation() {
     assert!(stderr.contains("container inventory failed"), "{stderr}");
     assert!(stderr.contains(machine_id('a').as_str()), "{stderr}");
     assert!(stderr.contains("No changes made"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn server_removal_without_the_typed_name_names_what_goes_and_the_retry() {
+    let service = DiscoveryService::new(test_description());
+    let resets = service.reset_machines.clone();
+    let removals = service.removed_machines.clone();
+    let (address, server) = serve_discovery(service).await;
+    let connect = format!("tcp://{address}");
+    let run = |extra: &'static [&'static str]| {
+        let connect = connect.clone();
+        async move {
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+                .args(["--json", "--connect", &connect, "server", "rm", "one"])
+                .args(extra)
+                .output()
+                .await
+                .unwrap()
+        }
+    };
+
+    let output = run(&[]).await;
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let at = |pointer: &str| error.pointer(pointer).unwrap().clone();
+    assert_eq!(at("/error/code"), "confirmation_required", "{error}");
+    assert_eq!(at("/error/details/server/name"), "one", "{error}");
+    assert_eq!(at("/error/details/data_loss/0/id/name"), "data", "{error}");
+    let next = at("/error/details/next");
+    let next = next.as_str().unwrap();
+    assert!(next.starts_with("ployz server rm one --connect"), "{next}");
+    assert!(
+        next.ends_with("--confirm one --accept-volume-loss data"),
+        "{next}"
+    );
+
+    let output = run(&["--confirm", "One"]).await;
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        error.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{error}"
+    );
+
+    assert!(resets.lock().unwrap().is_empty());
+    assert!(removals.lock().unwrap().is_empty());
     server.abort();
 }

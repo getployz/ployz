@@ -42,7 +42,7 @@ A fallible public function has an error-path test at its seam.
 
 ## CLI output
 
-Every command that produces a result takes `--json` and prints it through `crate::output`: one JSON object on stdout, keyed by noun (`{"machines": […]}`). Streams print one object per line. Anything human output reports is also in the JSON result. A mutation emits its outcome even when nothing changed. A command that cannot produce one JSON result refuses `--json` in the handler table; it never ignores the flag. `--json` never prompts: a choice that would prompt takes its documented default or fails with `invalid_argument` naming the flag that settles it.
+Every command that produces a result takes `--json` and prints it through `crate::output`: one JSON object on stdout, keyed by noun (`{"servers": […]}`). Streams print one object per line. Anything human output reports is also in the JSON result. A mutation emits its outcome even when nothing changed. A command that cannot produce one JSON result refuses `--json` in the handler table; it never ignores the flag. `--json` never prompts: a choice that would prompt takes its documented default or fails with `invalid_argument` naming the flag that settles it.
 
 Human text goes through `say!`; clippy denies `print_stdout` in the CLI crate.
 
