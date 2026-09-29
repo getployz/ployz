@@ -185,6 +185,7 @@ fn save(rows: &[&str], version: Option<String>) -> Move {
                 .map(|row| MovePick {
                     row: (*row).to_owned(),
                     choice: Some(serde_json::from_value(json!("from")).unwrap()),
+                    value: None,
                 })
                 .collect(),
         ),
@@ -421,6 +422,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             vec![MovePick {
                 row: row.into(),
                 choice: None,
+                value: None,
             }]
         }),
         ..Move::default()

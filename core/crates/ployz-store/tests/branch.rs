@@ -417,9 +417,11 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let production = EnvironmentName::parse("production").unwrap();
     assert_eq!(
         made.branch.live,
+        // db mounts the data Volume: the Branch writes production's real data.
         [LiveNode {
             name: "db".into(),
-            owner: Some(production.clone())
+            owner: Some(production.clone()),
+            data: true,
         }]
     );
     // A live reference reads, and is written, by the name where it runs.
@@ -713,6 +715,7 @@ fn save(picks: &[(&str, Option<&str>)], version: Option<&str>) -> Move {
                 .map(|(row, choice)| ployz_store::MovePick {
                     row: (*row).to_owned(),
                     choice: choice.map(|choice| serde_json::from_value(json!(choice)).unwrap()),
+                    value: None,
                 })
                 .collect()
         }),
@@ -865,6 +868,43 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         "Nothing to save into production"
     );
 
+    // Picked `new` with a value, each variable lands with the Parent's own: a secret sealed.
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.env.SESSION_KEY", json!({ "secret": "branch-key" })),
+            ("web.env.HOST", json!("branch-host")),
+        ],
+    );
+    let fresh = |row: &str, value: &str| ployz_store::MovePick {
+        row: row.to_owned(),
+        choice: Some(serde_json::from_value(json!("new")).unwrap()),
+        value: Some(value.to_owned()),
+    };
+    let mut plain = fresh("web.env.HOST", "x");
+    plain.choice = None;
+    let mut picked = save(&[], None);
+    picked.picks = Some(vec![plain]);
+    assert_eq!(
+        code(store.move_changes(&who, &picked)),
+        RpcErrorCode::InvalidArgument
+    );
+    picked.picks = Some(vec![
+        fresh("web.env.SESSION_KEY", "prod-key"),
+        fresh("web.env.HOST", "${{ web.NEW }}-prod"),
+    ]);
+    store.move_changes(&who, &picked).unwrap();
+    let input = deploy(&store, &who, "production", 5, true);
+    let env = &snapshot(&input, &uuid(3))["resolvedEnv"];
+    assert_eq!(
+        (&env["SESSION_KEY"], &env["HOST"]),
+        (&json!("prod-key"), &json!("1-prod"))
+    );
+    let stored = values(&store, &who, "production", "web");
+    assert_eq!(stored["env"]["SESSION_KEY"], json!({ "secret": true }));
+
     // No Save from a Branch on its way off the Servers.
     set(&store, &who, "fix-web", &[("web.env.LATE", json!("1"))]);
     deploy(&store, &who, "fix-web", 4, true);
@@ -887,5 +927,70 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     assert_eq!(
         code(store.move_changes(&who, &save(&[], None))),
         RpcErrorCode::Conflict
+    );
+}
+
+#[test]
+fn a_branch_is_planned_by_name_before_it_is_created() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    let plan = |copy: &[&str], preset: Option<&str>| {
+        let query = ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+            from: at("production"),
+            focus: vec!["web".to_owned()],
+            copy: copy.iter().map(|name| (*name).to_owned()).collect(),
+            preset: preset.map(|preset| serde_json::from_value(json!(preset)).unwrap()),
+        });
+        let ployz_store::View::BranchPlan(plan) = store.read(&who, &query).unwrap() else {
+            panic!("a branch plan");
+        };
+        json!(plan.nodes)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| {
+                (
+                    node["name"].as_str().unwrap().to_owned(),
+                    node["role"].as_str().unwrap().to_owned(),
+                    node["toggled"].as_str().unwrap().to_owned(),
+                    node["owner"].clone(),
+                    node["data"].as_bool().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let web = plan(&["web"], None);
+    let db = web.iter().find(|node| node.0 == "db").unwrap();
+    // web uses db live, from production, where it holds real data; toggled, the Branch gets its own.
+    assert_eq!(
+        (db.1.as_str(), db.2.as_str(), &db.3, db.4),
+        ("live", "own", &json!("production"), true)
+    );
+    assert_eq!(web.iter().find(|node| node.0 == "web").unwrap().1, "own");
+    // Everything copies every node.
+    assert!(plan(&[], Some("all")).iter().all(|node| node.1 == "own"));
+    // The Store creates the Branch the plan shows.
+    let created = store
+        .create_branch(&who, &branch("try-web", "production", &["web"]))
+        .unwrap();
+    assert_eq!(
+        created
+            .branch
+            .live
+            .iter()
+            .map(|node| node.name.as_str())
+            .collect::<Vec<_>>(),
+        ["db"]
+    );
+    assert_eq!(
+        code(store.read(
+            &who,
+            &ployz_store::Query::BranchPlan(ployz_store::BranchPlanQuery {
+                from: at("production"),
+                copy: vec!["nope".to_owned()],
+                ..Default::default()
+            })
+        )),
+        RpcErrorCode::NotFound
     );
 }

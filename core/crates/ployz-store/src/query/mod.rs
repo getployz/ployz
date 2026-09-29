@@ -67,6 +67,8 @@ pub enum Query {
     Removals(RemovalsQuery),
     /// A Branch: its Parent, Live Nodes and pending Update.
     Branch(crate::BranchQuery),
+    /// What a Branch would copy and use live, before it is created.
+    BranchPlan(crate::BranchPlanQuery),
     /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderQuery),
     /// What moving changes between a Branch and its Parent would stage.
@@ -116,6 +118,8 @@ pub enum View {
     Removals(RemovalsView),
     /// A Branch.
     Branch(crate::BranchView),
+    /// A planned Branch.
+    BranchPlan(crate::BranchPlanView),
     /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderView),
     /// A Move's changes.
@@ -154,6 +158,9 @@ pub(crate) fn run(
         Query::Volume(query) => volume(tx, who, query).map(View::Volume),
         Query::Removals(query) => removals(tx, who, query).map(View::Removals),
         Query::Branch(query) => crate::branch::branch(tx, who, query).map(View::Branch),
+        Query::BranchPlan(query) => {
+            crate::branch::branch_plan(tx, who, query).map(View::BranchPlan)
+        }
         Query::BuildOrder(_) => crate::builders::build_order(tx, who).map(View::BuildOrder),
         Query::Move(query) => crate::branch::move_view(tx, who, query).map(View::Move),
         Query::Environments(query) => {
