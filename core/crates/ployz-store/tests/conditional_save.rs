@@ -12,9 +12,9 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName,
-    EnvironmentRef, Landed, Move, MovePick, MoveQuery, OrganizationId, ProjectId, ProjectName,
-    Publish, PullRequest, PullRequestQuery, RunnerId, SaveState, ServiceId, SetPrPlan, SettingPath,
-    SystemEvent, Trusted, When, Written,
+    EnvironmentRef, Landed, Move, MovePick, MoveQuery, OrganizationId, PickChoice, ProjectId,
+    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState, ServiceId,
+    SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
@@ -41,9 +41,7 @@ fn at(environment: &str) -> EnvironmentRef {
 /// `main`, published; pull requests get PR Environments of it, and PR #5 is open.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -111,6 +109,7 @@ fn publish(store: &ConfigStore, who: &Actor, environment: &str) {
             &Command::Publish(Publish {
                 environment: at(environment),
                 version: None,
+                accept_volume_loss: Vec::new(),
             }),
         )
         .unwrap();
@@ -154,7 +153,7 @@ fn facts(open: bool, merge: Option<&str>, reached: Option<String>, second: u8) -
 }
 
 fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&who.organization, &event).unwrap() else {
+    let Written::Automated(automated) = store.system(&who.organization, &event, &Trusted::default()).unwrap() else {
         panic!("a system event writes Automated")
     };
     automated
@@ -178,19 +177,22 @@ fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automate
 
 /// Save `rows` of `pr-5` for its merge; `[]` withdraws.
 fn save(rows: &[&str], version: Option<String>) -> Move {
-    Move {
-        from: Some(at("pr-5")),
+    Move::Save(saving(rows, version))
+}
+
+fn saving(rows: &[&str], version: Option<String>) -> Save {
+    Save {
+        from: at("pr-5"),
         picks: Some(
             rows.iter()
                 .map(|row| MovePick {
                     row: (*row).to_owned(),
-                    choice: Some(serde_json::from_value(json!("from")).unwrap()),
-                    value: None,
+                    choice: Some(PickChoice::From),
                 })
                 .collect(),
         ),
         version,
-        ..Move::default()
+        ..Save::default()
     }
 }
 
@@ -250,18 +252,19 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         ],
     );
     // From a PR Environment a Save is for the merge, into its one Destination.
-    let query = MoveQuery {
-        from: Some(at("pr-5")),
-        ..MoveQuery::default()
+    let query = MoveQuery::Save {
+        from: at("pr-5"),
+        into: None,
+        when: None,
     };
     let review = store.move_view(&who, &query).unwrap();
     assert_eq!(review.into.name.as_str(), "production");
     let rows: Vec<&str> = review.rows.iter().map(|row| row.row.as_str()).collect();
     assert_eq!(rows, ["web.env.MODE", "web.env.TOKEN"]);
-    let now = Move {
+    let now = Move::Save(Save {
         when: Some(When::Now),
-        ..save(&["web.env"], None)
-    };
+        ..saving(&["web.env"], None)
+    });
     assert_eq!(
         store.move_changes(&who, &now).unwrap_err().code,
         RpcErrorCode::InvalidArgument
@@ -416,16 +419,13 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
         ),
         ("web.env.MODE", Landed::Hint, &json!("pr"), 5)
     );
-    let take = |row: Option<&str>| Move {
-        take: Some(hint.save.clone()),
-        picks: row.map(|row| {
-            vec![MovePick {
-                row: row.into(),
-                choice: None,
-                value: None,
-            }]
-        }),
-        ..Move::default()
+    let take = |row: Option<&str>| {
+        Move::Take(Take {
+            from: hint.save.clone(),
+            into: None,
+            rows: row.map(|row| vec![row.to_owned()]),
+            version: None,
+        })
     };
     assert_eq!(
         store

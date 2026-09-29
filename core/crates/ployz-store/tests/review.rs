@@ -3,6 +3,7 @@
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
+    Trusted,
     Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
     Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
     ProjectName, Publish, Published, Revision, ServiceId, SettingPath,
@@ -17,9 +18,7 @@ const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 /// A store with Project `shop` and new Services `web` (nginx) and `api` (caddy).
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -93,7 +92,8 @@ fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Pu
         &Publish {
             environment: EnvironmentRef::default(),
             version: version.map(Into::into),
-        },
+            accept_volume_loss: Vec::new(),
+        }, &Trusted::default(),
     )
 }
 

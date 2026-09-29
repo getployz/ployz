@@ -39,6 +39,7 @@ pub fn schema(path: Option<&str>) -> Result<Value, RpcError> {
         })));
     };
     let path = SettingPath::parse(path)?;
+    path.settings_of()?;
     Ok(versioned(path.target().map_or_else(service, target)))
 }
 
@@ -58,13 +59,14 @@ pub struct Explained {
 /// `did_you_mean` and `valid_children`.
 pub fn explain(path: &str) -> Result<Explained, RpcError> {
     let parsed = SettingPath::parse(path)?;
+    let service = parsed.settings_of()?;
     let Some(one) = parsed.target() else {
         let names = ServiceSetting::ALL.map(ServiceSetting::name);
         return Err(error::invalid(
             "Name a Setting: SERVICE.SETTING",
             json!({
                 "valid_children": names,
-                "example": format!("{}.replicas", parsed.service()),
+                "example": format!("{service}.replicas"),
             }),
         ));
     };

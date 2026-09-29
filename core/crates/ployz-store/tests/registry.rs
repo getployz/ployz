@@ -21,9 +21,7 @@ mod backend;
 const PATH: &str = "web.registryCredential";
 
 fn who() -> Actor {
-    Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    }
+    Actor::system(OrganizationId::parse("org").unwrap())
 }
 
 /// Project `shop` with image Services `web` and `api` and an empty one, `blank`.

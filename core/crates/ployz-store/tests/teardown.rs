@@ -36,9 +36,7 @@ fn at(environment: &str) -> EnvironmentRef {
 /// Project `shop`: `production` runs `web` and `db`, which mounts Volume `data`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -93,6 +91,8 @@ fn id(n: u8) -> DeploymentId {
     DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap()
 }
 
+/// Admit Deployment `n`. Accepting losses confirms them as a person would: with
+/// the version the refusal that listed them handed back.
 fn admit(
     store: &ConfigStore,
     who: &Actor,
@@ -102,26 +102,30 @@ fn admit(
     accept: &[&str],
     volumes: Option<VolumeObservation>,
 ) -> Result<ployz_store::DeploymentSummary, RpcError> {
-    store.admit(
-        who,
-        &Admit {
-            id: id(n),
-            environment: at(environment),
-            services: Vec::new(),
-            version: None,
-            upload: None,
-            retry: None,
-            remove,
-            accept_volume_loss: accept
-                .iter()
-                .map(|name| VolumeName::parse(*name).unwrap())
-                .collect(),
-        },
-        &Trusted {
-            volumes,
-            ..Trusted::default()
-        },
-    )
+    let request = |version: Option<String>| Admit {
+        id: id(n),
+        environment: at(environment),
+        services: Vec::new(),
+        version,
+        upload: None,
+        retry: None,
+        remove,
+        accept_volume_loss: accept
+            .iter()
+            .map(|name| VolumeName::parse(*name).unwrap())
+            .collect(),
+    };
+    let trusted = Trusted {
+        volumes,
+        ..Trusted::default()
+    };
+    match store.admit(who, &request(None), &trusted) {
+        Err(refused) if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired => {
+            let version = refused.details["version"].as_str().unwrap().to_owned();
+            store.admit(who, &request(Some(version)), &trusted)
+        }
+        admitted => admitted,
+    }
 }
 
 fn runner() -> RunnerId {

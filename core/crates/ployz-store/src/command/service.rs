@@ -218,12 +218,19 @@ pub(crate) fn remove_service(
 }
 
 /// A name is taken by another Service's name or Private DNS name: either would make
-/// `name` address two Services.
+/// `name` address two Services. `volumes` is never free.
 fn refuse_taken(
     environment: &scope::Environment,
     name: &ServiceName,
     except: Option<&str>,
 ) -> Result<(), RpcError> {
+    // `volumes.NAME` addresses a Volume, so no Service takes that name.
+    if name.as_str() == "volumes" {
+        return Err(error::invalid(
+            "volumes is reserved: paths name Volumes as volumes.NAME",
+            json!({ "service": name }),
+        ));
+    }
     let taken = environment.working.services.iter().any(|service| {
         Some(service.id.as_str()) != except
             && (service.slug == name.as_str() || service.config.private_dns == *name)
@@ -270,9 +277,7 @@ mod tests {
     fn a_node_introduction_keeps_the_service_as_created() {
         let store =
             ConfigStore::open("sqlite::memory:", crate::SealingKey::new(b"test").unwrap()).unwrap();
-        let who = Actor {
-            organization: OrganizationId::parse("org").unwrap(),
-        };
+        let who = Actor::system(OrganizationId::parse("org").unwrap());
         let uuid = |n: u8| format!("00000000-0000-4000-8000-00000000000{n}");
         store
             .create_project(

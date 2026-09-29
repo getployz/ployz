@@ -224,16 +224,47 @@ pub(crate) fn load(
     environment: &EnvironmentId,
     service: &str,
 ) -> Result<Policy, RpcError> {
-    let rows = tx.query(
+    Ok(stored(tx, environment, service)?.unwrap_or_default())
+}
+
+/// `service`'s Deployment Policy in `environment`, if one was ever set.
+pub(crate) fn stored(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    service: &str,
+) -> Result<Option<Policy>, RpcError> {
+    tx.query(
         "SELECT policy FROM config_service_policy WHERE environment_id = ?1 AND service_id = ?2",
         &[environment.as_str().into(), service.into()],
+    )?
+    .first()
+    .map(|row| serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Deployment Policy")))
+    .transpose()
+}
+
+/// Store `policy` as `service`'s Deployment Policy in `environment`.
+pub(crate) fn store(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    service: &str,
+    policy: &Policy,
+) -> Result<(), RpcError> {
+    tx.execute(
+        "INSERT INTO config_service_policy (environment_id, service_id, organization_id, policy) \
+         VALUES (?1, ?2, ?3, ?4) \
+         ON CONFLICT (environment_id, service_id) DO UPDATE SET policy = excluded.policy",
+        &[
+            environment.as_str().into(),
+            service.into(),
+            who.organization.as_str().into(),
+            serde_json::to_string(policy)
+                .expect("a policy is JSON")
+                .as_str()
+                .into(),
+        ],
     )?;
-    match rows.first() {
-        Some(row) => {
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Deployment Policy"))
-        }
-        None => Ok(Policy::default()),
-    }
+    Ok(())
 }
 
 /// Set (or with `None`, unset) one Setting of Git Service `service`'s policy.
@@ -256,20 +287,7 @@ pub(crate) fn set(
     if policy == before {
         return Ok(false);
     }
-    tx.execute(
-        "INSERT INTO config_service_policy (environment_id, service_id, organization_id, policy) \
-         VALUES (?1, ?2, ?3, ?4) \
-         ON CONFLICT (environment_id, service_id) DO UPDATE SET policy = excluded.policy",
-        &[
-            environment.as_str().into(),
-            service.id.as_str().into(),
-            who.organization.as_str().into(),
-            serde_json::to_string(&policy)
-                .expect("a policy is JSON")
-                .as_str()
-                .into(),
-        ],
-    )?;
+    store(tx, who, environment, &service.id, &policy)?;
     Ok(true)
 }
 

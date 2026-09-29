@@ -28,9 +28,7 @@ fn name(name: &str) -> ServiceName {
 /// A store with Project `shop`, an image Service `web` and an empty Service `worker`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,

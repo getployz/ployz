@@ -46,12 +46,14 @@ pub struct Admit {
     #[ts(optional = nullable)]
     pub retry: Option<DeploymentId>,
     /// Remove the Environment from the Servers: ship it empty, deleting its deployed
-    /// Volumes, without touching Working or Saved State. `services`, `version`,
-    /// `upload` and `retry` stay empty. `RemoveEnvironment` then deletes it.
+    /// Volumes, without touching Working or Saved State. `services`, `upload` and
+    /// `retry` stay empty. `RemoveEnvironment` then deletes it.
     #[serde(default)]
     pub remove: bool,
     /// Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
-    /// deletes data refuses with `confirmation_required` unless it names each one.
+    /// deletes data, or publishes a removal that will, refuses with
+    /// `confirmation_required` unless it names each one and passes the `version`
+    /// that refusal handed back.
     #[serde(default)]
     pub accept_volume_loss: Vec<VolumeName>,
 }
@@ -103,6 +105,7 @@ fn admitted(
     admit: &Admit,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    trusted.runnable()?;
     if let Some(source) = &admit.retry {
         if admit.environment != EnvironmentRef::default()
             || admit.remove
@@ -143,26 +146,38 @@ fn admitted(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
+    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let saved_intent = canonicalize_environment_intent(environment.working.clone());
+    // A full Deploy removes what Saved State dropped; publishing puts a removal in
+    // Saved State. Either runs the destructive review; only the first deletes.
+    let publishes = review
+        .saved
+        .as_ref()
+        .is_none_or(|saved| saved.intent != saved_intent);
+    let removed = if admit.services.is_empty() || publishes {
+        removal::removed(&review.head.applied, &saved_intent, &namespace)?
+    } else {
+        Vec::new()
+    };
+    let losses = removal::review(
+        who,
+        id,
+        (&review.view.version, admit.version.as_deref()),
+        removed,
+        trusted.volumes.as_ref(),
+        &admit.accept_volume_loss,
+    )?;
+    let losses = if admit.services.is_empty() {
+        losses
+    } else {
+        Vec::new()
+    };
     let (saved, _) = review::publish(
         tx,
         who,
         id,
         environment.working.clone(),
         review.saved.as_ref(),
-    )?;
-    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let saved_intent = canonicalize_environment_intent(environment.working);
-    // Only a full Deploy removes nodes, so only it can delete data.
-    let removed = if admit.services.is_empty() {
-        removal::removed(&review.head.applied, &saved_intent, &namespace)?
-    } else {
-        Vec::new()
-    };
-    let losses = removal::review(
-        removed,
-        trusted.volumes.as_ref(),
-        &admit.accept_volume_loss,
-        &review.view.version,
     )?;
     let mut frozen = deployment::freeze(
         id,
@@ -177,7 +192,7 @@ fn admitted(
     // Only Cloud's authentication names an uploader, never the caller.
     let mut admit = admit.clone();
     if let Some(upload) = &mut admit.upload {
-        upload.uploader.clone_from(&trusted.uploader);
+        upload.uploader.clone_from(&who.principal);
     }
     deployment::admit(tx, who, &admit, id, saved, &frozen)
 }
@@ -192,17 +207,16 @@ fn removal(
     admit: &Admit,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
-    if !admit.services.is_empty() || admit.version.is_some() || admit.upload.is_some() {
+    if !admit.services.is_empty() || admit.upload.is_some() {
         return Err(error::invalid(
-            "A removal ships nothing: leave services, version and upload empty",
+            "A removal ships nothing: leave services and upload empty",
             json!({}),
         ));
     }
     let environment = scope::lock(tx, who, &admit.environment)?;
     crate::teardown::guard_removal(tx, &environment)?;
     let id = &environment.summary.id;
-    let history = deployment::history(tx, id, i64::MAX)?;
-    if let Some(running) = history.iter().find(|deployment| {
+    if let Some(running) = deployment::in_flight(tx, id)?.filter(|deployment| {
         matches!(
             deployment.status,
             DeploymentStatus::Running | DeploymentStatus::Cancelling
@@ -217,14 +231,17 @@ fn removal(
         ));
     }
     let review = review::review(tx, &environment)?;
+    review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = review::empty(&environment.working);
     let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
     let losses = removal::review(
+        who,
+        id,
+        (&review.view.version, admit.version.as_deref()),
         removed,
         trusted.volumes.as_ref(),
         &admit.accept_volume_loss,
-        &review.view.version,
     )?;
     let frozen = deployment::freeze(
         id,

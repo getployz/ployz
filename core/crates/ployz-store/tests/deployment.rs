@@ -10,7 +10,7 @@ use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
+    Principal,    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
     ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
@@ -27,9 +27,7 @@ const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 /// A store with Project `shop` and new Services `web` and `api`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -212,8 +210,8 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Applied),
-            ("api".to_owned(), NodeStatus::Applied)
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Deployed)
         ]
     );
     assert!(store.deployment(&who, &id(1)).unwrap().preview.is_some());
@@ -260,8 +258,8 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Applied),
-            ("api".to_owned(), NodeStatus::NotApplied)
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed)
         ]
     );
     // Only `api` is still to deploy; a different outcome can't overwrite this one.
@@ -288,8 +286,8 @@ fn nothing_executed_applies_nothing() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotApplied),
-            ("api".to_owned(), NodeStatus::NotApplied)
+            ("web".to_owned(), NodeStatus::NotAttempted),
+            ("api".to_owned(), NodeStatus::NotAttempted)
         ]
     );
     assert_eq!(changed(&store, &who), ["web", "api"]);
@@ -357,9 +355,7 @@ fn status(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentStatus {
 fn a_cancelled_queued_deployment_never_runs() {
     let (store, who) = shop();
     admit(&store, &who, 1, &[], None).unwrap();
-    let other = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let other = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(code(cancel(&store, &other, 1)), RpcErrorCode::NotFound);
     assert_eq!(
         cancel(&store, &who, 1).unwrap().status,
@@ -377,8 +373,8 @@ fn a_cancelled_queued_deployment_never_runs() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::NotApplied),
-            ("api".to_owned(), NodeStatus::NotApplied)
+            ("web".to_owned(), NodeStatus::NotAttempted),
+            ("api".to_owned(), NodeStatus::NotAttempted)
         ]
     );
     assert_eq!(changed(&store, &who), ["web", "api"]);
@@ -411,8 +407,8 @@ fn a_cancelled_running_deployment_keeps_its_confirmed_node_outcomes() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Applied),
-            ("api".to_owned(), NodeStatus::NotApplied)
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed)
         ]
     );
     assert_eq!(changed(&store, &who), ["api"]);
@@ -559,8 +555,8 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Applied),
-            ("api".to_owned(), NodeStatus::NotApplied)
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Failed)
         ]
     );
     assert!(
@@ -583,9 +579,7 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
 #[test]
 fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     let (store, who) = shop();
-    let other = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
     // It names the Environment: nothing else may.
     let narrowed = store.admit(
@@ -639,9 +633,7 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
 #[test]
 fn only_a_queued_deployment_starts() {
     let (store, who) = shop();
-    let other = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
     assert_eq!(code(start(&store, &other, 1)), RpcErrorCode::NotFound);
     // Starting changes nothing: a runner still claims it.
@@ -756,9 +748,7 @@ fn deployments_page_newest_first_within_the_organization() {
         },
     );
     assert_eq!(code(bad_limit), RpcErrorCode::InvalidArgument);
-    let stranger = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(
         code(store.deployment(&stranger, &id(1))),
         RpcErrorCode::NotFound
@@ -787,8 +777,8 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
     assert_eq!(
         nodes(&store, &who, 1),
         [
-            ("web".to_owned(), NodeStatus::Applied),
-            ("api".to_owned(), NodeStatus::Applied)
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Deployed)
         ]
     );
     let listed = store.services(&who, &ServicesQuery::default()).unwrap();
@@ -881,9 +871,7 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
     admit(&store, &who, 1, &[], None).unwrap();
     let after = store.namespace(&who, &NamespaceQuery::default()).unwrap();
     assert_eq!(after, before);
-    let stranger = Actor {
-        organization: OrganizationId::parse("other").unwrap(),
-    };
+    let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(
         code(store.namespace(&stranger, &NamespaceQuery::default())),
         RpcErrorCode::NotFound
@@ -1000,9 +988,9 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     let upload = |uploader: Option<&str>| UploadedSource {
         digest: "d".repeat(64),
         base: None,
-        uploader: uploader.map(str::to_owned),
+        uploader: uploader.map(|name| Principal::parse(name).unwrap()),
     };
-    let admit = |n: u8, trusted: &Trusted| {
+    let admit = |n: u8, who: &Actor| {
         let command = Command::Admit(Admit {
             id: id(n),
             environment: EnvironmentRef::default(),
@@ -1014,18 +1002,22 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
             remove: false,
             accept_volume_loss: Vec::new(),
         });
-        let Written::Deployment(summary) = store.write_trusted(&who, &command, trusted).unwrap()
-        else {
+        let Written::Deployment(summary) = store.write(who, &command).unwrap() else {
             panic!("an admit writes a Deployment");
         };
         summary
     };
-    let cloud = Trusted {
-        uploader: Some("nick".into()),
-        ..Trusted::default()
+    // Cloud names who acts; the Deployment records them as its admitter and uploader.
+    let nick = Actor {
+        principal: Some(Principal::parse("nick").unwrap()),
+        ..who.clone()
     };
-    assert_eq!(admit(1, &cloud).upload, Some(upload(Some("nick"))));
-    assert_eq!(admit(2, &Trusted::default()).upload, Some(upload(None)));
+    let admitted = admit(1, &nick);
+    assert_eq!(admitted.upload, Some(upload(Some("nick"))));
+    assert_eq!(admitted.admitted_by, nick.principal);
+    assert!(admitted.admitted_at > 0);
+    assert_eq!((admitted.started_at, admitted.ended_at), (None, None));
+    assert_eq!(admit(2, &who).upload, Some(upload(None)));
     let a = runner("cloud-a");
     let claimed = store.claim(&id(2), &a).unwrap();
     assert_eq!(claimed.uploads, vec![app.clone()]);
