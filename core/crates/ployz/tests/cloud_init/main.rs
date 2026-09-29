@@ -931,16 +931,15 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .output()
         .await
         .unwrap();
-    assert!(
-        !output.status.success(),
-        "Join must fail when Ingress Proxy cannot be placed"
+    // The join committed, so its result prints first and the missing Ingress Proxy exits partial.
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "Join must exit partial when Ingress Proxy cannot be placed"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !stdout.contains("Joined Machine"),
-        "success must not print when Ingress Proxy is missing, got {stdout}"
-    );
+    assert!(stdout.contains("Joined Machine"), "stdout: {stdout}");
     assert!(
         stderr.contains("Global catch-up is incomplete"),
         "stderr: {stderr}"

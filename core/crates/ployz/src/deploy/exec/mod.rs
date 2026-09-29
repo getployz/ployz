@@ -48,7 +48,7 @@ fn failure_outcome_from<E>(
     })
 }
 
-fn replacement_health_failure_outcome_from<E>(
+fn replacement_failure_outcome_from<E>(
     operations: &[DeployOperation],
     completed_count: usize,
     error: E,
@@ -61,7 +61,7 @@ fn replacement_health_failure_outcome_from<E>(
     };
     Some(DeployOutcome::Failed {
         completed: completed.to_vec(),
-        failed: FailedOperation::ReplacementHealth {
+        failed: FailedOperation::Replacement {
             operation: operation.clone(),
             error,
             compensation,
@@ -339,7 +339,7 @@ fn omission_requires_observation(membership: Option<&MembershipObservation>) -> 
 
 enum OperationFailure {
     Ordinary(ExecutionError),
-    ReplacementHealth {
+    Replacement {
         error: ExecutionError,
         compensation: Box<ReplacementCompensation<ExecutionError>>,
     },
@@ -530,18 +530,14 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
                 progress.outcome(outcome.clone());
                 return outcome;
             }
-            Err(OperationFailure::ReplacementHealth {
+            Err(OperationFailure::Replacement {
                 error,
                 compensation,
             }) => {
                 progress.fail(index, error.clone());
-                let outcome = replacement_health_failure_outcome_from(
-                    operations,
-                    index,
-                    error,
-                    *compensation,
-                )
-                .expect("replacement health failure belongs to the replacement operation");
+                let outcome =
+                    replacement_failure_outcome_from(operations, index, error, *compensation)
+                        .expect("replacement failure belongs to the replacement operation");
                 progress.outcome(outcome.clone());
                 return outcome;
             }
@@ -761,27 +757,63 @@ async fn run_container<C: MachineOperations>(
         cancellation,
     )
     .await?;
+    serve(
+        client,
+        index,
+        progress,
+        machine_id,
+        &created.container_id,
+        spec,
+        skip_health_monitor,
+        cancellation,
+    )
+    .await?;
+    Ok(created.container_id)
+}
+
+// A new Service Container succeeds once it serves, not merely once it is healthy.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "progress row plus health spec travel together through execute"
+)]
+async fn serve<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &mut Progress,
+    machine_id: &MachineId,
+    container_id: &ContainerId,
+    spec: &ResolvedServiceSpec,
+    skip_health_monitor: bool,
+    cancellation: &CancellationToken,
+) -> Result<(), ExecutionError> {
     if !skip_health_monitor {
         monitor_container(
             client,
             index,
             progress,
             machine_id,
-            &created.container_id,
+            container_id,
             spec,
             cancellation,
         )
         .await?;
     }
+    wait_serving(client, *container_id, cancellation).await
+}
+
+async fn wait_serving<C: MachineOperations>(
+    client: &C,
+    container_id: ContainerId,
+    cancellation: &CancellationToken,
+) -> Result<(), ExecutionError> {
     client
         .wait_for_container_observations(
-            &[created.container_id],
+            &[container_id],
             ContainerObservationCondition::Serving,
             cancellation,
         )
         .await
-        .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
-    Ok(created.container_id)
+        .map_err(|error| machine_error(MachineAction::InspectContainer, error))
 }
 
 async fn replace_container<C: MachineOperations>(
@@ -793,7 +825,7 @@ async fn replace_container<C: MachineOperations>(
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
-    let restart_old_on_failure = if stop_first {
+    let old_stopped = if stop_first {
         let old = match client
             .inspect_container(&operation.machine_id, &operation.old_container_id)
             .await
@@ -824,7 +856,8 @@ async fn replace_container<C: MachineOperations>(
         false
     };
 
-    let created = create_and_start(
+    // A started new container travels with the failure so compensation can stop it.
+    let started = match create_and_start(
         client,
         index,
         progress,
@@ -835,68 +868,34 @@ async fn replace_container<C: MachineOperations>(
         Some(operation.old_container_id),
         cancellation,
     )
-    .await?;
-    let container_id = created.container_id;
-
-    if !operation.skip_health_monitor
-        && let Err(error) = monitor_container(
+    .await
+    {
+        Ok(created) => serve(
             client,
             index,
             progress,
             &operation.machine_id,
-            &container_id,
+            &created.container_id,
             &operation.spec,
+            operation.skip_health_monitor,
             cancellation,
         )
         .await
-    {
-        if !matches!(&error, ExecutionError::Health { .. }) {
-            return Err(error.into());
-        }
-        progress.set_running(index, OperationPhase::Compensating);
-        let stop_new_container = StopAttempt::from(
-            ignore_not_found(
-                client
-                    .stop_container(
-                        &operation.machine_id,
-                        &container_id,
-                        Some(stop_grace_period(&operation.spec).unwrap_or(0)),
-                    )
-                    .await,
-            )
-            .map_err(|error| machine_error(MachineAction::StopContainer, error)),
-        );
-        let compensation = if stop_first {
-            ReplacementCompensation::StopFirst {
-                stop_new_container,
-                restart_old_container: if restart_old_on_failure {
-                    RestartAttempt::from(
-                        client
-                            .start_container(&operation.machine_id, &operation.old_container_id)
-                            .await
-                            .map_err(|error| machine_error(MachineAction::StartContainer, error)),
-                    )
-                } else {
-                    RestartAttempt::NotAttempted
-                },
-            }
-        } else {
-            ReplacementCompensation::StartFirst { stop_new_container }
-        };
-        return Err(OperationFailure::ReplacementHealth {
+        .map_err(|error| (Some(created.container_id), error)),
+        Err(error) => Err((None, error)),
+    };
+    if let Err((new_container, error)) = started {
+        return Err(compensate(
+            client,
+            index,
+            progress,
+            operation,
+            old_stopped,
+            new_container,
             error,
-            compensation: Box::new(compensation),
-        });
-    }
-
-    client
-        .wait_for_container_observations(
-            &[container_id],
-            ContainerObservationCondition::Serving,
-            cancellation,
         )
-        .await
-        .map_err(|error| machine_error(MachineAction::InspectContainer, error))?;
+        .await);
+    }
 
     if !stop_first {
         progress.set_running(index, OperationPhase::StoppingContainer);
@@ -922,6 +921,76 @@ async fn replace_container<C: MachineOperations>(
         )
         .await
         .map_err(|error| machine_error(MachineAction::InspectContainer, error).into())
+}
+
+// A failure after the old container stopped restores it; otherwise only a health
+// failure is compensated, by stopping the new container.
+async fn compensate<C: MachineOperations>(
+    client: &C,
+    index: usize,
+    progress: &mut Progress,
+    operation: &ReplacementOperation,
+    old_stopped: bool,
+    new_container: Option<ContainerId>,
+    error: ExecutionError,
+) -> OperationFailure {
+    if !old_stopped && !matches!(&error, ExecutionError::Health { .. }) {
+        return error.into();
+    }
+    progress.set_running(index, OperationPhase::Compensating);
+    let stop_new_container = match new_container {
+        Some(container_id) => Some(StopAttempt::from(
+            ignore_not_found(
+                client
+                    .stop_container(
+                        &operation.machine_id,
+                        &container_id,
+                        Some(stop_grace_period(&operation.spec).unwrap_or(0)),
+                    )
+                    .await,
+            )
+            .map_err(|error| machine_error(MachineAction::StopContainer, error)),
+        )),
+        None => None,
+    };
+    let compensation = match (old_stopped, stop_new_container) {
+        (true, stop_new_container) => ReplacementCompensation::OldStopped {
+            stop_new_container,
+            restart_old_container: restore_old_container(client, operation).await,
+        },
+        (false, Some(stop_new_container)) => {
+            ReplacementCompensation::OldUntouched { stop_new_container }
+        }
+        // A health failure always follows a started container.
+        (false, None) => return error.into(),
+    };
+    OperationFailure::Replacement {
+        error,
+        compensation: Box::new(compensation),
+    }
+}
+
+// Cancelling the Deploy does not abandon the container it stopped. The wait stays
+// bounded because `wait_for_container_observations` gives up after its own
+// `BARRIER_TIMEOUT` (cluster/container_observations.rs).
+async fn restore_old_container<C: MachineOperations>(
+    client: &C,
+    operation: &ReplacementOperation,
+) -> RestartAttempt<ExecutionError> {
+    let restored = async {
+        client
+            .start_container(&operation.machine_id, &operation.old_container_id)
+            .await
+            .map_err(|error| machine_error(MachineAction::StartContainer, error))?;
+        wait_serving(
+            client,
+            operation.old_container_id,
+            &CancellationToken::new(),
+        )
+        .await
+    }
+    .await;
+    RestartAttempt::from(restored)
 }
 
 #[expect(

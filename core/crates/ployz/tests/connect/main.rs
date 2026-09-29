@@ -696,7 +696,8 @@ fn listing_container(
 }
 
 #[tokio::test]
-async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is_unreachable() {
+async fn volume_remove_removes_a_visible_owner_and_exits_partial_when_an_unrelated_machine_is_unreachable()
+ {
     let description = test_description();
     let mut service = DiscoveryService::new(description);
     service.machines = vec![machine('a', "owner"), machine('b', "unreachable")];
@@ -717,8 +718,10 @@ async fn volume_remove_succeeds_for_a_visible_owner_when_an_unrelated_machine_is
         .await
         .unwrap();
 
-    assert!(
-        output.status.success(),
+    // The unchecked Machine may hold a same-named Volume, so the removal is partial.
+    assert_eq!(
+        output.status.code(),
+        Some(3),
         "stderr: {}\nstdout: {}",
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout)

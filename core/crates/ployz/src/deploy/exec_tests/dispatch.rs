@@ -621,7 +621,9 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
                         }
                     }
                     RpcRequestBody::StartContainer(start) => {
-                        if first_start.swap(false, Ordering::SeqCst) {
+                        // Restoring v1 fails too, so the retry replans the candidate as a run.
+                        if start.container_id == old_id || first_start.swap(false, Ordering::SeqCst)
+                        {
                             RpcResponse::from(error("start failed"))
                         } else {
                             remote

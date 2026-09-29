@@ -171,7 +171,7 @@ pub fn project_runtime_outcome(
         } => {
             let (operation, error) = match failed {
                 FailedOperation::Operation { operation, error } => (operation, error),
-                FailedOperation::ReplacementHealth {
+                FailedOperation::Replacement {
                     operation, error, ..
                 } => (DeployOperation::ReplaceContainer(operation), error),
             };

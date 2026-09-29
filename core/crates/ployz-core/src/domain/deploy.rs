@@ -234,23 +234,25 @@ pub enum FailedOperation<E> {
         operation: DeployOperation,
         error: E,
     },
-    /// Replacement started; health failed; `compensation` is what ran next.
-    ReplacementHealth {
+    /// Replacement failed its health check, or failed at any step after a stop-first stop;
+    /// `compensation` is what ran next.
+    Replacement {
         operation: ReplacementOperation,
         error: E,
         compensation: ReplacementCompensation<E>,
     },
 }
 
-/// Compensation after a replacement health failure.
+/// Compensation after a failed replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplacementCompensation<E> {
-    /// New container started first; `stop_new_container` is that stop attempt.
-    StartFirst { stop_new_container: StopAttempt<E> },
-    /// Old container stopped first; `restart_old_container` is that restart attempt.
-    StopFirst {
-        stop_new_container: StopAttempt<E>,
+    /// The old container was left as it was; `stop_new_container` is the stop attempt on the new one.
+    OldUntouched { stop_new_container: StopAttempt<E> },
+    /// Stop-first replacement stopped the old container; `restart_old_container` restores it.
+    /// `stop_new_container` is `None` when the new container never started.
+    OldStopped {
+        stop_new_container: Option<StopAttempt<E>>,
         restart_old_container: RestartAttempt<E>,
     },
 }
@@ -282,15 +284,13 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
     }
 }
 
-/// Whether restarting the old container was attempted after stop-first replacement failure.
+/// The attempt to restore the old container after a failed stop-first replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum RestartAttempt<E> {
-    /// Restart was not attempted.
-    NotAttempted,
-    /// The old container restarted.
+    /// The old container restarted and serves again.
     Restarted,
-    /// The restart returned `error`.
+    /// The restart, or the wait for the old container to serve, returned `error`.
     Failed { error: E },
 }
 
@@ -304,7 +304,7 @@ impl<E> From<Result<(), E>> for RestartAttempt<E> {
 }
 
 impl<E> RestartAttempt<E> {
-    /// Whether the old container is running again.
+    /// Whether the old container serves again.
     #[must_use]
     pub const fn restarted(&self) -> bool {
         matches!(self, Self::Restarted)
