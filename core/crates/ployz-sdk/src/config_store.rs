@@ -86,7 +86,7 @@ impl ConfigStore {
         query: serde_json::Value,
         trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let who = actor(organization)?;
+        let who = actor(organization, None)?;
         let query: ployz_store::Query = serde_json::from_value(query)
             .map_err(|_| invalid_argument("Expected a Config Store query"))?;
         let trusted = evidence(trusted)?;
@@ -95,8 +95,9 @@ impl ConfigStore {
             .await
     }
 
-    /// Apply a `ConfigCommand` as the given Organization, in one transaction.
-    /// `trusted` is evidence Cloud gathered itself (`ConfigTrusted`), never the caller's.
+    /// Apply a `ConfigCommand` as `principal` (who Cloud authenticated; none for
+    /// Cloud itself) in the given Organization, in one transaction. `trusted` is
+    /// evidence Cloud gathered itself (`ConfigTrusted`), never the caller's.
     ///
     /// # Errors
     /// Returns the Store's RPC error, or `unavailable` when it is too busy or slow.
@@ -106,8 +107,9 @@ impl ConfigStore {
         organization: String,
         command: serde_json::Value,
         trusted: Option<serde_json::Value>,
+        principal: Option<String>,
     ) -> Result<serde_json::Value> {
-        let who = actor(organization)?;
+        let who = actor(organization, principal)?;
         let command: ployz_store::Command = serde_json::from_value(command)
             .map_err(|_| invalid_argument("Expected a Config Store command"))?;
         let trusted = evidence(trusted)?;
@@ -176,8 +178,11 @@ impl ConfigStore {
             upload: Option<std::path::PathBuf>,
             failure: Option<String>,
         }
-        let who = actor(organization)?;
+        let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
+        // Only a Deployment of this Organization runs here.
+        let (store, owned) = (Arc::clone(&self.store), deployment.clone());
+        self.run(move || store.deployment(&who, &owned)).await?;
         let connections = serde_json::from_value(connections)
             .map_err(|_| invalid_argument("invalid management connections"))?;
         let sources: Sources = sources
@@ -194,7 +199,6 @@ impl ConfigStore {
         };
         let summary = ployz::sdk::run_deployment(
             Arc::clone(&self.store),
-            who,
             deployment,
             runner,
             connections,
@@ -224,7 +228,8 @@ impl ConfigStore {
     }
 
     /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
-    /// resolves to what it did (`ConfigWritten`, `automated`). Only Cloud's GitHub
+    /// resolves to what it did (`ConfigWritten`, `automated`). `trusted` carries how
+    /// many Servers the Organization has (`ConfigTrusted.servers`). Only Cloud's GitHub
     /// workers call this.
     ///
     /// # Errors
@@ -234,13 +239,39 @@ impl ConfigStore {
         &self,
         organization: String,
         event: serde_json::Value,
+        trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
-        let who = actor(organization)?;
+        let who = actor(organization, None)?;
         let event: ployz_store::SystemEvent = serde_json::from_value(whole(event))
             .map_err(|_| invalid_argument("Expected a system event"))?;
+        let trusted = evidence(trusted)?;
         let store = Arc::clone(&self.store);
-        self.run(move || store.system(&who.organization, &event))
+        self.run(move || store.system(&who.organization, &event, &trusted))
             .await
+    }
+
+    /// Forget the Organization's configuration once it has no Project
+    /// (`OrganizationRemoved`). Only Cloud's own Organization removal calls this.
+    ///
+    /// # Errors
+    /// Returns `conflict` while it has a Project, or a storage error.
+    #[napi]
+    pub async fn remove_organization(&self, organization: String) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.remove_organization(&who)).await
+    }
+
+    /// Every queued Deployment no runner claimed, admitted before `before` (Unix
+    /// seconds), across Organizations (`Unclaimed[]`): what Cloud's sweep dispatches
+    /// again.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn unclaimed(&self, before: i64) -> Result<serde_json::Value> {
+        let store = Arc::clone(&self.store);
+        self.run(move || store.unclaimed(before)).await
     }
 
     /// The head of a GitHub branch the Store last saw for the Organization, or null:
@@ -255,7 +286,7 @@ impl ConfigStore {
         repository_id: i64,
         branch: String,
     ) -> Result<serde_json::Value> {
-        let who = actor(organization)?;
+        let who = actor(organization, None)?;
         let repository_id = u64::try_from(repository_id)
             .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
         let store = Arc::clone(&self.store);
@@ -275,7 +306,7 @@ impl ConfigStore {
         repository_id: i64,
         branch: String,
     ) -> Result<serde_json::Value> {
-        let who = actor(organization)?;
+        let who = actor(organization, None)?;
         let repository_id = u64::try_from(repository_id)
             .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
         let store = Arc::clone(&self.store);
@@ -460,9 +491,13 @@ impl ConfigStore {
     }
 }
 
-fn actor(organization: String) -> Result<Actor> {
+fn actor(organization: String, principal: Option<String>) -> Result<Actor> {
     Ok(Actor {
         organization: OrganizationId::parse(organization).map_err(rpc_to_napi)?,
+        principal: principal
+            .map(ployz_store::Principal::parse)
+            .transpose()
+            .map_err(rpc_to_napi)?,
     })
 }
 

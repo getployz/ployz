@@ -120,7 +120,8 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
 }
 
 fn system(store: &ConfigStore, event: &SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&org(), event, &Trusted::default()).unwrap() else {
+    let Written::Automated(automated) = store.system(&org(), event, &Trusted::default()).unwrap()
+    else {
         panic!("a system event writes Automated")
     };
     automated
@@ -204,11 +205,19 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
 
     // Malformed observations are refused without echoing them.
     let error = store
-        .system(&org(), &push(Some(H3), Some("nope"), None), &Trusted::default())
+        .system(
+            &org(),
+            &push(Some(H3), Some("nope"), None),
+            &Trusted::default(),
+        )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     let error = store
-        .system(&org(), &push(Some(H3), Some(H1), Some(&["../etc"])), &Trusted::default())
+        .system(
+            &org(),
+            &push(Some(H3), Some(H1), Some(&["../etc"])),
+            &Trusted::default(),
+        )
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 }

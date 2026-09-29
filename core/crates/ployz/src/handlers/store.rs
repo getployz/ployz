@@ -160,7 +160,9 @@ impl Store {
 
     pub(crate) fn publish(&self, publish: &Publish) -> Result<Published, StoreCallError> {
         let request = Command::Publish(publish.clone());
-        self.call("write", &request, |store, who| store.publish(who, publish))
+        self.call("write", &request, |store, who| {
+            store.publish(who, publish, &Trusted::default())
+        })
     }
 
     pub(crate) fn discard(&self, discard: &Discard) -> Result<Discarded, StoreCallError> {
@@ -481,9 +483,7 @@ pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store>, Error> {
 
 fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
     if let Ok(url) = std::env::var(env::STORE) {
-        let actor = Actor {
-            organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
-        };
+        let actor = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"));
         // The hidden test mode keeps its sealing key beside its database.
         let key = match url
             .strip_prefix("sqlite:")

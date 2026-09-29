@@ -22,14 +22,14 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::command::{Command, insert_environment, replayable};
-use crate::deployment::{self, DeploymentStatus, NodeStatus};
+use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision};
+use crate::policy::{self, Policy};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
-use crate::policy::{self, Policy};
 use crate::{Actor, registry, review};
 
 /// Make a Branch of an Environment: Own Copies of the nodes picked, and of what
@@ -849,7 +849,13 @@ fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
     match sides.direction {
         Direction::Update => {
             let applied = deployment::head(tx, &sides.from)?.applied;
-            Moving::update(tx, &sides.from, applied, &sides.into, sides.row.base.clone())
+            Moving::update(
+                tx,
+                &sides.from,
+                applied,
+                &sides.into,
+                sides.row.base.clone(),
+            )
         }
         Direction::Save => {
             let parent = deployment::head(tx, &sides.into)?.applied;

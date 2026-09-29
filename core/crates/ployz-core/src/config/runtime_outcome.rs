@@ -197,8 +197,7 @@ pub fn project_runtime_outcome(
             (summary, completed, Some(operation), unexecuted)
         }
     };
-    if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len()
-    {
+    if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());
     }
     let mut matched = vec![false; preview.operations.len()];
@@ -207,8 +206,16 @@ pub fn project_runtime_outcome(
     for (mut operation, (completed, ran)) in completed
         .into_iter()
         .map(|operation| (operation, (true, true)))
-        .chain(failed.into_iter().map(|operation| (operation, (false, true))))
-        .chain(pending.into_iter().map(|operation| (operation, (false, false))))
+        .chain(
+            failed
+                .into_iter()
+                .map(|operation| (operation, (false, true))),
+        )
+        .chain(
+            pending
+                .into_iter()
+                .map(|operation| (operation, (false, false))),
+        )
     {
         redact_operation(&mut operation)?;
         // ponytail: quadratic matching for bounded plans; index operation identities if large plans make this measurable.

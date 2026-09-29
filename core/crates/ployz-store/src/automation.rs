@@ -373,7 +373,7 @@ fn deploy(
     match admit(tx, who, environment, push, (select, saves), trusted) {
         Ok(Some(Deploy::Admitted(deployment))) => automated.admitted.push(AutoDeployed {
             environment: environment.clone(),
-            deployment,
+            deployment: *deployment,
         }),
         Ok(Some(Deploy::Waiting)) => automated.waiting.push(environment.clone()),
         Ok(Some(Deploy::NoServers)) => automated.skipped.push(Skipped {
@@ -399,7 +399,7 @@ fn deploy(
 }
 
 enum Deploy {
-    Admitted(DeploymentSummary),
+    Admitted(Box<DeploymentSummary>),
     Waiting,
     /// It would deploy, but no Server could run it.
     NoServers,
@@ -585,7 +585,7 @@ fn admit(
     };
     let summary = deployment::admit(tx, who, &request, id, saved.revision, &frozen)?;
     build::pin(tx, &request.id, &pins)?;
-    Ok(Some(Deploy::Admitted(summary)))
+    Ok(Some(Deploy::Admitted(Box::new(summary))))
 }
 
 /// Whether every check suite of the pushed commit completed and passed; false

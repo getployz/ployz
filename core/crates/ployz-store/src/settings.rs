@@ -721,11 +721,6 @@ impl SettingPath {
         Self(Addressed::Service(service.clone(), None))
     }
 
-    /// The path of Volume `volume` as a whole.
-    pub(crate) fn volume(volume: &VolumeName) -> Self {
-        Self(Addressed::Volume(volume.clone()))
-    }
-
     /// The path of one Setting of `service`.
     pub(crate) fn of(service: &ServiceName, setting: ServiceSetting) -> Self {
         Self::at(service, Target::Setting(setting))

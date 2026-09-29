@@ -120,7 +120,9 @@ fn admit(
         ..Trusted::default()
     };
     match store.admit(who, &request(None), &trusted) {
-        Err(refused) if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired => {
+        Err(refused)
+            if !accept.is_empty() && refused.code == RpcErrorCode::ConfirmationRequired =>
+        {
             let version = refused.details["version"].as_str().unwrap().to_owned();
             store.admit(who, &request(Some(version)), &trusted)
         }

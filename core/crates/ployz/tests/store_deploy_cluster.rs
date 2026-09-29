@@ -43,7 +43,7 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     ployz(&["set", "web.env.GREETING=hi-${{ TOKEN }}"]);
     let deployed = ployz(&["deploy", "--events", events.to_str().unwrap()]);
     assert_eq!(deployed["status"], json!("applied"), "{deployed}");
-    assert_eq!(deployed["nodes"][0]["outcome"], json!("applied"));
+    assert_eq!(deployed["nodes"][0]["outcome"], json!("deployed"));
     assert!(deployed["preview"].is_object());
     assert!(!deployed.to_string().contains("s3cr3t"));
     let progress = std::fs::read_to_string(&events).unwrap();
@@ -354,9 +354,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite:{}", dir.path().join("store.db").display());
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -460,7 +458,6 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             store.pin(&id, &pins).unwrap();
             ployz::sdk::run_deployment(
                 Arc::clone(&store),
-                who.clone(),
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),
                 vec![Connection::tcp(address)],
@@ -542,9 +539,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     let dir = tempfile::tempdir().unwrap();
     let url = format!("sqlite:{}", dir.path().join("store.db").display());
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -622,7 +617,6 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 .unwrap();
             ployz::sdk::run_deployment(
                 Arc::clone(&store),
-                who.clone(),
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),
                 vec![Connection::tcp(address)],

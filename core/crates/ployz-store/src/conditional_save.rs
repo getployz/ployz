@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, When, Way};
+use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, Way, When};
 use crate::id::{ConditionalSaveId, EnvironmentId, ProjectId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -584,7 +584,11 @@ pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, take: &Take) -> Result<Moved, R
 
 /// Give the Service of `key`'s lineage in `intent` the pull request's sealed secret,
 /// keeping the variable's identity. False when that Service or variable is gone.
-fn put_secret(intent: &mut SavedEnvironmentIntent, key: &str, secret: &SavedVariableIntent) -> bool {
+fn put_secret(
+    intent: &mut SavedEnvironmentIntent,
+    key: &str,
+    secret: &SavedVariableIntent,
+) -> bool {
     let lineage = key.split_once(':').map_or(key, |(lineage, _)| lineage);
     let variable = intent
         .services
@@ -600,7 +604,9 @@ fn put_secret(intent: &mut SavedEnvironmentIntent, key: &str, secret: &SavedVari
         return false;
     };
     variable.value = secret.value.clone();
-    variable.value_fingerprint.clone_from(&secret.value_fingerprint);
+    variable
+        .value_fingerprint
+        .clone_from(&secret.value_fingerprint);
     true
 }
 
@@ -1130,11 +1136,7 @@ fn with_variable_ids_of(
     next
 }
 
-fn load(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    id: &ConditionalSaveId,
-) -> Result<Option<Found>, RpcError> {
+fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSaveId) -> Result<Option<Found>, RpcError> {
     let rows = tx.query(
         "SELECT environment_id, state, number, saved FROM config_conditional_save \
          WHERE id = ?1 AND organization_id = ?2",

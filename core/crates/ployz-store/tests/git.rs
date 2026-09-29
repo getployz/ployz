@@ -266,7 +266,8 @@ fn a_git_service_round_trips_get_edit_publish() {
                 environment: EnvironmentRef::default(),
                 version: Some(diff.version),
                 accept_volume_loss: Vec::new(),
-            }, &Trusted::default(),
+            },
+            &Trusted::default(),
         )
         .unwrap();
     assert!(published.saved.0 >= 1);
