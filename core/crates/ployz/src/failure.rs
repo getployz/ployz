@@ -2,9 +2,10 @@ use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
     CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
-    PartialResult, RpcError, ServiceSelectorError, StreamProtocolError, UnconfirmedDataLoss,
-    ValueError,
+    PartialResult, RpcError, RpcErrorCode, ServiceSelectorError, StreamProtocolError,
+    UnconfirmedDataLoss, ValueError,
 };
+use serde_json::{Value, json};
 
 use crate::{
     cloud_enroll,
@@ -16,8 +17,10 @@ use crate::{
     operator::OperatorError,
     project::ProjectError,
     provisioning::ProvisionError,
-    volume::AssignmentError,
 };
+
+/// Exit code of a command that printed its result but did not fully succeed.
+pub const PARTIAL_EXIT: u8 = 3;
 
 /// CLI command outcome. `Display` is product stderr. `exit` is silent.
 #[derive(Debug)]
@@ -31,17 +34,22 @@ enum Inner {
     Exit(u8),
 }
 
+/// A product failure raised by the CLI itself, with its `--json` error code.
 // Skip marker for later capture_exception; not a library error.
 #[derive(Debug)]
-struct Usage(Cow<'static, str>);
+struct Message {
+    code: RpcErrorCode,
+    text: Cow<'static, str>,
+    details: Value,
+}
 
-impl fmt::Display for Usage {
+impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
-impl Error for Usage {}
+impl Error for Message {}
 
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
@@ -57,13 +65,137 @@ impl Failure {
         }
     }
 
+    /// The result is printed, but some targets failed or never answered.
+    #[must_use]
+    pub fn partial() -> Self {
+        Self::exit(PARTIAL_EXIT)
+    }
+
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::command(Usage(message.into()))
+        Self::coded(RpcErrorCode::InvalidArgument, message)
+    }
+
+    pub fn not_found(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::NotFound, message)
+    }
+
+    pub fn ambiguous(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Ambiguous, message)
+    }
+
+    pub fn conflict(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Conflict, message)
+    }
+
+    pub fn unavailable(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Unavailable, message)
+    }
+
+    pub fn coded(code: RpcErrorCode, message: impl Into<Cow<'static, str>>) -> Self {
+        Self::detailed(code, message, Value::Null)
+    }
+
+    /// A failure whose `--json` error carries machine-readable evidence in `details`.
+    pub fn detailed(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        details: Value,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+        })
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
         Self::usage(format!("WARNING: {context}: {cause}."))
+    }
+
+    /// The `--json` error object: the RPC error shape and vocabulary.
+    #[must_use]
+    pub fn report(&self) -> RpcError {
+        let (code, details) = match &self.inner {
+            Inner::Command(error) => classify(error.as_ref()),
+            Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
+        };
+        RpcError {
+            code,
+            message: self.to_string(),
+            details,
+        }
+    }
+}
+
+#[expect(
+    clippy::wildcard_enum_match_arm,
+    reason = "every unlisted connection failure means the Cluster was not reached"
+)]
+fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
+    let code = if let Some(message) = error.downcast_ref::<Message>() {
+        return (message.code.clone(), message.details.clone());
+    } else if let Some(error) = error.downcast_ref::<RpcError>() {
+        return (error.code.clone(), error.details.clone());
+    } else if let Some(error) = error.downcast_ref::<ConnectError>() {
+        match error {
+            ConnectError::Remote(error) => return (error.code.clone(), error.details.clone()),
+            ConnectError::ClientRefused | ConnectError::ClientCleared => {
+                RpcErrorCode::Unauthenticated
+            }
+            ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
+                RpcErrorCode::Unsupported
+            }
+            ConnectError::Context(error) => context_code(error),
+            ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
+                RpcErrorCode::InvalidArgument
+            }
+            _ => RpcErrorCode::Unavailable,
+        }
+    } else if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
+        match error {
+            MachineSelectorError::NoTargets => RpcErrorCode::InvalidArgument,
+            MachineSelectorError::NoVisibleMachines | MachineSelectorError::NotFound(_) => {
+                RpcErrorCode::NotFound
+            }
+            MachineSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
+        }
+    } else if let Some(error) = error.downcast_ref::<ServiceSelectorError>() {
+        match error {
+            ServiceSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
+            ServiceSelectorError::NameAmbiguity { .. } => RpcErrorCode::Ambiguous,
+        }
+    } else if let Some(error) = error.downcast_ref::<ContainerSelectorError>() {
+        match error {
+            ContainerSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
+            ContainerSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
+        }
+    } else if let Some(error) = error.downcast_ref::<ContextError>() {
+        context_code(error)
+    } else if error.is::<TransportError>() {
+        RpcErrorCode::Unavailable
+    } else if error.is::<ValueError>()
+        || error.is::<ConnectionError>()
+        || error.is::<ConfigError>()
+        || error.is::<std::num::ParseIntError>()
+        || error.is::<shell_words::ParseError>()
+    {
+        RpcErrorCode::InvalidArgument
+    } else {
+        RpcErrorCode::Internal
+    };
+    (code, Value::Null)
+}
+
+fn context_code(error: &ContextError) -> RpcErrorCode {
+    match error {
+        ContextError::NoConfig
+        | ContextError::NoContexts(_)
+        | ContextError::ContextNotFound { .. }
+        | ContextError::NoConnections { .. } => RpcErrorCode::NotFound,
+        ContextError::NoCurrentContext(_) | ContextError::Connection(_) => {
+            RpcErrorCode::InvalidArgument
+        }
     }
 }
 
@@ -125,8 +257,21 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         Err(Failure {
             inner: Inner::Exit(code),
         }) => ExitCode::from(code),
-        Err(error) => {
+        // A printed result stays the one stdout object; what failed after it is partial.
+        Err(error) if crate::output::emitted() => {
             eprintln!("{error}");
+            ExitCode::from(PARTIAL_EXIT)
+        }
+        Err(error) => {
+            if crate::output::json() {
+                let report = json!({ "error": error.report() });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).expect("a JSON value serializes")
+                );
+            } else {
+                eprintln!("{error}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -160,7 +305,6 @@ from_error!(
     PushError,
     TransportError,
     CodecError,
-    AssignmentError,
     ProvisionError,
     IngressImageError,
     RpcError,
@@ -328,7 +472,7 @@ mod tests {
     fn usage_is_not_a_library_error() {
         let failure = Failure::usage("nope");
         assert_eq!(failure.to_string(), "nope");
-        assert_eq!(source::<Usage>(&failure).to_string(), "nope");
+        assert_eq!(source::<Message>(&failure).to_string(), "nope");
         assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 

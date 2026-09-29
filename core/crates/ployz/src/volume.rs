@@ -64,14 +64,6 @@ impl ProvisionedVolumeSize {
     }
 }
 
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum AssignmentError {
-    #[error("expected KEY=VALUE, got {0:?}")]
-    MissingDelimiter(String),
-    #[error("assignment key cannot be empty")]
-    EmptyKey,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct MachineVolume {
     pub machine_name: MachineName,
@@ -113,23 +105,6 @@ pub fn machine_volumes(
                     machine_name: machine_name.clone(),
                     volume,
                 })
-        })
-        .collect()
-}
-
-pub fn parse_assignments<'a>(
-    values: impl IntoIterator<Item = &'a str>,
-) -> Result<BTreeMap<String, String>, AssignmentError> {
-    values
-        .into_iter()
-        .map(|value| {
-            let (key, value) = value
-                .split_once('=')
-                .ok_or_else(|| AssignmentError::MissingDelimiter(value.to_owned()))?;
-            if key.is_empty() {
-                return Err(AssignmentError::EmptyKey);
-            }
-            Ok((key.into(), value.into()))
         })
         .collect()
 }

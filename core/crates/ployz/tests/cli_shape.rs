@@ -31,15 +31,11 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             // Shell tooling, not a Cluster operation.
             "completion",
             "ctx",
-            "ctx connection",
             "ctx ls",
             "ctx rm",
-            "ctx show",
             "ctx use",
             "ingress",
-            "ingress config",
             "ingress deploy",
-            "ingress logs",
             "machine",
             "machine add",
             "machine build-cache-clear",
@@ -47,27 +43,23 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "machine inspect",
             "machine logs",
             "machine ls",
-            "machine rename",
             "machine rm",
-            "machine rtt",
             "machine update",
             "machine upgrade",
-            "machine upgrade inspect",
             "project",
             "project ls",
             "project rm",
-            "proxy",
-            "ps",
             "service",
             "service exec",
             "service inspect",
             "service logs",
             "service ls",
+            "service proxy",
+            "service ps",
             "service rm",
             "service scale",
             "service start",
             "service stop",
-            "version",
             "volume",
             "volume create",
             "volume inspect",
@@ -78,52 +70,65 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
 }
 
 #[test]
-fn version_takes_no_output_template() {
-    for flag in ["-o", "--output"] {
+fn every_result_command_takes_one_json_switch_and_no_output_format() {
+    fn leaves(command: &clap::Command, parent: &str, paths: &mut Vec<String>) {
+        for child in command.get_subcommands() {
+            let path = format!("{parent}{}", child.get_name());
+            if child.has_subcommands() {
+                leaves(child, &format!("{path} "), paths);
+            } else {
+                paths.push(path);
+            }
+        }
+    }
+    let command = ployz::cli::command();
+    let mut paths = Vec::new();
+    leaves(&command, "", &mut paths);
+    for path in paths {
+        let mut leaf = &command;
+        for name in path.split(' ') {
+            leaf = leaf.find_subcommand(name).unwrap();
+        }
+        let json = leaf.get_arguments().find(|arg| arg.get_id() == "json");
+        let streams_a_session =
+            ["service exec", "service proxy", "completion"].contains(&path.as_str());
+        assert_eq!(json.is_none(), streams_a_session, "{path}");
+        if let Some(json) = json {
+            assert_eq!(json.get_short(), None, "{path}");
+        }
         assert!(
-            ployz::cli::command()
-                .try_get_matches_from(["ployz", "version", flag, "{{.Version}}"])
-                .is_err(),
-            "{flag}"
+            leaf.get_arguments().all(|arg| arg.get_id() != "output"),
+            "{path} keeps an output format"
         );
     }
 }
 
 #[test]
-fn listing_json_output_accepts_only_json_in_long_and_short_forms() {
-    let paths: &[&[&str]] = &[
-        &["ps"],
-        &["service", "ls"],
-        &["volume", "ls"],
-        &["project", "ls"],
-    ];
-    for path in paths {
-        for flag in ["--output", "-o"] {
-            let mut args = vec!["ployz"];
-            args.extend_from_slice(path);
-            args.extend([flag, "json"]);
-            let matches = ployz::cli::command().try_get_matches_from(args).unwrap();
-            let mut leaf = &matches;
-            while let Some((_, child)) = leaf.subcommand() {
-                leaf = child;
-            }
+fn each_short_flag_has_one_meaning_across_the_tree() {
+    fn collect(
+        command: &clap::Command,
+        path: &str,
+        seen: &mut std::collections::BTreeMap<char, (String, String)>,
+    ) {
+        for arg in command.get_arguments() {
+            let Some(short) = arg.get_short() else {
+                continue;
+            };
+            let id = arg.get_id().to_string();
+            let previous = seen
+                .entry(short)
+                .or_insert_with(|| (id.clone(), path.to_owned()));
             assert_eq!(
-                leaf.get_one::<String>("output").map(String::as_str),
-                Some("json"),
-                "{} {flag}",
-                path.join(" ")
+                previous.0, id,
+                "-{short} means --{} in `{}` but --{id} in `{path}`",
+                previous.0, previous.1
             );
         }
-
-        let mut args = vec!["ployz"];
-        args.extend_from_slice(path);
-        args.extend(["--output", "yaml"]);
-        assert!(
-            ployz::cli::command().try_get_matches_from(args).is_err(),
-            "{} accepted a non-JSON output format",
-            path.join(" ")
-        );
+        for child in command.get_subcommands() {
+            collect(child, &format!("{path} {}", child.get_name()), seen);
+        }
     }
+    collect(&ployz::cli::command(), "ployz", &mut Default::default());
 }
 
 #[test]
@@ -144,7 +149,7 @@ fn native_completion_is_generated_for_every_supported_shell() {
 }
 
 #[test]
-fn machine_upgrade_requires_explicit_targets_and_has_typed_inspection() {
+fn machine_upgrade_requires_explicit_targets() {
     let command = ployz::cli::command();
     let request = command
         .clone()
@@ -187,7 +192,6 @@ fn machine_upgrade_requires_explicit_targets_and_has_typed_inspection() {
     );
     assert!(
         command
-            .clone()
             .try_get_matches_from([
                 "ployz",
                 "machine",
@@ -198,37 +202,55 @@ fn machine_upgrade_requires_explicit_targets_and_has_typed_inspection() {
             ])
             .is_err()
     );
+}
 
-    let inspect = command
-        .try_get_matches_from([
-            "ployz",
-            "machine",
-            "upgrade",
-            "inspect",
-            "edge-a",
-            "--attempt",
-            "0123456789abcdef0123456789abcdef",
-            "-o",
-            "json",
-        ])
+/// Run the binary against an empty config home; returns (exit code, stdout JSON, stderr).
+fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.yaml");
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(args)
+        .args(["--ployz-config", config.to_str().unwrap()])
+        .env("HOME", home.path())
+        .env_remove("PLOYZ_CONTEXT")
+        .env_remove("PLOYZ_CONNECT")
+        .output()
         .unwrap();
-    let inspect = inspect
-        .subcommand_matches("machine")
-        .unwrap()
-        .subcommand_matches("upgrade")
-        .unwrap()
-        .subcommand_matches("inspect")
-        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
+    (
+        output.status.code(),
+        json,
+        String::from_utf8(output.stderr).unwrap(),
+    )
+}
+
+#[test]
+fn json_results_and_errors_are_one_stdout_object_with_distinct_exit_codes() {
+    let (code, json, _) = run_json(&["ctx", "ls", "--json"]);
+    assert_eq!(code, Some(0));
+    assert_eq!(json, serde_json::json!({ "contexts": [] }));
+
+    let (code, json, _) = run_json(&["ctx", "use", "missing", "--json"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(json.pointer("/error/code").unwrap(), "not_found", "{json}");
+    assert!(message(&json).contains("no contexts"), "{json}");
+
+    let (code, json, stderr) = run_json(&["volume", "ls", "--json", "--no-such-flag"]);
+    assert_eq!(code, Some(2), "{stderr}");
     assert_eq!(
-        inspect
-            .get_one::<ployz_core::MachineUpgradeAttemptId>("attempt")
-            .map(ToString::to_string),
-        Some("0123456789abcdef0123456789abcdef".into())
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
     );
-    assert_eq!(
-        inspect.get_one::<String>("output").map(String::as_str),
-        Some("json")
-    );
+    assert!(message(&json).contains("--no-such-flag"), "{json}");
+}
+
+fn message(json: &serde_json::Value) -> &str {
+    json.pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap()
 }
 
 #[cfg(unix)]

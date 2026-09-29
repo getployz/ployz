@@ -1,37 +1,8 @@
 //! CLI handlers for neutral Ingress Proxy operations.
 
 use clap::ArgMatches;
-use ployz_core::{GetIngressProxyConfigRequest, MachineTarget, op};
 
 use super::{Error, connect_client, leaf_matches, runtime, string_values};
-use crate::connect::TARGET_RPC_TIMEOUT;
-
-pub(super) fn config(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let selector = matches.get_one::<String>("machine").cloned();
-    runtime()?.block_on(async {
-        let mut client = connect_client(root, None).await?;
-        let target = selector.map(MachineTarget::parse).transpose()?;
-        let config = match target.as_ref() {
-            None => {
-                client
-                    .call::<op::GetIngressProxyConfig>(GetIngressProxyConfigRequest {}, None)
-                    .await?
-            }
-            Some(target) => {
-                client
-                    .invoke::<op::GetIngressProxyConfig>(
-                        GetIngressProxyConfigRequest {},
-                        target,
-                        Some(TARGET_RPC_TIMEOUT),
-                    )
-                    .await?
-            }
-        };
-        print!("{}", config.config());
-        Ok(())
-    })
-}
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -51,7 +22,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         let requested = crate::ingress::service_spec(image, constraints).await?;
-        crate::deploy::apply_requested(
+        let outcome = crate::deploy::apply_requested(
             &mut client,
             &requested,
             force_recreate,
@@ -60,6 +31,6 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         )
         .await
         .map_err(Error::from)?;
-        Ok(())
+        crate::deploy::emit_outcome(&outcome)
     })
 }

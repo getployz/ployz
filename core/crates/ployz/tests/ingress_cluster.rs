@@ -88,20 +88,13 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     }
     let observations = wait_running(&mut client, &api_id, 3).await;
     for (index, machine) in machines.iter().enumerate() {
-        let config = wait_config(&mut client, machine, |config| {
+        wait_config(&mut client, machine, |config| {
             config.contains("http://example.test")
                 && observations.iter().all(|container| {
                     config.contains(&format!("{}:8080", container.address.unwrap().0))
                 })
         })
         .await;
-        assert_eq!(
-            cli(
-                &direct,
-                &["ingress", "config", "--machine", machine.id.as_str()],
-            ),
-            config
-        );
         assert_eq!(
             cluster
                 .machine_shell(index, "curl -fsS -H 'Host: example.test' http://127.0.0.1",)
@@ -136,7 +129,10 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             .unwrap();
     }
 
-    let logs = run_cli(&direct, &["ingress", "logs", "--tail", "1"]);
+    let logs = run_cli(
+        &direct,
+        &["service", "logs", "ployz-system/ingress", "--tail", "1"],
+    );
     let logs = [logs.stdout, logs.stderr].concat();
     assert!(String::from_utf8(logs).unwrap().contains(" ingress/"));
 

@@ -212,8 +212,8 @@ where
             error,
         )));
     }
-    println!("Joined Machine {} ({})", assigned.name, assigned.id);
-    Ok(())
+    crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
+    crate::output::emit(&serde_json::json!({ "machine": assigned, "founded": false }))
 }
 
 enum FounderLocalState {
@@ -319,7 +319,7 @@ where
         && let Some(requested) = ingress
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
-        crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
+        let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
             Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
@@ -340,8 +340,8 @@ where
         &pairing.secret,
     )
     .await?;
-    println!("Initialised Machine {} ({})", machine.name, machine.id);
-    Ok(())
+    crate::output::say!("Initialised Machine {} ({})", machine.name, machine.id);
+    crate::output::emit(&serde_json::json!({ "machine": machine, "founded": true }))
 }
 
 /// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.

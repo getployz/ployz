@@ -9,7 +9,7 @@ use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame, FanoutSelector,
-    LogBody, LogEntry, LogOrigin, LogsOptions, QualifiedService, ServiceSelector, select_service,
+    LogBody, LogEntry, LogOrigin, LogsOptions, ServiceSelector, select_service,
 };
 use tokio::io::copy_bidirectional;
 
@@ -95,10 +95,6 @@ pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
         .map(|values| values.cloned().collect::<Vec<_>>())
         .unwrap_or_default();
     service_logs_with(root, explicit)
-}
-
-pub(super) fn ingress_logs(root: &ArgMatches) -> Result<(), Error> {
-    service_logs_with(root, vec![QualifiedService::system_ingress().to_string()])
 }
 
 fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
@@ -250,7 +246,13 @@ async fn print_logs(
     utc: bool,
 ) -> Result<(), Error> {
     while let Some(entry) = entries.recv().await {
-        let entry = entry.map_err(Error::usage)?;
+        let entry = entry.map_err(Error::unavailable)?;
+        if crate::output::json() {
+            if let Some(line) = log_line(&entry) {
+                crate::output::emit_line(&line)?;
+            }
+            continue;
+        }
         let timestamp = timestamp(&entry, utc);
         let (service_name, service_id, container, hook) = match &entry.metadata.origin {
             LogOrigin::Service {
@@ -289,6 +291,35 @@ async fn print_logs(
             .and_then(|()| output.write_all(message))?;
     }
     Ok(())
+}
+
+/// One `--json` log line; heartbeats and stream errors carry no log text.
+fn log_line(entry: &LogEntry) -> Option<serde_json::Value> {
+    let (message, stderr) = printable_log_bytes(&entry.body)?;
+    let (service, service_id, container_id, hook) = match &entry.metadata.origin {
+        LogOrigin::Service {
+            service_id,
+            service_name,
+            container_id,
+            hook,
+        } => (
+            service_name.as_str(),
+            Some(service_id),
+            Some(container_id),
+            hook.as_deref(),
+        ),
+        LogOrigin::Machine { service } => (service.as_str(), None, None, None),
+    };
+    Some(serde_json::json!({
+        "timestamp": timestamp(entry, true),
+        "machine": entry.metadata.machine_name,
+        "service": service,
+        "service_id": service_id,
+        "container_id": container_id,
+        "hook": hook,
+        "stream": if stderr { "stderr" } else { "stdout" },
+        "message": String::from_utf8_lossy(message),
+    }))
 }
 
 fn printable_log_bytes(body: &LogBody) -> Option<(&[u8], bool)> {

@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     sync::Arc,
 };
 
@@ -255,7 +255,7 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !crate::output::interactive() {
         return Err(Error::usage(format!(
             "cannot confirm {} without a terminal; pass --yes",
             prompt.escape_debug()

@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     num::NonZeroU32,
 };
 
@@ -11,7 +11,11 @@ use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{connect::Client, failure::Failure};
+use crate::{
+    connect::Client,
+    failure::Failure,
+    output::{say, say_inline},
+};
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
@@ -27,7 +31,7 @@ pub(crate) async fn apply_requested(
     force_recreate: bool,
     skip_health_monitor: bool,
     context: &str,
-) -> Result<(), ApplyError> {
+) -> Result<Outcome, ApplyError> {
     let preview = crate::setup_retry::run(
         client,
         "Preparing service deployment",
@@ -47,8 +51,8 @@ pub(crate) async fn apply_requested(
     .map_err(|error| ApplyError::Prepare(error.into()))?;
     print_warnings(&preview);
     if preview.noop() {
-        print!("{}", render::plan_text(&preview, context));
-        return Ok(());
+        say_inline!("{}", render::plan_text(&preview, context));
+        return Ok(nothing_done());
     }
     let cancellation = crate::cancellation::on_ctrl_c();
     let _stop_listener = cancellation.clone().drop_guard();
@@ -57,7 +61,7 @@ pub(crate) async fn apply_requested(
             client,
             &preview,
             format!("Running service {}", requested.name),
-            Ink::detect(io::stdout()),
+            Ink::human(),
             &cancellation,
         )
         .await,
@@ -93,7 +97,11 @@ impl From<ApplyError> for Failure {
             } => {
                 let text =
                     report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
-                Failure::usage(text.trim().to_owned())
+                Failure::detailed(
+                    ployz_core::RpcErrorCode::Internal,
+                    text.trim().to_owned(),
+                    serde_json::json!({ "outcome": outcome }),
+                )
             }
         }
     }
@@ -110,7 +118,7 @@ pub(crate) async fn deploy_scale(
     replicas: NonZeroU32,
     skip_health_monitor: bool,
     gate: ConfirmGate<'_>,
-) -> Result<(), Failure> {
+) -> Result<Outcome, Failure> {
     let preview = plan_scale(
         client,
         selector,
@@ -129,10 +137,10 @@ async fn confirm_and_execute(
     preview: &DeployPlan,
     gate: ConfirmGate<'_>,
     cancellation: &CancellationToken,
-) -> Result<(), Failure> {
-    print!("{}", render::plan_text(preview, gate.context));
+) -> Result<Outcome, Failure> {
+    say_inline!("{}", render::plan_text(preview, gate.context));
     if preview.noop() {
-        return Ok(());
+        return Ok(nothing_done());
     }
     if !gate.auto_confirm
         && !crate::cancellation::read(
@@ -141,15 +149,15 @@ async fn confirm_and_execute(
         )
         .await?
     {
-        println!("No changes were made.");
-        return Ok(());
+        say!("No changes were made.");
+        return Ok(nothing_done());
     }
     finish(
         stream_confirm(
             client,
             preview,
             format!("Deploying to {}", gate.context),
-            Ink::detect(io::stdout()),
+            Ink::human(),
             cancellation,
         )
         .await,
@@ -164,15 +172,15 @@ pub(crate) async fn remove_project(
     volumes: VolumeFate,
     context: &str,
     confirm_data_loss: &DataLossConfirmation,
-) -> Result<(), Failure> {
+) -> Result<Outcome, Failure> {
     let preview = client
         .prepare_project_destroy(name, confirm_data_loss, volumes)
         .await
         .map_err(crate::failure::refusal_from_rpc)?;
     print_warnings(&preview);
-    print!("{}", render::removal_plan_text(&preview, context));
+    say_inline!("{}", render::removal_plan_text(&preview, context));
     if preview.noop() {
-        return Ok(());
+        return Ok(nothing_done());
     }
     let cancellation = crate::cancellation::on_ctrl_c();
     let _stop_listener = cancellation.clone().drop_guard();
@@ -181,7 +189,7 @@ pub(crate) async fn remove_project(
             client,
             &preview,
             format!("Removing Project {name} from {context}"),
-            Ink::detect(io::stdout()),
+            Ink::human(),
             &cancellation,
         )
         .await,
@@ -250,17 +258,16 @@ impl ProgressPrinter {
             return;
         };
         let signature = progress_signature(event);
-        let tty = io::stdout().is_terminal();
+        let tty = crate::output::human_is_terminal();
         if !tty && self.last_signature.as_ref() == Some(&signature) {
             return;
         }
         self.last_rows = rows.clone();
         let text = report::paint_live(&self.title, *completed, *total, rows, &self.ink);
         if tty && self.last_terminal_rows > 0 {
-            print!("\x1b[{}F\x1b[J", self.last_terminal_rows);
+            say_inline!("\x1b[{}F\x1b[J", self.last_terminal_rows);
         }
-        print!("{text}");
-        let _ = io::stdout().flush();
+        say_inline!("{text}");
         if tty {
             let columns = crossterm::terminal::size().map_or(80, |(columns, _)| columns);
             let plain = report::paint_live(&self.title, *completed, *total, rows, &Ink::plain());
@@ -313,7 +320,7 @@ fn print_warnings(preview: &DeployPreview) {
 }
 
 async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool, Failure> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !crate::output::interactive() {
         return Err(Failure::usage(
             "confirmation requires a terminal; pass --yes to continue",
         ));
@@ -325,18 +332,37 @@ async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool,
     Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
+/// Terminal evidence of a Deploy that ran to completion.
+pub(crate) type Outcome = DeployOutcome<ExecutionError>;
+
+/// A no-op, declined, or already-converged Deploy: nothing to do, nothing done.
+fn nothing_done() -> Outcome {
+    DeployOutcome::Success {
+        completed: Vec::new(),
+    }
+}
+
+/// The `--json` result of a Deploy: its terminal evidence.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error.
+pub(crate) fn emit_outcome(outcome: &Outcome) -> Result<(), Failure> {
+    crate::output::emit(&serde_json::json!({ "outcome": outcome }))
+}
+
 fn finish(
     (outcome, printer): (DeployOutcome<ExecutionError>, ProgressPrinter),
     success_title: &str,
-) -> Result<(), ApplyError> {
+) -> Result<Outcome, ApplyError> {
     match outcome {
         DeployOutcome::Success { completed } => {
             let text = render::success_text(&completed, success_title);
-            if io::stdout().is_terminal() && printer.last_terminal_rows > 0 {
-                print!("\x1b[{}F\x1b[J", printer.last_terminal_rows);
+            if crate::output::human_is_terminal() && printer.last_terminal_rows > 0 {
+                say_inline!("\x1b[{}F\x1b[J", printer.last_terminal_rows);
             }
-            print!("{text}");
-            Ok(())
+            say_inline!("{text}");
+            Ok(DeployOutcome::Success { completed })
         }
         failed @ DeployOutcome::Failed { .. } => Err(ApplyError::Execute {
             outcome: Box::new(failed),

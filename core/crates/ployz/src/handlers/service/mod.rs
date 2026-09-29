@@ -8,8 +8,12 @@ use ployz_core::{
     ServiceObservation, ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
 };
 
-use crate::cluster::ContainerObservationCondition;
+use crate::{
+    cluster::ContainerObservationCondition,
+    output::{self, Gaps, say},
+};
 use ployz_core::EnvironmentValues;
+use serde_json::json;
 
 use super::{
     Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
@@ -22,10 +26,6 @@ use super::{
 ///
 /// Returns a connection, RPC, or serialization error.
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
-    let json = leaf_matches(root)
-        .get_one::<String>("output")
-        .map(String::as_str)
-        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
@@ -35,28 +35,30 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
             print_observation_warning(&live);
             let services = live.services();
-            if json {
-                println!("{}", serde_json::to_string_pretty(&services)?);
-            } else {
-                println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-                for service in &services {
-                    let counts = service_counts(service, &machines);
-                    println!(
-                        "{}\t{}\t{}\t{}",
-                        service.service_id,
-                        service.identity,
-                        service_count_text(counts),
-                        service.hook_containers.len()
-                    );
-                    if counts.unknown > 0 {
-                        eprintln!(
-                            "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity, counts.unknown
+            let gaps = Gaps::of(&live.containers);
+            output::finish(
+                &json!({ "services": services, "failures": gaps.failures, "omitted": gaps.omitted }),
+                |_| {
+                    say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
+                    for service in &services {
+                        let counts = service_counts(service, &machines);
+                        say!(
+                            "{}\t{}\t{}\t{}",
+                            service.service_id,
+                            service.identity,
+                            service_count_text(counts),
+                            service.hook_containers.len()
                         );
+                        if counts.unknown > 0 {
+                            eprintln!(
+                                "WARNING: {} has unknown storage eligibility on {} Machine(s)",
+                                service.identity, counts.unknown
+                            );
+                        }
                     }
-                }
-            }
-            Ok(())
+                },
+            )?;
+            gaps.outcome()
         })
     })
 }
@@ -134,7 +136,6 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
-    let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -145,31 +146,33 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &containers
-                            .iter()
-                            .map(|container| container.as_observation())
-                            .collect::<Vec<_>>()
-                    )?
-                );
-            } else {
-                println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
-                for container in containers {
-                    let observation = container.as_observation();
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        observation.container_id,
-                        observation.identity(),
-                        process_kind(container),
-                        observation.machine_id,
-                        observation.runtime
-                    );
-                }
-            }
-            Ok(())
+            let gaps = Gaps::of(&live.containers);
+            let observations = containers
+                .iter()
+                .map(|container| container.as_observation())
+                .collect::<Vec<_>>();
+            output::finish(
+                &json!({
+                    "containers": observations,
+                    "failures": gaps.failures,
+                    "omitted": gaps.omitted,
+                }),
+                |_| {
+                    say!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
+                    for container in &containers {
+                        let observation = container.as_observation();
+                        say!(
+                            "{}\t{}\t{}\t{}\t{}",
+                            observation.container_id,
+                            observation.identity(),
+                            process_kind(*container),
+                            observation.machine_id,
+                            observation.runtime
+                        );
+                    }
+                },
+            )?;
+            gaps.outcome()
         })
     })
 }
@@ -257,8 +260,16 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
             print_observation_warning(&live);
             let services = live.services();
             let service = select_service(&services, &selector)?;
-            println!("{}", serde_json::to_string_pretty(service)?);
-            Ok(())
+            let gaps = Gaps::of(&live.containers);
+            let result =
+                json!({ "service": service, "failures": gaps.failures, "omitted": gaps.omitted });
+            output::finish(&result, |result| {
+                say!(
+                    "{}",
+                    serde_json::to_string_pretty(result).expect("a JSON value serializes")
+                );
+            })?;
+            gaps.outcome()
         })
     })
 }
@@ -280,6 +291,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             let services = select_services(&observed, &selectors)?;
             let outcome =
                 apply_service_action(client, &live, &services, action, signal, timeout).await?;
+            output::emit(&outcome.evidence(&live))?;
             service_action_result(outcome.partial)
         })
     })
@@ -343,6 +355,7 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
             let (volumes, skipped) = volumes_safe_to_remove(volumes, &services, &outcome.affected);
+            let mut removals = Vec::new();
             let volume_result = if volumes.is_empty() {
                 Ok(())
             } else {
@@ -353,10 +366,17 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
                     })
                     .await
                 {
-                    Ok(removal) => super::volume::refuse_unless_removed(removal),
+                    Ok(removal) => {
+                        removals.clone_from(&removal);
+                        super::volume::refuse_unless_removed(removal)
+                    }
                     Err(error) => Err(error.into()),
                 }
             };
+            let mut evidence = outcome.evidence(&live);
+            evidence.insert("volumes".into(), json!(removals));
+            evidence.insert("volumes_not_attempted".into(), json!(skipped));
+            output::emit(&evidence)?;
             combined_teardown_result(
                 combined_teardown_result(
                     service_action_result(outcome.partial),
@@ -485,7 +505,32 @@ fn member_volume_ids(
 
 struct ServiceActionOutcome {
     affected: HashSet<ContainerId>,
+    /// One entry per Container the action reached.
+    changed: Vec<serde_json::Value>,
+    /// One entry per Container the action failed on.
+    failures: Vec<serde_json::Value>,
     partial: bool,
+}
+
+impl ServiceActionOutcome {
+    /// The `--json` result: what changed, what failed, and which Machines never answered.
+    fn evidence(
+        &self,
+        live: &LiveServices<RpcError>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut failures = self.failures.clone();
+        failures.extend(
+            live.containers
+                .failures
+                .iter()
+                .map(|failure| json!(failure)),
+        );
+        serde_json::Map::from_iter([
+            ("changed".into(), json!(self.changed)),
+            ("failures".into(), json!(failures)),
+            ("omitted".into(), json!(live.containers.omissions)),
+        ])
+    }
 }
 
 async fn apply_service_action(
@@ -503,16 +548,27 @@ async fn apply_service_action(
         .map(|container| container.as_observation().container_id)
         .collect::<HashSet<_>>();
     let mut changed = Vec::new();
+    let mut rows = Vec::new();
+    let mut failures = Vec::new();
     let mut partial = false;
     for service in services {
         let outcomes = client
             .change_observed_service(service, action, signal.clone(), timeout)
             .await;
         for success in outcomes.successes {
-            println!(
+            say!(
                 "{}\t{}\t{}\t{}",
-                action, service.identity, success.machine_id, success.value
+                action,
+                service.identity,
+                success.machine_id,
+                success.value
             );
+            rows.push(json!({
+                "action": action.to_string(),
+                "service": service.identity,
+                "machine_id": success.machine_id,
+                "container_id": success.value,
+            }));
             if service_container_ids.contains(&success.value) {
                 changed.push(success.value);
             }
@@ -522,6 +578,11 @@ async fn apply_service_action(
                 "WARNING: {} failed for {} on {}: {}",
                 action, failure.error.container_id, failure.machine_id, failure.error.error.message
             );
+            failures.push(json!({
+                "machine_id": failure.machine_id,
+                "container_id": failure.error.container_id,
+                "error": failure.error.error,
+            }));
             partial = true;
         }
     }
@@ -545,6 +606,8 @@ async fn apply_service_action(
     }
     Ok(ServiceActionOutcome {
         affected: changed.into_iter().collect(),
+        changed: rows,
+        failures,
         partial,
     })
 }
@@ -560,7 +623,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        crate::deploy::deploy_scale(
+        let outcome = crate::deploy::deploy_scale(
             &mut client,
             &selector,
             replicas,
@@ -570,7 +633,8 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
                 context: context.unwrap_or("default"),
             },
         )
-        .await
+        .await?;
+        crate::deploy::emit_outcome(&outcome)
     })
 }
 

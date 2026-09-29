@@ -6,13 +6,12 @@ use crate::{
     project::refuse_reserved,
 };
 
+use serde_json::json;
+
 use super::{Error, data_loss, leaf_matches, required, with_client};
+use crate::output::{self, Gaps, say};
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
-    let json = leaf_matches(root)
-        .get_one::<String>("output")
-        .map(String::as_str)
-        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
@@ -28,20 +27,35 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                     .iter()
                     .map(|volume| (&volume.id, &volume.labels)),
             );
-            if json {
-                println!("{}", serde_json::to_string_pretty(&projects)?);
+            let mut gaps = Gaps::default();
+            gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
+            let volumes = &snapshot.volume_snapshot;
+            gaps.extend(volumes.machine_failures(), volumes.omissions());
+            let unavailable_volumes = volumes.named_failures();
+            output::finish(
+                &json!({
+                    "projects": projects,
+                    "failures": gaps.failures,
+                    "omitted": gaps.omitted,
+                    "unavailable_volumes": unavailable_volumes,
+                }),
+                |_| {
+                    say!("PROJECT\tSERVICES\tVOLUMES");
+                    for project in &projects {
+                        say!(
+                            "{}\t{}\t{}",
+                            project.name,
+                            project.services.len(),
+                            project.volumes.len()
+                        );
+                    }
+                },
+            )?;
+            if unavailable_volumes.is_empty() {
+                gaps.outcome()
             } else {
-                println!("PROJECT\tSERVICES\tVOLUMES");
-                for project in projects {
-                    println!(
-                        "{}\t{}\t{}",
-                        project.name,
-                        project.services.len(),
-                        project.volumes.len()
-                    );
-                }
+                Err(Error::partial())
             }
-            Ok(())
         })
     })
 }
@@ -81,7 +95,8 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 crate::context::ConnectionSource::Direct => "direct connection".into(),
                 crate::context::ConnectionSource::LocalSocket => "local socket".into(),
             };
-            remove_project(client, &name, volumes, &context, &confirmation).await
+            let outcome = remove_project(client, &name, volumes, &context, &confirmation).await?;
+            crate::deploy::emit_outcome(&outcome)
         })
     })
 }

@@ -11,7 +11,7 @@ pub mod env {
 
 #[must_use]
 pub fn command() -> Command {
-    base("ployz", "Manage Ployz machines, services, and volumes")
+    let command = base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
         .subcommand(build())
         .subcommand(cloud())
@@ -19,12 +19,25 @@ pub fn command() -> Command {
         .subcommand(ingress())
         .subcommand(machine())
         .subcommand(project())
-        .subcommand(proxy())
-        .subcommand(ps())
         .subcommand(service())
-        .subcommand(version())
         .subcommand(volume())
-        .subcommand(completion())
+        .subcommand(completion());
+    with_json(command)
+}
+
+/// Commands whose output is a terminal session, a tunnel, or shell code, not a result.
+const WITHOUT_JSON: [&str; 3] = ["exec", "proxy", "completion"];
+
+/// Give every result-producing leaf the one `--json` switch.
+fn with_json(command: Command) -> Command {
+    if command.has_subcommands() {
+        return command.mut_subcommands(with_json);
+    }
+    if WITHOUT_JSON.contains(&command.get_name()) {
+        command
+    } else {
+        command.arg(switch("json", None).help("Print the result as one JSON object on stdout"))
+    }
 }
 
 fn base(name: &'static str, about: &'static str) -> Command {
@@ -70,10 +83,6 @@ fn value(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
-fn json_output() -> Arg {
-    value("output", Some('o')).value_parser(["json"])
-}
-
 fn many(name: &'static str, short: Option<char>) -> Arg {
     value(name, short)
         .action(ArgAction::Append)
@@ -108,29 +117,29 @@ fn ingress() -> Command {
     base("ingress", "Manage the Ingress Proxy")
         .arg_required_else_help(true)
         .subcommand(
-            base("config", "Print Ingress Proxy configuration").arg(value("machine", Some('m'))),
-        )
-        .subcommand(
             base("deploy", "Deploy the Ingress Proxy")
                 .arg(value("image", None))
                 .arg(many("constraint", None))
                 .arg(switch("recreate", None))
                 .arg(switch("skip-health", None)),
         )
-        .subcommand(log_flags(base("logs", "Show Ingress Proxy logs")))
 }
 
 fn ctx() -> Command {
     base("ctx", "Manage local contexts")
+        .arg_required_else_help(true)
+        .subcommand(base("ls", "List contexts"))
         .subcommand(
-            base("connection", "Show or select the default connection").arg(
-                positional("connection", false)
-                    .help("Connection label or 1-based index in the current context"),
+            base(
+                "use",
+                "Select a context and optionally its default connection",
+            )
+            .arg(positional("context-name", false))
+            .arg(
+                value("connection", None)
+                    .help("Connection label or 1-based index in the selected context"),
             ),
         )
-        .subcommand(base("ls", "List contexts"))
-        .subcommand(base("show", "Show a context"))
-        .subcommand(base("use", "Select a context").arg(positional("context-name", false)))
         .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
 }
 
@@ -195,7 +204,7 @@ fn cloud() -> Command {
 fn cloud_enroll() -> Command {
     machine_policy_flags(base("enroll", "Found or join a Cluster through Cloud"))
         .arg(positional("token", true))
-        .arg(value("name", Some('n')))
+        .arg(value("name", None))
         .arg(
             value("network", None)
                 .default_value("10.210.0.0/16")
@@ -242,19 +251,17 @@ fn machine() -> Command {
         .subcommand(machine_init())
         .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
-        .subcommand(base("inspect", "Inspect a machine").arg(positional("machine", true)))
+        .subcommand(
+            base(
+                "inspect",
+                "Inspect a machine: telemetry, round-trip times, and its latest upgrade attempt",
+            )
+            .arg(positional("machine", true)),
+        )
         .subcommand(
             log_flags(base("logs", "Show machine logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
         )
-        .subcommand(
-            base("ls", "List machines")
-                .arg(value("output", Some('o')).value_parser(["json"])),
-        )
-        .subcommand(
-            base("rename", "Rename a machine")
-                .arg(positional("old-name", true))
-                .arg(positional("new-name", true)),
-        )
+        .subcommand(base("ls", "List machines"))
         .subcommand(
             base("rm", "Remove a machine")
                 .arg(switch("no-reset", None).help(
@@ -266,7 +273,6 @@ fn machine() -> Command {
                     volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host; --yes cannot bypass this"),
                 ),
         )
-        .subcommand(base("rtt", "Show round-trip times"))
         .subcommand(machine_upgrade())
         .subcommand(
             machine_policy_flags(base("update", "Update machine configuration"))
@@ -286,9 +292,6 @@ fn machine() -> Command {
 fn machine_upgrade() -> Command {
     base("upgrade", "Upgrade explicitly selected machines")
         .arg_required_else_help(true)
-        .subcommand_negates_reqs(true)
-        .args_conflicts_with_subcommands(true)
-        .subcommand_precedence_over_arg(true)
         .arg(
             positional("version", true)
                 .value_name("VERSION")
@@ -298,15 +301,6 @@ fn machine_upgrade() -> Command {
             many("machine", Some('m'))
                 .required(true)
                 .help("Machine name or ID; repeat for an explicit sequence"),
-        )
-        .subcommand(
-            base("inspect", "Inspect one Machine upgrade attempt")
-                .arg(positional("machine", true))
-                .arg(
-                    value("attempt", None)
-                        .value_parser(clap::value_parser!(ployz_core::MachineUpgradeAttemptId)),
-                )
-                .arg(json_output()),
         )
 }
 
@@ -321,7 +315,7 @@ fn machine_policy_flags(command: Command) -> Command {
 
 fn provisioning_flags(command: Command) -> Command {
     machine_policy_flags(command)
-        .arg(value("name", Some('n')))
+        .arg(value("name", None))
         .arg(switch("no-install", None))
         .arg(
             value("storage", None)
@@ -361,10 +355,7 @@ fn machine_init() -> Command {
 fn project() -> Command {
     base("project", "Manage projects")
         .arg_required_else_help(true)
-        .subcommand(
-            base("ls", "List projects")
-                .arg(json_output()),
-        )
+        .subcommand(base("ls", "List projects"))
         .subcommand(
             base("rm", "Remove a project")
                 .arg(switch("volumes", None).help(
@@ -378,24 +369,22 @@ fn project() -> Command {
         )
 }
 
-fn proxy() -> Command {
+fn service_proxy() -> Command {
     base("proxy", "Proxy a local port to a service")
         .arg(positional("service", true))
         .arg(positional("port", true))
 }
 
-fn ps() -> Command {
-    base("ps", "List service containers")
-        .arg(
-            value("sort", Some('s'))
-                .default_value("service")
-                .value_parser(["service", "machine", "health"]),
-        )
-        .arg(json_output())
+fn service_ps() -> Command {
+    base("ps", "List service containers").arg(
+        value("sort", None)
+            .default_value("service")
+            .value_parser(["service", "machine", "health"]),
+    )
 }
 
 fn service_ls() -> Command {
-    base("ls", "List services").arg(json_output())
+    base("ls", "List services")
 }
 
 fn volume_acceptance() -> Arg {
@@ -438,7 +427,7 @@ fn service_start() -> Command {
 fn service_stop() -> Command {
     base("stop", "Stop services")
         .arg(services())
-        .arg(value("signal", Some('s')).default_value("SIGTERM"))
+        .arg(value("signal", None).default_value("SIGTERM"))
         .arg(value("timeout", Some('t')).default_value("10"))
 }
 
@@ -449,14 +438,12 @@ fn service() -> Command {
         .subcommand(service_inspect())
         .subcommand(service_ls())
         .subcommand(service_logs())
+        .subcommand(service_proxy())
+        .subcommand(service_ps())
         .subcommand(service_rm())
         .subcommand(service_scale())
         .subcommand(service_start())
         .subcommand(service_stop())
-}
-
-fn version() -> Command {
-    base("version", "Show version information")
 }
 
 fn volume() -> Command {
@@ -464,14 +451,11 @@ fn volume() -> Command {
         .arg_required_else_help(true)
         .subcommand(
             base("create", "Create a volume")
-                .arg(value("driver", Some('d')).default_value("local"))
-                .arg(many("label", Some('l')))
                 .arg(value("machine", Some('m')))
-                .arg(many("opt", Some('o')))
                 .arg(
                     value("size", None)
                         .value_parser(crate::volume::ProvisionedVolumeSize::parse)
-                        .conflicts_with_all(["driver", "opt"]),
+                        .help("Provisioned Volume quota; without it the volume is a plain local Docker Volume"),
                 )
                 .arg(positional("volume-name", true)),
         )
@@ -481,14 +465,11 @@ fn volume() -> Command {
                 .arg(positional("volume-name", true)),
         )
         .subcommand(
-            base("ls", "List volumes")
-                .arg(many("machine", Some('m')))
-                .arg(switch("quiet", Some('q')))
-                .arg(json_output()),
+            base("ls", "List volumes").arg(many("machine", Some('m'))),
         )
         .subcommand(
             base("rm", "Remove volumes")
-                .arg(switch("force", Some('f')))
+                .arg(switch("force", None))
                 .arg(many("machine", Some('m')))
                 .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
                 .arg(

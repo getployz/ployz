@@ -8,6 +8,9 @@ use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, target};
 use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
 use ployz_core::EnvironmentValues;
+use serde_json::json;
+
+use crate::output::{self, say};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -65,12 +68,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
-        println!("Removed Machine {} ({}) membership", selected.name, selected.id);
+        say!("Removed Machine {} ({}) membership", selected.name, selected.id);
         if let Some(reason) = &reset_failure {
             eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
             for loss in &observed.data_loss {
-                println!("Volume data was not erased by reset: {loss}");
+                say!("Volume data was not erased by reset: {loss}");
             }
         }
         if !replicated_services.is_empty() {
@@ -93,8 +96,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             context.drop_machine(&selected.id);
             config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         }
+        output::emit(&json!({
+            "machine": selected,
+            "reset_warning": reset_failure,
+            "data_loss": observed.data_loss,
+            "under_replicated": replicated_services,
+        }))?;
         if reset_failure.is_some() {
-            return Err(Error::exit(1));
+            return Err(Error::partial());
         }
         Ok::<_, Error>(())
     })

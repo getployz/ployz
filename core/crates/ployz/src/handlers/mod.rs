@@ -24,8 +24,40 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
-    let matches = command.clone().get_matches();
+    let matches = match command.clone().try_get_matches() {
+        Ok(matches) => matches,
+        Err(error) => return Err(usage_failure(error)),
+    };
+    // `--json` exists only on commands that print a result.
+    crate::output::set_json(
+        leaf_matches(&matches)
+            .try_get_one::<bool>("json")
+            .ok()
+            .flatten()
+            == Some(&true),
+    );
     dispatch(&matches, &mut command)
+}
+
+/// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
+fn usage_failure(error: clap::Error) -> Error {
+    use clap::error::ErrorKind;
+    let wants_json = std::env::args_os().any(|arg| arg == "--json");
+    if !wants_json
+        || matches!(
+            error.kind(),
+            ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        )
+    {
+        error.exit();
+    }
+    crate::output::set_json(true);
+    let message = error.render().to_string();
+    let failure = Error::usage(message.trim().trim_start_matches("error: ").to_owned());
+    let _ = crate::failure::terminate(Err(failure));
+    Error::exit(u8::try_from(error.exit_code()).unwrap_or(2))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
@@ -178,29 +210,10 @@ type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
 fn handler_for(path: &str) -> Option<Handler> {
     let handler: Handler = match path {
-        "ingress config" => ingress::config,
         "ingress deploy" => ingress::deploy,
-        "ingress logs" => operator::ingress_logs,
-        "ctx" => |root| context::select(root, None),
-        "ctx connection" => |root| {
-            context::connection(
-                root,
-                leaf_matches(root)
-                    .get_one::<String>("connection")
-                    .map(String::as_str),
-            )
-        },
         "ctx ls" => context::list,
         "ctx rm" => context::remove,
-        "ctx show" => context::show,
-        "ctx use" => |root| {
-            context::select(
-                root,
-                leaf_matches(root)
-                    .get_one::<String>("context-name")
-                    .map(String::as_str),
-            )
-        },
+        "ctx use" => context::select,
         "build" => build::build,
         "cloud enroll" => cloud::enroll,
         "machine add" => machine::add,
@@ -209,28 +222,21 @@ fn handler_for(path: &str) -> Option<Handler> {
         "machine inspect" => machine::inspect,
         "machine logs" => operator::machine_logs,
         "machine ls" => machine::list,
-        "machine rename" => machine::rename,
         "machine rm" => machine::remove,
-        "machine rtt" => machine::rtt,
         "machine update" => machine::update,
         "machine upgrade" => machine::upgrade,
-        "machine upgrade inspect" => machine::inspect_upgrade,
-        "proxy" => operator::proxy,
         "project ls" => project::list,
         "project rm" => project::remove,
-        "ps" => service::processes,
         "service exec" => operator::exec,
         "service inspect" => service::inspect,
         "service logs" => operator::service_logs,
         "service ls" => service::list,
+        "service proxy" => operator::proxy,
+        "service ps" => service::processes,
         "service rm" => service::remove,
         "service scale" => service::scale,
         "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
         "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
-        "version" => |_| {
-            println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        },
         "volume create" => volume::create,
         "volume inspect" => volume::inspect,
         "volume ls" => volume::list,
@@ -344,11 +350,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
+    fn machine_update_rejects_an_invalid_machine_name_before_connecting() {
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "machine", "rename", "vultr1", "BAD NAME"])
+            .try_get_matches_from(["ployz", "machine", "update", "vultr1", "--name", "BAD NAME"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
@@ -605,28 +611,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_volume_assignments_fail_before_connecting() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "volume",
-                "create",
-                "data",
-                "--opt",
-                "missing-delimiter",
-                "--connect",
-                "tcp://127.0.0.1:1",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            r#"expected KEY=VALUE, got "missing-delimiter""#,
-        );
-    }
-
-    #[test]
     fn scale_zero_fails_before_connecting() {
         let mut command = command();
         let matches = command
@@ -740,7 +724,7 @@ mod tests {
             .get_subcommands()
             .filter(|child| child.get_name() != "help")
             .collect::<Vec<_>>();
-        if path != "ployz" && (children.is_empty() || path == "ployz ctx") {
+        if path != "ployz" && children.is_empty() {
             paths.insert(path.trim_start_matches("ployz ").to_owned());
         }
         for child in children {
