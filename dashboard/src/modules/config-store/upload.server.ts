@@ -1,14 +1,12 @@
 import "@tanstack/react-start/server-only";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import type { ConfigStore } from "@ployz/sdk";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Data, Effect, Stream } from "effect";
 import { uploadChunk } from "#/modules/config-store/tables";
-import { GithubSourceError, extractUploadedSource, removeExtractedSource } from "#/modules/github/github-source.server";
+import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import type { StoreRefusal } from "./store.contract";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /** The most compressed source one Deployment may upload: the same cap as a repository archive's download. */
 const UPLOAD_LIMIT = 256 * 1024 * 1024;
@@ -27,7 +25,7 @@ const refused = (code: string, message: string) => new UploadRefused({ refusal: 
 
 /** The Store's answer to "does Deployment `deploymentId` exist in this Organization?", as a refusal when it does. */
 const notAdmittedYet = (store: ConfigStore, organizationId: string, deploymentId: string) =>
-  Effect.tryPromise({ try: () => store.read(organizationId, { query: "deployment", id: deploymentId }), catch: (cause) => cause }).pipe(
+  storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
     Effect.flatMap(() => Effect.fail(refused("conflict", "This Deployment was admitted already; upload its source before admitting it."))),
     Effect.catch((cause) => {
       if (cause instanceof UploadRefused) return Effect.fail(cause);
@@ -58,25 +56,25 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
         sql`${uploadChunk.deploymentId} not in (select id from config_deployment
           where status in ('queued', 'running', 'cancelling'))`,
       ));
-      const reader = body.getReader();
       let pending = Buffer.alloc(0);
       let total = 0;
       let index = 0;
       const insert = (data: Buffer) => drizzle.insert(uploadChunk).values({ deploymentId, index: index++, organizationId, data });
-      while (true) {
-        const next = yield* Effect.tryPromise({ try: () => reader.read(), catch: () => refused("invalid_argument", "The upload stopped before it ended.") });
-        if (next.done) break;
-        total += next.value.length;
+      // Failing the stream cancels the body.
+      yield* Stream.fromReadableStream({
+        evaluate: () => body,
+        onError: () => refused("invalid_argument", "The upload stopped before it ended."),
+      }).pipe(Stream.runForEach((chunk) => Effect.gen(function* () {
+        total += chunk.length;
         if (total > limit) {
-          yield* Effect.promise(() => reader.cancel());
           return yield* refused("invalid_argument", `The upload is over the ${limit / 1024 / 1024} MiB compressed source limit.`);
         }
-        pending = Buffer.concat([pending, next.value]);
+        pending = Buffer.concat([pending, chunk]);
         while (pending.length >= CHUNK_SIZE) {
           yield* insert(pending.subarray(0, CHUNK_SIZE));
           pending = pending.subarray(CHUNK_SIZE);
         }
-      }
+      })));
       if (total === 0) return yield* refused("invalid_argument", "The upload is empty.");
       if (pending.length > 0) yield* insert(pending);
     })).pipe(Effect.catchIf(isUniqueViolation, () => Effect.fail(refused("conflict", "This Deployment has its upload already."))));
@@ -93,27 +91,20 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
   const owned = and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId));
   const chunks = yield* drizzle.select({ index: uploadChunk.index }).from(uploadChunk).where(owned).orderBy(asc(uploadChunk.index));
   if (chunks.length === 0) return undefined;
-  const directory = yield* Effect.acquireRelease(
-    Effect.tryPromise({ try: () => mkdtemp(path.join(tmpdir(), "ployz-upload-")), catch: () => new GithubSourceError({ message: "Could not create the upload's workspace." }) }),
-    (directory) => Effect.promise(() => removeExtractedSource(directory)),
-  );
   // One chunk in memory at a time.
   const read = (index: number) => Effect.runPromise(drizzle.select({ data: uploadChunk.data }).from(uploadChunk)
     .where(and(owned, eq(uploadChunk.index, index))).pipe(Effect.map((rows) => rows[0]?.data ?? Buffer.alloc(0))));
   async function* data() {
     for (const { index } of chunks) yield await read(index);
   }
-  return yield* Effect.tryPromise({
-    try: (signal) => extractUploadedSource(data(), directory, signal),
-    catch: (error) => error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Cloud couldn't read this Deployment's upload. Upload it again." }),
-  });
+  return yield* extractUploadedSource(data());
 });
 
 /** Delete Deployment `deploymentId`'s upload once it has ended, or was never admitted; while it's in flight, keep it. */
 export const releaseUpload = Effect.fn("ConfigStore.releaseUpload")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
-  const status = yield* Effect.tryPromise({ try: () => store.read(organizationId, { query: "deployment", id: deploymentId }), catch: (cause) => cause }).pipe(
+  const status = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
     Effect.map((view) => view.view === "deployment" ? view.status : undefined),
     Effect.catch((cause) => isRefusal(cause) && cause.code === "not_found" ? Effect.succeed(undefined) : Effect.fail(cause)),
   );
