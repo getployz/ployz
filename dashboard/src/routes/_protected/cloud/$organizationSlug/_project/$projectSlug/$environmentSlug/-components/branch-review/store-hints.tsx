@@ -1,9 +1,10 @@
 import { useLoaderData, useParams } from "@tanstack/react-router";
-import type { DiffView, JsonValue, PullRequestHint } from "@ployz/sdk";
+import type { DiffView, PullRequestHint } from "@ployz/sdk";
 import { GitPullRequestIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { presentMoveRow } from "#/modules/config-store/store-branches";
 import { hintNotes } from "#/modules/config-store/store-pull-requests";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
@@ -26,8 +27,8 @@ export function storeHintNotes(diff: DiffView, groups: readonly CanvasEnvironmen
         {notes.rest.map((hint) => (
           <Item key={`${hint.save}:${hint.row}`} variant="outline" size="sm">
             <ItemContent className="min-w-0">
-              <ItemTitle>{hint.row}</ItemTitle>
-              {hint.landed === "staged" ? <ItemDescription className="font-mono">{shown(hint.value)}</ItemDescription> : null}
+              <ItemTitle>{presented(hint).node} · {presented(hint).label}</ItemTitle>
+              {hint.landed === "staged" ? <ItemDescription className="font-mono">{presented(hint).after || "—"}</ItemDescription> : null}
             </ItemContent>
             <ItemActions><HintNote hint={hint} /></ItemActions>
           </Item>
@@ -46,7 +47,7 @@ function HintNote({ hint }: { hint: PullRequestHint }) {
   if (hint.landed === "staged") return tag;
   return (
     <span className="flex min-w-0 items-center gap-1 text-muted-foreground">
-      {tag}<span className="truncate font-mono text-foreground">{shown(hint.value)}</span>
+      {tag}<span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${hint.row}`}
         // Stages the pull request's value over this Environment's own; the refetched review shows it, a refusal toasts.
         onClick={() => void writer.commit({ command: "move", into: store, take: hint.save, picks: [{ row: hint.row }] })}>
@@ -56,9 +57,5 @@ function HintNote({ hint }: { hint: PullRequestHint }) {
   );
 }
 
-/** A value as a note shows it: a secret stays hidden. */
-function shown(value: JsonValue) {
-  if (value === null) return "—";
-  if (typeof value === "object" && !Array.isArray(value) && "secret" in value) return "hidden";
-  return typeof value === "string" ? value : JSON.stringify(value);
-}
+/** A hint in a Save sheet's words: its node and setting, and the pull request's value (a secret stays hidden). */
+const presented = (hint: PullRequestHint) => presentMoveRow({ row: hint.row, conflict: false, from: hint.value, into: null });
