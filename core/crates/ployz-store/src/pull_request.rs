@@ -140,6 +140,11 @@ pub struct PrPlansView {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PrPlan {
     pub repository: String,
+    #[ts(type = "number")]
+    pub repository_id: u64,
+    /// The GitHub App installation its Services deploy through.
+    #[ts(type = "number")]
+    pub installation_id: u64,
     pub enabled: bool,
     /// None until picked, or once that Environment is gone.
     pub start_from: Option<EnvironmentName>,
@@ -147,6 +152,19 @@ pub struct PrPlan {
     pub setup: Vec<SetupCommand>,
     pub remove_on_close: bool,
     pub include_bots: bool,
+    /// Its pull requests with a PR Environment in the Project, not being closed.
+    pub open: Vec<OpenPullRequest>,
+}
+
+/// A pull request with a PR Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OpenPullRequest {
+    #[ts(type = "number")]
+    pub number: u64,
+    /// Empty until Cloud reports its facts.
+    pub title: String,
+    pub author: String,
+    pub environment: EnvironmentName,
 }
 
 /// A pull request's PR Environments and whether it is ready to merge.
@@ -240,11 +258,16 @@ pub(crate) fn set_plan(
         &[project.id.as_str().into()],
     )?;
     let repositories = repositories(tx, &project.id)?;
-    let Some((repository_id, _)) = repositories
+    let Some(Repository {
+        id: repository_id, ..
+    }) = repositories
         .iter()
-        .find(|(_, name)| *name == set.repository)
+        .find(|repository| repository.name == set.repository)
     else {
-        let names: Vec<&str> = repositories.iter().map(|(_, name)| name.as_str()).collect();
+        let names: Vec<&str> = repositories
+            .iter()
+            .map(|repository| repository.name.as_str())
+            .collect();
         return Err(error::not_found(
             format!(
                 "No Service of Project {} deploys from {} through the GitHub App",
@@ -344,7 +367,12 @@ pub(crate) fn plans(
 ) -> Result<PrPlansView, RpcError> {
     let project = scope::project(tx, who, query.project.as_ref())?;
     let mut plans = Vec::new();
-    for (repository_id, name) in repositories(tx, &project.id)? {
+    for Repository {
+        id: repository_id,
+        name,
+        installation_id,
+    } in repositories(tx, &project.id)?
+    {
         let stored = load(tx, &project.id, repository_id)?.unwrap_or_else(off);
         let start = match &stored.start_from {
             Some(id) => start_from(tx, id)?,
@@ -355,8 +383,11 @@ pub(crate) fn plans(
                 .as_ref()
                 .and_then(|start| branch::name_of(&start.working, lineage))
         };
+        let open = open_in(tx, who, &project.id, repository_id)?;
         plans.push(PrPlan {
             repository: name,
+            repository_id,
+            installation_id,
             enabled: stored.enabled,
             start_from: start.as_ref().map(|start| start.summary.name.clone()),
             copy: stored
@@ -376,6 +407,7 @@ pub(crate) fn plans(
                 .collect(),
             remove_on_close: stored.remove_on_close,
             include_bots: stored.include_bots,
+            open,
         });
     }
     Ok(PrPlansView {
@@ -388,11 +420,11 @@ pub(crate) fn plans(
 }
 
 /// Every repository a Service of the Project deploys from through the GitHub App,
-/// by ID, with its name, sorted by name.
+/// by ID, with its name and installation, sorted by name.
 fn repositories(
     tx: &mut dyn Tx,
     project: &crate::id::ProjectId,
-) -> Result<Vec<(u64, String)>, RpcError> {
+) -> Result<Vec<Repository>, RpcError> {
     let rows = tx.query(
         "SELECT id FROM config_environment WHERE project_id = ?1 ORDER BY id",
         &[project.as_str().into()],
@@ -405,17 +437,58 @@ fn repositories(
             if let ServiceSource::Git {
                 repository,
                 repository_id,
-                access: ServiceGitAccess::GithubInstallation { .. },
+                access: ServiceGitAccess::GithubInstallation { installation_id },
                 ..
             } = service.config.source
             {
-                found.entry(repository_id).or_insert(repository);
+                found.entry(repository_id).or_insert(Repository {
+                    id: repository_id,
+                    name: repository,
+                    installation_id,
+                });
             }
         }
     }
-    let mut found: Vec<(u64, String)> = found.into_iter().collect();
-    found.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut found: Vec<Repository> = found.into_values().collect();
+    found.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(found)
+}
+
+/// A repository a Project's Services deploy from through the GitHub App.
+struct Repository {
+    id: u64,
+    name: String,
+    installation_id: u64,
+}
+
+/// The repository's pull requests with a PR Environment in the Project, not being closed.
+fn open_in(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    project: &crate::id::ProjectId,
+    repository_id: u64,
+) -> Result<Vec<OpenPullRequest>, RpcError> {
+    let rows = tx.query(
+        "SELECT p.number, e.name FROM config_pr_environment p \
+         JOIN config_environment e ON e.id = p.environment_id \
+         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+         WHERE e.project_id = ?1 AND p.repository_id = ?2 AND b.closing = 0 ORDER BY p.number",
+        &[project.as_str().into(), repository(repository_id)?.into()],
+    )?;
+    let mut open = Vec::new();
+    for row in rows {
+        let number = u64::try_from(row.int(0)?).map_err(|_| error::corrupt("pull request"))?;
+        let environment =
+            EnvironmentName::parse(row.text(1)?).map_err(|_| error::corrupt("Environment name"))?;
+        let facts = facts(tx, who, repository_id, number)?;
+        open.push(OpenPullRequest {
+            number,
+            title: facts.as_ref().map(|f| f.title.clone()).unwrap_or_default(),
+            author: facts.map(|f| f.author).unwrap_or_default(),
+            environment,
+        });
+    }
+    Ok(open)
 }
 
 fn load(

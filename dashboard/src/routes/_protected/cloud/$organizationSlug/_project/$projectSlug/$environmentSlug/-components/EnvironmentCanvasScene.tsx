@@ -43,6 +43,7 @@ import { serviceChanges, serviceSettingRows, settingText } from "#/modules/confi
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { BranchPickingProvider } from "./new-branch/branch-picking";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
+import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 
 export function PendingCanvas() {
   return (
@@ -254,9 +255,10 @@ export function EnvironmentCanvasScene() {
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    {/* TODO(#1275): over the Store only; PR Environment plans stay on the Cloud document until #1271. */}
-    <BranchPickingProvider newBranch={storeEnabled ? null : newBranch} prPlan={prPlan}>
+    {/* TODO(#1275): over the Store only. */}
+    <BranchPickingProvider newBranch={storeEnabled ? null : newBranch} prPlan={storeEnabled ? null : prPlan}>
     <StorePickingProvider newBranch={storeEnabled ? newBranch : null}>
+    <StorePrPickingProvider prPlan={storeEnabled ? prPlan : null}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
@@ -278,6 +280,7 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
+    </StorePrPickingProvider>
     </StorePickingProvider>
     </BranchPickingProvider>
     </BottomBarSlot.Provider>

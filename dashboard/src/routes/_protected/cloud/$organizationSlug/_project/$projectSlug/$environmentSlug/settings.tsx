@@ -5,7 +5,7 @@ import { useLiveQuery } from "@tanstack/react-db";
 import { ChevronRightIcon, GitBranchIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { Effect, Option, Schema } from "effect";
 import { getEnvironmentsCollection } from "#/collections/collections";
-import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
+import { prefetchRemote, prefetchRemoteWithStoreViews, requireEnvironment } from "#/collections/route-data";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { DashboardPage } from "#/components/dashboard-page";
 import { Badge } from "#/components/ui/badge";
@@ -25,7 +25,8 @@ import { useDeletionNodes, useEnvironmentPlace } from "#/routes/_protected/cloud
 import { BranchDefaultsSection } from "./-components/branch-defaults-section";
 import { CreateEnvironmentDialog } from "./-components/create-environment-dialog";
 import { PrEnvironmentsSection } from "./-components/pr-environments-section";
-import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
+import { missingPrEnvironmentGrantsQueryOptions, missingStorePrGrantsQueryOptions } from "#/modules/pr-environments/plan.queries";
+import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
 import { useEnvironmentNotes } from "#/modules/project/environment-notes";
 import { Route as EnvironmentLayoutRoute } from "./route";
@@ -41,9 +42,12 @@ export const Route = createFileRoute(
     scope: Schema.optional(settingsSection.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
   loader: async ({ params, context }) => {
-    // The Environment's loader read the Project's Environments, which is all its settings show.
-    if (storeEnabled) return;
     const { organizationSlug, projectSlug } = params;
+    // The Environment's loader read the Project's Environments; the rest are the PR plans and their GitHub permissions.
+    if (storeEnabled) {
+      await prefetchRemoteWithStoreViews(context, organizationSlug, [prPlansQuery(projectSlug)], missingStorePrGrantsQueryOptions(organizationSlug, projectSlug));
+      return;
+    }
     const environment = await requireEnvironment(context, params);
     await prefetchRemote(context,
       latestTeardownAttemptQueryOptions({ organizationSlug, scope: "environment", environmentId: environment.id }),

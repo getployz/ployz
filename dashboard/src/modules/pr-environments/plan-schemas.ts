@@ -19,3 +19,6 @@ export type SetPrEnvironmentPlan = typeof SetPrEnvironmentPlan.Type;
 
 /** The organization whose GitHub App installations to check. */
 export const ListPrEnvironmentGrants = Schema.Struct({ organizationSlug: OrganizationSlug });
+
+/** The Project whose PR plans' installations to check, over the Config Store. */
+export const ListStorePrGrants = Schema.Struct({ organizationSlug: OrganizationSlug, projectSlug: ProjectSlug });
