@@ -100,6 +100,10 @@ _Avoid_: API key, personal access token, CLI token
 A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
 _Avoid_: CLI login, device token
 
+**Server Access**:
+A Signed-in Device's or Organization Token's own `cli-<id>` Management Client on one Server, which Cloud sets on first live use. When the credential ends or its member leaves, Cloud refuses it at once and clears it on each Server; a Server that hasn't confirmed the Clear stays listed until a retry does.
+_Avoid_: device key, CLI capability
+
 **Cloud Lens**:
 Cloud's role after bootstrap is to host the Organization's Config Store and to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth
