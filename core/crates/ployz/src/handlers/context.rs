@@ -228,8 +228,7 @@ fn prompt<'a>(
 }
 
 pub(crate) fn command() -> Command {
-    base("ctx", "Manage local contexts")
-        .arg_required_else_help(true)
+    base("ctx", "Show where commands act, or manage local contexts")
         .subcommand(base("ls", "List contexts"))
         .subcommand(
             base(
@@ -248,6 +247,7 @@ pub(crate) fn command() -> Command {
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::Supported;
     Some(match path {
+        "" => (super::link::show, Supported),
         "ls" => (list, Supported),
         "rm" => (remove, Supported),
         "use" => (select, Supported),
