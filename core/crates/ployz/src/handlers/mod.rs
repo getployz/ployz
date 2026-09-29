@@ -15,6 +15,7 @@ pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
 pub(crate) mod deploy;
+pub(crate) mod domain;
 pub(crate) mod env;
 pub(crate) mod github;
 pub(crate) mod link;
@@ -268,6 +269,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some((review::diff, Json::Supported)),
         ("discard", "") => Some((review::discard, Json::Supported)),
+        ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
         ("exec", "") => Some((operator::exec, Json::Refused)),
         ("explain", "") => Some((catalog::explain, Json::Supported)),

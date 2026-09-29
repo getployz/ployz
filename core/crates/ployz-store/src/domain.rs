@@ -150,6 +150,17 @@ pub enum DomainName {
 }
 
 impl Domain {
+    /// Whether users mean it by `name`: its hostname, or a generated domain's prefix.
+    fn is_named(&self, name: &str) -> bool {
+        let name = name.trim().to_ascii_lowercase();
+        match &self.name {
+            DomainName::Generated { prefix, hostname } => {
+                *prefix == name || hostname.as_ref().is_some_and(|hostname| *hostname == name)
+            }
+            DomainName::Custom { hostname } => hostname.as_str() == name,
+        }
+    }
+
     /// The name users address it by: its hostname, else a generated domain's prefix.
     #[must_use]
     pub fn shown(&self) -> &str {
@@ -362,7 +373,7 @@ pub(crate) fn remove_domain(
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let found = domains_of(&environment.working, trusted)
         .into_iter()
-        .find(|domain| domain.shown() == remove.domain.trim().to_ascii_lowercase())
+        .find(|domain| domain.is_named(&remove.domain))
         .ok_or_else(|| no_domain(&environment, trusted))?;
     let service = environment.service_mut(&found.service)?;
     match &found.name {
@@ -420,7 +431,7 @@ pub(crate) fn domain(
     let environment = scope::environment(tx, who, &query.environment)?;
     let found = domains_of(&environment.working, trusted)
         .into_iter()
-        .find(|domain| domain.shown() == query.domain.trim().to_ascii_lowercase())
+        .find(|domain| domain.is_named(&query.domain))
         .ok_or_else(|| no_domain(&environment, trusted))?;
     let head = crate::deployment::head(tx, &environment)?;
     Ok(DomainView {
