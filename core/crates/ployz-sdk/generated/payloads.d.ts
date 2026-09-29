@@ -2031,8 +2031,6 @@ repository: string, };
 
 export type PublicIpUpdate = { "action": "keep" } | { "action": "remove" } | { "action": "set", "value": string };
 
-export type PublicationBasis = { "kind": "no_saved_state" } | { "kind": "saved_revision", savedStateSnapshotId: string, };
-
 export type Publish = {
 /**
  * The Environment to publish.

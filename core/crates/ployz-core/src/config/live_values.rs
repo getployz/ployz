@@ -2,13 +2,9 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use ts_rs::TS;
 
-use super::{
-    ConfigError, SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner,
-    check_branch_name,
-};
+use super::{SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner};
 use crate::Namespace;
 
 /// The Namespace that runs a Live Node, with its frozen variable producers.
@@ -53,21 +49,6 @@ pub struct LiveValues {
 }
 
 const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
-
-/// Decode a live-values request, admitting the owner namespace under the Namespace rule.
-///
-/// # Errors
-/// Returns ConfigError at `owner.namespace` for an unusable Namespace, else for a bad shape.
-pub fn parse_live_values_input(value: Value) -> Result<LiveValuesInput, ConfigError> {
-    let namespace = value
-        .pointer("/owner/namespace")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    check_branch_name(namespace)
-        .map_err(|error| ConfigError::at("owner.namespace", &error.message))?;
-    serde_json::from_value(value)
-        .map_err(|_| ConfigError::at("liveValues", "Invalid live values request"))
-}
 
 /// Rescope the owner's producers: used lineages keep their id so the Branch finds them; every
 /// other owner lineage moves under the owner's namespace so the Branch's Own Copies of the

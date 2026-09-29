@@ -3,8 +3,14 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::config_request;
+use ployz_core::config::{ConfigError, lower_deployment};
 use serde_json::{Value, json};
+
+/// Lower a JSON deployment input, answering JSON as Cloud's worker reads it.
+fn lowered(value: Value) -> Result<Value, ConfigError> {
+    lower_deployment(serde_json::from_value(value).unwrap())
+        .map(|intent| serde_json::to_value(intent).unwrap())
+}
 
 #[test]
 fn lowering_owns_port_defaults_and_domain_overrides() {
@@ -14,9 +20,9 @@ fn lowering_owns_port_defaults_and_domain_overrides() {
         "routes":[{"id":"00000000-0000-4000-8000-000000000001","hostname":"app.example.com","targetPort":null}]
     });
     let lower = |config: Value, env: Value| {
-        config_request(json!({"operation":"lower_deployment","value":{
+        lowered(json!({
             "namespace":"production","snapshots":[{"config":config,"resolvedEnv":env}]
-        }}))
+        }))
     };
 
     for (env, expected_port) in [(json!({}), 8080), (json!({"PORT":"3000"}), 3000)] {
@@ -69,9 +75,9 @@ fn lowering_refuses_unexpanded_managed_hostnames() {
         "healthcheck":{"type":"none"},"restartPolicy":"on-failure",
         "managedHostnames":[{"prefix":"api-production","targetPort":null}]
     });
-    let error = config_request(json!({"operation":"lower_deployment","value":{
+    let error = lowered(json!({
         "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{}}]
-    }}))
+    }))
     .unwrap_err();
     assert_eq!(error.path, "managedHostnames");
 }
@@ -86,10 +92,10 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
         "mounts":[{"volumeResourceId":"00000000-0000-4000-8000-000000000002","volumeName":"Renamed","mountPath":"/data"}]
     });
     let lower = |config: Value| {
-        config_request(json!({"operation":"lower_deployment","value":{
+        lowered(json!({
             "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{"TOKEN":"authorized-secret","PORT":"8080"}}],
             "volumes":[{"volumeResourceId":"00000000-0000-4000-8000-000000000002"}]
-        }}))
+        }))
     };
     let intent = lower(config.clone()).unwrap();
     let spec = &intent["target"][0];
@@ -129,10 +135,7 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
     );
 }
 
-fn lower_hook(
-    pre_deploy: Option<&str>,
-    setup: Value,
-) -> Result<Value, ployz_core::config::ConfigError> {
+fn lower_hook(pre_deploy: Option<&str>, setup: Value) -> Result<Value, ConfigError> {
     let config = json!({"version":2,"privateDns":"api",
         "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
         "preDeployCommand":pre_deploy,"healthcheck":{"type":"none"},"restartPolicy":"on-failure"
@@ -141,9 +144,9 @@ fn lower_hook(
     if !setup.is_null() {
         snapshot["setupCommands"] = setup;
     }
-    config_request(json!({"operation":"lower_deployment","value":{
+    lowered(json!({
         "namespace":"production","snapshots":[snapshot]
-    }}))
+    }))
     .map(|intent| intent["target"][0]["pre_deploy"]["command"].clone())
 }
 
@@ -236,8 +239,7 @@ fn referencing(edges: &[(&str, &[&str])]) -> Value {
 }
 
 fn dependencies(value: &Value) -> Value {
-    config_request(json!({"operation":"lower_deployment","value":value})).unwrap()["dependencies"]
-        .clone()
+    lowered(value.clone()).unwrap()["dependencies"].clone()
 }
 
 #[test]

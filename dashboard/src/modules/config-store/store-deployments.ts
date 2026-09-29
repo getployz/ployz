@@ -92,20 +92,23 @@ export const deploymentStatusLabels = {
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
 
-/** A Deployment as its icon shows it. */
-export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "cancelled";
+/**
+ * A Deployment as its icon shows it. `unknown`: its runner vanished mid-run, so nobody knows what applied; it never
+ * reads as failed or deployed.
+ */
+export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "cancelled";
 
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
-export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "not_applied";
+export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
 
 export const nodeLightLabels = {
-  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", not_applied: "Not applied",
+  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not applied",
 } satisfies Record<NodeLight, string>;
 
-/** Each status in the icons' vocabulary. `unknown` (its runner vanished mid-run) needs a look, like a failure. */
+/** Each status in the icons' vocabulary. */
 export const deploymentStatusIcons = {
   queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
-  unknown: "failed", cancelled: "cancelled", superseded: "cancelled",
+  unknown: "unknown", cancelled: "cancelled", superseded: "cancelled",
 } satisfies Record<DeploymentStatus, DeploymentLight>;
 
 export const nodeStatusLabels = {
@@ -115,7 +118,7 @@ export const nodeStatusLabels = {
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
 export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
   if (outcome === "applied") return "deployed";
-  if (outcome === "unknown") return "failed";
+  if (outcome === "unknown") return "unknown";
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
   return "not_applied";
