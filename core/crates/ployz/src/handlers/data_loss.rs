@@ -14,7 +14,6 @@ use crate::output::{self, say};
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
     Preserve,
-    Delete,
     LoseAccess,
 }
 
@@ -63,18 +62,18 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
         args.push(name.into());
         leaf = child;
     }
-    for id in ["service", "volume-name", "server"] {
+    for id in ["volume-name", "server"] {
         args.extend(string_values(leaf, id));
     }
     for machine in string_values(leaf, "machine") {
         args.extend(["--machine".into(), machine]);
     }
-    for id in ["volumes", "no-reset", "force"] {
+    for id in ["no-reset", "force"] {
         if leaf.try_get_one::<bool>(id).ok().flatten() == Some(&true) {
             args.push(format!("--{id}"));
         }
     }
-    for id in ["connect", "ployz-config", "namespace", "confirm"] {
+    for id in ["connect", "ployz-config", "confirm"] {
         if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
             args.extend([format!("--{id}"), value.clone()]);
         }
@@ -111,14 +110,6 @@ fn confirm_with(
     )?;
     match volume_effect {
         VolumeEffect::Preserve => writeln!(output, "Volumes will be kept.")?,
-        VolumeEffect::Delete if observed.data_loss.is_empty() => {
-            writeln!(output, "No volumes to delete.")?
-        }
-        VolumeEffect::Delete => writeln!(
-            output,
-            "Permanently delete these volumes and their data ({}):",
-            observed.data_loss.len()
-        )?,
         VolumeEffect::LoseAccess => writeln!(
             output,
             "Volumes losing access through the cluster ({}). Their data will not be erased:",
@@ -211,7 +202,6 @@ fn prompt(
 ) -> Result<bool, Error> {
     if !targets.is_empty() {
         let consequence = match volume_effect {
-            VolumeEffect::Delete => "permanently delete the listed volumes and their data",
             VolumeEffect::LoseAccess => {
                 "lose access to the listed volumes through the cluster; their data will not be erased"
             }
@@ -373,7 +363,7 @@ mod tests {
                 &["gone".into()],
                 &["app".into()],
                 ConfirmationOptions {
-                    volume_effect: VolumeEffect::Delete,
+                    volume_effect: VolumeEffect::LoseAccess,
                     yes: true,
                     tty: true,
                 },
@@ -402,16 +392,15 @@ mod tests {
                     &named,
                     &["app".into()],
                     ConfirmationOptions {
-                        volume_effect: VolumeEffect::Delete,
+                        volume_effect: VolumeEffect::LoseAccess,
                         yes,
                         tty: false,
                     },
                     &[
                         "ployz".into(),
-                        "service".into(),
+                        "server".into(),
                         "rm".into(),
                         "app".into(),
-                        "--volumes".into(),
                         "--context".into(),
                         "prod west".into(),
                     ],
@@ -438,7 +427,7 @@ mod tests {
                 &["data".into(), "logs".into(), "data".into()],
                 &["app".into()],
                 ConfirmationOptions {
-                    volume_effect: VolumeEffect::Delete,
+                    volume_effect: VolumeEffect::LoseAccess,
                     yes: false,
                     tty,
                 },
@@ -473,7 +462,7 @@ mod tests {
             &[],
             &targets,
             ConfirmationOptions {
-                volume_effect: VolumeEffect::Delete,
+                volume_effect: VolumeEffect::LoseAccess,
                 yes: true,
                 tty: true,
             },
@@ -489,9 +478,9 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmed).is_ok());
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("This will remove app/db, app/api and permanently delete the listed volumes and their data."));
+        assert!(output.contains("This will remove app/db, app/api and lose access to the listed volumes through the cluster; their data will not be erased."));
         assert!(output.contains("Press Enter without typing to cancel."));
-        assert!(output.contains("Permanently delete these volumes and their data (1):"));
+        assert!(output.contains("Volumes losing access through the cluster (1)."));
         assert!(output.contains("(machine ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
         assert!(output.contains("Names did not match"));
         assert!(!output.contains("[y/N]"));
@@ -503,7 +492,7 @@ mod tests {
                     &[],
                     &targets,
                     ConfirmationOptions {
-                        volume_effect: VolumeEffect::Delete,
+                        volume_effect: VolumeEffect::LoseAccess,
                         yes: false,
                         tty: true
                     },
@@ -526,7 +515,7 @@ mod tests {
                 &["wrong".into()],
                 &targets,
                 ConfirmationOptions {
-                    volume_effect: VolumeEffect::Delete,
+                    volume_effect: VolumeEffect::LoseAccess,
                     yes: false,
                     tty: true
                 },
@@ -541,7 +530,13 @@ mod tests {
     #[test]
     fn no_volume_and_preserved_volume_removal_need_ordinary_confirmation() {
         let observed = ObservedDataLoss { data_loss: vec![] };
-        for destroy in [false, true] {
+        for (effect, shown) in [
+            (VolumeEffect::Preserve, "Volumes will be kept"),
+            (
+                VolumeEffect::LoseAccess,
+                "Volumes losing access through the cluster (0)",
+            ),
+        ] {
             let mut output = Vec::new();
             assert!(
                 confirm_with(
@@ -549,11 +544,7 @@ mod tests {
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        volume_effect: if destroy {
-                            VolumeEffect::Delete
-                        } else {
-                            VolumeEffect::Preserve
-                        },
+                        volume_effect: effect,
                         yes: false,
                         tty: false
                     },
@@ -563,22 +554,14 @@ mod tests {
                 )
                 .is_err()
             );
-            assert!(String::from_utf8(output).unwrap().contains(if destroy {
-                "No volumes to delete"
-            } else {
-                "Volumes will be kept"
-            }));
+            assert!(String::from_utf8(output).unwrap().contains(shown));
             assert!(
                 confirm_with(
                     &observed,
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        volume_effect: if destroy {
-                            VolumeEffect::Delete
-                        } else {
-                            VolumeEffect::Preserve
-                        },
+                        volume_effect: effect,
                         yes: true,
                         tty: false
                     },
@@ -595,11 +578,7 @@ mod tests {
                     &[],
                     &["app".into()],
                     ConfirmationOptions {
-                        volume_effect: if destroy {
-                            VolumeEffect::Delete
-                        } else {
-                            VolumeEffect::Preserve
-                        },
+                        volume_effect: effect,
                         yes: false,
                         tty: true
                     },
@@ -624,13 +603,13 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
-                "service",
+                "volume",
                 "rm",
                 "db",
                 "api",
-                "--namespace",
-                "app",
-                "--volumes",
+                "--machine",
+                "edge",
+                "--force",
                 "--connect",
                 "unix:///tmp/socket name",
                 "--ployz-config",
@@ -642,8 +621,9 @@ mod tests {
         assert_eq!(shell_words::split(&command).unwrap(), args);
         let parsed = crate::cli::command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
-        assert_eq!(string_values(leaf, "service"), ["db", "api"]);
-        assert_eq!(leaf.get_one::<String>("namespace").unwrap(), "app");
+        assert_eq!(string_values(leaf, "volume-name"), ["db", "api"]);
+        assert_eq!(string_values(leaf, "machine"), ["edge"]);
+        assert!(leaf.get_flag("force"));
         assert_eq!(
             leaf.get_one::<String>("connect").unwrap(),
             "unix:///tmp/socket name"

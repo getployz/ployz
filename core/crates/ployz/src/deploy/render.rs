@@ -133,12 +133,6 @@ fn volumes_to_create_lines(preview: &DeployPreview) -> String {
     out
 }
 
-/// Confirm prompt targeting the selected context.
-#[must_use]
-pub fn confirm_prompt(context: &str) -> String {
-    format!("Proceed with deployment to {context}? [y/N] ")
-}
-
 /// Endpoints on success; synthesized live list plus footer when no printer ran.
 #[must_use]
 #[cfg(test)]

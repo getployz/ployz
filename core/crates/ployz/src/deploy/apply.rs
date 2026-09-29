@@ -1,21 +1,15 @@
-use std::{io, num::NonZeroU32};
+use std::io;
 
-use ployz_core::{
-    DeployEvent, DeployIntent, Namespace, OperationRow, RequestedServiceSpec, ServiceSelector,
-};
+use ployz_core::{DeployEvent, DeployIntent, Namespace, OperationRow, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{
-    connect::Client,
-    failure::Failure,
-    output::{say, say_inline},
-};
+use crate::{connect::Client, failure::Failure, output::say_inline};
 
 use super::{
     DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError,
-    pipeline::{plan_options, plan_scale},
+    pipeline::plan_options,
     render,
     report::{self, Ink},
 };
@@ -113,65 +107,6 @@ fn closing_failure(
         ployz_core::RpcErrorCode::Internal,
         text.trim().to_owned(),
         serde_json::json!({ "outcome": outcome }),
-    )
-}
-
-pub(crate) struct ConfirmGate<'a> {
-    pub auto_confirm: bool,
-    pub context: &'a str,
-}
-
-pub(crate) async fn deploy_scale(
-    client: &mut Client,
-    selector: &ServiceSelector,
-    replicas: NonZeroU32,
-    skip_health_monitor: bool,
-    gate: ConfirmGate<'_>,
-) -> Result<Outcome, ApplyError> {
-    let preview = plan_scale(
-        client,
-        selector,
-        replicas,
-        plan_options(false, skip_health_monitor),
-    )
-    .await?;
-    print_warnings(&preview);
-    let cancellation = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancellation.clone().drop_guard();
-    confirm_and_execute(client, &preview, gate, &cancellation).await
-}
-
-async fn confirm_and_execute(
-    client: &Client,
-    preview: &DeployPlan,
-    gate: ConfirmGate<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Outcome, ApplyError> {
-    say_inline!("{}", render::plan_text(preview, gate.context));
-    if preview.noop() {
-        return Ok(nothing_done());
-    }
-    if !gate.auto_confirm
-        && !crate::cancellation::read(
-            cancellation,
-            confirm(&render::confirm_prompt(gate.context), cancellation),
-        )
-        .await?
-    {
-        say!("No changes were made.");
-        return Ok(nothing_done());
-    }
-    finish(
-        stream_confirm(
-            client,
-            preview,
-            format!("Deploying to {}", gate.context),
-            Ink::human(),
-            cancellation,
-            |_| {},
-        )
-        .await,
-        &format!("Deployed to {}", gate.context),
     )
 }
 
@@ -320,18 +255,6 @@ fn print_warnings(preview: &DeployPreview) {
     for warning in &preview.warnings {
         eprintln!("WARNING: {warning}");
     }
-}
-
-async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool, Failure> {
-    if !crate::output::interactive() {
-        return Err(Failure::usage(
-            "confirmation requires a terminal; pass --yes to continue",
-        ));
-    }
-    crate::output::say_inline!("{prompt}");
-    let input =
-        crate::cancellation::read_line(cancellation, io::BufReader::new(io::stdin())).await?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
 }
 
 /// Terminal evidence of a Deploy that ran to completion.

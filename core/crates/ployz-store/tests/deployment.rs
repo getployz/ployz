@@ -1,3 +1,7 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 //! Admission, runner ownership, replay and partial Node Outcomes, through the Store's
 //! interface only, on SQLite and on Postgres (see `backend`).
 

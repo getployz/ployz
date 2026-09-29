@@ -227,6 +227,58 @@ fn an_agent_creates_and_edits_an_image_service() {
 }
 
 #[test]
+fn an_agent_adds_lists_renames_and_removes_services() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let empty = ok(store, &["service", "add", "worker"]);
+        assert_eq!(empty.pointer("/next"), Some(&json!("ployz diff")));
+
+        let renamed = ok(store, &["service", "rename", "web", "frontend"]);
+        assert_eq!(
+            renamed.get("service"),
+            Some(
+                &json!({ "id": renamed["service"]["id"], "name": "frontend", "private_dns": "web" })
+            )
+        );
+        assert_eq!(renamed.get("staged"), Some(&json!(["frontend"])));
+        assert_eq!(renamed.get("next"), Some(&json!("ployz diff")));
+        let taken = error(store, &["service", "rename", "worker", "web"]);
+        assert_eq!(taken["code"], json!("conflict"));
+
+        let listed = ok(store, &["service", "ls"]);
+        assert_eq!(
+            listed["services"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|service| (&service["name"], &service["source"], &service["change"]))
+                .collect::<Vec<_>>(),
+            [
+                (&json!("frontend"), &json!("image"), &json!("create")),
+                (&json!("worker"), &json!("empty"), &json!("create")),
+            ]
+        );
+        let inspected = ok(store, &["service", "inspect", "frontend"]);
+        assert_eq!(inspected["private_dns"], json!("web"));
+        assert_eq!(inspected["values"]["image"], json!("nginx:1"));
+        assert_eq!(inspected["lineage"], inspected["id"]);
+
+        let removed = ok(store, &["service", "rm", "worker"]);
+        assert_eq!(removed.get("staged"), Some(&json!(["worker"])));
+        let missing = error(store, &["service", "inspect", "worker"]);
+        assert_eq!(missing["code"], json!("not_found"));
+        assert_eq!(
+            ok(store, &["service", "ls"])["services"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
 fn a_stale_revision_conflicts_and_names_the_read_that_refreshes_it() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
