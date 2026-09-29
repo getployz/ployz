@@ -9,7 +9,6 @@ use std::time::Duration;
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
     Actor, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, RunEvidence, RunnerId,
-    Written,
 };
 
 use super::{ImageCleanup, Session, connect_connections};
@@ -118,15 +117,8 @@ impl Run {
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
-        match self
-            .store(move |store| store.record(&deployment, &runner, evidence))
-            .await?
-        {
-            Written::Deployment(summary) => Ok(summary),
-            _ => Err(internal(
-                "The Store recorded something other than a Deployment",
-            )),
-        }
+        self.store(move |store| store.record(&deployment, &runner, evidence))
+            .await
     }
 
     async fn status(&self) -> Result<DeploymentStatus, RpcError> {

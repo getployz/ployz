@@ -14,7 +14,7 @@ use ployz_store::{
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
     RemoveService, RenameService, Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    ServicesQuery, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -199,9 +199,6 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             .record(&id(1), &a, succeeded(&["web", "api"]))
             .unwrap()
     );
-    let Written::Deployment(recorded) = recorded else {
-        unreachable!("a record writes a Deployment")
-    };
     assert_eq!(recorded.status, DeploymentStatus::Applied);
     assert_eq!(
         nodes(&store, &who, 1),

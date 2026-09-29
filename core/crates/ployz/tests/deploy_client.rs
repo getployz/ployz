@@ -997,7 +997,11 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let summary = run("cloud-run-1").await.unwrap();
     assert_eq!(summary.status, DeploymentStatus::Applied);
     let view = store.deployment(&who, &id).unwrap();
-    assert_eq!(view.nodes[0].outcome, NodeStatus::Applied);
+    assert!(
+        view.nodes
+            .iter()
+            .all(|node| node.outcome == NodeStatus::Applied)
+    );
     assert!(view.preview.is_some());
 
     // A duplicate delivery runs as another runner and finds it ended.
