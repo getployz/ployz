@@ -81,12 +81,6 @@ export const insertServiceIdentity = Effect.fn("EnvironmentDesign.insertServiceI
   },
 );
 
-export const serviceExists = Effect.fn("EnvironmentDesign.serviceExists")(
-  function* (environmentId: string, serviceId: string) {
-    return (yield* loadEnvironmentDocument(environmentId)).intent.services.some((node) => node.id === serviceId);
-  },
-);
-
 export const insertCanvasPosition = Effect.fn(
   "EnvironmentDesign.insertCanvasPosition",
 )(function* (input: {

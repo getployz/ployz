@@ -47,6 +47,9 @@ import {
   ENVIRONMENT_RESOURCE_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
+import { useCreateStoreService } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import type { NewServiceSource } from "#/modules/config-store/store-services";
 
 type InitialPanel = "root" | "git" | "image";
 type Panel = { kind: InitialPanel };
@@ -95,10 +98,7 @@ type ServiceCommandProps = {
   };
   initialPanel?: InitialPanel;
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
-  onCreated?: (
-    result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
-    stillHere: boolean,
-  ) => void | Promise<void>;
+  onCreated?: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
   onCreateVolume?: () => void;
   /** Says when a create starts and ends, so the dialog around it can stay open meanwhile. */
   onPendingChange?: (pending: boolean) => void;
@@ -193,6 +193,7 @@ function useServiceCreateActions({
   const markHere = useStillHere();
   const createEmptyProject = useServerFn(createEmptyProjectServerFn);
   const createService = useServerFn(createServiceServerFn);
+  const createStoreService = useCreateStoreService(props.organizationSlug);
   const createVolumeResource = useServerFn(createVolumeResourceServerFn);
 
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
@@ -245,6 +246,7 @@ function useServiceCreateActions({
       projectSlug: props.projectSlug,
       environmentSlug: props.environmentSlug,
       environmentId: environment.id,
+      environmentName: environment.name,
       canvasPosition: props.canvasPosition,
     };
   }
@@ -295,6 +297,17 @@ function useServiceCreateActions({
   const createServiceFromSource = (source: ServiceSource) =>
     whileCreating(async () => {
       const stillHere = markHere();
+      // TODO(#1267): a new Project's first Service moves to the Store with Projects.
+      if (storeEnabled && props.mode === "service") {
+        const target = await getServiceModeEnvironment();
+        const created = await createStoreService({
+          store: { project: target.projectSlug, environment: target.environmentName },
+          environmentId: target.environmentId,
+          position: target.canvasPosition,
+        }, newServiceSource(source));
+        await props.onCreated?.(created, stillHere());
+        return;
+      }
       const target = await getCreationTarget();
       const result = await createService({
         data: {
@@ -381,6 +394,11 @@ function useServiceCreateActions({
     setActivePanel,
     createServiceFromSource,
   };
+}
+
+function newServiceSource(source: ServiceSource): NewServiceSource {
+  if (source.type === "git") return { type: "git", repository: source.repository, branch: source.branch.type === "connected" ? source.branch.name : null };
+  return source.type === "image" ? { type: "image", image: source.image } : { type: "empty" };
 }
 
 export function ServiceCreateCommand(props: ServiceCreateCommandProps) {

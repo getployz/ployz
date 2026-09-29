@@ -3,7 +3,7 @@ import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import type { ServiceDeploymentSurfaceState } from "#/modules/services/service-deployment-semantics";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 
-export function getServiceIcon(service: Pick<EnvironmentServiceViewRecord["service"], "source">) {
+export function getServiceIcon(service: { source: Pick<EnvironmentServiceViewRecord["service"]["source"], "type"> }) {
   switch (service.source.type) {
     case "empty":
       return <TerminalIcon />;

@@ -8,8 +8,11 @@ import {
 } from "#/modules/services/services.collection";
 import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
 import { extractDisplayRefs } from "#/modules/environment-design/variable-template";
-import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT } from "./constants";
+import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE } from "./constants";
+import { findPlacement } from "../../-utils/node-placement";
 import type {
+  CanvasStoreServiceNode,
+  StoreCanvasService,
   CanvasLiveNode,
   CanvasResourceNode,
   CanvasServiceNode,
@@ -128,6 +131,34 @@ export function buildNodes(
   }));
 
   return [...serviceNodes, ...volumeNodes];
+}
+
+/** Config Store Services where the canvas last put them; positions stay Cloud's, keyed by the Service's id. */
+export function buildStoreServiceNodes(
+  services: StoreCanvasService[],
+  canvasPositions: ServiceCanvasPositionRecord[],
+  selectedNodeId: string | null,
+  environmentId: string,
+): CanvasStoreServiceNode[] {
+  const positionByResource = getPositionByCanvasResource(canvasPositions);
+  const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...SERVICE_NODE_SIZE }));
+  return services.map((service) => {
+    const stored = positionByResource.get(getCanvasPositionCollectionKey({ resourceType: "service", resourceId: service.service.id }));
+    // One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it.
+    const position = stored ? getCanvasPosition(stored) : findPlacement({ x: 0, y: 0 }, SERVICE_NODE_SIZE, occupied);
+    if (!stored) occupied.push({ ...position, ...SERVICE_NODE_SIZE });
+    return {
+      id: service.service.id,
+      type: "storeService",
+      position,
+      width: SERVICE_NODE_WIDTH,
+      height: SERVICE_NODE_HEIGHT,
+      handles: CANVAS_NODE_HANDLES,
+      draggable: true,
+      selected: service.service.id === selectedNodeId,
+      data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
+    } satisfies CanvasStoreServiceNode;
+  });
 }
 
 export function buildEdges(

@@ -1,5 +1,5 @@
 import { queryOptions, useMutationState, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
-import type { Change, ConfigQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue } from "@ployz/sdk";
+import type { Change, ConfigQuery, DiffQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -122,6 +122,22 @@ export function withPendingChanges(view: EnvironmentView, changes: readonly Chan
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */
 export function environmentSettingsQuery(environment: EnvironmentRef): { query: "environment" } & EnvironmentQuery {
   return { query: "environment", environment, path: null, all: true };
+}
+
+/** An Environment's Services, staged removals included: what its canvas draws. */
+export function servicesQuery(environment: EnvironmentRef): { query: "services" } & ServicesQuery {
+  return { query: "services", environment };
+}
+
+/** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
+export function diffQuery(environment: EnvironmentRef): { query: "diff" } & DiffQuery {
+  return { query: "diff", environment };
+}
+
+/** A view the page can't show without: a refusal fails the route, whose error component words it. */
+export function requireView<T>(result: StoreResult<T>): T {
+  if (!result.ok) throw new Error(result.refusal.message);
+  return result.value;
 }
 
 /**

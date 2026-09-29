@@ -9,6 +9,8 @@ import {
 import { ServiceDrawer } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceDrawer";
 import { useServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { serviceSearchSchema } from "../../services/$serviceId/-components/service-pages";
+import { StoreServiceDrawer } from "../../services/$serviceId/-components/StoreServiceDrawer";
+import { storeEnabled } from "#/modules/config-store/store.contract";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/services/$serviceId",
@@ -17,7 +19,7 @@ export const Route = createFileRoute(
   // Switching tabs navigates, so the Deployments tab's first page starts as it opens. SSR renders it.
   loaderDeps: ({ search }) => ({ tab: search.tab }),
   loader: async ({ params, context, deps }) => {
-    if (deps.tab !== "deployments") return;
+    if (deps.tab !== "deployments" || storeEnabled) return;
     const environment = await requireEnvironment(context, params);
     await prefetchRemotePages(context, nodeDeploymentsQueryOptions(params.organizationSlug, environment.id, params.serviceId));
   },
@@ -28,6 +30,11 @@ export const Route = createFileRoute(
 
 function RouteComponent() {
   const params = Route.useParams();
+  return storeEnabled ? <StoreServiceDrawer params={params} /> : <LegacyServiceDrawer params={params} />;
+}
+
+// TODO(#1275): goes with the dark gate.
+function LegacyServiceDrawer({ params }: { params: ReturnType<typeof Route.useParams> }) {
   const state = useServiceDrawerState(params);
 
   if (state == null) {
