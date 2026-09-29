@@ -91,11 +91,41 @@ pub(crate) struct DeviceEntry {
     pub(crate) current: bool,
 }
 
-/// The Organization's tokens and the caller's signed-in devices.
+/// A revoked token or device whose Clear some Servers haven't confirmed yet.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct RevokingEntry {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    /// Machine IDs still holding its Management Client.
+    pub(crate) unconfirmed: Vec<String>,
+}
+
+/// The Organization's tokens, the caller's signed-in devices, and revocations still to confirm.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Credentials {
     pub(crate) tokens: Vec<TokenEntry>,
     pub(crate) devices: Vec<DeviceEntry>,
+    pub(crate) revoking: Vec<RevokingEntry>,
+}
+
+/// Which Servers (by Machine ID) confirmed clearing a revoked credential's Management Client.
+/// Cloud refuses the credential at once either way; `unconfirmed` Servers still let its key in.
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub(crate) struct ServerClears {
+    pub(crate) confirmed: Vec<String>,
+    pub(crate) unconfirmed: Vec<String>,
+}
+
+/// This credential's own Management Capability on each Server Cloud could reach.
+#[derive(Debug, Deserialize)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "live operations (#1241) dial with it")
+)]
+pub(crate) struct ServerAccess {
+    pub(crate) connections: Vec<crate::context::Connection>,
+    /// Machine IDs Cloud couldn't provision a holder on now.
+    pub(crate) unreachable: Vec<String>,
 }
 
 /// A token just made: the one reply that carries its secret.
@@ -200,23 +230,42 @@ pub(crate) async fn new_token(
     Ok(reply.token)
 }
 
-/// Revoke a token of the Organization, or sign out one of the caller's devices.
+/// Revoke a token of the Organization, or sign out one of the caller's devices, then clear
+/// its Management Client on each Server. Rerun on a revoked id, it retries unconfirmed Servers.
 ///
 /// # Errors
 ///
 /// Returns [`LoginError::UnknownCredential`] when there is no such id, or a Cloud failure.
-pub(crate) async fn remove_token(credential: &Credential, id: &str) -> Result<Removed, LoginError> {
+pub(crate) async fn remove_token(
+    credential: &Credential,
+    id: &str,
+) -> Result<(Removed, ServerClears), LoginError> {
     #[derive(Deserialize)]
     struct Reply {
         removed: Removed,
+        servers: ServerClears,
     }
     match call::<Reply>(credential, Method::DELETE, &format!("tokens/{id}"), None).await {
-        Ok(reply) => Ok(reply.removed),
+        Ok(reply) => Ok((reply.removed, reply.servers)),
         Err(LoginError::Status { status: 404, .. }) => {
             Err(LoginError::UnknownCredential(id.to_owned()))
         }
         Err(error) => Err(error),
     }
+}
+
+/// This credential's own Management Capability on each Server of its Organization; Cloud
+/// provisions a missing one, including on Servers enrolled after login.
+///
+/// # Errors
+///
+/// Returns a Cloud failure.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "live operations (#1241) dial with it")
+)]
+pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, LoginError> {
+    call(credential, Method::POST, "server-access", None).await
 }
 
 /// The Organization's Billing Plan and Custom Domain Capability.
@@ -490,6 +539,23 @@ mod tests {
         // A Cloud without the CLI surface (or with it switched off).
         let error = credentials(&credential).await.unwrap_err();
         assert!(matches!(error, LoginError::Unsupported(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn server_access_reads_dialable_connections() {
+        let capability = format!("ployz1:{}", "A".repeat(86));
+        let reply = serde_json::json!({
+            "connections": [{ "machine_id": "a".repeat(32), "management": capability }],
+            "unreachable": ["b".repeat(32)],
+        });
+        let cloud = fake_cloud(move |route, _| match route {
+            "POST /api/cli/server-access" => (200, reply.clone()),
+            other => panic!("unexpected {other}"),
+        });
+        let access = server_access(&token(&cloud)).await.unwrap();
+        assert_eq!(access.connections.len(), 1);
+        assert_eq!(access.unreachable, ["b".repeat(32)]);
+        assert!(!format!("{access:?}").contains(&capability));
     }
 
     #[tokio::test]

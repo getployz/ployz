@@ -167,6 +167,21 @@ impl Client {
             .map_err(rpc_to_napi)
     }
 
+    /// Set this Machine's Management Client slot named `label`; returns the secret
+    /// `ployz1:` Management Capability for it. Do not log it.
+    ///
+    /// # Errors
+    /// Returns an invalid label, transport errors or a non-participating Machine.
+    #[napi]
+    pub async fn set_management_client(&self, label: String) -> Result<String> {
+        let label = ManagementClientLabel::parse(label).map_err(invalid_argument)?;
+        self.inner
+            .set_management_client(label)
+            .await
+            .map(|capability| capability.to_secret_string())
+            .map_err(rpc_to_napi)
+    }
+
     /// Inspect identity and Management Client labels on this session.
     ///
     /// # Errors

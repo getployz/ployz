@@ -73,7 +73,13 @@ fn fake_cloud(browser: Arc<Mutex<Browser>>, routes: Arc<Mutex<Vec<String>>>) -> 
                         "session": { "activeOrganizationId": "o1", "activeOrganizationSlug": "acme" },
                     }),
                 ),
-                "POST /api/auth/sign-out" => (200, json!({ "success": true })),
+                "POST /api/cli/logout" => (
+                    200,
+                    json!({
+                        "signed_out": { "id": "d1" },
+                        "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+                    }),
+                ),
                 _ => (404, json!({})),
             };
             let body = body.to_string();
@@ -152,12 +158,18 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
     let signed_out = ployz(&config, &["logout", "--json"]);
     assert_eq!(
         json_of(&signed_out),
-        json!({ "signed_out": true, "cloud": cloud })
+        json!({
+            "signed_out": true,
+            "cloud": cloud,
+            "device": "d1",
+            "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+            "next": "ployz token rm d1",
+        })
     );
     let again = ployz(&config, &["logout", "--json"]);
     assert_eq!(
         json_of(&again),
-        json!({ "signed_out": false, "cloud": null })
+        json!({ "signed_out": false, "cloud": null, "device": null, "servers": null })
     );
     assert_eq!(
         routes.lock().unwrap().as_slice(),
@@ -165,7 +177,7 @@ fn json_login_returns_the_code_at_once_and_finishes_on_the_next_run() {
             "POST /api/auth/device/code",
             "POST /api/auth/device/token",
             "GET /api/auth/get-session",
-            "POST /api/auth/sign-out",
+            "POST /api/cli/logout",
         ]
     );
 }

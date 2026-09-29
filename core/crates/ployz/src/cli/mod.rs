@@ -11,7 +11,9 @@ pub mod env {
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
     pub const TOKEN: &str = "PLOYZ_TOKEN";
+    /// The Environment authoring commands address, as `--env`.
     pub const ENVIRONMENT: &str = "PLOYZ_ENV";
+    /// The Project authoring commands address, as `--project`.
     pub const PROJECT: &str = "PLOYZ_PROJECT";
     /// Hidden test mode: host the Config Store in-process (`sqlite:PATH`). Not for users.
     pub const STORE: &str = "PLOYZ_STORE";
