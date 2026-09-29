@@ -166,7 +166,9 @@ impl Client {
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> DeployOutcome<ExecutionError> {
-        execute_operation_sequence(preview, self, cancellation, progress).await
+        let mut client = self.clone();
+        client.registry_auth.clone_from(preview.registry_auth());
+        execute_operation_sequence(preview, &client, cancellation, progress).await
     }
 
     /// Preview, auto-confirm, and return the Deploy Outcome.

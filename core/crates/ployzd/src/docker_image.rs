@@ -1,13 +1,17 @@
 //! Docker image preparation shared by workloads and managed services.
 
-use bollard::{Docker, errors::Error, query_parameters::CreateImageOptionsBuilder};
+use bollard::{
+    Docker, auth::DockerCredentials, errors::Error, query_parameters::CreateImageOptionsBuilder,
+};
 use futures_util::TryStreamExt;
-use ployz_core::PullPolicy;
+use ployz_core::{PullPolicy, RegistryAuth};
 
+/// Make `image` present as `policy` asks, pulling with `auth` for a private image.
 pub(crate) async fn prepare_image(
     docker: &Docker,
     image: &str,
     policy: PullPolicy,
+    auth: Option<&RegistryAuth>,
 ) -> Result<(), Error> {
     let pull = match policy {
         PullPolicy::Always => true,
@@ -34,7 +38,11 @@ pub(crate) async fn prepare_image(
                         .build(),
                 ),
                 None,
-                None,
+                auth.map(|auth| DockerCredentials {
+                    username: auth.username.clone(),
+                    password: Some(auth.password.clone()),
+                    ..Default::default()
+                }),
             )
             .try_for_each(|_| async { Ok(()) })
             .await?;
@@ -58,6 +66,8 @@ mod tests {
 
     use axum::{Router, http::StatusCode};
     use tokio::net::TcpListener;
+
+    use base64::Engine as _;
 
     use super::*;
 
@@ -97,12 +107,63 @@ mod tests {
             ("app@sha256:abcd", "app@sha256:abcd"),
             ("app:v1@sha256:abcd", "app:v1@sha256:abcd"),
         ] {
-            prepare_image(&docker, image, PullPolicy::Always)
+            prepare_image(&docker, image, PullPolicy::Always, None)
                 .await
                 .unwrap();
             assert_eq!(requests.lock().unwrap().pop().as_deref(), Some(expected));
         }
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_private_pull_carries_its_credentials() {
+        let headers = Arc::new(Mutex::new(Vec::new()));
+        let captured = headers.clone();
+        let app = Router::new().fallback(move |request: axum::http::HeaderMap| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(request.get("x-registry-auth").cloned());
+                (StatusCode::OK, "{}\n")
+            }
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let docker = Docker::connect_with_http(
+            &format!("http://{address}"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .unwrap();
+        let auth = RegistryAuth {
+            username: Some("octocat".into()),
+            password: "token".into(),
+        };
+        prepare_image(&docker, "ghcr.io/acme/api", PullPolicy::Always, Some(&auth))
+            .await
+            .unwrap();
+        prepare_image(&docker, "nginx", PullPolicy::Always, None)
+            .await
+            .unwrap();
+        server.abort();
+        let headers = headers.lock().unwrap().clone();
+        let [Some(private), public] = headers.as_slice() else {
+            panic!("expected two pulls, the first with credentials: {headers:?}");
+        };
+        let decoded = base64::engine::general_purpose::URL_SAFE
+            .decode(private.as_bytes())
+            .unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(decoded["username"], "octocat");
+        assert_eq!(decoded["password"], "token");
+        assert!(
+            public
+                .as_ref()
+                .is_none_or(|header| !header.to_str().unwrap().contains("token"))
+        );
     }
 
     #[tokio::test]
@@ -175,7 +236,7 @@ mod tests {
                 bollard::API_DEFAULT_VERSION,
             )
             .unwrap();
-            let result = prepare_image(&docker, "test", policy).await;
+            let result = prepare_image(&docker, "test", policy, None).await;
             server.abort();
             assert_eq!(result.is_ok(), succeeds, "{policy:?}: {result:?}");
             assert_eq!(*paths.lock().unwrap(), expected_paths, "{policy:?}");

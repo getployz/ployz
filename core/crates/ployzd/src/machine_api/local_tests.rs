@@ -460,6 +460,7 @@ async fn keyed_creation_replays_conflicts_and_obeys_new_work_admission() {
         creation_key: Some("retry/1".into()),
         kind: ContainerKind::ServiceContainer,
         namespace: Namespace::parse("app").unwrap(),
+        registry_auth: None,
         resolved_spec: serde_json::from_value(json!({
             "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
             "mode":{"mode":"replicated", "replicas":1},
@@ -713,6 +714,7 @@ async fn listed_containers_redact_environment_unless_requested() {
                 creation_key: None,
                 kind: ContainerKind::ServiceContainer,
                 namespace: Namespace::parse("app").unwrap(),
+                registry_auth: None,
                 resolved_spec: serde_json::from_value(json!({
                     "service_id": ServiceId::parse("a".repeat(32)).unwrap(), "name":"api",
                     "mode":{"mode":"replicated", "replicas":1},

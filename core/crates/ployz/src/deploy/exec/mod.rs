@@ -243,6 +243,7 @@ impl MachineOperations for Client {
                 kind,
                 namespace: namespace.clone(),
                 resolved_spec: spec.clone(),
+                registry_auth: self.registry_auth.get(&spec.name).cloned(),
             },
             &MachineTarget::from(machine_id),
             None,
