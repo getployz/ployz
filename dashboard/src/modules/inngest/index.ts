@@ -16,9 +16,10 @@ import {
 } from "#/modules/cluster-domain/sync.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
-import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
-import { createStorePrCheck, createStorePullRequest, createStoreSweep } from "#/modules/config-store/store-pull-request.inngest";
+import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import {
+  createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
+} from "#/modules/config-store/store-github.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
   return [
@@ -34,6 +35,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createSyncClusterDomain(inngest),
     createScheduleClusterDomainSync(inngest),
     createRunStoreDeployment(inngest),
+    createCancelStoreDeployment(inngest),
     createStoreGithubPush(inngest),
     createStoreGithubCheckSuite(inngest),
     createStorePullRequest(inngest),

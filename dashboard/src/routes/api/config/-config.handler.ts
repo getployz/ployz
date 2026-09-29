@@ -1,8 +1,8 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigQuery } from "@ployz/sdk";
-import { Effect } from "effect";
-import { callStore, cloudStore, refusal } from "#/modules/config-store/config-store.server";
-import type { StoreCall } from "#/modules/config-store/store.contract";
+import { Effect, Option, Schema } from "effect";
+import { callStore, refusal } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { StoreCommand, StoreQuery, type StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -31,8 +31,13 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
-  // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
-  const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation: "write", command: input as ConfigCommand };
+  const query = operation === "read" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreQuery)(input)) : undefined;
+  const command = operation === "write" ? Option.getOrUndefined(Schema.decodeUnknownOption(StoreCommand)(input)) : undefined;
+  const call: StoreCall | undefined = query !== undefined ? { operation: "read", query }
+    : command !== undefined ? { operation: "write", command } : undefined;
+  if (call === undefined) {
+    return refusal({ code: "invalid_argument", message: `Expected a ${operation === "read" ? "query" : "command"}.`, details: null });
+  }
   // Only Cloud's own Organization removal forgets an Organization's configuration.
   if (call.operation === "write" && call.command.command === "remove_organization") {
     return refusal({ code: "unsupported", message: "Remove an Organization with `ployz org rm`.", details: null });

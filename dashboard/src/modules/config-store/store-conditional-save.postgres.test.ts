@@ -1,22 +1,15 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ConfigTrusted, ServiceId, SystemEvent } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import type { ConfigCommand, JsonValue, ConfigTrusted, ServiceId, SystemEvent } from "@ployz/sdk";
+import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
-import { cloudStore } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
-import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
-import { githubInstallation } from "#/modules/github/tables";
-import { member, user } from "#/modules/identity/tables";
 import { githubPushReceivedEvent } from "#/modules/inngest/events";
-import { organization } from "#/modules/organization/tables";
-import { AppConfig } from "#/server/config.server";
-import { Database, DatabaseLive } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { fakeGithubApiBy } from "#/test/fake-github";
+import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
 const PROJECT = "00000000-0000-4000-8000-00000000d002";
@@ -28,46 +21,24 @@ const HEAD = "4".repeat(40);
 const here = { project: null, environment: null };
 
 /** GitHub with `acme/web` (42) through installation 7: pull request 5 merged as MERGE, `main` at HEAD, which has it. */
-const github: GithubApiService = {
-  json: (request) => {
-    const answer = request.url.endsWith("/pulls/5")
-      ? {
-        number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: PR_HEAD },
-        base: { ref: "main" }, state: "closed", merged: true, merge_commit_sha: MERGE, commits: 1,
-        updated_at: "2026-09-29T11:00:00Z",
-      }
-      : request.url.includes("/git/ref/")
-        ? { ref: "refs/heads/main", object: { type: "commit", sha: HEAD } }
-        : request.url.includes("/compare/")
-          ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
-          : { id: 42, full_name: "acme/web", private: true };
-    return Schema.decodeUnknownEffect(request.schema)(answer).pipe(Effect.orDie);
-  },
-  archive: () => Effect.die("no checkout in this test"),
-};
+const github = fakeGithubApiBy(({ url }): JsonValue => url.endsWith("/pulls/5")
+  ? {
+    number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: PR_HEAD },
+    base: { ref: "main" }, state: "closed", merged: true, merge_commit_sha: MERGE, commits: 1,
+    updated_at: "2026-09-29T11:00:00Z",
+  }
+  : url.includes("/git/ref/")
+    ? { ref: "refs/heads/main", object: { type: "commit", sha: HEAD } }
+    : url.includes("/compare/")
+      ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
+      : { id: 42, full_name: "acme/web", private: true }).service;
 
 it.live(
   "a merge pushed before its closed delivery freezes the Conditional Save, and that push lands it before it deploys",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
-      yield* Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        const [owner] = yield* drizzle.insert(user).values({ email: "ada@example.test", name: "Ada" }).returning();
-        yield* drizzle.insert(organization).values({ id: ORGANIZATION, name: "Shop", slug: "shop" });
-        yield* drizzle.insert(member).values({ userId: owner?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
-        yield* drizzle.insert(githubInstallation).values({
-          userId: owner?.id ?? "", installationId: 7, accountLogin: "acme", accountType: "Organization",
-        });
-      }).pipe(Effect.provide(services));
-
+      const services = yield* Layer.build(yield* storeTestCloud({ github }));
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -102,7 +73,7 @@ it.live(
 
       // GitHub delivers the merge push before the closed pull request.
       const runner: Parameters<typeof createStoreGithubPush>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
-        Effect.provide(services), Effect.provideService(GithubApi, github))));
+        Effect.provide(services))));
       const pushed = (yield* Effect.promise(async () => (await new InngestTestEngine({
         function: createStoreGithubPush(new Inngest({ id: "store-conditional-save-test" }), runner),
         events: [{
@@ -119,7 +90,7 @@ it.live(
       expect(web).toMatchObject({ values: { env: { MODE: "fast" } } });
       expect(yield* Effect.promise(() => store.pendingSaves(ORGANIZATION, 42, "main"))).toEqual({ standing: [], merged: [] });
       const environments = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "environments", project: null }));
-      expect(environments.view === "environments" && environments.environments.map((listing) => listing.name)).toEqual(["production"]);
+      expect(environments.environments.map((listing) => listing.name)).toEqual(["production"]);
     }),
   60_000,
 );

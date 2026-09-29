@@ -1,22 +1,15 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ConfigTrusted, ServiceId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import type { ConfigCommand, JsonValue, ConfigTrusted, ServiceId } from "@ployz/sdk";
+import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
-import { cloudStore } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
-import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
-import { githubInstallation } from "#/modules/github/tables";
-import { member, user } from "#/modules/identity/tables";
 import { githubCheckSuiteReceivedEvent, githubPushReceivedEvent } from "#/modules/inngest/events";
-import { organization } from "#/modules/organization/tables";
-import { AppConfig } from "#/server/config.server";
-import { Database, DatabaseLive } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { fakeGithubApiBy } from "#/test/fake-github";
+import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -27,20 +20,14 @@ const H2 = "2".repeat(40);
 const here = { project: null, environment: null };
 
 /** GitHub with `acme/web` (42) through installation 7: `main` at `state.head`, suite 9 as `state.suite` says. */
-function github(state: { head: string; suite: { status: string; conclusion: string | null; updated_at: string } }): GithubApiService {
-  return {
-    json: (request) => {
-      const answer = request.url.includes("/git/ref/")
-        ? { ref: "refs/heads/main", object: { type: "commit", sha: state.head } }
-        : request.url.includes("/compare/")
-          ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
-          : request.url.includes("/check-suites/")
-            ? { id: 9, head_sha: H2, ...state.suite }
-            : { id: 42, full_name: "acme/web", private: true };
-      return Schema.decodeUnknownEffect(request.schema)(answer).pipe(Effect.orDie);
-    },
-    archive: () => Effect.die("no checkout in this test"),
-  };
+function github(state: { head: string; suite: { status: string; conclusion: string | null; updated_at: string } }) {
+  return fakeGithubApiBy(({ url }): JsonValue => url.includes("/git/ref/")
+    ? { ref: "refs/heads/main", object: { type: "commit", sha: state.head } }
+    : url.includes("/compare/")
+      ? { status: "ahead", files: [{ filename: "src/app.ts" }] }
+      : url.includes("/check-suites/")
+        ? { id: 9, head_sha: H2, ...state.suite }
+        : { id: 42, full_name: "acme/web", private: true }).service;
 }
 
 const push = (after: string) => ({
@@ -64,25 +51,10 @@ it.live(
   "pushes and CI reach the Store: Saved State auto-deploys pinned to the head, wait-for-CI holds it, replays add nothing",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
+      const state = { head: H1, suite: { status: "in_progress", conclusion: null as string | null, updated_at: "2026-09-29T10:00:00Z" } };
+      const services = yield* Layer.build(yield* storeTestCloud({ github: github(state) }));
       // A member of the Organization installed the GitHub App as installation 7.
-      yield* Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        const [owner] = yield* drizzle.insert(user).values({ email: "ada@example.test", name: "Ada" }).returning();
-        yield* drizzle.insert(organization).values({ id: ORGANIZATION, name: "Shop", slug: "shop" });
-        yield* drizzle.insert(member).values({ userId: owner?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
-        yield* drizzle.insert(githubInstallation).values({
-          userId: owner?.id ?? "", installationId: 7, accountLogin: "acme", accountType: "Organization",
-        });
-      }).pipe(Effect.provide(services));
-
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -96,9 +68,8 @@ it.live(
       });
       yield* write({ command: "publish", environment: here, version: null });
 
-      const state = { head: H1, suite: { status: "in_progress", conclusion: null as string | null, updated_at: "2026-09-29T10:00:00Z" } };
       const runner: Parameters<typeof createStoreGithubPush>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
-        Effect.provide(services), Effect.provideService(GithubApi, github(state)))));
+        Effect.provide(services))));
       const inngest = new Inngest({ id: "store-github-test" });
       const sent: string[] = [];
       const run = (event: ReturnType<typeof push> | ReturnType<typeof suite>) => Effect.promise(async () =>
