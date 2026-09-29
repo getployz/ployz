@@ -1,11 +1,13 @@
 import { Suspense, useState, type ReactNode } from "react";
 import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { PackageIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
 import { GitRepoSelectorDialog, ImageSelectorDialog } from "#/components/service-source-selector";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
+import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
+import { Input } from "#/components/ui/input";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
@@ -19,6 +21,7 @@ import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorN
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
+import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
 import { useRemoveStoreService } from "./useDeleteService";
@@ -99,7 +102,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} />
       </Suspense>
     ),
-    scale: <FieldGroup>{field("replicas")}</FieldGroup>,
+    scale: <FieldGroup>{field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
     build: service.source === "git"
       ? <FieldGroup>{field("buildMethod")}{buildMethod === "dockerfile" ? field("dockerfilePath") : field("buildCommand")}</FieldGroup>
       : null,
@@ -183,6 +186,15 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
   const current = settingText(row.value ?? row.default);
   const edit = (raw: string) => writer.edit({ environment: state.environment, changes: [settingChange(path, setting, raw)] });
 
+  if (setting.type === "boolean") {
+    const on = (row.value ?? row.default) === true;
+    return (
+      <SwitchField id={`setting-${name}`} label={setting.title} description={setting.description} checked={on}
+        onChange={(next) => writer.edit({ environment: state.environment, changes: [{ op: "set", path, value: next }] })} />
+    );
+  }
+  if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
+
   return (
     <Field>
       <FieldLabel>{setting.title}</FieldLabel>
@@ -217,6 +229,46 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
           onCommit={edit}
         />
       )}
+    </Field>
+  );
+}
+
+/** A list Setting, like watch paths: each entry a removable badge, one added at a time. */
+function StoreListField({ state, name, setting, row }: { state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const [adding, setAdding] = useState("");
+  const list = Schema.is(Schema.Array(Schema.String))(row.value) ? row.value : [];
+  const change = state.changes.get(name);
+  const save = (next: readonly string[]) => writer.edit({ environment: state.environment,
+    changes: [next.length ? { op: "set", path: `${state.service.name}.${name}`, value: [...next] } : { op: "unset", path: `${state.service.name}.${name}` }] });
+  const add = () => {
+    const next = adding.trim();
+    if (next && !list.includes(next)) save([...list, next]);
+    setAdding("");
+  };
+  return (
+    <Field data-changed={change ? true : undefined}>
+      <FieldLabel>{setting.title}</FieldLabel>
+      <FieldDescription>{setting.description}</FieldDescription>
+      {list.length ? (
+        <div className="flex flex-wrap gap-2">
+          {list.map((entry) => (
+            <Badge key={entry} variant="secondary">
+              {entry}
+              <button type="button" aria-label={`Remove ${entry}`} className="-mr-0.5 ml-1 rounded-sm opacity-70 hover:opacity-100"
+                onClick={() => save(list.filter((other) => other !== entry))}>
+                <XIcon className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+      <div className="flex items-center gap-2">
+        <Input aria-label={`New ${setting.title.toLowerCase()}`} placeholder="/src/**" className="flex-1" value={adding}
+          onChange={(event) => setAdding(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(); } }} />
+        <Button type="button" variant="outline" onClick={add}><PlusIcon data-icon="inline-start" />Add</Button>
+      </div>
     </Field>
   );
 }
@@ -264,7 +316,16 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           </ItemActions>
         </Item>
       </Field>
-      {kind === "repository" ? <><StoreSettingField state={state} name="branch" /><StoreSettingField state={state} name="rootDir" /></> : <StoreRegistryCredentials state={state} image={value} />}
+      {kind === "repository" ? (
+        <>
+          <StoreSettingField state={state} name="branch" />
+          <StoreSettingField state={state} name="rootDir" />
+          {/* Its Deployment Policy: when a push to the branch deploys. */}
+          <StoreSettingField state={state} name="autoDeploy" />
+          <StoreSettingField state={state} name="waitForCi" />
+          <StoreSettingField state={state} name="watchPaths" />
+        </>
+      ) : <StoreRegistryCredentials state={state} image={value} />}
       <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
       <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
         onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
