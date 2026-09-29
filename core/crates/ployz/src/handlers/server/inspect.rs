@@ -25,6 +25,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                 .iter()
                 .map(|observation| MachineObservationOutput {
                     gateway: observation.machine.subnet.gateway().0,
+                    public_key: observation.machine.public_key.to_string(),
                     observation,
                 })
                 .collect::<Vec<_>>();
@@ -143,6 +144,8 @@ struct MachineObservationOutput<'a> {
     #[serde(flatten)]
     observation: &'a MachineObservation,
     gateway: Ipv4Addr,
+    /// The WireGuard public key in base64, as `wg` prints it.
+    public_key: String,
 }
 
 #[cfg(test)]
