@@ -1057,6 +1057,11 @@ fn setting_paths_complete_from_the_store_and_the_catalog() {
         };
         assert_eq!(complete("w").trim(), "web.");
         assert_eq!(complete("web.me").trim(), "web.memLimit");
+        // The Environment's own variables and mounts complete too.
+        ok(store, &["set", "web.env.LOG_LEVEL=info"]);
+        ok(store, &["volume", "add", "data", "--mount", "web:/data"]);
+        assert!(complete("web.env").contains("web.env.LOG_LEVEL"));
+        assert_eq!(complete("web.mou").trim(), "web.mounts.data");
     }
 }
 

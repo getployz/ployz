@@ -175,26 +175,40 @@ fn type_of(schema: &Value) -> String {
 }
 
 /// Completes `SERVICE.SETTING`: Service names from the Store when it is reachable,
-/// then the catalog's Settings once a Service is typed.
+/// then the catalog's Settings once a Service is typed, and the Environment's own
+/// variables (`SERVICE.env.KEY`) and mounts (`SERVICE.mounts.VOLUME`).
 pub(crate) fn setting_paths() -> ArgValueCompleter {
     ArgValueCompleter::new(|current: &std::ffi::OsStr| {
         let current = current.to_string_lossy();
+        let stored = stored_paths();
         let paths = if current.contains('.') {
-            catalog::complete(&current)
+            let mut paths = catalog::complete(&current);
+            paths.extend(
+                stored
+                    .into_iter()
+                    .filter(|path| path.starts_with(current.as_ref())),
+            );
+            paths.sort();
+            paths.dedup();
+            paths
         } else {
-            services()
-                .into_iter()
+            let mut services: Vec<String> = stored
+                .iter()
+                .filter_map(|path| path.split('.').next())
                 .filter(|service| service.starts_with(current.as_ref()))
                 .map(|service| format!("{service}."))
-                .collect()
+                .collect();
+            services.dedup();
+            services
         };
         paths.into_iter().map(CompletionCandidate::new).collect()
     })
 }
 
-/// The Services of the scoped Environment, or none when the Store is out of reach.
-/// Completion sees no flags, so scope comes from `PLOYZ_PROJECT`, `PLOYZ_ENV` and the directory link.
-fn services() -> Vec<String> {
+/// Every Setting path of the scoped Environment, or none when the Store is out of
+/// reach. Completion sees no flags, so scope comes from `PLOYZ_PROJECT`, `PLOYZ_ENV`
+/// and the directory link.
+fn stored_paths() -> Vec<String> {
     let scope = || -> Option<Vec<String>> {
         let config = std::env::var(crate::cli::env::CONFIG)
             .unwrap_or_else(|_| "~/.config/ployz/config.yaml".to_owned());
@@ -207,13 +221,12 @@ fn services() -> Vec<String> {
             all: true,
         };
         let view = store.environment(&query).ok()?;
-        let mut services = view
-            .settings
-            .into_iter()
-            .filter_map(|row| row.path.service().map(ToString::to_string))
-            .collect::<Vec<_>>();
-        services.dedup();
-        Some(services)
+        Some(
+            view.settings
+                .into_iter()
+                .map(|row| row.path.to_string())
+                .collect(),
+        )
     };
     scope().unwrap_or_default()
 }
