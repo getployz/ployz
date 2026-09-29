@@ -1,3 +1,6 @@
+// Human text and warnings go through `crate::output`; tests may print freely.
+#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
+
 pub mod build;
 mod cancellation;
 pub mod cli;
@@ -15,6 +18,7 @@ pub mod handlers;
 pub mod image;
 pub mod ingress;
 pub mod operator;
+pub mod output;
 pub mod project;
 mod provisioning;
 pub mod sdk;

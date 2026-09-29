@@ -48,12 +48,12 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
         };
         let (address, server) = serve_discovery(service).await;
 
-        let output = run_ployz(address, &["machine", "ls", "--output", "json"]).await;
+        let output = run_ployz(address, &["machine", "ls", "--json"]).await;
 
         assert!(output.status.success(), "{output:?}");
         let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
-            observed.pointer("/0/storage"),
+            observed.pointer("/machines/0/storage"),
             Some(&if advertised {
                 serde_json::json!({
                     "state": "pool",

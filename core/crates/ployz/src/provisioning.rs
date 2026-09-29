@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::OsString,
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::PathBuf,
     process::{Command, Stdio},
 };
@@ -132,14 +132,9 @@ pub enum ProvisionError {
 pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, ProvisionError> {
     let storage = match matches.get_one::<StorageChoice>("storage").copied() {
         Some(storage) => storage,
-        None if matches.get_flag("yes")
-            || !io::stdin().is_terminal()
-            || !io::stdout().is_terminal() =>
-        {
-            StorageChoice::None
-        }
+        None if matches.get_flag("yes") || !crate::output::interactive() => StorageChoice::None,
         None => {
-            print!(
+            crate::output::say_inline!(
                 "Storage preparation [zfs/none] (none keeps this Machine currently stateless): "
             );
             io::stdout().flush().map_err(ProvisionError::StorageInput)?;
@@ -164,7 +159,9 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
 
 pub(crate) fn announce_storage(storage: StorageChoice) {
     if storage == StorageChoice::None {
-        println!("Storage: none — this Machine currently supports stateless workloads only.");
+        crate::output::say!(
+            "Storage: none — this Machine currently supports stateless workloads only."
+        );
     }
 }
 

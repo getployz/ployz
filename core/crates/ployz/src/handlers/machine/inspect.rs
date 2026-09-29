@@ -1,42 +1,42 @@
-use std::{net::Ipv4Addr, time::Duration};
+use std::net::Ipv4Addr;
 
 use clap::ArgMatches;
-use futures_util::future::join_all;
 use ployz_core::{
-    InspectRequest, MachineFailure, MachineObservation, MachineStorageObservation, MachineSuccess,
-    MachineTarget, PartialResult, RpcError, RttObservation, op,
+    InspectMachineUpgradeRequest, InspectRequest, MachineObservation, MachineStorageObservation,
+    MachineTarget, RpcErrorCode, op,
 };
 use serde::Serialize;
+use serde_json::json;
 
 use super::with_client;
 use crate::{
-    connect::TARGET_RPC_TIMEOUT,
+    connect::{ConnectError, TARGET_RPC_TIMEOUT},
     handlers::{Error, leaf_matches},
+    output::{self, Gaps, say},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
-    let output = leaf_matches(root).get_one::<String>("output").cloned();
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
-            client.observe_machine_storage(&mut machines).await;
+            let storage = client.observe_machine_storage(&mut machines).await;
             let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
-            if output.as_deref() == Some("json") {
-                let machines = machines
-                    .iter()
-                    .map(|observation| MachineObservationOutput {
-                        gateway: observation.machine.subnet.gateway().0,
-                        observation,
-                    })
-                    .collect::<Vec<_>>();
-                println!("{}", serde_json::to_string_pretty(&machines)?);
-            } else {
-                println!(
+            let listed = machines
+                .iter()
+                .map(|observation| MachineObservationOutput {
+                    gateway: observation.machine.subnet.gateway().0,
+                    observation,
+                })
+                .collect::<Vec<_>>();
+            let mut gaps = Gaps::default();
+            gaps.extend(&storage.failures, &storage.omissions);
+            let finished = output::finish_fanout("machines", &listed, &gaps, || {
+                say!(
                     "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
                 );
                 for observed in &machines {
                     let machine = &observed.machine;
-                    println!(
+                    say!(
                         "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                         machine.id,
                         machine.name,
@@ -61,11 +61,11 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                         machine.runtime.architecture,
                     );
                 }
-            }
+            });
             if let Some(warning) = warning {
-                eprintln!("{warning}");
+                crate::output::warning!("{warning}");
             }
-            Ok(())
+            finished
         })
     })
 }
@@ -101,7 +101,8 @@ fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     }
 }
 
-/// Print fresh targeted Machine telemetry; list/watch request only storage evidence.
+/// Print fresh targeted Machine telemetry, its round-trip times to peers, and its
+/// latest upgrade attempt; list/watch request only storage evidence.
 pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let selector = MachineTarget::parse(
         leaf_matches(root)
@@ -114,14 +115,25 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 .invoke::<op::Inspect>(
                     InspectRequest {
                         telemetry: ployz_core::InspectTelemetry::Full,
+                        include_rtts: true,
                         ..Default::default()
                     },
                     &selector,
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
-            println!("{}", serde_json::to_string_pretty(&details)?);
-            Ok(())
+            let upgrade = match client
+                .call_repeatable::<op::InspectMachineUpgrade>(
+                    InspectMachineUpgradeRequest { attempt_id: None },
+                    Some(&selector),
+                )
+                .await
+            {
+                Ok(attempt) => Some(attempt),
+                Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => None,
+                Err(error) => return Err(error.into()),
+            };
+            output::show(&json!({ "machine": details, "upgrade": upgrade }))
         })
     })
 }
@@ -133,101 +145,10 @@ struct MachineObservationOutput<'a> {
     gateway: Ipv4Addr,
 }
 
-pub(in crate::handlers) fn rtt(root: &ArgMatches) -> Result<(), Error> {
-    with_client(root, |client| {
-        Box::pin(async move {
-            let machines = client.machines().await?;
-            let mut requests = Vec::new();
-            let mut result = PartialResult {
-                successes: Vec::new(),
-                failures: Vec::new(),
-                omissions: Vec::new(),
-            };
-            for observed in machines {
-                let id = observed.machine.id;
-                if !observed.membership.invites_rpc() {
-                    result.omissions.push(id);
-                    continue;
-                }
-                let mut client = client.clone();
-                requests.push(async move {
-                    let request = InspectRequest {
-                        include_rtts: true,
-                        ..Default::default()
-                    };
-                    let outcome = client
-                        .read::<op::Inspect>(request, &MachineTarget::from(&id))
-                        .await;
-                    (id, outcome)
-                });
-            }
-            for (id, outcome) in join_all(requests).await {
-                match outcome {
-                    Ok(details) => result.successes.push(MachineSuccess {
-                        machine_id: id,
-                        value: details.rtts,
-                    }),
-                    Err(error) => result.failures.push(MachineFailure {
-                        machine_id: id,
-                        error,
-                    }),
-                }
-            }
-            print_rtts(&result);
-            Ok(())
-        })
-    })
-}
-
-#[must_use]
-fn format_measured_rtt(median_ns: u64) -> String {
-    if median_ns == 0 {
-        "<1ms".into()
-    } else {
-        format!("{:?}", Duration::from_nanos(median_ns))
-    }
-}
-
-#[must_use]
-fn format_rtt_table(result: &PartialResult<Vec<RttObservation>, RpcError>) -> String {
-    let mut table = String::from("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n");
-    for success in &result.successes {
-        for observation in &success.value {
-            let target = observation
-                .machine
-                .as_ref()
-                .map_or(observation.peer_id.as_str(), |machine| machine.id.as_str());
-            table.push_str(&format!(
-                "{}\t{target}\t{}\t{}\n",
-                success.machine_id,
-                format_measured_rtt(observation.statistics.median_ns),
-                format_measured_rtt(observation.statistics.population_stddev_ns),
-            ));
-        }
-    }
-    table
-}
-
-fn print_rtts(result: &PartialResult<Vec<RttObservation>, RpcError>) {
-    print!("{}", format_rtt_table(result));
-    for failure in &result.failures {
-        eprintln!(
-            "WARNING: RTT inspection failed for {}: {}",
-            failure.machine_id, failure.error
-        );
-    }
-    for machine_id in &result.omissions {
-        eprintln!("WARNING: RTT inspection omitted for {machine_id}");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ployz_core::{
-        CORROSION_GOSSIP_PORT, MachineId, MachineIdentity, MachineName, MachineStorageObservation,
-        RttStatistics,
-    };
+    use ployz_core::MachineStorageObservation;
 
     #[test]
     fn storage_column_distinguishes_ready_without_a_pool() {
@@ -248,80 +169,6 @@ mod tests {
             })),
             "POOL (4294967296 BYTES, 3865470566 USED, 429496730 FREE)"
         );
-    }
-
-    #[test]
-    fn missing_rtt_is_omitted_and_sub_millisecond_samples_are_not_printed_as_0ns() {
-        assert_eq!(format_measured_rtt(0), "<1ms");
-
-        let source = machine_id('1');
-        let table = format_rtt_table(&PartialResult {
-            successes: vec![MachineSuccess {
-                machine_id: source,
-                value: vec![rtt_observation("peer-zero", 0, 0)],
-            }],
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        });
-        assert_eq!(
-            table,
-            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\tpeer-zero\t<1ms\t<1ms\n")
-        );
-        assert!(!table.contains("0ns"));
-    }
-
-    #[test]
-    fn measured_rtt_prints_human_units() {
-        assert_eq!(format_measured_rtt(1_500_000), "1.5ms");
-        let statistics = RttStatistics {
-            median_ns: 1_500_000,
-            population_stddev_ns: 200_000,
-        };
-
-        let source = machine_id('1');
-        let target = machine_id('2');
-        let table = format_rtt_table(&PartialResult {
-            successes: vec![MachineSuccess {
-                machine_id: source,
-                value: vec![RttObservation {
-                    peer_id: "peer-live".into(),
-                    address: format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}")
-                        .parse()
-                        .unwrap(),
-                    machine: Some(MachineIdentity {
-                        id: target,
-                        name: MachineName::parse("node-b").unwrap(),
-                    }),
-                    statistics,
-                }],
-            }],
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        });
-        assert_eq!(
-            table,
-            format!("SOURCE\tTARGET\tMEDIAN\tSTDDEV\n{source}\t{target}\t1.5ms\t200µs\n")
-        );
-        assert!(!table.contains("1500000"));
-        assert!(!table.contains("0ns"));
-    }
-
-    fn machine_id(digit: char) -> MachineId {
-        digit.to_string().repeat(32).parse().unwrap()
-    }
-
-    fn rtt_observation(peer_id: &str, median_ns: u64, population_stddev_ns: u64) -> RttObservation {
-        RttObservation {
-            peer_id: peer_id.into(),
-            address: format!("[fdcc::2]:{CORROSION_GOSSIP_PORT}")
-                .parse()
-                .unwrap(),
-            machine: None,
-            statistics: RttStatistics {
-                median_ns,
-                population_stddev_ns,
-            },
-        }
     }
 
     #[test]

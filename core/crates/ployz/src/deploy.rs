@@ -20,7 +20,7 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, remove_project};
+pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, emit_outcome, remove_project};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
@@ -163,6 +163,24 @@ impl VolumeSnapshot {
             )));
         }
         Ok(())
+    }
+
+    /// Volumes a Machine could not inspect although it answered.
+    #[must_use]
+    pub fn named_failures(&self) -> &[VolumeObservationFailure] {
+        &self.named_failures
+    }
+
+    /// Machines whose Volume listing failed.
+    #[must_use]
+    pub fn machine_failures(&self) -> &[MachineFailure<RpcError>] {
+        &self.machine_failures
+    }
+
+    /// Machines that never answered the Volume listing.
+    #[must_use]
+    pub fn omissions(&self) -> &[MachineId] {
+        &self.omissions
     }
 
     /// Successful Docker Volume observations.

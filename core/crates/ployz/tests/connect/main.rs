@@ -357,46 +357,48 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     service.machines.push(down);
     let (address, server) = serve_discovery(service).await;
 
+    // The down Machine is omitted from every listing, so each result is partial.
     let json_cases: &[(&[&str], &str, &str)] = &[
         (
-            &["service", "ls", "--output", "json"],
-            "/0/identity",
+            &["service", "ls", "--json"],
+            "/services/0/identity",
             "app/api",
         ),
         (
-            &["service", "ls", "-o", "json"],
-            "/0/containers/0/resolved_spec/container/image",
+            &["service", "ls", "--json"],
+            "/services/0/containers/0/resolved_spec/container/image",
             "alpine:3.23.3",
         ),
         (
-            &["ps", "--output", "json"],
-            "/0/resolved_spec/container/image",
+            &["service", "ps", "--json"],
+            "/containers/0/resolved_spec/container/image",
             "alpine:3.23.3",
         ),
         (
-            &["volume", "ls", "-q", "-o", "json"],
-            "/0/volume/options/type",
+            &["volume", "ls", "--json"],
+            "/volumes/0/volume/options/type",
             "none",
         ),
         (
-            &["project", "ls", "--output", "json"],
-            "/0/services/0",
+            &["project", "ls", "--json"],
+            "/projects/0/services/0",
             "app/api",
         ),
     ];
     for (args, pointer, expected) in json_cases {
         let output = run_ployz(address, args).await;
-        if args.first() == Some(&"volume") {
-            assert!(!output.status.success(), "{args:?}: {output:?}");
-        } else {
-            assert!(output.status.success(), "{args:?}: {output:?}");
-        }
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
         let document: Value = serde_json::from_slice(&output.stdout)
             .unwrap_or_else(|error| panic!("{args:?}: {error}: {output:?}"));
         assert_eq!(
             document.pointer(pointer).and_then(Value::as_str),
             Some(*expected),
             "{args:?}: {document}"
+        );
+        assert_eq!(
+            document.pointer("/omitted"),
+            Some(&serde_json::json!(["b".repeat(32)])),
+            "{args:?}"
         );
         assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
     }
@@ -411,7 +413,7 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     let human_cases = [
         (&["service", "ls"][..], services),
         (
-            &["ps"][..],
+            &["service", "ps"][..],
             format!(
                 "CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE\n{container_id}\tapp/api\tServiceContainer\t{machine_id}\trunning (health: healthy)\n{}\tapp/worker\tPreDeployHook\t{machine_id}\texited with code 0\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: unhealthy)\n{}\tapp/worker\tServiceContainer\t{machine_id}\trunning (health: starting)\n{}\tapp/worker\tServiceContainer\t{machine_id}\texited with code 1\n",
                 "0".repeat(64),
@@ -431,20 +433,13 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     ];
     for (args, expected) in human_cases {
         let output = run_ployz(address, args).await;
-        if args.first() == Some(&"volume") {
-            assert!(!output.status.success(), "{args:?}: {output:?}");
-        } else {
-            assert!(output.status.success(), "{args:?}: {output:?}");
-        }
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
         assert_eq!(
             String::from_utf8(output.stdout).unwrap(),
             expected,
             "{args:?}"
         );
     }
-    let quiet = run_ployz(address, &["volume", "ls", "-q"]).await;
-    assert!(!quiet.status.success(), "{quiet:?}");
-    assert_eq!(quiet.stdout, b"data\n");
     server.abort();
 }
 
@@ -534,7 +529,9 @@ async fn volume_inspect_uses_direct_lookup_without_enumeration() {
     assert_eq!(inspect_calls.load(Ordering::SeqCst), 1);
     let document: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
-        document.pointer("/volume/id/name").and_then(Value::as_str),
+        document
+            .pointer("/volume/volume/id/name")
+            .and_then(Value::as_str),
         Some("data")
     );
     server.abort();
@@ -552,7 +549,7 @@ async fn volume_create_reports_created_but_unverified_as_failure() {
     let created = Arc::clone(&service.created_volumes);
     let (address, server) = serve_discovery(service).await;
 
-    let output = run_ployz(address, &["volume", "create", "data", "--driver", "local"]).await;
+    let output = run_ployz(address, &["volume", "create", "data"]).await;
 
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(created.lock().unwrap().len(), 1);
@@ -598,27 +595,13 @@ async fn volume_create_size_uses_the_ployz_driver_and_plain_create_stays_ordinar
             BTreeMap::from([("size".into(), size.into())])
         );
     }
-    let ordinary = run_ployz(
-        address,
-        &[
-            "volume",
-            "create",
-            "ordinary",
-            "--driver",
-            "local",
-            "--opt",
-            "type=none",
-        ],
-    )
-    .await;
+    let ordinary = run_ployz(address, &["volume", "create", "ordinary"]).await;
     assert!(ordinary.status.success(), "{ordinary:?}");
 
     let (_, ordinary) = created.lock().unwrap().pop().unwrap();
     assert_eq!(ordinary.driver, "local");
-    assert_eq!(
-        ordinary.options,
-        BTreeMap::from([("type".into(), "none".into())])
-    );
+    assert!(ordinary.options.is_empty());
+    assert!(ordinary.labels.is_empty());
     server.abort();
 }
 
@@ -675,7 +658,7 @@ async fn existing_provisioned_volume_accepts_the_same_bound_but_never_resizes() 
     let different = run_ployz(address, &["volume", "create", "data", "--size", "2g"]).await;
     assert!(!different.status.success(), "{different:?}");
     assert!(
-        String::from_utf8_lossy(&different.stderr).contains("volume update"),
+        String::from_utf8_lossy(&different.stderr).contains("resizing is not supported"),
         "{different:?}"
     );
     server.abort();

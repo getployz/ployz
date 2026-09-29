@@ -1,5 +1,5 @@
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     sync::Arc,
 };
 
@@ -117,7 +117,7 @@ pub(super) async fn wait_direct_participating(
     )
     .await
     .map_err(|error| {
-        Error::usage(format!(
+        Error::unavailable(format!(
             "{}: {error}",
             readiness_timeout_message(timeout_message)
         ))
@@ -159,7 +159,7 @@ pub(in crate::handlers) async fn initialize(
             )
             .await?;
             if details.id != identity.id || details.public_key != identity.public_key {
-                return Err(Error::usage(
+                return Err(Error::conflict(
                     "Initialization outcome belongs to a different Machine identity; inspect the Machine before retrying; do not reset it",
                 ));
             }
@@ -167,7 +167,7 @@ pub(in crate::handlers) async fn initialize(
                 .machine
                 .expect("observed predicate verified the initialized Machine");
             if !initial_policy.matches(&machine) {
-                return Err(Error::usage(
+                return Err(Error::conflict(
                     "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
                 ));
             }
@@ -233,7 +233,7 @@ pub(in crate::handlers) async fn join(
                 .as_ref()
                 .is_some_and(|machine| initial_policy.matches(machine))
             {
-                return Err(Error::usage(
+                return Err(Error::conflict(
                     "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
                 ));
             }
@@ -256,7 +256,7 @@ async fn observe_mutation(
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
             if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
         },
-    ).await.map_err(|error| Error::usage(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
+    ).await.map_err(|error| Error::unavailable(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
@@ -269,16 +269,20 @@ pub(in crate::handlers) fn confirm(yes: bool, prompt: &str) -> Result<(), Error>
     if yes {
         return Ok(());
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !crate::output::interactive() {
         return Err(Error::usage(format!(
             "cannot confirm {} without a terminal; pass --yes",
             prompt.escape_debug()
         )));
     }
-    println!("{prompt}");
-    println!("This removes Ployz-managed containers and resets this machine's cluster membership.");
-    println!("Volume data will not be erased, but will lose access through the current cluster.");
-    print!("Type yes to confirm, or press Enter to cancel: ");
+    crate::output::say!("{prompt}");
+    crate::output::say!(
+        "This removes Ployz-managed containers and resets this machine's cluster membership."
+    );
+    crate::output::say!(
+        "Volume data will not be erased, but will lose access through the current cluster."
+    );
+    crate::output::say_inline!("Type yes to confirm, or press Enter to cancel: ");
     io::stdout().flush()?;
     let mut answer = String::new();
     io::stdin().read_line(&mut answer)?;

@@ -27,6 +27,14 @@ impl Ink {
         }
     }
 
+    /// Color for the stream carrying human text.
+    #[must_use]
+    pub(crate) fn human() -> Self {
+        Self {
+            color: crate::output::human_is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+        }
+    }
+
     /// No ANSI.
     #[must_use]
     pub(crate) const fn plain() -> Self {

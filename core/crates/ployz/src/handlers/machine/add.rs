@@ -5,7 +5,12 @@ use ployz_core::{
 
 use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, helpers, target};
-use crate::handlers::{Error, leaf_matches};
+use serde_json::json;
+
+use crate::{
+    handlers::{Error, leaf_matches},
+    output::{self, say},
+};
 
 pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -100,7 +105,7 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
     connection = connection.with_machine_id(assigned.id);
     config.save_connection(&context_name, connection.clone())?;
-    println!("{}", added_machine_line(&assigned));
+    say!("{}", added_machine_line(&assigned));
 
     runtime.block_on(helpers::wait_direct_participating(
         matches,
@@ -115,12 +120,16 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Err(error) = catch_up {
         let recovery =
             super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
-        return Err(Error::usage(format!(
-            "{}\nFor ingress, continue with: {recovery}",
-            crate::global_catch_up::joined_catch_up_error(error)
-        )));
+        return Err(Error::detailed(
+            ployz_core::RpcErrorCode::Internal,
+            format!(
+                "{}\nFor ingress, continue with: {recovery}",
+                crate::global_catch_up::joined_catch_up_error(error)
+            ),
+            json!({ "machine": assigned }),
+        ));
     }
-    Ok(())
+    output::emit(&json!({ "machine": assigned }))
 }
 
 fn added_machine_line(assigned: &Machine) -> String {

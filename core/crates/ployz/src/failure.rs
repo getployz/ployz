@@ -2,9 +2,10 @@ use std::{borrow::Cow, error::Error, fmt, io, process::ExitCode};
 
 use ployz_core::{
     CodecError, ContainerSelectorError, DataLoss, MachineSelectorError, MachineUpdateError,
-    PartialResult, RpcError, ServiceSelectorError, StreamProtocolError, UnconfirmedDataLoss,
-    ValueError,
+    PartialResult, RpcError, RpcErrorCode, ServiceSelectorError, StreamProtocolError,
+    UnconfirmedDataLoss, ValueError,
 };
+use serde_json::Value;
 
 use crate::{
     cloud_enroll,
@@ -16,8 +17,13 @@ use crate::{
     operator::OperatorError,
     project::ProjectError,
     provisioning::ProvisionError,
-    volume::AssignmentError,
 };
+
+/// Exit code of a command that printed its result but did not fully succeed.
+pub const PARTIAL_EXIT: u8 = 3;
+
+/// Exit code of a rejected command line, as clap exits.
+pub const USAGE_EXIT: u8 = 2;
 
 /// CLI command outcome. `Display` is product stderr. `exit` is silent.
 #[derive(Debug)]
@@ -27,27 +33,42 @@ pub struct Failure {
 
 #[derive(Debug)]
 enum Inner {
-    Command(Box<dyn Error + Send + Sync>),
+    /// A printed failure and the exit code it ends the process with.
+    Command(Box<dyn Error + Send + Sync>, u8),
     Exit(u8),
 }
 
+/// A product failure raised by the CLI itself, with its `--json` error code.
 // Skip marker for later capture_exception; not a library error.
 #[derive(Debug)]
-struct Usage(Cow<'static, str>);
+struct Message {
+    code: RpcErrorCode,
+    text: Cow<'static, str>,
+    details: Value,
+}
 
-impl fmt::Display for Usage {
+impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.text)
     }
 }
 
-impl Error for Usage {}
+impl Error for Message {}
 
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: Inner::Command(Box::new(error)),
+            inner: Inner::Command(Box::new(error), 1),
         }
+    }
+
+    /// End the process with `code` instead of 1 when this failure is printed.
+    #[must_use]
+    pub fn with_exit(mut self, code: u8) -> Self {
+        if let Inner::Command(_, exit) = &mut self.inner {
+            *exit = code;
+        }
+        self
     }
 
     #[must_use]
@@ -57,13 +78,370 @@ impl Failure {
         }
     }
 
+    /// The result is printed, but some targets failed or never answered.
+    #[must_use]
+    pub fn partial() -> Self {
+        Self::exit(PARTIAL_EXIT)
+    }
+
+    /// The input was wrong.
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
-        Self::command(Usage(message.into()))
+        Self::coded(RpcErrorCode::InvalidArgument, message)
+    }
+
+    /// The named target does not exist.
+    pub fn not_found(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::NotFound, message)
+    }
+
+    /// The selector matches more than one target.
+    pub fn ambiguous(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Ambiguous, message)
+    }
+
+    /// The target's current state refuses the request.
+    pub fn conflict(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Conflict, message)
+    }
+
+    /// A target could not be reached or its outcome is unknown.
+    pub fn unavailable(message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(RpcErrorCode::Unavailable, message)
+    }
+
+    /// A failure with an explicit `--json` error code.
+    pub fn coded(code: RpcErrorCode, message: impl Into<Cow<'static, str>>) -> Self {
+        Self::detailed(code, message, Value::Null)
+    }
+
+    /// A failure whose `--json` error carries machine-readable evidence in `details`.
+    pub fn detailed(
+        code: RpcErrorCode,
+        message: impl Into<Cow<'static, str>>,
+        details: Value,
+    ) -> Self {
+        Self::command(Message {
+            code,
+            text: message.into(),
+            details,
+        })
     }
 
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
-        Self::usage(format!("WARNING: {context}: {cause}."))
+        Self::coded(
+            RpcErrorCode::Internal,
+            format!("WARNING: {context}: {cause}."),
+        )
+    }
+
+    /// The `--json` error object: the RPC error shape and vocabulary.
+    #[must_use]
+    pub fn report(&self) -> RpcError {
+        let (code, details) = match &self.inner {
+            Inner::Command(error, _) => classify(error.as_ref()),
+            Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
+        };
+        RpcError {
+            code,
+            message: self.to_string(),
+            details,
+        }
+    }
+}
+
+fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
+    if let Some(message) = error.downcast_ref::<Message>() {
+        return (message.code.clone(), message.details.clone());
+    }
+    if let Some(error) = error.downcast_ref::<RpcError>() {
+        return (error.code.clone(), error.details.clone());
+    }
+    if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
+        return (error.code.clone(), error.details.clone());
+    }
+    (code(error), Value::Null)
+}
+
+/// The `--json` code of a CLI-side error: `invalid_argument` for bad input,
+/// `unavailable` when a target could not be reached, `internal` only for real faults.
+fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
+    if let Some(error) = error.downcast_ref::<ConnectError>() {
+        return connect_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<RpcError>() {
+        return error.code.clone();
+    }
+    if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
+        return machine_selector_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<ServiceSelectorError>() {
+        return match error {
+            ServiceSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
+            ServiceSelectorError::NameAmbiguity { .. } => RpcErrorCode::Ambiguous,
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ContainerSelectorError>() {
+        return match error {
+            ContainerSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
+            ContainerSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ContextError>() {
+        return context_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<OperatorError>() {
+        return operator_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<PlanError>() {
+        return plan_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<ProvisionError>() {
+        return provision_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<PushError>() {
+        return push_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<CodecError>() {
+        return codec_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<cloud_enroll::Error>() {
+        return cloud_enroll_code(error);
+    }
+    if let Some(error) = error.downcast_ref::<MachineUpdateError>() {
+        return match error {
+            MachineUpdateError::DuplicateName => RpcErrorCode::Conflict,
+            MachineUpdateError::MissingEndpoints => RpcErrorCode::InvalidArgument,
+        };
+    }
+    if let Some(error) = error.downcast_ref::<io::Error>() {
+        return io_code(error);
+    }
+    if error.is::<TransportError>() || error.is::<IngressImageError>() {
+        return RpcErrorCode::Unavailable;
+    }
+    if error.is::<ValueError>()
+        || error.is::<ConnectionError>()
+        || error.is::<ConfigError>()
+        || error.is::<ProjectError>()
+        || error.is::<std::num::ParseIntError>()
+        || error.is::<shell_words::ParseError>()
+    {
+        return RpcErrorCode::InvalidArgument;
+    }
+    // StreamProtocolError, serde_json::Error, and anything unlisted: a real fault.
+    RpcErrorCode::Internal
+}
+
+fn connect_code(error: &ConnectError) -> RpcErrorCode {
+    match error {
+        ConnectError::Remote(error) => error.code.clone(),
+        ConnectError::ClientRefused | ConnectError::ClientCleared => RpcErrorCode::Unauthenticated,
+        ConnectError::ProxyUnsupported(_) | ConnectError::UnsupportedNetwork(_) => {
+            RpcErrorCode::Unsupported
+        }
+        ConnectError::Context(error) => context_code(error),
+        ConnectError::Config(_) | ConnectError::Connection(_) | ConnectError::Value(_) => {
+            RpcErrorCode::InvalidArgument
+        }
+        ConnectError::Codec(error) => codec_code(error),
+        // Every connection failed: the last one says why.
+        ConnectError::AllFailed {
+            last: Some(last), ..
+        } => connect_code(last),
+        ConnectError::Join(_) => RpcErrorCode::Internal,
+        ConnectError::IdentityMismatch { .. }
+        | ConnectError::Attempt(_)
+        | ConnectError::EntryNotReady
+        | ConnectError::Io(_)
+        | ConnectError::Dial(_)
+        | ConnectError::MissingMachineDetails
+        | ConnectError::SshClientMissing(_)
+        | ConnectError::SshProbe { .. }
+        | ConnectError::Routing(_)
+        | ConnectError::Path { .. }
+        | ConnectError::AllFailed { last: None, .. }
+        | ConnectError::Rpc(_)
+        | ConnectError::Framing(_) => RpcErrorCode::Unavailable,
+    }
+}
+
+fn machine_selector_code(error: &MachineSelectorError) -> RpcErrorCode {
+    match error {
+        MachineSelectorError::NoTargets => RpcErrorCode::InvalidArgument,
+        MachineSelectorError::NoVisibleMachines | MachineSelectorError::NotFound(_) => {
+            RpcErrorCode::NotFound
+        }
+        MachineSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
+    }
+}
+
+fn operator_code(error: &OperatorError) -> RpcErrorCode {
+    match error {
+        OperatorError::Connect(error) => connect_code(error),
+        OperatorError::Selector(error) => code(error),
+        OperatorError::MachineSelector(error) => machine_selector_code(error),
+        OperatorError::Container(error) => code(error),
+        OperatorError::Codec(error) => codec_code(error),
+        OperatorError::OpenContainerLogs { source, .. }
+        | OperatorError::OpenMachineLogs { source, .. } => operator_code(source),
+        OperatorError::Value(_)
+        | OperatorError::TtyRequiresStdin
+        | OperatorError::InvalidServiceSelector(_)
+        | OperatorError::InvalidTail(_)
+        | OperatorError::InvalidLogTime(_)
+        | OperatorError::InvalidProxyPort
+        | OperatorError::InvalidLocalPort(_)
+        | OperatorError::InvalidRemotePort(_)
+        | OperatorError::UnsupportedLogService { .. } => RpcErrorCode::InvalidArgument,
+        OperatorError::NoRegularContainer
+        | OperatorError::NoContainersOnMachines { .. }
+        | OperatorError::NoMachines => RpcErrorCode::NotFound,
+        OperatorError::Rpc(_)
+        | OperatorError::StreamClosed
+        | OperatorError::NoHealthyContainer
+        | OperatorError::SnapshotStale => RpcErrorCode::Unavailable,
+        OperatorError::Protocol(_) => RpcErrorCode::Internal,
+    }
+}
+
+fn plan_code(error: &PlanError) -> RpcErrorCode {
+    match error {
+        PlanError::Service { source, .. } => plan_code(source),
+        PlanError::ConflictingHostPublications { .. }
+        | PlanError::ConflictingDockerVolumeDefinitions { .. }
+        | PlanError::DuplicateTargetService { .. }
+        | PlanError::MixedVolumeModes { .. }
+        | PlanError::DependencyCycle { .. } => RpcErrorCode::InvalidArgument,
+        PlanError::Storage { .. }
+        | PlanError::HostPortConflict { .. }
+        | PlanError::InsufficientCapacity
+        | PlanError::NoEligibleMachines { .. }
+        | PlanError::ServiceModeCannotChange
+        | PlanError::ProvisionedVolumeStorageRequired { .. }
+        | PlanError::ProvisionedVolumeStorageUnavailable
+        | PlanError::ExistingPlainVolume { .. }
+        | PlanError::ExistingProvisionedVolumeMismatch { .. }
+        | PlanError::HostnameConflict { .. } => RpcErrorCode::Conflict,
+        PlanError::CapacityUnknown
+        | PlanError::ProvisionedVolumeStorageUnknown { .. }
+        | PlanError::DockerVolumeUnavailable { .. } => RpcErrorCode::Unavailable,
+    }
+}
+
+fn provision_code(error: &ProvisionError) -> RpcErrorCode {
+    match error {
+        ProvisionError::CleanupAfter { primary, .. } => provision_code(primary),
+        ProvisionError::MissingDestination
+        | ProvisionError::RemoteTransport(_)
+        | ProvisionError::Connection(_)
+        | ProvisionError::StorageChoice(_)
+        | ProvisionError::ZfsWithoutInstaller => RpcErrorCode::InvalidArgument,
+        ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
+            RpcErrorCode::Unauthenticated
+        }
+        ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
+            RpcErrorCode::Unsupported
+        }
+        ProvisionError::SshClientMissing(_)
+        | ProvisionError::Whoami(_)
+        | ProvisionError::WhoamiFailed(_)
+        | ProvisionError::Sudo(_)
+        | ProvisionError::Platform(_)
+        | ProvisionError::PlatformFailed(_)
+        | ProvisionError::BootstrapDownload { .. }
+        | ProvisionError::Transfer(_)
+        | ProvisionError::TransferFailed { .. } => RpcErrorCode::Unavailable,
+        ProvisionError::WhoamiUtf8
+        | ProvisionError::EmptyUser
+        | ProvisionError::PlatformUtf8
+        | ProvisionError::BootstrapIo { .. }
+        | ProvisionError::BootstrapCommand { .. }
+        | ProvisionError::BootstrapVerification(_)
+        | ProvisionError::Install(_)
+        | ProvisionError::InstallFailed { .. }
+        | ProvisionError::Cleanup(_)
+        | ProvisionError::CleanupFailed { .. }
+        | ProvisionError::StorageInput(_) => RpcErrorCode::Internal,
+    }
+}
+
+fn push_code(error: &PushError) -> RpcErrorCode {
+    match error {
+        PushError::VariantUnavailable { .. } => RpcErrorCode::NotFound,
+        PushError::BuildIncomplete { .. } => RpcErrorCode::Conflict,
+        PushError::InvalidReference { .. } | PushError::InvalidSelector(_) => {
+            RpcErrorCode::InvalidArgument
+        }
+        PushError::Selector(error) => machine_selector_code(error),
+        PushError::Cluster(error) => connect_code(error),
+        PushError::ImageIngest(error) | PushError::PeerPull(error) => error.code.clone(),
+        PushError::UnsupportedImageStore => RpcErrorCode::Unsupported,
+        // Ctrl-C or the caller stopped delivery: not a fault; it did not finish and can be retried.
+        PushError::Cancelled => RpcErrorCode::Unavailable,
+    }
+}
+
+fn codec_code(error: &CodecError) -> RpcErrorCode {
+    match error {
+        CodecError::UnsupportedCommand(_) | CodecError::UnsupportedProtocolMajor { .. } => {
+            RpcErrorCode::Unsupported
+        }
+        CodecError::EncodeJson(_)
+        | CodecError::DecodeJson(_)
+        | CodecError::UnexpectedResponse { .. }
+        | CodecError::UnexpectedRequest { .. } => RpcErrorCode::Internal,
+    }
+}
+
+fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
+    match error {
+        cloud_enroll::Error::Timeout(_)
+        | cloud_enroll::Error::Connect(_)
+        | cloud_enroll::Error::Http(_)
+        | cloud_enroll::Error::RetrySameCommand { .. } => RpcErrorCode::Unavailable,
+        cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
+        cloud_enroll::Error::Status { status, .. } => match status {
+            401 | 403 => RpcErrorCode::Unauthenticated,
+            404 => RpcErrorCode::NotFound,
+            409 => RpcErrorCode::Conflict,
+            408 | 429 => RpcErrorCode::Unavailable,
+            400..=499 => RpcErrorCode::InvalidArgument,
+            _ => RpcErrorCode::Unavailable,
+        },
+    }
+}
+
+fn io_code(error: &io::Error) -> RpcErrorCode {
+    use io::ErrorKind;
+    let kind = error.kind();
+    if kind == ErrorKind::NotFound {
+        RpcErrorCode::NotFound
+    } else if kind == ErrorKind::InvalidInput {
+        RpcErrorCode::InvalidArgument
+    } else if matches!(
+        kind,
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::TimedOut
+    ) {
+        RpcErrorCode::Unavailable
+    } else {
+        RpcErrorCode::Internal
+    }
+}
+
+fn context_code(error: &ContextError) -> RpcErrorCode {
+    match error {
+        ContextError::NoConfig
+        | ContextError::NoContexts(_)
+        | ContextError::ContextNotFound { .. }
+        | ContextError::NoConnections { .. } => RpcErrorCode::NotFound,
+        ContextError::NoCurrentContext(_) | ContextError::Connection(_) => {
+            RpcErrorCode::InvalidArgument
+        }
     }
 }
 
@@ -103,7 +481,7 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error) => error.fmt(f),
+            Inner::Command(error, _) => error.fmt(f),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -112,7 +490,7 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
-            Inner::Command(error) => Some(error.as_ref()),
+            Inner::Command(error, _) => Some(error.as_ref()),
             Inner::Exit(_) => None,
         }
     }
@@ -125,9 +503,20 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         Err(Failure {
             inner: Inner::Exit(code),
         }) => ExitCode::from(code),
+        // A printed result stays the one stdout object; what failed after it is partial.
+        Err(error) if crate::output::emitted() => {
+            crate::output::warning!("{error}");
+            ExitCode::from(PARTIAL_EXIT)
+        }
         Err(error) => {
-            eprintln!("{error}");
-            ExitCode::FAILURE
+            if crate::output::json() {
+                crate::output::error(&error.report());
+            } else {
+                crate::output::warning!("{error}");
+            }
+            match error.inner {
+                Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
+            }
         }
     }
 }
@@ -160,7 +549,6 @@ from_error!(
     PushError,
     TransportError,
     CodecError,
-    AssignmentError,
     ProvisionError,
     IngressImageError,
     RpcError,
@@ -328,7 +716,7 @@ mod tests {
     fn usage_is_not_a_library_error() {
         let failure = Failure::usage("nope");
         assert_eq!(failure.to_string(), "nope");
-        assert_eq!(source::<Usage>(&failure).to_string(), "nope");
+        assert_eq!(source::<Message>(&failure).to_string(), "nope");
         assert_eq!(terminate(Err(failure)), ExitCode::FAILURE);
     }
 
@@ -342,6 +730,46 @@ mod tests {
         );
         assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn missing_root_is_unauthenticated() {
+        let failure = Failure::from(ProvisionError::NotRoot);
+        assert_eq!(failure.report().code, RpcErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn cloud_http_status_codes_map_to_their_meaning() {
+        for (status, code) in [
+            (429, RpcErrorCode::Unavailable),
+            (408, RpcErrorCode::Unavailable),
+            (404, RpcErrorCode::NotFound),
+            (409, RpcErrorCode::Conflict),
+            (403, RpcErrorCode::Unauthenticated),
+            (422, RpcErrorCode::InvalidArgument),
+            (503, RpcErrorCode::Unavailable),
+        ] {
+            let failure = Failure::from(cloud_enroll::Error::Status {
+                status,
+                body: String::new(),
+            });
+            assert_eq!(failure.report().code, code, "HTTP {status}");
+        }
+    }
+
+    #[test]
+    fn bad_log_tail_is_invalid_argument() {
+        let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
+        assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn a_failure_after_a_result_is_partial() {
+        crate::output::emit(&"done").unwrap();
+        assert_eq!(
+            terminate(Err(Failure::usage("nope"))),
+            ExitCode::from(PARTIAL_EXIT)
+        );
     }
 
     #[test]

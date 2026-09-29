@@ -3,12 +3,17 @@ use std::collections::{BTreeSet, HashSet};
 use clap::ArgMatches;
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices,
-    MachineObservation, MembershipObservation, ObservedDataLoss, RemoveVolumesRequest, RpcError,
-    ServiceObservation, ServicePlacementEligibility, ServiceSelector, VolumeSource, select_service,
+    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
+    MachineId, MachineObservation, MembershipObservation, ObservedDataLoss, QualifiedService,
+    RemoveVolumesRequest, RpcError, ServiceObservation, ServicePlacementEligibility,
+    ServiceSelector, VolumeRemoval, VolumeSource, select_service,
 };
+use serde::Serialize;
 
-use crate::cluster::ContainerObservationCondition;
+use crate::{
+    cluster::ContainerObservationCondition,
+    output::{self, Gaps, say},
+};
 use ployz_core::EnvironmentValues;
 
 use super::{
@@ -22,26 +27,21 @@ use super::{
 ///
 /// Returns a connection, RPC, or serialization error.
 pub fn list(root: &ArgMatches) -> Result<(), Error> {
-    let json = leaf_matches(root)
-        .get_one::<String>("output")
-        .map(String::as_str)
-        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
+            // Storage only feeds replica counts, which warn on unknown eligibility.
             client.observe_machine_storage(&mut machines).await;
             let live = client
                 .live_services_from(&machines, EnvironmentValues::Redacted)
                 .await?;
             print_observation_warning(&live);
             let services = live.services();
-            if json {
-                println!("{}", serde_json::to_string_pretty(&services)?);
-            } else {
-                println!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
+            output::finish_fanout("services", &services, &Gaps::of(&live.containers), || {
+                say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
                 for service in &services {
                     let counts = service_counts(service, &machines);
-                    println!(
+                    say!(
                         "{}\t{}\t{}\t{}",
                         service.service_id,
                         service.identity,
@@ -49,14 +49,14 @@ pub fn list(root: &ArgMatches) -> Result<(), Error> {
                         service.hook_containers.len()
                     );
                     if counts.unknown > 0 {
-                        eprintln!(
+                        crate::output::warning!(
                             "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity, counts.unknown
+                            service.identity,
+                            counts.unknown
                         );
                     }
                 }
-            }
-            Ok(())
+            })
         })
     })
 }
@@ -134,7 +134,6 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
-    let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -145,31 +144,29 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &containers
-                            .iter()
-                            .map(|container| container.as_observation())
-                            .collect::<Vec<_>>()
-                    )?
-                );
-            } else {
-                println!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
-                for container in containers {
-                    let observation = container.as_observation();
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        observation.container_id,
-                        observation.identity(),
-                        process_kind(container),
-                        observation.machine_id,
-                        observation.runtime
-                    );
-                }
-            }
-            Ok(())
+            let observations = containers
+                .iter()
+                .map(|container| container.as_observation())
+                .collect::<Vec<_>>();
+            output::finish_fanout(
+                "containers",
+                &observations,
+                &Gaps::of(&live.containers),
+                || {
+                    say!("CONTAINER ID\tSERVICE\tKIND\tMACHINE\tSTATE");
+                    for container in &containers {
+                        let observation = container.as_observation();
+                        say!(
+                            "{}\t{}\t{}\t{}\t{}",
+                            observation.container_id,
+                            observation.identity(),
+                            process_kind(*container),
+                            observation.machine_id,
+                            observation.runtime
+                        );
+                    }
+                },
+            )
         })
     })
 }
@@ -257,8 +254,7 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
             print_observation_warning(&live);
             let services = live.services();
             let service = select_service(&services, &selector)?;
-            println!("{}", serde_json::to_string_pretty(service)?);
-            Ok(())
+            output::show_fanout("service", &service, &Gaps::of(&live.containers))
         })
     })
 }
@@ -280,6 +276,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
             let services = select_services(&observed, &selectors)?;
             let outcome =
                 apply_service_action(client, &live, &services, action, signal, timeout).await?;
+            output::emit(&outcome.result(&live))?;
             service_action_result(outcome.partial)
         })
     })
@@ -343,6 +340,7 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
             )
             .await?;
             let (volumes, skipped) = volumes_safe_to_remove(volumes, &services, &outcome.affected);
+            let mut removals = Vec::new();
             let volume_result = if volumes.is_empty() {
                 Ok(())
             } else {
@@ -353,10 +351,18 @@ pub fn remove(root: &ArgMatches) -> Result<(), Error> {
                     })
                     .await
                 {
-                    Ok(removal) => super::volume::refuse_unless_removed(removal),
+                    Ok(removal) => {
+                        removals.clone_from(&removal);
+                        super::volume::refuse_unless_removed(removal)
+                    }
                     Err(error) => Err(error.into()),
                 }
             };
+            output::emit(&ServiceActionResult {
+                volumes: Some(&removals),
+                volumes_not_attempted: Some(&skipped),
+                ..outcome.result(&live)
+            })?;
             combined_teardown_result(
                 combined_teardown_result(
                     service_action_result(outcome.partial),
@@ -388,7 +394,7 @@ fn service_volume_teardown(
             .into_iter()
             .find(|id| volumes.contains(id))
         {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "Docker Volume {} on {} is still mounted by {}",
                 id.name, id.machine_id, service.identity
             )));
@@ -485,7 +491,54 @@ fn member_volume_ids(
 
 struct ServiceActionOutcome {
     affected: HashSet<ContainerId>,
+    /// One entry per Container the action reached.
+    containers: Vec<ChangedContainer>,
+    /// One entry per Container the action failed on.
+    container_failures: Vec<ContainerFailure>,
     partial: bool,
+}
+
+#[derive(Serialize)]
+struct ChangedContainer {
+    action: String,
+    service: QualifiedService,
+    machine_id: MachineId,
+    container_id: ContainerId,
+}
+
+#[derive(Serialize)]
+struct ContainerFailure {
+    machine_id: MachineId,
+    container_id: ContainerId,
+    error: RpcError,
+}
+
+/// The `--json` result of start, stop, and rm.
+#[derive(Serialize)]
+struct ServiceActionResult<'a> {
+    containers: &'a [ChangedContainer],
+    /// Containers the action failed on.
+    container_failures: &'a [ContainerFailure],
+    /// Machines whose Live Observation failed before the action.
+    failures: &'a [MachineFailure<RpcError>],
+    omitted: &'a [MachineId],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volumes: Option<&'a [VolumeRemoval]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    volumes_not_attempted: Option<&'a [DockerVolumeId]>,
+}
+
+impl ServiceActionOutcome {
+    fn result<'a>(&'a self, live: &'a LiveServices<RpcError>) -> ServiceActionResult<'a> {
+        ServiceActionResult {
+            containers: &self.containers,
+            container_failures: &self.container_failures,
+            failures: &live.containers.failures,
+            omitted: &live.containers.omissions,
+            volumes: None,
+            volumes_not_attempted: None,
+        }
+    }
 }
 
 async fn apply_service_action(
@@ -503,25 +556,44 @@ async fn apply_service_action(
         .map(|container| container.as_observation().container_id)
         .collect::<HashSet<_>>();
     let mut changed = Vec::new();
+    let mut rows = Vec::new();
+    let mut container_failures = Vec::new();
     let mut partial = false;
     for service in services {
         let outcomes = client
             .change_observed_service(service, action, signal.clone(), timeout)
             .await;
         for success in outcomes.successes {
-            println!(
+            say!(
                 "{}\t{}\t{}\t{}",
-                action, service.identity, success.machine_id, success.value
+                action,
+                service.identity,
+                success.machine_id,
+                success.value
             );
+            rows.push(ChangedContainer {
+                action: action.to_string(),
+                service: service.identity.clone(),
+                machine_id: success.machine_id,
+                container_id: success.value,
+            });
             if service_container_ids.contains(&success.value) {
                 changed.push(success.value);
             }
         }
         for failure in outcomes.failures {
-            eprintln!(
+            crate::output::warning!(
                 "WARNING: {} failed for {} on {}: {}",
-                action, failure.error.container_id, failure.machine_id, failure.error.error.message
+                action,
+                failure.error.container_id,
+                failure.machine_id,
+                failure.error.error.message
             );
+            container_failures.push(ContainerFailure {
+                machine_id: failure.machine_id,
+                container_id: failure.error.container_id,
+                error: failure.error.error,
+            });
             partial = true;
         }
     }
@@ -540,11 +612,15 @@ async fn apply_service_action(
         )
         .await?;
     if !live.containers.all_targets_succeeded() {
-        eprintln!("WARNING: the Service selection came from a partial Live Observation");
+        crate::output::warning!(
+            "WARNING: the Service selection came from a partial Live Observation"
+        );
         partial = true;
     }
     Ok(ServiceActionOutcome {
         affected: changed.into_iter().collect(),
+        containers: rows,
+        container_failures,
         partial,
     })
 }
@@ -560,7 +636,7 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     let context = matches.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
         let mut client = connect_client(root, context).await?;
-        crate::deploy::deploy_scale(
+        let outcome = crate::deploy::deploy_scale(
             &mut client,
             &selector,
             replicas,
@@ -570,7 +646,8 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
                 context: context.unwrap_or("default"),
             },
         )
-        .await
+        .await?;
+        crate::deploy::emit_outcome(&outcome)
     })
 }
 
@@ -621,7 +698,7 @@ fn stop_options(
 
 fn print_observation_warning(live: &LiveServices<RpcError>) {
     for line in observation_warning_lines(live) {
-        eprintln!("{line}");
+        crate::output::warning!("{line}");
     }
 }
 

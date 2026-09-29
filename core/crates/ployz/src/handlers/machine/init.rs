@@ -9,7 +9,9 @@ use crate::{
     connect::DEFAULT_LOCAL_SOCKET,
     context::{Connection, Context},
     handlers::{Error, leaf_matches},
+    output::{self, say},
 };
+use serde_json::json;
 
 pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
@@ -26,7 +28,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .unwrap_or_else(|| "default".into());
     if config.contexts.contains_key(&context_name) {
-        return Err(Error::usage(format!(
+        return Err(Error::conflict(format!(
             "context {context_name:?} already exists"
         )));
     }
@@ -112,9 +114,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     config.set_current_context(Some(context_name.clone()))?;
     config.save()?;
     if let Some(current_context) = config.current_context() {
-        println!("Switched context to '{current_context}'");
+        say!("Switched context to '{current_context}'");
     }
-    println!("Initialised Machine {} ({})", machine.name, machine.id);
+    say!("Initialised Machine {} ({})", machine.name, machine.id);
     let ingress_recovery =
         super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
     let inspect_recovery = super::super::recovery_command(
@@ -122,20 +124,25 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         &context_name,
         &["machine", "inspect", machine.name.as_str()],
     );
-    runtime.block_on(async {
+    let ingress = runtime.block_on(async {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
                 .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if machine.accepts_ingress {
             let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
-            crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
+            let outcome = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
                 Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
             })?;
+            return Ok(Some(outcome));
         }
-        Ok::<_, Error>(())
+        Ok::<_, Error>(None)
     })?;
-    Ok(())
+    output::emit(&json!({
+        "machine": machine,
+        "context": context_name,
+        "ingress": ingress,
+    }))
 }
 
 #[cfg(test)]

@@ -7,18 +7,15 @@ use crate::{
 };
 
 use super::{Error, data_loss, leaf_matches, required, with_client};
+use crate::output::{self, Gaps, say};
 
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
-    let json = leaf_matches(root)
-        .get_one::<String>("output")
-        .map(String::as_str)
-        == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let machines = client.machines().await?;
             let snapshot = client.deploy_snapshot(machines).await?;
             for line in observer_listing_warnings(&snapshot) {
-                eprintln!("{line}");
+                crate::output::warning!("{line}");
             }
             let projects = derive_projects(
                 &snapshot.containers,
@@ -28,20 +25,22 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                     .iter()
                     .map(|volume| (&volume.id, &volume.labels)),
             );
-            if json {
-                println!("{}", serde_json::to_string_pretty(&projects)?);
-            } else {
-                println!("PROJECT\tSERVICES\tVOLUMES");
-                for project in projects {
-                    println!(
+            let mut gaps = Gaps::default();
+            gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
+            let volumes = &snapshot.volume_snapshot;
+            gaps.extend(volumes.machine_failures(), volumes.omissions());
+            gaps.unavailable_volumes = volumes.named_failures().to_vec();
+            output::finish_fanout("projects", &projects, &gaps, || {
+                say!("PROJECT\tSERVICES\tVOLUMES");
+                for project in &projects {
+                    say!(
                         "{}\t{}\t{}",
                         project.name,
                         project.services.len(),
                         project.volumes.len()
                     );
                 }
-            }
-            Ok(())
+            })
         })
     })
 }
@@ -81,7 +80,8 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 crate::context::ConnectionSource::Direct => "direct connection".into(),
                 crate::context::ConnectionSource::LocalSocket => "local socket".into(),
             };
-            remove_project(client, &name, volumes, &context, &confirmation).await
+            let outcome = remove_project(client, &name, volumes, &context, &confirmation).await?;
+            crate::deploy::emit_outcome(&outcome)
         })
     })
 }

@@ -58,26 +58,47 @@ fn context_commands_list_show_and_persist_an_explicit_selection() {
     assert!(listed.contains("dev"));
     assert!(listed.contains("prod"));
 
-    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "show", "--ployz-config", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    assert_eq!(String::from_utf8(shown.stdout).unwrap().trim(), "dev");
+    assert_eq!(current_context(&path), Some("dev".into()));
 
     fs::remove_dir_all(root).unwrap();
 }
 
+/// The current context as `ctx ls --json` reports it.
+fn current_context(path: &std::path::Path) -> Option<String> {
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args([
+            "ctx",
+            "ls",
+            "--json",
+            "--ployz-config",
+            path.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let contexts: Vec<ListedContext> =
+        serde_json::from_value(listed.get("contexts").unwrap().clone()).unwrap();
+    contexts
+        .into_iter()
+        .find(|context| context.current)
+        .map(|context| context.name)
+}
+
+#[derive(serde::Deserialize)]
+struct ListedContext {
+    name: String,
+    current: bool,
+}
+
 #[test]
-fn ctx_connection_shows_the_current_default_without_a_terminal() {
-    let root =
-        std::env::temp_dir().join(format!("ployz-ctx-connection-show-{}", std::process::id()));
-    let path = root.join("config.yaml");
-    let _ = fs::remove_dir_all(&root);
+fn ctx_ls_json_lists_connections_with_the_default_first_without_mutating() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("config.yaml");
     let before = Config::new(
         &path,
         Some("prod".into()),
@@ -93,31 +114,35 @@ fn ctx_connection_shows_the_current_default_without_a_terminal() {
     );
     before.save().unwrap();
 
-    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
+    let listed = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
             "ctx",
-            "connection",
+            "ls",
+            "--json",
             "--ployz-config",
             path.to_str().unwrap(),
         ])
         .output()
         .unwrap();
     assert!(
-        shown.status.success(),
+        listed.status.success(),
         "{}",
-        String::from_utf8_lossy(&shown.stderr)
+        String::from_utf8_lossy(&listed.stderr)
     );
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(
-        String::from_utf8(shown.stdout).unwrap().trim(),
-        "unix:///tmp/prod-a.sock"
+        listed,
+        serde_json::json!({ "contexts": [{
+            "name": "prod",
+            "current": true,
+            "connections": ["unix:///tmp/prod-a.sock", "unix:///tmp/prod-b.sock"],
+        }] })
     );
     assert_eq!(Config::load(&path).unwrap(), before);
-
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn ctx_connection_selects_and_persists_across_invocations() {
+fn ctx_use_connection_selects_and_persists_across_invocations() {
     let root = std::env::temp_dir().join(format!(
         "ployz-ctx-connection-select-{}",
         std::process::id()
@@ -143,7 +168,8 @@ fn ctx_connection_selects_and_persists_across_invocations() {
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
             "ctx",
-            "connection",
+            "use",
+            "--connection",
             "unix:///tmp/prod-b.sock",
             "--ployz-config",
             path.to_str().unwrap(),
@@ -154,25 +180,6 @@ fn ctx_connection_selects_and_persists_across_invocations() {
         selected.status.success(),
         "{}",
         String::from_utf8_lossy(&selected.stderr)
-    );
-
-    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "ctx",
-            "connection",
-            "--ployz-config",
-            path.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    assert_eq!(
-        String::from_utf8(shown.stdout).unwrap().trim(),
-        "unix:///tmp/prod-b.sock"
     );
     assert_eq!(
         Config::load(&path)
@@ -191,7 +198,7 @@ fn ctx_connection_selects_and_persists_across_invocations() {
 }
 
 #[test]
-fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
+fn ctx_use_rejects_an_unknown_connection_without_mutating() {
     let root = std::env::temp_dir().join(format!(
         "ployz-ctx-connection-unknown-{}",
         std::process::id()
@@ -223,7 +230,8 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .args([
                 "ctx",
-                "connection",
+                "use",
+                "--connection",
                 requested,
                 "--ployz-config",
                 path.to_str().unwrap(),
@@ -239,9 +247,9 @@ fn ctx_connection_rejects_an_unknown_connection_without_mutating() {
 }
 
 #[test]
-fn ctx_connection_help_describes_show_and_select() {
+fn ctx_use_help_describes_the_connection_choice() {
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "connection", "--help"])
+        .args(["ctx", "use", "--help"])
         .output()
         .unwrap();
     assert!(
@@ -250,11 +258,8 @@ fn ctx_connection_help_describes_show_and_select() {
         String::from_utf8_lossy(&output.stderr)
     );
     let help = String::from_utf8(output.stdout).unwrap();
-    assert!(
-        help.contains("Show or select the default connection"),
-        "{help}"
-    );
-    assert!(help.contains("[connection]"), "{help}");
+    assert!(help.contains("--connection"), "{help}");
+    assert!(help.contains("[context-name]"), "{help}");
 }
 
 #[test]
@@ -467,16 +472,7 @@ fn ctx_rm_of_the_current_context_unsets_current() {
     assert!(stdout.contains("Removed context prod."), "{stdout}");
     assert!(stdout.contains("Current context is now unset."), "{stdout}");
 
-    let shown = Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["ctx", "show", "--ployz-config", path.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(
-        shown.status.success(),
-        "{}",
-        String::from_utf8_lossy(&shown.stderr)
-    );
-    assert_eq!(String::from_utf8(shown.stdout).unwrap().trim(), "");
+    assert_eq!(current_context(&path), None);
 
     let config = Config::load(&path).unwrap();
     assert_eq!(config.current_context(), None);
@@ -672,9 +668,8 @@ fn management_context_selection_and_listing_never_print_capabilities() {
     .unwrap();
     for args in [
         vec!["ctx", "ls"],
-        vec!["ctx", "show"],
-        vec!["ctx", "connection"],
-        vec!["ctx", "connection", "management:[redacted]"],
+        vec!["ctx", "ls", "--json"],
+        vec!["ctx", "use", "--connection", "management:[redacted]"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")
@@ -689,7 +684,7 @@ fn management_context_selection_and_listing_never_print_capabilities() {
         );
         assert!(!String::from_utf8_lossy(&output.stdout).contains(&secret));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(&secret));
-        if args.get(1) == Some(&"connection") {
+        if args.len() > 2 {
             assert!(String::from_utf8_lossy(&output.stdout).contains("management:[redacted]"));
         }
     }
@@ -749,7 +744,7 @@ fn management_selection_uses_machine_labels_or_ordered_indices_in_a_mixed_contex
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")
             .arg(&path)
-            .args(["ctx", "connection", &selector])
+            .args(["ctx", "use", "--connection", &selector])
             .output()
             .unwrap();
         assert!(
@@ -817,7 +812,7 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
         let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
             .arg("--ployz-config")
             .arg(&path)
-            .args(["ctx", "connection", selector])
+            .args(["ctx", "use", "--connection", selector])
             .output()
             .unwrap();
         assert!(!output.status.success());
@@ -827,7 +822,7 @@ fn ambiguous_management_labels_fail_without_mutation_and_index_selects_the_secon
     let selected = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .arg("--ployz-config")
         .arg(&path)
-        .args(["ctx", "connection", "2"])
+        .args(["ctx", "use", "--connection", "2"])
         .output()
         .unwrap();
     assert!(selected.status.success());
