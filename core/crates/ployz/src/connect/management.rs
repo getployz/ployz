@@ -1,6 +1,6 @@
 //! Management transport endpoint ownership, authenticated dialing, and channel cleanup.
 
-use super::{ConnectError, connect_stream};
+use super::{BoxProxyStream, ConnectError, connect_stream};
 use crate::context::ConnectionError;
 use iroh::{
     Endpoint as IrohEndpoint, EndpointAddr, PublicKey, RelayMode, RelayUrl, SecretKey,
@@ -9,7 +9,7 @@ use iroh::{
 };
 use ployz_core::{
     DEFAULT_RELAY_URL, DescribeContractRequest, MANAGEMENT_ALPN, MachineRpcClient,
-    ManagementCapability, op,
+    ManagementCapability, TUNNEL_ALPN, TUNNEL_FAILED, TUNNEL_OPEN, op,
 };
 use std::{
     collections::HashMap,
@@ -19,7 +19,7 @@ use std::{
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
 use tonic::transport::Channel;
 
 /// Application close codes the daemon refuses an unadmitted key with: never admitted or
@@ -154,6 +154,62 @@ pub(super) async fn connect_management(
             }
             _ => error,
         })
+}
+
+/// Open a port-forward tunnel to `address` (an `ip:port` in the Cluster network) through
+/// the Machine the capability names. The stream owns its connection: dropping it ends
+/// the tunnel on both sides.
+pub(super) async fn dial_tunnel(
+    capability: &ManagementCapability,
+    relay: &ManagementRelay,
+    address: &str,
+) -> Result<BoxProxyStream, ConnectError> {
+    let header = u8::try_from(address.len())
+        .map_err(|_| ConnectError::Attempt(format!("tunnel target too long: {address}").into()))?;
+    let machine = PublicKey::from_bytes(capability.machine().as_bytes())
+        .map_err(|_| ConnectionError::ManagementCapability)?;
+    let endpoint = management_endpoint(capability.client_secret(), relay).await?;
+    let connection = endpoint
+        .endpoint
+        .connect(
+            EndpointAddr::new(machine).with_relay_url(relay.url.clone()),
+            TUNNEL_ALPN,
+        )
+        .await
+        .map_err(|error| ConnectError::Attempt(format!("tunnel dial: {error}").into()))?;
+    let session = Arc::new(ManagementConnection {
+        connection,
+        _endpoint: endpoint,
+    });
+    let open = async {
+        let (mut send, mut receive) = session.connection.open_bi().await?;
+        send.write_u8(header).await?;
+        send.write_all(address.as_bytes()).await?;
+        match receive.read_u8().await? {
+            TUNNEL_OPEN => Ok((send, receive)),
+            other => Err(io::Error::other(format!("unexpected tunnel reply {other}"))),
+        }
+    };
+    let (send, receive) = open.await.map_err(|error| {
+        let Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) =
+            session.connection.close_reason()
+        else {
+            return ConnectError::Attempt(format!("tunnel open: {error}").into());
+        };
+        if close.error_code == CLIENT_REFUSED {
+            ConnectError::ClientRefused
+        } else if close.error_code == CLIENT_CLEARED {
+            ConnectError::ClientCleared
+        } else if close.error_code == VarInt::from_u32(TUNNEL_FAILED) {
+            ConnectError::Attempt(String::from_utf8_lossy(&close.reason).into_owned().into())
+        } else {
+            ConnectError::Attempt(format!("tunnel open: {error}").into())
+        }
+    })?;
+    Ok(Box::new(ManagementIo {
+        io: tokio::io::join(receive, send),
+        _session: session,
+    }))
 }
 
 // The channel owns its endpoint. Dropping a session closes the QUIC connection

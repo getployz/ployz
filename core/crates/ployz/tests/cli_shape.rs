@@ -69,7 +69,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "service add",
             "service inspect",
             "service ls",
-            "service proxy",
+            "service port-forward",
             "service restart",
             "service rm",
             "service scale",
@@ -120,10 +120,9 @@ fn json_is_one_global_switch_and_no_command_keeps_an_output_format() {
 }
 
 #[test]
-fn sessions_tunnels_shell_code_and_build_refuse_json() {
+fn sessions_shell_code_and_build_refuse_json() {
     for args in [
         &["exec", "--json", "api"][..],
-        &["service", "proxy", "--json", "api", "8080"],
         &["completion", "--json", "bash"],
         &[
             "build",
