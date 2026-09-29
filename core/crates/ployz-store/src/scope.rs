@@ -1,6 +1,8 @@
 //! Resolving which Project and Environment a request means, and loading and saving
 //! an Environment's Working State document.
 
+use std::collections::BTreeMap;
+
 use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, parse_environment_intent,
 };
@@ -51,9 +53,39 @@ pub(crate) struct Project {
 pub(crate) struct Environment {
     pub(crate) summary: EnvironmentSummary,
     pub(crate) working: SavedEnvironmentIntent,
+    /// The name of each node a Branch uses live, by lineage: its variables
+    /// reference them by these names.
+    pub(crate) live: BTreeMap<String, String>,
 }
 
 impl Environment {
+    /// Every Service name a variable may reference, by lineage: its own Services
+    /// and the nodes it uses live.
+    pub(crate) fn names(&self) -> BTreeMap<String, String> {
+        let mut names = self.live.clone();
+        names.extend(
+            self.working
+                .services
+                .iter()
+                .map(|service| (service.lineage_id.clone(), service.slug.clone())),
+        );
+        names
+    }
+
+    /// Refuse with `conflict` unless Working State is still at `expect`.
+    pub(crate) fn expect(&self, expect: Option<Revision>) -> Result<(), RpcError> {
+        match expect {
+            Some(expect) if expect != self.summary.revision => Err(error::conflict(
+                format!(
+                    "Working State moved from revision {expect} to {}",
+                    self.summary.revision
+                ),
+                json!({ "revision": self.summary.revision }),
+            )),
+            _ => Ok(()),
+        }
+    }
+
     /// The Service named `name` in Working State.
     pub(crate) fn service(&self, name: &ServiceName) -> Result<&SavedServiceIntent, RpcError> {
         let services = &self.working.services;
@@ -218,6 +250,21 @@ fn resolve(
     Ok((project.name, stored(EnvironmentId::parse(row.text(0)?))?))
 }
 
+/// Load an Environment by its ID, without locking it.
+pub(crate) fn load_by_id(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Environment, RpcError> {
+    let rows = tx.query(
+        "SELECT p.name FROM config_environment e \
+         JOIN config_project p ON p.id = e.project_id WHERE e.id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let project = stored(ProjectName::parse(
+        rows.first()
+            .ok_or_else(|| error::corrupt("Environment"))?
+            .text(0)?,
+    ))?;
+    load(tx, project, id)
+}
+
 fn load(
     tx: &mut dyn Tx,
     project: ProjectName,
@@ -232,6 +279,7 @@ fn load(
         .ok()
         .and_then(|value| parse_environment_intent(value).ok())
         .ok_or_else(|| error::corrupt("Working State"))?;
+    let live = crate::branch::live_names(tx, id, &working)?;
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),
@@ -240,6 +288,7 @@ fn load(
             revision: Revision(u64::try_from(row.int(1)?).map_err(|_| error::corrupt("revision"))?),
         },
         working,
+        live,
     })
 }
 

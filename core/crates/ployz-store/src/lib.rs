@@ -3,6 +3,7 @@
 //! [`Command`], each in one transaction; in-process callers use the typed method
 //! for each, which runs the same code. Storage is its only I/O.
 
+mod branch;
 mod build;
 pub mod catalog;
 mod command;
@@ -24,6 +25,10 @@ mod variables;
 
 use ployz_core::RpcError;
 
+pub use branch::{
+    BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, SetupCommand,
+    UpdateBranch,
+};
 pub use build::{BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource};
 pub use command::*;
 pub use deployment::{
@@ -499,6 +504,49 @@ impl ConfigStore {
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, String>,
     ) -> Result<Vec<GitSource>, RpcError> {
         self.storage.write(|tx| build::pin(tx, deployment, commits))
+    }
+
+    /// [`Command::CreateBranch`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn create_branch(&self, who: &Actor, create: &CreateBranch) -> Result<Branched, RpcError> {
+        self.storage
+            .write(|tx| branch::create_branch(tx, who, create))
+    }
+
+    /// [`Command::UpdateBranch`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
+    /// Working State, or when its Parent deployed nothing new.
+    pub fn update_branch(&self, who: &Actor, update: &UpdateBranch) -> Result<Branched, RpcError> {
+        self.storage
+            .write(|tx| branch::update_branch(tx, who, update))
+    }
+
+    /// [`Command::CopyNode`].
+    ///
+    /// # Errors
+    /// As [`update_branch`](Self::update_branch).
+    pub fn copy_node(&self, who: &Actor, copy: &CopyNode) -> Result<Branched, RpcError> {
+        self.storage.write(|tx| branch::copy_node(tx, who, copy))
+    }
+
+    /// [`Command::KeepBranch`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn keep_branch(&self, who: &Actor, keep: &KeepBranch) -> Result<Branched, RpcError> {
+        self.storage.write(|tx| branch::keep_branch(tx, who, keep))
+    }
+
+    /// [`Query::Branch`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read); `invalid_argument` for an Environment that isn't a Branch.
+    pub fn branch(&self, who: &Actor, query: &BranchQuery) -> Result<BranchView, RpcError> {
+        self.storage.read(|tx| branch::branch(tx, who, query))
     }
 
     /// One Git build of a Deployment, with its log.

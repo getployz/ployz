@@ -65,6 +65,8 @@ pub enum Query {
     Volume(VolumeQuery),
     /// The deployed Volumes a full Deploy would remove.
     Removals(RemovalsQuery),
+    /// A Branch: its Parent, Live Nodes and pending Update.
+    Branch(crate::BranchQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -100,6 +102,8 @@ pub enum View {
     Volume(VolumeView),
     /// What a full Deploy would remove.
     Removals(RemovalsView),
+    /// A Branch.
+    Branch(crate::BranchView),
 }
 
 pub(crate) fn run(
@@ -125,5 +129,6 @@ pub(crate) fn run(
         Query::Volumes(query) => volumes(tx, who, query).map(View::Volumes),
         Query::Volume(query) => volume(tx, who, query).map(View::Volume),
         Query::Removals(query) => removals(tx, who, query).map(View::Removals),
+        Query::Branch(query) => crate::branch::branch(tx, who, query).map(View::Branch),
     }
 }

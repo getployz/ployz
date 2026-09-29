@@ -22,7 +22,7 @@ pub use edit::{Change, Edit, Edited};
 pub use project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
 };
-pub(crate) use project::{create_environment, create_project};
+pub(crate) use project::{create_environment, create_project, insert_environment};
 pub use review::{Discard, Discarded, Publish, Published};
 pub(crate) use review::{discard, publish};
 pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
@@ -72,6 +72,14 @@ pub enum Command {
     AddDomain(crate::AddDomain),
     /// Take a public domain off its Service.
     RemoveDomain(crate::RemoveDomain),
+    /// Make a Branch of an Environment.
+    CreateBranch(crate::CreateBranch),
+    /// Stage a Branch's Parent's deployed changes in it.
+    UpdateBranch(crate::UpdateBranch),
+    /// Turn a Branch's Live Node into an Own Copy.
+    CopyNode(crate::CopyNode),
+    /// Keep a Branch, or stop keeping it.
+    KeepBranch(crate::KeepBranch),
 }
 
 impl Command {
@@ -87,6 +95,7 @@ impl Command {
             Self::Admit(admit) => vec![admit.id.as_str()],
             Self::CreateGitService(create) => vec![create.id.as_str()],
             Self::CreateVolume(create) => vec![create.id.as_str()],
+            Self::CreateBranch(create) => vec![create.id.as_str()],
             Self::Edit(_)
             | Self::RenameService(_)
             | Self::RemoveService(_)
@@ -96,7 +105,10 @@ impl Command {
             | Self::Start(_)
             | Self::Cancel(_)
             | Self::AddDomain(_)
-            | Self::RemoveDomain(_) => Vec::new(),
+            | Self::RemoveDomain(_)
+            | Self::UpdateBranch(_)
+            | Self::CopyNode(_)
+            | Self::KeepBranch(_) => Vec::new(),
         }
     }
 }
@@ -130,6 +142,8 @@ pub enum Written {
     Deployment(crate::DeploymentSummary),
     /// A public domain was added or removed.
     Domain(crate::DomainStaged),
+    /// A Branch was made, updated, given an Own Copy, or kept.
+    Branch(crate::Branched),
 }
 
 pub(crate) fn run(
@@ -168,6 +182,14 @@ pub(crate) fn run(
         Command::RemoveDomain(remove) => {
             crate::domain::remove_domain(tx, who, remove, trusted).map(Written::Domain)
         }
+        Command::CreateBranch(create) => {
+            crate::branch::create_branch(tx, who, create).map(Written::Branch)
+        }
+        Command::UpdateBranch(update) => {
+            crate::branch::update_branch(tx, who, update).map(Written::Branch)
+        }
+        Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
+        Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
     }
 }
 
