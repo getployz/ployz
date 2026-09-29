@@ -16,6 +16,8 @@ export function useRuntimeLens(organizationSlug: string) {
 
   return {
     machines: machines.map(projectRuntimeMachineRecord),
+    /** Cloud knows the Organization has no Server to run anything: none connected, or none observed. */
+    noServers: status === "no_connection" || (status === "observed" && machines.length === 0),
     status,
     error,
     incomplete: statusRows[0] ? isIncompleteObservation(statusRows[0].incompleteIds) : false,

@@ -24,7 +24,8 @@ import { LIVE_EDGE_STYLE } from "./nodes";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { useSavesInto, useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { changeGroups, isInFlight } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -194,6 +195,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
+  const waiting = useSavesInto(params.organizationSlug, params.projectSlug, diff.environment.name);
+  const { noServers } = useRuntimeLens(params.organizationSlug);
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
@@ -208,6 +211,8 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardRow={(_, path) => void actions.discard(path)}
         active={deployments.filter((deployment) => isInFlight(deployment.status))}
         notes={storeHintNotes(diff, groups)}
+        waiting={waiting}
+        noServers={noServers}
       />
       {actions.dialog}
     </>

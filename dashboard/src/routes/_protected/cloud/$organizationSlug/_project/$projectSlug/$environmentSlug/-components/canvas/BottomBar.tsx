@@ -3,7 +3,7 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { MoreVerticalIcon } from "lucide-react";
+import { GitPullRequestIcon, MoreVerticalIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
@@ -12,6 +12,7 @@ import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { plural } from "#/lib/plural";
+import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
@@ -36,6 +37,10 @@ type BottomBarProps = {
   active: DeploymentSummary[];
   /** Details' notes from merged pull requests. */
   notes: Pick<ReviewProps, "noteFor" | "after">;
+  /** Changes open pull requests saved here, going live when each merges. */
+  waiting?: ReadonlyArray<{ number: number; changes: number }>;
+  /** The Organization has no Server to deploy to: Deploy becomes Add a server; Publish still works. */
+  noServers?: boolean;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
@@ -57,8 +62,11 @@ export function BottomBar({
   onDiscardRow,
   active: newestFirst,
   notes,
+  waiting = [],
+  noServers = false,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -67,7 +75,7 @@ export function BottomBar({
   // Oldest first: the oldest holds, or is next for, the Environment's one run.
   const active = [...newestFirst].reverse();
   const hasChanges = totalChanges > 0 || canPublish;
-  const deployable = totalChanges > 0;
+  const deployable = totalChanges > 0 && !noServers;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
 
   function deploy() {
@@ -120,12 +128,16 @@ export function BottomBar({
     <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Changes to publish"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
-      <Tooltip>
+      {noServers ? (
+        <Link to={SERVERS_ROUTE_TO} params={{ organizationSlug: params.organizationSlug }} className={buttonVariants({ variant: "intent" })}>
+          Add a server
+        </Link>
+      ) : <Tooltip>
         <TooltipTrigger render={<Button variant="intent" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
           {active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
-      </Tooltip>
+      </Tooltip>}
       <DropdownMenu>
         <DropdownMenuTrigger render={<Button size="icon" variant="ghost" aria-label="More change actions" title="More change actions" />}>
           <MoreVerticalIcon />
@@ -137,7 +149,13 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shown ? <AttemptState deployment={shown} /> : null;
+  ) : shown ? <AttemptState deployment={shown} /> : waiting.length ? (
+    <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />}
+      title={waiting.map(({ number }) => `PR #${number}`).join(", ")}
+      detail={waiting.map(({ number, changes }) => goLiveWhen(changes, number)).join(" · ")}>
+      {null}
+    </Row>
+  ) : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
   const reviewProps = {
@@ -169,6 +187,8 @@ function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
     </Row>
   );
 }
+
+const SERVERS_ROUTE_TO = "/cloud/$organizationSlug/~/servers";
 
 /** One row: what, in a few words, then its actions. Changes to deploy take the staged-intent surface. */
 function Row({ staged = false, icon, title, detail, children }: {
