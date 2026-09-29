@@ -1,14 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# An interrupted run can leave testkit containers behind. Remove them with:
+#   docker rm -f $(docker ps -aq -f label=dev.ployz.testkit=true)
+
 log_dir=${PLOYZ_LAYER3_LOG_DIR:-target/layer3-logs}
 mkdir -p "$log_dir"
 failed=0
 
-# Each suite gets 5 minutes unless its call sets SUITE_TIMEOUT.
+# Each suite gets 5 minutes unless its call sets SUITE_TIMEOUT. --nocapture
+# prints each failure as it happens, so a killed suite keeps its diagnostics.
 run_suite() {
     local name=$1 started=$SECONDS status=0 result
     shift
+    set -- "$@" --nocapture
     printf '\n::group::%s\n' "$name"
     printf 'Reproduce: '
     printf '%q ' "$@"
@@ -53,7 +58,8 @@ run_suite internal_dns_cluster cargo test --locked --no-fail-fast --package ploy
     --test internal_dns_cluster \
     -- --ignored --test-threads=1
 
-run_suite ingress_cluster cargo test --locked --no-fail-fast --package ployz \
+# The three-Machine projection case alone takes about 5 minutes.
+SUITE_TIMEOUT=10m run_suite ingress_cluster cargo test --locked --no-fail-fast --package ployz \
     --test ingress_cluster \
     -- --ignored --test-threads=1
 
@@ -69,7 +75,8 @@ run_suite workflow_layer3 cargo test --locked --no-fail-fast --package ployz \
     --test workflow_layer3 \
     -- --ignored --test-threads=1
 
-run_suite certificates_cluster cargo test --locked --no-fail-fast --package ployz \
+# Ten certificate cases at 15-180 seconds each; about 15 minutes locally.
+SUITE_TIMEOUT=20m run_suite certificates_cluster cargo test --locked --no-fail-fast --package ployz \
     --test certificates_cluster \
     -- --ignored --test-threads=1
 

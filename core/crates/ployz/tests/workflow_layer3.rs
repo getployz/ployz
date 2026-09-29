@@ -55,7 +55,10 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
     let unchanged = session.preview(scaled).await.unwrap();
     assert!(unchanged.noop(), "{:?}", unchanged.preview());
     unchanged.close();
-    assert_success(ployz(address, ["scale", "--yes", "scaled-workflow", "2"]));
+    assert_success(ployz(
+        address,
+        ["service", "scale", "--yes", "scaled-workflow", "2"],
+    ));
 
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 2).await;
     let scaled = observed_service(&initial_run, "scaled-workflow");
@@ -106,6 +109,23 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
                 "fixture=machine-2",
             ],
         ));
+        // The label reaches machine-1's Deploy Snapshot asynchronously.
+        let mut client = connect_selected_with(
+            SelectedConnections {
+                source: ConnectionSource::Direct,
+                connections: vec![Connection::tcp(address)],
+            },
+            Arc::new(SystemConnector::default()),
+        )
+        .await
+        .unwrap();
+        wait_for_machine(&mut client, |machine| {
+            machine
+                .labels
+                .get("fixture")
+                .is_some_and(|value| value.as_str() == "machine-2")
+        })
+        .await;
 
         let session = session(address).await;
         let outcome = session
@@ -284,15 +304,25 @@ async fn wait_for_machine_name(
     id: &ployz_core::MachineId,
     name: &str,
 ) {
+    wait_for_machine(client, |machine| {
+        &machine.id == id && machine.name.as_str() == name
+    })
+    .await;
+}
+
+async fn wait_for_machine(
+    client: &mut ployz::connect::Client,
+    matches: impl Fn(&ployz_core::Machine) -> bool,
+) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if client
                 .call::<op::ListMachines>(ListMachinesRequest {}, None)
                 .await
                 .is_ok_and(|list| {
-                    list.machines.iter().any(|machine| {
-                        &machine.machine.id == id && machine.machine.name.as_str() == name
-                    })
+                    list.machines
+                        .iter()
+                        .any(|machine| matches(&machine.machine))
                 })
             {
                 return;

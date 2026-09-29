@@ -194,7 +194,7 @@ async fn replicated_store_preserves_partial_and_contradictory_observations() {
     assert_eq!(local.record().phase(), LocalMachinePhase::Participating);
 
     let interrupted_dir = root.0.join("interrupted-machine");
-    let target = BTreeMap::from([("unreachable-actor".to_owned(), 1)]);
+    let target = BTreeMap::from([("a".repeat(32), 1)]);
     write_record(
         &interrupted_dir,
         &LocalMachineRecord::parse(

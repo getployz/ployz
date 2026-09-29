@@ -7,8 +7,8 @@ use std::{
 use ployz_core::{
     CERTIFICATE_POLICY_CLUSTER_KEY, CORROSION_API_PORT, CertificateHost, CertificateMaterialChange,
     ContainerKind, GetIngressProxyConfigRequest, Machine, MachineTarget, MachineUpdate,
-    ProjectName, PublicIpUpdate, PublishCertificateMaterialRequest, ResolvedServiceSpec, ServiceId,
-    StartContainerRequest, StopContainerRequest, op,
+    ProjectName, PublicIpUpdate, PublishCertificateMaterialRequest, RemoveContainerRequest,
+    ResolvedServiceSpec, ServiceId, StartContainerRequest, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan, fake_acme::FakeCa};
 
@@ -64,12 +64,13 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
     assert!(certificate_bodies(&cluster, 0).contains("BEGIN CERTIFICATE"));
     wait_https(&cluster, 0, "app.example.com").await;
 
+    // A stopped Container keeps its site (answering 502); removal drops the hostname.
     client
-        .call::<op::StopContainer>(
-            StopContainerRequest {
+        .call::<op::RemoveContainer>(
+            RemoveContainerRequest {
                 container_id: custom,
-                signal: None,
-                grace_period_seconds: Some(0),
+                remove_volumes: false,
+                force: true,
             },
             Some(&MachineTarget::from(&first.id)),
         )
@@ -195,8 +196,8 @@ async fn down_machine_does_not_block_ordering() {
             "deploy",
             "--image",
             "caddy:2.10.2",
-            "--machine",
-            living.id.as_str(),
+            "--constraint",
+            &format!("node.id=={}", living.id),
         ],
     );
     wait_service(&mut client, "ingress", 1).await;
@@ -252,14 +253,14 @@ async fn certificate_renews_before_expiry_without_restart() {
     .await;
     assert_eq!(ca.ordered(), vec!["app.example.com".to_owned()]);
     wait_https(&cluster, 0, "app.example.com").await;
-    let issued = certificate_bodies(&cluster, 0);
+    let issued = issued_certificates(&cluster, 0);
 
     wait_until(Duration::from_secs(180), || {
         count_orders(&ca.ordered(), "app.example.com") >= 2
     })
     .await;
     wait_until(Duration::from_secs(60), || {
-        certificate_bodies(&cluster, 0) != issued
+        issued_certificates(&cluster, 0) != issued
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
@@ -304,14 +305,14 @@ async fn machines_holding_the_same_certificate_renew_once() {
     })
     .await;
     assert_eq!(count_orders(&ca.ordered(), "app.example.com"), 1);
-    let issued = certificate_bodies(&cluster, 0);
+    let issued = issued_certificates(&cluster, 0);
 
     wait_until(Duration::from_secs(180), || {
         count_orders(&ca.ordered(), "app.example.com") >= 2
     })
     .await;
     wait_until(Duration::from_secs(60), || {
-        certificate_bodies(&cluster, 0) != issued
+        issued_certificates(&cluster, 0) != issued
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
@@ -325,7 +326,8 @@ async fn machines_holding_the_same_certificate_renew_once() {
 async fn failed_renewal_keeps_serving_the_existing_certificate() {
     let ca = FakeCa::bind("0.0.0.0:0").await.unwrap();
     ca.set_advertised_host("host.docker.internal");
-    ca.set_certificate_lifetime(Duration::from_secs(90));
+    // Renewal starts at two thirds of the lifetime, leaving 40s to watch it fail.
+    ca.set_certificate_lifetime(Duration::from_secs(120));
     let cluster = Cluster::create(plan("l3-acme-renew-fail", 1)).unwrap();
     cluster.wait_ready(Duration::from_secs(30)).await.unwrap();
     let first = cluster.initialize_first().await.unwrap();
@@ -353,16 +355,17 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
-    let issued = certificate_bodies(&cluster, 0);
+    let issued = issued_certificates(&cluster, 0);
     ca.set_validation("127.0.0.1", 1);
 
-    tokio::time::sleep(Duration::from_secs(95)).await;
-    assert_eq!(certificate_bodies(&cluster, 0), issued);
+    wait_until(Duration::from_secs(100), || ca.ordered().len() >= 2).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(issued_certificates(&cluster, 0), issued);
     wait_https(&cluster, 0, "app.example.com").await;
 
     ca.set_validation(validation_host(ip), 80);
     wait_until(Duration::from_secs(180), || {
-        certificate_bodies(&cluster, 0) != issued
+        issued_certificates(&cluster, 0) != issued
     })
     .await;
     wait_https(&cluster, 0, "app.example.com").await;
@@ -409,8 +412,8 @@ async fn joining_machine_serves_existing_certificate() {
             "deploy",
             "--image",
             "caddy:2.10.2",
-            "--machine",
-            second.id.as_str(),
+            "--constraint",
+            &format!("node.id=={}", second.id),
         ],
     );
     wait_config(&mut client, &second, |config| {
@@ -655,17 +658,16 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
     )
     .await;
     wait_running(&mut client, &outside_id, 1).await;
+    // Verification goes through the hostname, so the elsewhere address never answers.
+    let refused = "outside.example.com did not answer on port 80";
     wait_config(&mut client, &first, |config| {
-        config.contains("# Skipped certificate issuance:")
-            && config.contains("outside.example.com")
-            && config.contains("198.51.100.10")
-            && config.contains(&ip.to_string())
+        config.contains("# Skipped certificate issuance:") && config.contains(refused)
     })
     .await;
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert_eq!(ca.ordered(), Vec::<String>::new());
     assert!(
-        certificate_bodies(&cluster, 0).contains("198.51.100.10"),
+        certificate_bodies(&cluster, 0).contains(refused),
         "{}",
         certificate_bodies(&cluster, 0)
     );
@@ -694,8 +696,9 @@ async fn publish_public_ip(cluster: &Cluster, entry: usize, machine: &Machine, i
 }
 
 fn point_dns(cluster: &Cluster, hostname: &str, ip: IpAddr) {
+    // Docker bind-mounts /etc/hosts, so `sed -i`'s rename fails; rewrite in place.
     let script = format!(
-        "if grep -q ' {hostname}$' /etc/hosts; then sed -i 's/^.* {hostname}$/{ip} {hostname}/' /etc/hosts; else echo '{ip} {hostname}' >> /etc/hosts; fi"
+        "if grep -q ' {hostname}$' /etc/hosts; then sed 's/^.* {hostname}$/{ip} {hostname}/' /etc/hosts > /tmp/hosts && cat /tmp/hosts > /etc/hosts; else echo '{ip} {hostname}' >> /etc/hosts; fi"
     );
     cluster.machine_shell(0, &script).unwrap();
 }
@@ -934,6 +937,17 @@ fn certificate_bodies(cluster: &Cluster, index: usize) -> String {
         "v1/queries",
         r#"{"query":"SELECT hostname, body FROM certificates","params":[]}"#,
     )
+}
+
+/// Issued certificates only; a renewal in flight also rewrites its challenge fields.
+fn issued_certificates(cluster: &Cluster, index: usize) -> Vec<String> {
+    certificate_bodies(cluster, index)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|line| line.pointer("/row/1/1")?.as_str().map(str::to_owned))
+        .filter_map(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        .filter_map(|body| body.get("certificate")?.as_str().map(str::to_owned))
+        .collect()
 }
 
 fn corrosion_exec(cluster: &Cluster, index: usize, path: &str, payload: &str) -> String {

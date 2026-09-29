@@ -88,7 +88,7 @@ install_cli() {
     if [ ! -f "$tmp_dir/ployz" ] || [ -L "$tmp_dir/ployz" ] || [ ! -x "$tmp_dir/ployz" ]; then
         error "Release binary ployz is invalid"
     fi
-    installed_version=$("$tmp_dir/ployz" version) || error "Cannot run ployz"
+    installed_version=$("$tmp_dir/ployz" --version) || error "Cannot run ployz"
     [ "$installed_version" = "$version" ] || error "Release binary ployz has version $installed_version, expected $version"
 
     if [ -w "$INSTALL_BIN_DIR" ]; then
