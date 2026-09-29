@@ -432,7 +432,7 @@ async fn founder_recovery_rejects_replaced_identity() {
             .unwrap();
         assert!(!output.status.success());
         let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("different Machine identity"), "{error}");
+        assert!(error.contains("different Server identity"), "{error}");
         assert_eq!(daemon.initialize_requests().len(), 1);
         assert_eq!(daemon.reset_count(), 0);
         assert!(enroll.callbacks().is_empty());

@@ -48,12 +48,12 @@ async fn machine_ls_observes_storage_only_when_the_target_advertises_it() {
         };
         let (address, server) = serve_discovery(service).await;
 
-        let output = run_ployz(address, &["machine", "ls", "--json"]).await;
+        let output = run_ployz(address, &["server", "ls", "--json"]).await;
 
         assert!(output.status.success(), "{output:?}");
         let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(
-            observed.pointer("/machines/0/storage"),
+            observed.pointer("/servers/0/storage"),
             Some(&if advertised {
                 serde_json::json!({
                     "state": "pool",
@@ -81,13 +81,13 @@ async fn machine_ls_warns_without_failing_when_one_daemon_version_differs() {
         .daemon_version = "0.0.0-old".into();
     let (address, server) = serve_discovery(service).await;
 
-    let output = run_ployz(address, &["machine", "ls"]).await;
+    let output = run_ployz(address, &["server", "ls"]).await;
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         format!(
-            "WARNING: 1 Machine runs a daemon version different from CLI {}.\n",
+            "WARNING: 1 Server runs a daemon version different from CLI {}.\n",
             env!("CARGO_PKG_VERSION")
         )
     );
@@ -106,7 +106,7 @@ async fn machine_ls_does_not_warn_when_every_daemon_matches() {
         .daemon_version = env!("CARGO_PKG_VERSION").into();
     let (address, server) = serve_discovery(service).await;
 
-    let output = run_ployz(address, &["machine", "ls"]).await;
+    let output = run_ployz(address, &["server", "ls"]).await;
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stderr, b"");

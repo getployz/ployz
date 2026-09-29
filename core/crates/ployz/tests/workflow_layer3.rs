@@ -123,9 +123,9 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
         command
-            .args(["--connect", &format!("tcp://{address}"), "machine", "rm"])
+            .args(["--connect", &format!("tcp://{address}"), "server", "rm"])
             .args(no_reset.then_some("--no-reset"))
-            .args(["--yes", "machine-2"]);
+            .args(["--confirm", "machine-2", "machine-2"]);
         let removed = command.output().unwrap();
         assert!(
             removed.status.success(),
@@ -192,19 +192,13 @@ async fn assert_machine_rename_preserves_containers(
         .map(|container| container.as_observation().container_id)
         .collect::<BTreeSet<_>>();
     assert!(
-        !ployz(address, ["machine", "update", "machine-1", "--name", ""])
+        !ployz(address, ["server", "set", "machine-1", "--name", ""])
             .status
             .success()
     );
     assert_success(ployz(
         address,
-        [
-            "machine",
-            "update",
-            "machine-1",
-            "--name",
-            "workflow-renamed",
-        ],
+        ["server", "set", "machine-1", "--name", "workflow-renamed"],
     ));
     wait_for_machine_name(client, machine_id, "workflow-renamed").await;
     let after_rename = wait_for_services(client, &["scaled-workflow"], 2).await;

@@ -358,7 +358,7 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
         (vec!["ployz", "service", "ps"], 5),
         (vec!["ployz", "--ssh-timeout", "17", "service", "ps"], 17),
         (vec!["ployz", "service", "ps", "--ssh-timeout", "17"], 17),
-        (vec!["ployz", "machine", "ls", "--ssh-timeout", "17"], 17),
+        (vec!["ployz", "server", "ls", "--ssh-timeout", "17"], 17),
     ] {
         let root = crate::cli::command().try_get_matches_from(args).unwrap();
         let mut matches = &root;

@@ -116,10 +116,6 @@ pub(crate) struct ServerClears {
 
 /// This credential's own Management Capability on each Server Cloud could reach.
 #[derive(Debug, Deserialize)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "live operations (#1241) dial with it")
-)]
 pub(crate) struct ServerAccess {
     pub(crate) connections: Vec<crate::context::Connection>,
     /// Machine IDs Cloud couldn't provision a holder on now.
@@ -258,10 +254,6 @@ pub(crate) async fn remove_token(
 /// # Errors
 ///
 /// Returns a Cloud failure.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "live operations (#1241) dial with it")
-)]
 pub(crate) async fn server_access(credential: &Credential) -> Result<ServerAccess, LoginError> {
     call(credential, Method::POST, "server-access", None).await
 }
