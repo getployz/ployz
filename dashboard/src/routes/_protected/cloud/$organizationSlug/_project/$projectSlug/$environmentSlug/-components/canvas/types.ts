@@ -1,4 +1,4 @@
-import type { ServiceListing } from "@ployz/sdk";
+import type { ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { Node } from "@xyflow/react";
 
@@ -42,6 +42,22 @@ export type CanvasStoreServiceNode = Node<StoreCanvasService & {
   environmentId: string;
 }, "storeService">;
 
+/** A Config Store Volume on the canvas, as the Store lists it. */
+export type CanvasStoreVolumeNode = Node<{
+  volume: VolumeListing;
+  resourceType: "volume";
+  resourceId: string;
+  environmentId: string;
+}, "storeVolume">;
+
+/** What the canvas draws from the Config Store while it backs this Environment. */
+export type StoreCanvas = {
+  services: StoreCanvasService[];
+  volumes: VolumeListing[];
+  /** How many Services and Volumes the next Deploy changes. */
+  totalChanges: number;
+};
+
 /** A Branch's Live Node: another Environment's service its Own Copies use live. */
 export type CanvasLiveNode = Node<{ liveNode: LiveNode }, "live">;
 
@@ -49,6 +65,7 @@ export type CanvasResourceNode =
   | CanvasServiceNode
   | CanvasStoreServiceNode
   | CanvasVolumeNode
+  | CanvasStoreVolumeNode
   | CanvasLiveNode;
 
 export type FlowPosition = { x: number; y: number };

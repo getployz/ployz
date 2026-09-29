@@ -1,4 +1,5 @@
 import { Position, type Edge } from "@xyflow/react";
+import type { VolumeListing } from "@ployz/sdk";
 import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
 import type { EnvironmentServiceVolumeAttachment } from "#/modules/environment-design/service-volume-attachments";
@@ -8,11 +9,13 @@ import {
 } from "#/modules/services/services.collection";
 import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
 import { extractDisplayRefs } from "#/modules/environment-design/variable-template";
-import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE } from "./constants";
+import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
 import type {
+  CanvasResourceType,
   CanvasStoreServiceNode,
-  StoreCanvasService,
+  CanvasStoreVolumeNode,
+  StoreCanvas,
   CanvasLiveNode,
   CanvasResourceNode,
   CanvasServiceNode,
@@ -133,32 +136,60 @@ export function buildNodes(
   return [...serviceNodes, ...volumeNodes];
 }
 
-/** Config Store Services where the canvas last put them; positions stay Cloud's, keyed by the Service's id. */
-export function buildStoreServiceNodes(
-  services: StoreCanvasService[],
+/**
+ * Config Store Services and Volumes where the canvas last put them; positions stay Cloud's, keyed by the node's id.
+ * One made elsewhere (the CLI) has no place yet: the first free one near the origin, or below the first Service that
+ * mounts a Volume, until someone drags it.
+ */
+export function buildStoreNodes(
+  store: Pick<StoreCanvas, "services" | "volumes">,
   canvasPositions: ServiceCanvasPositionRecord[],
   selectedNodeId: string | null,
   environmentId: string,
-): CanvasStoreServiceNode[] {
+): (CanvasStoreServiceNode | CanvasStoreVolumeNode)[] {
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...SERVICE_NODE_SIZE }));
-  return services.map((service) => {
-    const stored = positionByResource.get(getCanvasPositionCollectionKey({ resourceType: "service", resourceId: service.service.id }));
-    // One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it.
-    const position = stored ? getCanvasPosition(stored) : findPlacement({ x: 0, y: 0 }, SERVICE_NODE_SIZE, occupied);
-    if (!stored) occupied.push({ ...position, ...SERVICE_NODE_SIZE });
-    return {
-      id: service.service.id,
-      type: "storeService",
-      position,
-      width: SERVICE_NODE_WIDTH,
-      height: SERVICE_NODE_HEIGHT,
-      handles: CANVAS_NODE_HANDLES,
-      draggable: true,
-      selected: service.service.id === selectedNodeId,
-      data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
-    } satisfies CanvasStoreServiceNode;
-  });
+  const place = (resourceType: CanvasResourceType, resourceId: string, near = { x: 0, y: 0 }) => {
+    const stored = positionByResource.get(getCanvasPositionCollectionKey({ resourceType, resourceId }));
+    if (stored) return getCanvasPosition(stored);
+    const position = findPlacement(near, SERVICE_NODE_SIZE, occupied);
+    occupied.push({ ...position, ...SERVICE_NODE_SIZE });
+    return position;
+  };
+  const node = { width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, handles: CANVAS_NODE_HANDLES, draggable: true };
+  const services = store.services.map((service) => ({
+    ...node,
+    id: service.service.id,
+    type: "storeService",
+    position: place("service", service.service.id),
+    selected: service.service.id === selectedNodeId,
+    data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
+  } satisfies CanvasStoreServiceNode));
+  // Volumes sit below the Services that mount them, so their links run up into them.
+  const below = (volume: VolumeListing) => {
+    const owner = services.find((service) => service.data.service.name === volume.mounts[0]?.service);
+    return owner ? { x: owner.position.x, y: owner.position.y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 3 } : undefined;
+  };
+  return [
+    ...services,
+    ...store.volumes.map((volume) => ({
+      ...node,
+      id: volume.id,
+      type: "storeVolume",
+      position: place("volume", volume.id, below(volume)),
+      selected: volume.id === selectedNodeId,
+      data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
+    } satisfies CanvasStoreVolumeNode)),
+  ];
+}
+
+/** A link from each Config Store Volume into every Service that mounts it, as legacy mounts drew them. */
+export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes">): Edge[] {
+  const serviceIdByName = new Map(store.services.map(({ service }) => [service.name, service.id]));
+  return store.volumes.flatMap((volume) => volume.mounts.flatMap((mount) => {
+    const serviceId = serviceIdByName.get(mount.service);
+    return serviceId ? [{ id: `mount:${volume.id}:${serviceId}`, source: volume.id, target: serviceId }] : [];
+  }));
 }
 
 export function buildEdges(
