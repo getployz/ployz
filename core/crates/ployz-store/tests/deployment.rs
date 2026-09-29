@@ -466,7 +466,9 @@ fn a_runner_that_stops_before_preparing_executed_nothing() {
     store
         .record(&id(2), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
-    store.record(&id(2), &a, succeeded(&["web", "api"])).unwrap();
+    store
+        .record(&id(2), &a, succeeded(&["web", "api"]))
+        .unwrap();
     store.record(&id(2), &a, RunEvidence::Abandoned).unwrap();
     assert_eq!(status(&store, &who, 2), DeploymentStatus::Applied);
     // An ended Deployment can't be cancelled.

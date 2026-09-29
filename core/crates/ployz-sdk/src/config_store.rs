@@ -1,7 +1,8 @@
 //! The Config Store for Cloud: `read` and `write` as Promises. Each call runs its
 //! blocking database work on a worker thread, at most [`CONCURRENCY`] at once, and
 //! ends `unavailable` when it waits or runs too long. The Store's in-process-only
-//! operations are never bound here without their own caller checks.
+//! operations are never bound here without their own caller checks: Cloud's worker
+//! runs a Deployment in one call, so its secrets and evidence never reach JavaScript.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +10,7 @@ use std::time::Duration;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_core::{RpcError, RpcErrorCode};
-use ployz_store::{Actor, OrganizationId};
+use ployz_store::{Actor, DeploymentId, OrganizationId, RunEvidence, RunnerId};
 use tokio::sync::Semaphore;
 
 use crate::{invalid_argument, rpc_to_napi};
@@ -88,6 +89,54 @@ impl ConfigStore {
         self.run(move || store.write_trusted(&who, &command, &trusted))
             .await
     }
+
+    /// Run the Organization's queued Deployment `deployment` as `runner` on one of
+    /// `connections` (`Connection[]`), and resolve to its summary once its outcome is
+    /// recorded. Only Cloud's worker calls this. It takes as long as the Deploy does.
+    ///
+    /// # Errors
+    /// Returns `conflict` when this runner has nothing to run, or a storage error.
+    #[napi]
+    pub async fn run_deployment(
+        &self,
+        organization: String,
+        deployment: String,
+        runner: String,
+        connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let (deployment, runner) = ids(deployment, runner)?;
+        let connections = serde_json::from_value(connections)
+            .map_err(|_| invalid_argument("invalid management connections"))?;
+        let summary = ployz::sdk::run_deployment(
+            Arc::clone(&self.store),
+            who,
+            deployment,
+            runner,
+            connections,
+        )
+        .await
+        .map_err(rpc_to_napi)?;
+        serde_json::to_value(summary).map_err(|error| Error::from_reason(error.to_string()))
+    }
+
+    /// Record that `runner` stopped without finishing Deployment `deployment`: its
+    /// outcome is unknown once it prepared it. Recording it after an outcome changes
+    /// nothing.
+    ///
+    /// # Errors
+    /// Returns `conflict` when another runner owns the Deployment, or a storage error.
+    #[napi]
+    pub async fn abandon_deployment(
+        &self,
+        deployment: String,
+        runner: String,
+    ) -> Result<serde_json::Value> {
+        let (deployment, runner) = ids(deployment, runner)?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.record(&deployment, &runner, RunEvidence::Abandoned))
+            .await
+    }
 }
 
 impl ConfigStore {
@@ -117,6 +166,13 @@ fn actor(organization: String) -> Result<Actor> {
     Ok(Actor {
         organization: OrganizationId::parse(organization).map_err(rpc_to_napi)?,
     })
+}
+
+fn ids(deployment: String, runner: String) -> Result<(DeploymentId, RunnerId)> {
+    Ok((
+        DeploymentId::parse(deployment).map_err(rpc_to_napi)?,
+        RunnerId::parse(runner).map_err(rpc_to_napi)?,
+    ))
 }
 
 async fn blocking<T: Send + 'static>(

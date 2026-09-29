@@ -6,6 +6,7 @@ import type {
   ConfigTrusted,
   ConfigView,
   ConfigWritten,
+  DeploymentSummary,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -258,6 +259,14 @@ export interface ConfigStore {
   read(organization: string, query: ConfigQuery): Promise<ConfigView>;
   /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
+  /**
+   * Cloud's worker only: claim the queued Deployment as `runner`, deploy it on one of `connections` and record its
+   * outcome. Its secrets and evidence stay in Rust; it resolves to the summary, or rejects `conflict` when this runner
+   * has nothing to run.
+   */
+  runDeployment(organization: string, deployment: string, runner: string, connections: Connection[]): Promise<DeploymentSummary>;
+  /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
+  abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
 }
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.

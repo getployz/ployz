@@ -324,6 +324,9 @@ async function openConfigStore(url, sealingSecret) {
   return {
     read: (organization, query) => withRpcError(store.read(organization, query)),
     write: (organization, command, trusted) => withRpcError(store.write(organization, command, trusted)),
+    runDeployment: (organization, deployment, runner, connections) =>
+      withRpcError(store.runDeployment(organization, deployment, runner, connections)),
+    abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
   };
 }
 
