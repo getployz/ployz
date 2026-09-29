@@ -6,8 +6,6 @@ use crate::{
     project::refuse_reserved,
 };
 
-use serde_json::json;
-
 use super::{Error, data_loss, leaf_matches, required, with_client};
 use crate::output::{self, Gaps, say};
 
@@ -31,31 +29,18 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
             let volumes = &snapshot.volume_snapshot;
             gaps.extend(volumes.machine_failures(), volumes.omissions());
-            let unavailable_volumes = volumes.named_failures();
-            output::finish(
-                &json!({
-                    "projects": projects,
-                    "failures": gaps.failures,
-                    "omitted": gaps.omitted,
-                    "unavailable_volumes": unavailable_volumes,
-                }),
-                |_| {
-                    say!("PROJECT\tSERVICES\tVOLUMES");
-                    for project in &projects {
-                        say!(
-                            "{}\t{}\t{}",
-                            project.name,
-                            project.services.len(),
-                            project.volumes.len()
-                        );
-                    }
-                },
-            )?;
-            if unavailable_volumes.is_empty() {
-                gaps.outcome()
-            } else {
-                Err(Error::partial())
-            }
+            gaps.unavailable_volumes = volumes.named_failures().to_vec();
+            output::finish_fanout("projects", &projects, gaps, || {
+                say!("PROJECT\tSERVICES\tVOLUMES");
+                for project in &projects {
+                    say!(
+                        "{}\t{}\t{}",
+                        project.name,
+                        project.services.len(),
+                        project.volumes.len()
+                    );
+                }
+            })
         })
     })
 }

@@ -5,7 +5,7 @@ use ployz_core::{
     PartialResult, RpcError, RpcErrorCode, ServiceSelectorError, StreamProtocolError,
     UnconfirmedDataLoss, ValueError,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::{
     cloud_enroll,
@@ -30,7 +30,8 @@ pub struct Failure {
 
 #[derive(Debug)]
 enum Inner {
-    Command(Box<dyn Error + Send + Sync>),
+    /// A printed failure and the exit code it ends the process with.
+    Command(Box<dyn Error + Send + Sync>, u8),
     Exit(u8),
 }
 
@@ -54,8 +55,17 @@ impl Error for Message {}
 impl Failure {
     pub(crate) fn command(error: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: Inner::Command(Box::new(error)),
+            inner: Inner::Command(Box::new(error), 1),
         }
+    }
+
+    /// End the process with `code` instead of 1 when this failure is printed.
+    #[must_use]
+    pub fn with_exit(mut self, code: u8) -> Self {
+        if let Inner::Command(_, exit) = &mut self.inner {
+            *exit = code;
+        }
+        self
     }
 
     #[must_use]
@@ -71,26 +81,32 @@ impl Failure {
         Self::exit(PARTIAL_EXIT)
     }
 
+    /// The input was wrong.
     pub fn usage(message: impl Into<Cow<'static, str>>) -> Self {
         Self::coded(RpcErrorCode::InvalidArgument, message)
     }
 
+    /// The named target does not exist.
     pub fn not_found(message: impl Into<Cow<'static, str>>) -> Self {
         Self::coded(RpcErrorCode::NotFound, message)
     }
 
+    /// The selector matches more than one target.
     pub fn ambiguous(message: impl Into<Cow<'static, str>>) -> Self {
         Self::coded(RpcErrorCode::Ambiguous, message)
     }
 
+    /// The target's current state refuses the request.
     pub fn conflict(message: impl Into<Cow<'static, str>>) -> Self {
         Self::coded(RpcErrorCode::Conflict, message)
     }
 
+    /// A target could not be reached or its outcome is unknown.
     pub fn unavailable(message: impl Into<Cow<'static, str>>) -> Self {
         Self::coded(RpcErrorCode::Unavailable, message)
     }
 
+    /// A failure with an explicit `--json` error code.
     pub fn coded(code: RpcErrorCode, message: impl Into<Cow<'static, str>>) -> Self {
         Self::detailed(code, message, Value::Null)
     }
@@ -110,14 +126,17 @@ impl Failure {
 
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
-        Self::usage(format!("WARNING: {context}: {cause}."))
+        Self::coded(
+            RpcErrorCode::Internal,
+            format!("WARNING: {context}: {cause}."),
+        )
     }
 
     /// The `--json` error object: the RPC error shape and vocabulary.
     #[must_use]
     pub fn report(&self) -> RpcError {
         let (code, details) = match &self.inner {
-            Inner::Command(error) => classify(error.as_ref()),
+            Inner::Command(error, _) => classify(error.as_ref()),
             Inner::Exit(_) => (RpcErrorCode::Internal, Value::Null),
         };
         RpcError {
@@ -128,18 +147,26 @@ impl Failure {
     }
 }
 
+fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
+    if let Some(message) = error.downcast_ref::<Message>() {
+        return (message.code.clone(), message.details.clone());
+    }
+    if let Some(error) = error.downcast_ref::<RpcError>() {
+        return (error.code.clone(), error.details.clone());
+    }
+    if let Some(ConnectError::Remote(error)) = error.downcast_ref::<ConnectError>() {
+        return (error.code.clone(), error.details.clone());
+    }
+    (code(error), Value::Null)
+}
+
 #[expect(
     clippy::wildcard_enum_match_arm,
     reason = "every unlisted connection failure means the Cluster was not reached"
 )]
-fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value) {
-    let code = if let Some(message) = error.downcast_ref::<Message>() {
-        return (message.code.clone(), message.details.clone());
-    } else if let Some(error) = error.downcast_ref::<RpcError>() {
-        return (error.code.clone(), error.details.clone());
-    } else if let Some(error) = error.downcast_ref::<ConnectError>() {
-        match error {
-            ConnectError::Remote(error) => return (error.code.clone(), error.details.clone()),
+fn code(error: &(dyn Error + Send + Sync + 'static)) -> RpcErrorCode {
+    if let Some(error) = error.downcast_ref::<ConnectError>() {
+        return match error {
             ConnectError::ClientRefused | ConnectError::ClientCleared => {
                 RpcErrorCode::Unauthenticated
             }
@@ -151,40 +178,44 @@ fn classify(error: &(dyn Error + Send + Sync + 'static)) -> (RpcErrorCode, Value
                 RpcErrorCode::InvalidArgument
             }
             _ => RpcErrorCode::Unavailable,
-        }
-    } else if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
-        match error {
+        };
+    }
+    if let Some(error) = error.downcast_ref::<MachineSelectorError>() {
+        return match error {
             MachineSelectorError::NoTargets => RpcErrorCode::InvalidArgument,
             MachineSelectorError::NoVisibleMachines | MachineSelectorError::NotFound(_) => {
                 RpcErrorCode::NotFound
             }
             MachineSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
-        }
-    } else if let Some(error) = error.downcast_ref::<ServiceSelectorError>() {
-        match error {
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ServiceSelectorError>() {
+        return match error {
             ServiceSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
             ServiceSelectorError::NameAmbiguity { .. } => RpcErrorCode::Ambiguous,
-        }
-    } else if let Some(error) = error.downcast_ref::<ContainerSelectorError>() {
-        match error {
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ContainerSelectorError>() {
+        return match error {
             ContainerSelectorError::NotFound { .. } => RpcErrorCode::NotFound,
             ContainerSelectorError::Ambiguous { .. } => RpcErrorCode::Ambiguous,
-        }
-    } else if let Some(error) = error.downcast_ref::<ContextError>() {
-        context_code(error)
-    } else if error.is::<TransportError>() {
-        RpcErrorCode::Unavailable
-    } else if error.is::<ValueError>()
+        };
+    }
+    if let Some(error) = error.downcast_ref::<ContextError>() {
+        return context_code(error);
+    }
+    if error.is::<TransportError>() {
+        return RpcErrorCode::Unavailable;
+    }
+    if error.is::<ValueError>()
         || error.is::<ConnectionError>()
         || error.is::<ConfigError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
     {
-        RpcErrorCode::InvalidArgument
-    } else {
-        RpcErrorCode::Internal
-    };
-    (code, Value::Null)
+        return RpcErrorCode::InvalidArgument;
+    }
+    RpcErrorCode::Internal
 }
 
 fn context_code(error: &ContextError) -> RpcErrorCode {
@@ -235,7 +266,7 @@ pub(crate) fn refusal_from_rpc(error: RpcError) -> Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.inner {
-            Inner::Command(error) => error.fmt(f),
+            Inner::Command(error, _) => error.fmt(f),
             Inner::Exit(code) => write!(f, "exit {code}"),
         }
     }
@@ -244,7 +275,7 @@ impl fmt::Display for Failure {
 impl Error for Failure {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self.inner {
-            Inner::Command(error) => Some(error.as_ref()),
+            Inner::Command(error, _) => Some(error.as_ref()),
             Inner::Exit(_) => None,
         }
     }
@@ -264,15 +295,13 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
         }
         Err(error) => {
             if crate::output::json() {
-                let report = json!({ "error": error.report() });
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report).expect("a JSON value serializes")
-                );
+                crate::output::error(&error.report());
             } else {
                 eprintln!("{error}");
             }
-            ExitCode::FAILURE
+            match error.inner {
+                Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
+            }
         }
     }
 }
@@ -486,6 +515,15 @@ mod tests {
         );
         assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn a_failure_after_a_result_is_partial() {
+        crate::output::emit(&"done").unwrap();
+        assert_eq!(
+            terminate(Err(Failure::usage("nope"))),
+            ExitCode::from(PARTIAL_EXIT)
+        );
     }
 
     #[test]

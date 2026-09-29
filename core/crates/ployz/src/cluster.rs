@@ -661,7 +661,12 @@ impl Client {
         }
     }
 
-    pub(crate) async fn observe_machine_storage(&self, machines: &mut [MachineObservation]) {
+    /// Fill in each reachable Machine's storage. The result carries the Machines
+    /// that failed (`failures`) or did not answer in time (`omissions`).
+    pub(crate) async fn observe_machine_storage(
+        &self,
+        machines: &mut [MachineObservation],
+    ) -> PartialResult<(), RpcError> {
         let mut tasks = JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
             if machine.membership.invites_rpc() {
@@ -672,12 +677,30 @@ impl Client {
                 ));
             }
         }
+        let mut result = PartialResult {
+            successes: Vec::new(),
+            failures: Vec::new(),
+            omissions: Vec::new(),
+        };
         while let Some(observed) = tasks.join_next().await {
-            let (index, storage) = observed.expect("Machine storage observation does not panic");
-            if let Some(machine) = machines.get_mut(index) {
-                machine.storage = storage;
+            let (index, observed) = observed.expect("Machine storage observation does not panic");
+            let Some(machine) = machines.get_mut(index) else {
+                continue;
+            };
+            let machine_id = machine.machine.id;
+            match observed {
+                Some(Ok(storage)) => {
+                    machine.storage = storage;
+                    result.successes.push(MachineSuccess {
+                        machine_id,
+                        value: (),
+                    });
+                }
+                Some(Err(error)) => result.failures.push(MachineFailure { machine_id, error }),
+                None => result.omissions.push(machine_id),
             }
         }
+        result
     }
 
     /// List Containers on every visible Machine and derive the observed Services.
@@ -1060,21 +1083,24 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
     }
 }
 
+/// `None` when the Machine did not answer within the storage budget.
 async fn observe_machine_storage(
     client: Client,
     index: usize,
     machine_id: MachineId,
-) -> (usize, Option<MachineStorageObservation>) {
+) -> (
+    usize,
+    Option<Result<Option<MachineStorageObservation>, RpcError>>,
+) {
     let target = MachineTarget::from(&machine_id);
     let observation = async {
         let description = client
             .invoke::<op::DescribeContract>(DescribeContractRequest {}, &target, None)
-            .await
-            .ok()?;
+            .await?;
         if !description.supports(MACHINE_STORAGE_OBSERVATION_CAPABILITY) {
-            return None;
+            return Ok(None);
         }
-        client
+        Ok(client
             .invoke::<op::Inspect>(
                 InspectRequest {
                     include_storage: true,
@@ -1083,14 +1109,12 @@ async fn observe_machine_storage(
                 &target,
                 None,
             )
-            .await
-            .ok()?
-            .storage
+            .await?
+            .storage)
     };
     let storage = tokio::time::timeout(STORAGE_OBSERVATION_TIMEOUT, observation)
         .await
-        .ok()
-        .flatten();
+        .ok();
     (index, storage)
 }
 

@@ -12,14 +12,14 @@ use super::with_client;
 use crate::{
     connect::{ConnectError, TARGET_RPC_TIMEOUT},
     handlers::{Error, leaf_matches},
-    output::{self, say},
+    output::{self, Gaps, say},
 };
 
 pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let mut machines = client.machines().await?;
-            client.observe_machine_storage(&mut machines).await;
+            let storage = client.observe_machine_storage(&mut machines).await;
             let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
             let listed = machines
                 .iter()
@@ -28,7 +28,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                     observation,
                 })
                 .collect::<Vec<_>>();
-            output::finish(&json!({ "machines": listed }), |_| {
+            let finished = output::finish_fanout("machines", &listed, Gaps::of(&storage), || {
                 say!(
                     "ID\tNAME\tMEMBERSHIP\tSTORAGE\tSUBNET\tGATEWAY\tPUBLIC IP\tENDPOINTS\tHOSTNAME\tDAEMON\tDOCKER\tOS\tKERNEL\tARCH"
                 );
@@ -59,11 +59,11 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
                         machine.runtime.architecture,
                     );
                 }
-            })?;
+            });
             if let Some(warning) = warning {
                 eprintln!("{warning}");
             }
-            Ok(())
+            finished
         })
     })
 }
@@ -131,13 +131,7 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => None,
                 Err(error) => return Err(error.into()),
             };
-            let result = json!({ "machine": details, "upgrade": upgrade });
-            output::finish(&result, |result| {
-                say!(
-                    "{}",
-                    serde_json::to_string_pretty(result).expect("a JSON value serializes")
-                );
-            })
+            output::show(&json!({ "machine": details, "upgrade": upgrade }))
         })
     })
 }

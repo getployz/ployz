@@ -11,8 +11,13 @@ pub mod env {
 
 #[must_use]
 pub fn command() -> Command {
-    let command = base("ployz", "Manage Ployz machines, services, and volumes")
+    base("ployz", "Manage Ployz machines, services, and volumes")
         .arg(switch("version", Some('V')).help("Print version"))
+        .arg(
+            switch("json", None)
+                .global(true)
+                .help("Print the result as one JSON object on stdout"),
+        )
         .subcommand(build())
         .subcommand(cloud())
         .subcommand(ctx())
@@ -21,23 +26,7 @@ pub fn command() -> Command {
         .subcommand(project())
         .subcommand(service())
         .subcommand(volume())
-        .subcommand(completion());
-    with_json(command)
-}
-
-/// Commands whose output is a terminal session, a tunnel, or shell code, not a result.
-const WITHOUT_JSON: [&str; 3] = ["exec", "proxy", "completion"];
-
-/// Give every result-producing leaf the one `--json` switch.
-fn with_json(command: Command) -> Command {
-    if command.has_subcommands() {
-        return command.mut_subcommands(with_json);
-    }
-    if WITHOUT_JSON.contains(&command.get_name()) {
-        command
-    } else {
-        command.arg(switch("json", None).help("Print the result as one JSON object on stdout"))
-    }
+        .subcommand(completion())
 }
 
 fn base(name: &'static str, about: &'static str) -> Command {

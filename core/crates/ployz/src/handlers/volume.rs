@@ -69,7 +69,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 machine_name: machine.machine.name.clone(),
                 volume,
             };
-            output::finish(&json!({ "volume": created }), |_| {
+            output::finish(&json!({ "volume": created }), || {
                 say!("{}\t{}", created.machine_name, created.volume.id.name);
             })
         })
@@ -82,45 +82,34 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
-            let gaps = Gaps::of(&result);
-            let unavailable = volume_failures(&result).collect::<Vec<_>>();
-            output::finish(
-                &json!({
-                    "volumes": volumes,
-                    "failures": gaps.failures,
-                    "omitted": gaps.omitted,
-                    "unavailable_volumes": unavailable,
-                }),
-                |_| {
-                    say!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
-                    for volume in &volumes {
-                        let (kind, bound, used) = format_storage(&volume.volume.storage);
-                        say!(
-                            "{}\t{}\t{}\t{}\t{}\t{}",
-                            volume.machine_name,
-                            volume.volume.id.name,
-                            kind,
-                            bound,
-                            used,
-                            volume.volume.driver()
-                        );
-                    }
-                    for failure in &unavailable {
-                        say!(
-                            "{}\t{}\tUNAVAILABLE\t-\t-\t-",
-                            failure.id.machine_id,
-                            failure.id.name
-                        );
-                    }
-                },
-            )?;
+            let unavailable = volume_failures(&result).cloned().collect::<Vec<_>>();
+            let mut gaps = Gaps::of(&result);
+            gaps.unavailable_volumes.clone_from(&unavailable);
+            let finished = output::finish_fanout("volumes", &volumes, gaps, || {
+                say!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
+                for volume in &volumes {
+                    let (kind, bound, used) = format_storage(&volume.volume.storage);
+                    say!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        volume.machine_name,
+                        volume.volume.id.name,
+                        kind,
+                        bound,
+                        used,
+                        volume.volume.driver()
+                    );
+                }
+                for failure in &unavailable {
+                    say!(
+                        "{}\t{}\tUNAVAILABLE\t-\t-\t-",
+                        failure.id.machine_id,
+                        failure.id.name
+                    );
+                }
+            });
             report_failures(&result);
             report_inventory_failures(&result);
-            if inventories_complete(&result) {
-                Ok(())
-            } else {
-                Err(Error::partial())
-            }
+            finished
         })
     })
 }
@@ -186,14 +175,7 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     "Docker Volume {} was not found",
                     name.as_str().escape_debug()
                 ))),
-                NameMatches::One(volume) => {
-                    output::finish(&json!({ "volume": volume }), |result| {
-                        say!(
-                            "{}",
-                            serde_json::to_string_pretty(result).expect("a JSON value serializes")
-                        );
-                    })
-                }
+                NameMatches::One(volume) => output::show(&json!({ "volume": volume })),
                 volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
                     "Docker Volume {} is ambiguous; select one Machine: {}",
                     name.as_str().escape_debug(),

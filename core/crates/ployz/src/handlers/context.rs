@@ -54,15 +54,20 @@ pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
                 .collect(),
         })
         .collect::<Vec<_>>();
-    output::finish(&json!({ "contexts": contexts }), |_| {
+    output::finish(&json!({ "contexts": contexts }), || {
         if contexts.is_empty() {
             say!("No contexts found");
             return;
         }
-        say!("NAME\tCURRENT\tCONNECTIONS");
+        say!("NAME\tCURRENT\tDEFAULT\tCONNECTIONS");
         for context in &contexts {
             let current = if context.current { "*" } else { "" };
-            say!("{}\t{current}\t{}", context.name, context.connections.len());
+            let default = context.connections.first().map_or("-", String::as_str);
+            say!(
+                "{}\t{current}\t{default}\t{}",
+                context.name,
+                context.connections.len()
+            );
         }
     })
 }
@@ -116,7 +121,7 @@ pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
     config.save()?;
     output::finish(
         &json!({ "context": selected, "connection": connection }),
-        |_| {
+        || {
             say!("Current context is now {}.", selected.escape_debug());
             if let Some(connection) = &connection
                 && requested_connection.is_some()
@@ -135,7 +140,7 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let was_current = removed == RemovedContext::Current;
     output::finish(
         &json!({ "removed": name, "was_current": was_current }),
-        |_| {
+        || {
             say!("Removed context {}.", name.escape_debug());
             if was_current {
                 say!("Current context is now unset.");

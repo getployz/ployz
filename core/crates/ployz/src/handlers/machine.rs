@@ -43,8 +43,8 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
         ));
     }
     ployz_build::clear_cache(&ployz_build::HostPolicy::default())
-        .map_err(|error| Error::usage(error.to_string()))?;
-    output::finish(&json!({ "cleared": true }), |_| {
+        .map_err(|error| Error::coded(ployz_core::RpcErrorCode::Internal, error.to_string()))?;
+    output::finish(&json!({ "build_cache": { "cleared": true } }), || {
         say!("Cleared this host user's Ployz build cache.");
     })
 }
@@ -119,7 +119,7 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
-            output::finish(&json!({ "machine": machine.machine }), |_| {
+            output::finish(&json!({ "machine": machine.machine }), || {
                 say!(
                     "Updated Machine {} ({})",
                     machine.machine.name,

@@ -11,17 +11,18 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError};
+use ployz_core::{MachineFailure, MachineId, PartialResult, RpcError, VolumeObservationFailure};
 use serde::Serialize;
 
 use crate::failure::Failure;
 
-// One process runs one command, so the mode is process-wide rather than threaded
-// through every handler and the deploy renderer.
+// `JSON` is process config: set once before dispatch, read from any thread (the
+// deploy renderer and spawned tasks included).
 static JSON: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
-    // Results are printed on the handler's thread; per-thread keeps in-process tests apart.
+    // `EMITTED` is per-execution state. Results are printed on the handler's thread,
+    // so thread-local keeps in-process handler tests apart.
     static EMITTED: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -87,15 +88,28 @@ pub(crate) use {say, say_inline};
 /// Returns a serialization or stdout write error.
 pub(crate) fn finish<T: Serialize + ?Sized>(
     value: &T,
-    human: impl FnOnce(&T),
+    human: impl FnOnce(),
 ) -> Result<(), Failure> {
     if json() {
         emit(value)
     } else {
         EMITTED.set(true);
-        human(value);
+        human();
         Ok(())
     }
+}
+
+/// Print `value` as pretty JSON in both modes, for inspect-style commands.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error.
+pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
+    EMITTED.set(true);
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer_pretty(&mut stdout, value)?;
+    writeln!(stdout)?;
+    Ok(())
 }
 
 /// Print `value` as the JSON result; without `--json` the command already said it.
@@ -104,14 +118,12 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn emit<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
-    EMITTED.set(true);
-    if !json() {
-        return Ok(());
+    if json() {
+        show(value)
+    } else {
+        EMITTED.set(true);
+        Ok(())
     }
-    let mut stdout = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut stdout, value)?;
-    writeln!(stdout)?;
-    Ok(())
 }
 
 /// Print one line of a streamed JSON result; a no-op without `--json`.
@@ -120,6 +132,7 @@ pub(crate) fn emit<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
+    EMITTED.set(true);
     if !json() {
         return Ok(());
     }
@@ -130,17 +143,33 @@ pub(crate) fn emit_line<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure>
     Ok(())
 }
 
+/// Print the `--json` error object on one stdout line.
+pub(crate) fn error(error: &RpcError) {
+    #[derive(Serialize)]
+    struct Report<'a> {
+        error: &'a RpcError,
+    }
+    let mut stdout = io::stdout().lock();
+    // Nothing is left to report a failed write to.
+    let _ = serde_json::to_writer(&mut stdout, &Report { error })
+        .map_err(io::Error::from)
+        .and_then(|()| writeln!(stdout));
+}
+
 /// Whether the command already produced its result, so a later failure is partial.
 pub(crate) fn emitted() -> bool {
     EMITTED.get()
 }
 
 /// Per-Machine gaps in a fan-out result: `failures` answered with an error,
-/// `omitted` never answered. Any gap makes the command exit [`Failure::partial`].
+/// `omitted` never answered, `unavailable_volumes` listed but not inspected.
+/// Any gap makes the command exit [`Failure::partial`].
 #[derive(Debug, Default, Serialize)]
 pub(crate) struct Gaps {
     pub failures: Vec<MachineFailure<RpcError>>,
     pub omitted: Vec<MachineId>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unavailable_volumes: Vec<VolumeObservationFailure>,
 }
 
 impl Gaps {
@@ -148,6 +177,7 @@ impl Gaps {
         Self {
             failures: result.failures.clone(),
             omitted: result.omissions.clone(),
+            unavailable_volumes: Vec::new(),
         }
     }
 
@@ -165,16 +195,42 @@ impl Gaps {
         }
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.failures.is_empty() && self.omitted.is_empty()
-    }
-
     /// `Ok` when every Machine answered; otherwise the partial exit.
     pub(crate) fn outcome(&self) -> Result<(), Failure> {
-        if self.is_empty() {
+        if self.failures.is_empty()
+            && self.omitted.is_empty()
+            && self.unavailable_volumes.is_empty()
+        {
             Ok(())
         } else {
             Err(Failure::partial())
         }
     }
+}
+
+/// Finish a fan-out: `{key: value, failures, omitted[, unavailable_volumes]}`, or
+/// `human`; then the partial exit if any Machine left a gap.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error, or [`Failure::partial`].
+pub(crate) fn finish_fanout(
+    key: &str,
+    value: &impl Serialize,
+    gaps: Gaps,
+    human: impl FnOnce(),
+) -> Result<(), Failure> {
+    #[derive(Serialize)]
+    struct Fanout<'a, T> {
+        #[serde(flatten)]
+        value: std::collections::BTreeMap<&'a str, &'a T>,
+        #[serde(flatten)]
+        gaps: &'a Gaps,
+    }
+    let result = Fanout {
+        value: std::collections::BTreeMap::from([(key, value)]),
+        gaps: &gaps,
+    };
+    finish(&result, human)?;
+    gaps.outcome()
 }

@@ -24,25 +24,21 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
-    let matches = match command.clone().try_get_matches() {
-        Ok(matches) => matches,
-        Err(error) => return Err(usage_failure(error)),
-    };
-    // `--json` exists only on commands that print a result.
-    crate::output::set_json(
-        leaf_matches(&matches)
-            .try_get_one::<bool>("json")
-            .ok()
-            .flatten()
-            == Some(&true),
-    );
+    let matches = command.clone().try_get_matches().map_err(usage_failure)?;
+    crate::output::set_json(matches.get_flag("json"));
     dispatch(&matches, &mut command)
 }
+
+/// Commands whose output is a terminal session, a tunnel, shell code, or the Cloud
+/// runner's own fixed JSON, not a `--json` result.
+const WITHOUT_JSON: [&str; 4] = ["service exec", "service proxy", "completion", "build"];
 
 /// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
 fn usage_failure(error: clap::Error) -> Error {
     use clap::error::ErrorKind;
-    let wants_json = std::env::args_os().any(|arg| arg == "--json");
+    let wants_json = std::env::args_os()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json");
     if !wants_json
         || matches!(
             error.kind(),
@@ -55,9 +51,8 @@ fn usage_failure(error: clap::Error) -> Error {
     }
     crate::output::set_json(true);
     let message = error.render().to_string();
-    let failure = Error::usage(message.trim().trim_start_matches("error: ").to_owned());
-    let _ = crate::failure::terminate(Err(failure));
-    Error::exit(u8::try_from(error.exit_code()).unwrap_or(2))
+    Error::usage(message.trim().trim_start_matches("error: ").to_owned())
+        .with_exit(u8::try_from(error.exit_code()).unwrap_or(2))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
@@ -70,6 +65,12 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         println!();
         return Ok(());
     };
+    let path = command_path(matches);
+    if matches.get_flag("json") && WITHOUT_JSON.contains(&path.as_str()) {
+        return Err(Error::usage(format!(
+            "ployz {path} does not support --json"
+        )));
+    }
     if name == "completion" {
         let shell = child
             .get_one::<Shell>("shell")
@@ -78,7 +79,6 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
         generate(shell, command, "ployz", &mut std::io::stdout());
         return Ok(());
     }
-    let path = command_path(matches);
     let handler = handler_for(&path)
         .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
     handler(matches)

@@ -70,35 +70,60 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
 }
 
 #[test]
-fn every_result_command_takes_one_json_switch_and_no_output_format() {
-    fn leaves(command: &clap::Command, parent: &str, paths: &mut Vec<String>) {
+fn json_is_one_global_switch_and_no_command_keeps_an_output_format() {
+    fn assert_no_output(command: &clap::Command, path: &str) {
+        assert!(
+            command.get_arguments().all(|arg| arg.get_id() != "output"),
+            "{path} keeps an output format"
+        );
         for child in command.get_subcommands() {
-            let path = format!("{parent}{}", child.get_name());
-            if child.has_subcommands() {
-                leaves(child, &format!("{path} "), paths);
-            } else {
-                paths.push(path);
-            }
+            assert_no_output(child, &format!("{path} {}", child.get_name()));
         }
     }
     let command = ployz::cli::command();
-    let mut paths = Vec::new();
-    leaves(&command, "", &mut paths);
-    for path in paths {
-        let mut leaf = &command;
-        for name in path.split(' ') {
-            leaf = leaf.find_subcommand(name).unwrap();
-        }
-        let json = leaf.get_arguments().find(|arg| arg.get_id() == "json");
-        let streams_a_session =
-            ["service exec", "service proxy", "completion"].contains(&path.as_str());
-        assert_eq!(json.is_none(), streams_a_session, "{path}");
-        if let Some(json) = json {
-            assert_eq!(json.get_short(), None, "{path}");
-        }
+    let json = command
+        .get_arguments()
+        .find(|arg| arg.get_id() == "json")
+        .expect("root --json");
+    assert!(json.is_global_set());
+    assert_eq!(json.get_short(), None);
+    assert_no_output(&command, "ployz");
+
+    let matches = command
+        .try_get_matches_from(["ployz", "--json", "machine", "ls"])
+        .unwrap();
+    assert!(matches.get_flag("json"));
+}
+
+#[test]
+fn sessions_tunnels_shell_code_and_build_refuse_json() {
+    for args in [
+        &["service", "exec", "--json", "api"][..],
+        &["service", "proxy", "--json", "api", "8080"],
+        &["completion", "--json", "bash"],
+        &[
+            "build",
+            "--json",
+            "--grant",
+            "grant",
+            "--deployment",
+            "deployment.json",
+            "--commit",
+            "abc",
+            "--fingerprint",
+            "fp",
+        ],
+    ] {
+        let (code, json, stderr) = run_json(args);
+        assert_eq!(code, Some(1), "{args:?}: {stderr}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "invalid_argument",
+            "{json}"
+        );
         assert!(
-            leaf.get_arguments().all(|arg| arg.get_id() != "output"),
-            "{path} keeps an output format"
+            message(&json).ends_with("does not support --json"),
+            "{json}"
         );
     }
 }

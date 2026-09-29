@@ -5,7 +5,7 @@ use std::{collections::BTreeSet, time::Duration};
 use clap::ArgMatches;
 use ployz_core::{
     InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, op,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use tokio::time::Instant;
 
@@ -85,15 +85,16 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
                         let stopped = match &attempt.outcome {
                             MachineUpgradeOutcome::Succeeded { .. } => None,
                             MachineUpgradeOutcome::Failed { error, .. } => {
-                                Some(Error::usage(error.clone()))
+                                Some(Error::coded(RpcErrorCode::Internal, error.clone()))
                             }
-                            MachineUpgradeOutcome::Interrupted { .. } => {
-                                Some(Error::usage(format!(
+                            MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
+                                RpcErrorCode::Internal,
+                                format!(
                                     "Machine {} upgrade was interrupted; {}",
                                     machine.name,
                                     journal_hint(attempt_id)
-                                )))
-                            }
+                                ),
+                            )),
                             MachineUpgradeOutcome::Accepted
                             | MachineUpgradeOutcome::Running { .. } => {
                                 unreachable!("run_one returns only terminal evidence")
@@ -106,15 +107,14 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
                 if let Some(error) = stopped {
                     let unattempted = machines.get(index + 1..).unwrap_or_default();
                     print_unattempted(unattempted, machine);
-                    let report = error.report();
-                    return Err(Error::detailed(
-                        report.code,
-                        report.message,
-                        json!({
+                    // A recorded attempt is a result: print it, then exit partial.
+                    if !attempts.is_empty() {
+                        output::emit(&json!({
                             "attempts": attempts,
                             "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
-                        }),
-                    ));
+                        }))?;
+                    }
+                    return Err(error);
                 }
             }
             output::emit(&json!({ "attempts": attempts, "unattempted": [] }))
@@ -267,7 +267,7 @@ fn uncertain(
     attempt_id: MachineUpgradeAttemptId,
     error: impl std::fmt::Display,
 ) -> Error {
-    Error::usage(format!(
+    Error::unavailable(format!(
         "Machine {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,
@@ -277,7 +277,7 @@ fn uncertain(
 }
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
-    Error::usage(format!(
+    Error::unavailable(format!(
         "Machine {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,

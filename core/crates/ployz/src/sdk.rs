@@ -755,7 +755,7 @@ impl Watch {
                             *guard = None;
                             Ok(None)
                         }
-                        () = client.observe_machine_storage(&mut frame.machines) => {
+                        _ = client.observe_machine_storage(&mut frame.machines) => {
                             Ok(Some(frame))
                         }
                     }
