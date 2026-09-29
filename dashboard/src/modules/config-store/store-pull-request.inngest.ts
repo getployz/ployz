@@ -3,12 +3,17 @@ import type { StoreGithubServices } from "#/modules/config-store/store-github.se
 import {
   closeStoreEnvironments,
   observeStorePullRequest,
+  publishRequestedStorePrCheck,
   publishStorePrCheck,
   sweepStores,
   type StoreOutcome,
 } from "#/modules/config-store/store-pull-request.server";
 import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
-import { createConfigDeploymentAdmittedEvent, githubPullRequestReceivedEventType } from "#/modules/inngest/events";
+import {
+  configPrCheckRequestedEventType,
+  createConfigDeploymentAdmittedEvent,
+  githubPullRequestReceivedEventType,
+} from "#/modules/inngest/events";
 import { runInngestEffect } from "#/server/run.server";
 
 type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, StoreGithubServices>) => Promise<A>;
@@ -39,6 +44,20 @@ export const createStorePullRequest = (inngest: PloyzInngest, runEffect: StoreEf
       const check = done.check ? await step.run("publish-check", () => runEffect(publishStorePrCheck(event.data))) : "skipped";
       return { ...followed, check };
     },
+  );
+
+/** A Store write named a pull request: publish its check again, one post per pull request at a time. */
+export const createStorePrCheck = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+  inngest.createFunction(
+    {
+      id: "store-pr-check",
+      retries: 3,
+      triggers: [{ event: configPrCheckRequestedEventType }],
+      concurrency: [{ key: "event.data.pullRequestKey", limit: 1 }],
+    },
+    async ({ event, step }) => ({
+      check: await step.run("publish-check", () => runEffect(publishRequestedStorePrCheck(event.data))),
+    }),
   );
 
 /** Hourly, every Store closes idle Branches and deletes closing ones that left the Servers. */

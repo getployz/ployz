@@ -1,14 +1,16 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { cloudStore } from "#/modules/config-store/config-store.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
-import { StoreGithubFailure } from "#/modules/config-store/store-github.server";
-import { fetchInstallationPullRequest, postInstallationCheckRun } from "#/modules/github/github-observation.api";
+import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
+import { githubRepositoryCache } from "#/modules/github/tables";
+import { member } from "#/modules/identity/tables";
 import type { GithubPullRequestReceivedEventData } from "#/modules/github/github-ingestion.contracts";
 import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
-import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData } from "#/modules/inngest/events";
 import { organization } from "#/modules/organization/tables";
 import { PR_CHECK_NAME } from "#/modules/pr-environments/pr-check";
 import { AppConfig } from "#/server/config.server";
@@ -48,14 +50,19 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
   const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
   if (organizations.length === 0) return done;
   const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
-  if (live.updatedAt === null) return yield* new StoreGithubFailure({ cause: "GitHub sent a pull request without updated_at." });
-  const event: SystemEvent = {
-    event: "pull_request", repository_id: payload.repositoryId, number: payload.number, title: live.title,
-    author: live.author.login, bot: live.author.isBot, head_branch: live.headBranch, head: live.headSha,
-    target_branch: live.targetBranch, commits: live.commits, open: live.open, merge_commit: live.mergeCommitSha,
-    updated: new Date(live.updatedAt).toISOString().replace(/\.\d{3}Z$/, "Z"),
-  };
+  const { updatedAt } = live;
+  if (updatedAt === null) return yield* new StoreGithubFailure({ cause: "GitHub sent a pull request without updated_at." });
+  const merge = live.open ? null : live.mergeCommitSha;
+  const repository = merge === null ? null : yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
   for (const organizationId of organizations) {
+    // Merged: whether the head the Store last saw of the target branch already has the merge commit, so its
+    // Conditional Saves land with what that push deployed.
+    let reached: string | null = null;
+    if (merge !== null && repository !== null) {
+      const head = yield* storeCall(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
+      if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
+    }
+    const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
     yield* collect(organizationId, yield* storeCall(() => store.system(organizationId, event)), done);
   }
   return done;
@@ -112,6 +119,22 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
     }
   }
   return admitted;
+});
+
+/**
+ * A Store write named the pull request (a Conditional Save, for one): publish its check again, through the GitHub
+ * installation a member of the Organization reads the repository with.
+ */
+export const publishRequestedStorePrCheck = Effect.fn("StorePullRequest.publishRequestedCheck")(function* (
+  request: ConfigPrCheckRequestedEventData,
+) {
+  const { drizzle } = yield* Database;
+  const [found] = yield* drizzle.select({ installationId: githubRepositoryCache.installationId }).from(githubRepositoryCache)
+    .innerJoin(member, eq(member.userId, githubRepositoryCache.userId))
+    .where(and(eq(member.organizationId, request.organizationId), eq(githubRepositoryCache.repositoryId, request.repositoryId)))
+    .limit(1);
+  if (!found) return "skipped" as const;
+  return yield* publishStorePrCheck({ installationId: found.installationId, repositoryId: request.repositoryId, number: request.number });
 });
 
 /**
