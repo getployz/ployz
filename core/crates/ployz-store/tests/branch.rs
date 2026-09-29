@@ -10,10 +10,10 @@
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
-    CreateService, CreateVolume, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
+    CreateService, CreateVolume, Deploy, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
     EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, Move, MoveQuery,
-    OrganizationId, PickChoice, ProjectId, ProjectName, RunEvidence, RunnerId, Save, ServiceId,
-    ServiceQuery, SettingPath, SetupCommand, Trusted, Update, VolumeId, VolumeName,
+    OrganizationId, PickChoice, ProjectId, ProjectName, Removal, RunEvidence, RunnerId, Save,
+    ServiceId, ServiceQuery, SettingPath, SetupCommand, Trusted, Update, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -165,16 +165,14 @@ fn deploy(store: &ConfigStore, who: &Actor, environment: &str, n: u8, applied: b
     store
         .admit(
             who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: at(environment),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &Trusted::default(),
         )
         .unwrap();
@@ -912,16 +910,12 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     store
         .admit(
             &who,
-            &Admit {
+            &Admit::Remove(Removal {
                 id: DeploymentId::parse(uuid(90)).unwrap(),
                 environment: at("fix-web"),
-                services: Vec::new(),
                 version: None,
-                upload: None,
-                retry: None,
-                remove: true,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &Trusted::default(),
         )
         .unwrap();

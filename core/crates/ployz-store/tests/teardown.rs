@@ -13,10 +13,10 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Cancel, ConfigStore, CreateBranch, CreateEnvironment, CreateProject,
-    CreateService, CreateVolume, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentsQuery, Mount, OrganizationId, ProjectId, ProjectName,
-    RemovalsQuery, RemoveEnvironment, RemoveProject, RunEvidence, RunnerId, ServiceId,
-    SetDefaultEnvironment, Trusted, VolumeId, VolumeName, VolumeObservation,
+    CreateService, CreateVolume, Deploy, DeploymentId, DeploymentStatus, EnvironmentId,
+    EnvironmentName, EnvironmentRef, EnvironmentsQuery, Mount, OrganizationId, ProjectId,
+    ProjectName, Removal, RemovalsQuery, RemoveEnvironment, RemoveProject, Retry, RunEvidence,
+    RunnerId, ServiceId, SetDefaultEnvironment, Trusted, VolumeId, VolumeName, VolumeObservation,
 };
 use serde_json::json;
 
@@ -102,18 +102,25 @@ fn admit(
     accept: &[&str],
     volumes: Option<VolumeObservation>,
 ) -> Result<ployz_store::DeploymentSummary, RpcError> {
-    let request = |version: Option<String>| Admit {
-        id: id(n),
-        environment: at(environment),
-        services: Vec::new(),
-        version,
-        upload: None,
-        retry: None,
-        remove,
-        accept_volume_loss: accept
-            .iter()
-            .map(|name| VolumeName::parse(*name).unwrap())
-            .collect(),
+    let accept_volume_loss: Vec<VolumeName> = accept
+        .iter()
+        .map(|name| VolumeName::parse(*name).unwrap())
+        .collect();
+    let request = |version: Option<String>| match remove {
+        true => Admit::Remove(Removal {
+            id: id(n),
+            environment: at(environment),
+            version,
+            accept_volume_loss: accept_volume_loss.clone(),
+        }),
+        false => Admit::Deploy(Deploy {
+            id: id(n),
+            environment: at(environment),
+            services: Vec::new(),
+            version,
+            upload: None,
+            accept_volume_loss: accept_volume_loss.clone(),
+        }),
     };
     let trusted = Trusted {
         volumes,
@@ -338,16 +345,10 @@ fn a_deployed_root_leaves_the_servers_before_the_store() {
     let retried = store
         .admit(
             &who,
-            &Admit {
+            &Admit::Retry(Retry {
                 id: id(3),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(id(2)),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: id(2),
+            }),
             &Trusted::default(),
         )
         .unwrap();

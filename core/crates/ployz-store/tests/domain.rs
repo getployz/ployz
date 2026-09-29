@@ -10,10 +10,10 @@
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Cancel, ClusterDomain, ClusterDomainStatus, Command, ConfigStore,
-    CreateEnvironment, CreateProject, CreateService, DeploymentId, DnsLookup, DomainAction,
+    CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId, DnsLookup, DomainAction,
     DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId,
     EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    Query, RemoveDomain, RunEvidence, RunnerId, ServiceId, Trusted, View, Written,
+    Query, RemoveDomain, Retry, RunEvidence, RunnerId, ServiceId, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -230,16 +230,14 @@ fn admit(
 ) -> Result<Written, ployz_core::RpcError> {
     store.write_trusted(
         who,
-        &Command::Admit(Admit {
+        &Command::Admit(Admit::Deploy(Deploy {
             id: deployment(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
-            retry: None,
-            remove: false,
             upload: None,
             accept_volume_loss: Vec::new(),
-        }),
+        })),
         trusted,
     )
 }
@@ -375,16 +373,10 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
     store
         .write_trusted(
             &who,
-            &Command::Admit(Admit {
+            &Command::Admit(Admit::Retry(Retry {
                 id: deployment(2),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                retry: Some(deployment(1)),
-                remove: false,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-            }),
+                deployment: deployment(1),
+            })),
             &Trusted::default(),
         )
         .unwrap();

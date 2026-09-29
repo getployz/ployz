@@ -9,10 +9,10 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, Automated, BranchHead, CreateBranch, CreateGitService,
-    CreateProject, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
-    PullRequestQuery, RunEvidence, RunnerId, ServiceId, SetPrPlan, SetupCommand, Sweep,
-    SystemEvent, Trusted, Written,
+    CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName,
+    EnvironmentRef, EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName,
+    PullRequest, PullRequestQuery, Removal, RunEvidence, RunnerId, ServiceId, SetPrPlan,
+    SetupCommand, Sweep, SystemEvent, Trusted, Written,
 };
 use serde_json::json;
 
@@ -209,16 +209,12 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
     store
         .admit(
             who,
-            &Admit {
+            &Admit::Remove(Removal {
                 id: id.clone(),
                 environment: at(environment),
-                services: Vec::new(),
                 version: None,
-                upload: None,
-                retry: None,
-                remove: true,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &Trusted::default(),
         )
         .unwrap();
@@ -435,16 +431,14 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
     store
         .admit(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: redeploy.clone(),
                 environment: at("pr-5"),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &Trusted::default(),
         )
         .unwrap();
@@ -552,16 +546,14 @@ fn idle_branches_close_after_a_week_unless_kept() {
         store
             .admit(
                 &who,
-                &Admit {
+                &Admit::Deploy(Deploy {
                     id: id.clone(),
                     environment: at(name),
                     services: Vec::new(),
                     version: None,
                     upload: None,
-                    retry: None,
-                    remove: false,
                     accept_volume_loss: Vec::new(),
-                },
+                }),
                 &Trusted::default(),
             )
             .unwrap();

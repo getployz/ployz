@@ -342,9 +342,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     use ployz_core::config::ServiceGitAccess;
     use ployz_store::{
         Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildStatus, Change, ConfigStore,
-        CreateGitService, CreateProject, DeploymentId, DeploymentStatus, Edit, EnvironmentId,
-        EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId,
-        SettingPath, Trusted,
+        CreateGitService, CreateProject, Deploy, DeploymentId, DeploymentStatus, Edit,
+        EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId,
+        SealingKey, ServiceId, SettingPath, Trusted,
     };
 
     let plan = ClusterPlan::new(&format!("l3-store-git-{}", std::process::id()), 1).unwrap();
@@ -438,16 +438,14 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             store
                 .admit(
                     &who,
-                    &Admit {
+                    &Admit::Deploy(Deploy {
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
                         version: None,
                         upload: None,
-                        retry: None,
-                        remove: false,
                         accept_volume_loss: Vec::new(),
-                    },
+                    }),
                     &ployz_store::Trusted::default(),
                 )
                 .unwrap();
@@ -526,9 +524,10 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
 async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() {
     use ployz_core::ServiceName;
     use ployz_store::{
-        Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
-        DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
-        ProjectName, RunnerId, SealingKey, ServiceId, SettingPath, UploadedSource,
+        Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, Deploy,
+        DeploymentId, DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
+        Outcome, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId, SettingPath,
+        UploadedSource,
     };
 
     let plan =
@@ -598,7 +597,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             store
                 .admit(
                     &who,
-                    &Admit {
+                    &Admit::Deploy(Deploy {
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -608,10 +607,8 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                             base: None,
                             uploader: None,
                         }),
-                        retry: None,
-                        remove: false,
                         accept_volume_loss: Vec::new(),
-                    },
+                    }),
                     &ployz_store::Trusted::default(),
                 )
                 .unwrap();

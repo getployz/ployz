@@ -8,7 +8,7 @@
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
+    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DeploymentsQuery, DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef,
     OrganizationId, PlanQuery, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId,
     SettingPath,
@@ -108,16 +108,14 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store.admit(
         &who(),
-        &Admit {
+        &Admit::Deploy(Deploy {
             id: id.clone(),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
             upload: None,
-            retry: None,
-            remove: false,
             accept_volume_loss: Vec::new(),
-        },
+        }),
         &ployz_store::Trusted::default(),
     )?;
     Ok(id)

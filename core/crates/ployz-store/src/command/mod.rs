@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use admit::{Admit, Cancel, Start};
+pub use admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
 pub(crate) use admit::{admit, cancel, start};
 pub(crate) use edit::edit;
 pub use edit::{Change, Edit, Edited};
@@ -102,7 +102,7 @@ impl Command {
             }
             Self::CreateEnvironment(create) => vec![create.id.as_str()],
             Self::CreateService(create) => vec![create.id.as_str()],
-            Self::Admit(admit) => vec![admit.id.as_str()],
+            Self::Admit(admit) => vec![admit.id().as_str()],
             Self::CreateGitService(create) => vec![create.id.as_str()],
             Self::CreateVolume(create) => vec![create.id.as_str()],
             Self::CreateBranch(create) => vec![create.id.as_str()],
