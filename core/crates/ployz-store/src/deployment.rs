@@ -417,6 +417,7 @@ pub(crate) fn claim(
             )?;
             stored.summary.status = DeploymentStatus::Running;
             stored.run.runner = Some(runner.clone());
+            stored.summary.runner = Some(runner.clone());
             save(tx, &stored)?;
         }
     }

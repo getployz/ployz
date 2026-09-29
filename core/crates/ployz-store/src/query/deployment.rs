@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::Actor;
-use crate::deployment::{self, DeploymentSummary, DeploymentView};
+use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::review::{self, NodeChange};
@@ -65,7 +65,7 @@ pub struct DeploymentQuery {
     pub id: DeploymentId,
 }
 
-pub(super) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
+pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
@@ -91,7 +91,7 @@ pub(super) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
     })
 }
 
-pub(super) fn page(
+pub(crate) fn page(
     tx: &mut dyn Tx,
     who: &Actor,
     query: &DeploymentsQuery,
@@ -116,12 +116,4 @@ pub(super) fn page(
         deployments,
         next_cursor: next.map(|number| number.to_string()),
     })
-}
-
-pub(super) fn show(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    query: &DeploymentQuery,
-) -> Result<DeploymentView, RpcError> {
-    deployment::view(tx, who, &query.id)
 }

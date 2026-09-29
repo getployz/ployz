@@ -67,6 +67,37 @@ impl ConfigStore {
         self.storage.write(|tx| command::run(tx, who, command))
     }
 
+    /// What deploying would ship, from authored state alone.
+    ///
+    /// # Errors
+    /// As [`Self::read`], plus `invalid_argument` when the Environment can't deploy.
+    pub fn plan(&self, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
+        self.storage
+            .read(|tx| query::deployment::plan(tx, who, query))
+    }
+
+    /// One page of an Environment's Deployments, newest first.
+    ///
+    /// # Errors
+    /// As [`Self::read`], plus `invalid_argument` for a bad limit or cursor.
+    pub fn deployments(
+        &self,
+        who: &Actor,
+        query: &DeploymentsQuery,
+    ) -> Result<DeploymentsView, RpcError> {
+        self.storage
+            .read(|tx| query::deployment::page(tx, who, query))
+    }
+
+    /// One Deployment with its recorded Deploy Preview and Node Outcomes.
+    ///
+    /// # Errors
+    /// As [`Self::read`]; `not_found` for a Deployment of another Organization.
+    pub fn deployment(&self, who: &Actor, id: &DeploymentId) -> Result<DeploymentView, RpcError> {
+        self.storage
+            .read(|tx| deployment::view(tx, who, id))
+    }
+
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent.
     /// In-process only: never exposed over HTTPS.
     ///

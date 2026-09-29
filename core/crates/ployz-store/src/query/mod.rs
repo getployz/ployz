@@ -1,7 +1,7 @@
 //! `read`'s queries. Each family lives in its own module and adds one [`Query`]
 //! variant, one [`View`] variant, and one arm in [`run`].
 
-mod deployment;
+pub(crate) mod deployment;
 mod diff;
 mod environment;
 
@@ -42,6 +42,8 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         Query::Diff(query) => diff::run(tx, who, query).map(View::Diff),
         Query::Plan(query) => deployment::plan(tx, who, query).map(View::Plan),
         Query::Deployments(query) => deployment::page(tx, who, query).map(View::Deployments),
-        Query::Deployment(query) => deployment::show(tx, who, query).map(View::Deployment),
+        Query::Deployment(query) => {
+            crate::deployment::view(tx, who, &query.id).map(View::Deployment)
+        }
     }
 }
