@@ -1,6 +1,8 @@
 use std::collections::{BTreeSet, HashSet};
 
-use clap::ArgMatches;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+
+use crate::cli::{base, env, log_flags, positional, switch, trailing, value, volume_acceptance};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
@@ -735,3 +737,112 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn command() -> Command {
+    base("service", "Manage services")
+        .arg_required_else_help(true)
+        .subcommand(service_exec())
+        .subcommand(service_inspect())
+        .subcommand(service_ls())
+        .subcommand(service_logs())
+        .subcommand(service_proxy())
+        .subcommand(service_ps())
+        .subcommand(service_rm())
+        .subcommand(service_scale())
+        .subcommand(service_start())
+        .subcommand(service_stop())
+}
+
+fn service_exec() -> Command {
+    base("exec", "Execute a command in a service container")
+        .arg(value("container", None))
+        .arg(switch("detach", Some('d')))
+        .arg(switch("no-tty", Some('T')))
+        .arg(positional("service", true))
+        .arg(trailing("command"))
+}
+
+fn service_inspect() -> Command {
+    base("inspect", "Inspect a service").arg(positional("service", true))
+}
+
+fn service_logs() -> Command {
+    log_flags(base("logs", "Show logs")).arg(
+        Arg::new("service-or-container")
+            .required(true)
+            .num_args(1..)
+            .action(ArgAction::Append),
+    )
+}
+
+fn service_proxy() -> Command {
+    base("proxy", "Proxy a local port to a service")
+        .arg(positional("service", true))
+        .arg(positional("port", true))
+}
+
+fn service_ps() -> Command {
+    base("ps", "List service containers").arg(
+        value("sort", None)
+            .default_value("service")
+            .value_parser(["service", "machine", "health"]),
+    )
+}
+
+fn service_ls() -> Command {
+    base("ls", "List services")
+}
+
+fn service_rm() -> Command {
+    base("rm", "Remove services")
+        .arg(value("project-name", Some('p')))
+        .arg(switch("volumes", None).help(
+            "Also remove this Service's named Docker Volumes after the containers are removed",
+        ))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(volume_acceptance().requires("volumes"))
+        .arg(services())
+}
+
+fn services() -> Arg {
+    Arg::new("service")
+        .required(true)
+        .num_args(1..)
+        .action(ArgAction::Append)
+}
+
+fn service_scale() -> Command {
+    base("scale", "Scale a service")
+        .arg(switch("skip-health", None))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+        .arg(positional("service", true))
+        .arg(positional("replicas", true))
+}
+
+fn service_start() -> Command {
+    base("start", "Start services").arg(services())
+}
+
+fn service_stop() -> Command {
+    base("stop", "Stop services")
+        .arg(services())
+        .arg(value("signal", None).default_value("SIGTERM"))
+        .arg(value("timeout", Some('t')).default_value("10"))
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::{Refused, Supported};
+    Some(match path {
+        "exec" => (super::operator::exec, Refused),
+        "inspect" => (inspect, Supported),
+        "logs" => (super::operator::service_logs, Supported),
+        "ls" => (list, Supported),
+        "proxy" => (super::operator::proxy, Refused),
+        "ps" => (processes, Supported),
+        "rm" => (remove, Supported),
+        "scale" => (scale, Supported),
+        "start" => (|root| change(root, ContainerAction::Start), Supported),
+        "stop" => (|root| change(root, ContainerAction::Stop), Supported),
+        _ => return None,
+    })
+}

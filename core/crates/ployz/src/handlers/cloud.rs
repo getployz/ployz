@@ -2,7 +2,9 @@
 
 use std::{future::Future, time::Duration};
 
-use clap::ArgMatches;
+use clap::{ArgMatches, Command};
+
+use crate::cli::{base, env, machine_policy_flags, positional, switch, value};
 use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
@@ -615,4 +617,45 @@ mod tests {
         assert!(message.contains("Machine joined"));
         assert!(message.contains("listing failed"));
     }
+}
+
+pub(crate) fn command() -> Command {
+    Command::new("cloud")
+        .about("Manage Cloud")
+        .subcommand_required(true)
+        .arg_required_else_help(true)
+        .arg(
+            value("cloud-url", None)
+                .default_value("ployz.dev")
+                .global(true),
+        )
+        .subcommand(cloud_enroll())
+}
+
+fn cloud_enroll() -> Command {
+    machine_policy_flags(base("enroll", "Found or join a Cluster through Cloud"))
+        .arg(positional("token", true))
+        .arg(value("name", None))
+        .arg(
+            value("network", None)
+                .default_value("10.210.0.0/16")
+                .value_parser(clap::value_parser!(ipnet::Ipv4Net)),
+        )
+        .arg(
+            value("storage", None)
+                .default_value("none")
+                .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
+        )
+        .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
+        .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
+        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::Supported;
+    Some(match path {
+        "enroll" => (enroll, Supported),
+        _ => return None,
+    })
 }
