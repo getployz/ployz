@@ -501,7 +501,11 @@ mod tests {
         assert!(ployz_core::is_lower_hex(&digest, 64), "{digest}");
         fs::create_dir(root.join(".git")).unwrap();
         fs::write(root.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
-        assert_eq!(content_digest(root).unwrap(), digest, ".git is never uploaded");
+        assert_eq!(
+            content_digest(root).unwrap(),
+            digest,
+            ".git is never uploaded"
+        );
         let changed = |edit: &dyn Fn()| {
             edit();
             content_digest(root).unwrap()
@@ -509,7 +513,10 @@ mod tests {
         let mut seen = BTreeSet::from([digest]);
         let edits: [&dyn Fn(); 5] = [
             &|| fs::write(root.join("src/app"), "two").unwrap(),
-            &|| fs::set_permissions(root.join("src/app"), fs::Permissions::from_mode(0o755)).unwrap(),
+            &|| {
+                fs::set_permissions(root.join("src/app"), fs::Permissions::from_mode(0o755))
+                    .unwrap()
+            },
             &|| {
                 fs::remove_file(root.join("link")).unwrap();
                 symlink("src", root.join("link")).unwrap();

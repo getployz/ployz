@@ -1220,6 +1220,7 @@ async fn one_image_build_returns_the_receipt_prepare_reuses() {
 }
 
 /// An uploaded Service with no source of its own: `source` is Empty.
+#[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
 fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
     let mut snapshot = git("one", "dockerfile");
     snapshot["config"]["source"] = json!({"type": "empty", "version": 1, "rootDir": "/"});
@@ -1240,6 +1241,10 @@ fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Fixed fixtures; a missing entry must fail the test."
+)]
 async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
     let (root, service, builds) = fixture();
     let (session, server) = session(service).await;
@@ -1269,15 +1274,27 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
     assert_eq!(receipt.fingerprint, receipts[&name].fingerprint);
     let mut sourceless = uploaded(&root, false);
     sourceless.build_receipts = receipts.clone();
-    let reused = session.prepare(sourceless).unwrap().finished().await.unwrap();
-    assert_eq!(reused.build_receipts()[&name].fingerprint, receipt.fingerprint);
+    let reused = session
+        .prepare(sourceless)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    assert_eq!(
+        reused.build_receipts()[&name].fingerprint,
+        receipt.fingerprint
+    );
     assert!(reused.preview().operations.iter().any(|row| {
         row.operation
             .spec()
             .is_some_and(|spec| spec.container.image.contains(&receipt.image.reference))
     }));
     reused.close();
-    assert_eq!(builds.definitions.lock().unwrap().len(), 1, "nothing rebuilt");
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "nothing rebuilt"
+    );
 
     // An image that no longer runs on every placement, or is gone, needs a new upload.
     let mut incompatible = receipts.clone();

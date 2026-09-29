@@ -578,16 +578,21 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let a = runner("cli-a");
     let claimed = store.claim(&id(1), &a).unwrap();
     // The runner prepares the Service without a source from the lowering input.
-    assert!(claimed.intent.target.iter().all(|spec| spec.name.as_str() != "app"));
+    assert!(
+        claimed
+            .intent
+            .target
+            .iter()
+            .all(|spec| spec.name.as_str() != "app")
+    );
     assert_eq!(
         claimed.input["snapshots"][2]["config"]["source"]["type"],
         json!("empty")
     );
     assert!(claimed.receipts.is_empty());
     let receipt = json!({"fingerprint": "f".repeat(64)});
-    let built = |receipt: Value| {
-        RunEvidence::Built([(ServiceName::parse("app").unwrap(), receipt)].into())
-    };
+    let built =
+        |receipt: Value| RunEvidence::Built([(ServiceName::parse("app").unwrap(), receipt)].into());
     assert_eq!(
         code(store.record(&id(1), &runner("cli-b"), built(receipt.clone()))),
         RpcErrorCode::Conflict

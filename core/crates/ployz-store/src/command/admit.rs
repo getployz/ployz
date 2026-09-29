@@ -62,14 +62,5 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         &admit.services,
         namespace,
     )?;
-    deployment::admit(
-        tx,
-        who,
-        &admit.id,
-        id,
-        saved,
-        &admit.services,
-        admit.upload.as_ref(),
-        &frozen,
-    )
+    deployment::admit(tx, who, admit, id, saved, &frozen)
 }

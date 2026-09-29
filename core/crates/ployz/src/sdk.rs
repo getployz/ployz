@@ -840,7 +840,7 @@ async fn capture(input: PreparationInput) -> Result<preparation::CapturedPrepara
         .map_err(|_| invalid_argument("source capture task failed".into()))?
 }
 
-fn preparation_error(
+pub(crate) fn preparation_error(
     error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,
 ) -> RpcError {

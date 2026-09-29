@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::command::Admit;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
 use crate::review::{self, Head};
@@ -337,11 +338,11 @@ fn lower(
     let intent =
         lower_deployment(serde_json::from_value(input.clone()).expect("lowering input is valid"))
             .map_err(|error| {
-                error::invalid(
-                    format!("This Environment can't deploy: {}", error.message),
-                    json!({ "path": error.path }),
-                )
-            })?;
+            error::invalid(
+                format!("This Environment can't deploy: {}", error.message),
+                json!({ "path": error.path }),
+            )
+        })?;
     Ok((input, intent))
 }
 
@@ -350,16 +351,15 @@ fn lower(
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &DeploymentId,
+    admit: &Admit,
     environment: &EnvironmentId,
     saved: Revision,
-    services: &[ServiceName],
-    upload: Option<&UploadedSource>,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let (id, services) = (&admit.id, &admit.services);
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
-    let upload = match upload {
+    let upload = match &admit.upload {
         Some(upload) => {
             upload.check()?;
             Some(upload.clone())

@@ -68,7 +68,7 @@ pub(crate) struct CapturedPreparation {
     pub preference: BuildPreference,
 }
 
-pub(super) fn receipts(
+pub(crate) fn receipts(
     fingerprints: &BTreeMap<ServiceName, String>,
     builds: &[BuiltService],
 ) -> BTreeMap<ServiceName, BuildReceipt> {
@@ -294,10 +294,13 @@ fn freeze(
             (None, None) => continue,
         };
         if let Some(source) = source {
-            identities.insert(name.clone(), json!({
-                "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
-                "source": source, "root": root_dir, "build": config.settings.build,
-            }));
+            identities.insert(
+                name.clone(),
+                json!({
+                    "version": 1, "sdk": VERSION, "buildkit": ployz_build::BUILDKIT_IMAGE,
+                    "source": source, "root": root_dir, "build": config.settings.build,
+                }),
+            );
         }
         checkouts.insert(
             name.clone(),
@@ -446,7 +449,8 @@ mod tests {
             "build":{"buildMethod":"dockerfile", "dockerfilePath":"Dockerfile", "command":null}
         }}]});
         for refused in ["A".repeat(40), "abc".into()] {
-            let error = expected_fingerprints(deployment.clone(), commit(&refused), BTreeMap::new())
+            let error =
+                expected_fingerprints(deployment.clone(), commit(&refused), BTreeMap::new())
                     .unwrap_err();
             assert_eq!(
                 error.code,
@@ -565,6 +569,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Fixed fixtures; a missing entry must fail the test."
+    )]
     fn an_uploaded_source_has_its_own_identity_and_needs_its_content_or_a_receipt() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("Dockerfile"), "FROM scratch\n").unwrap();
@@ -582,15 +590,16 @@ mod tests {
         let git = service(json!({"version":2, "type":"git", "repository":"acme/web",
             "repositoryId":42, "access":{"type":"public"}, "rootDir":"/",
             "branch":{"type":"connected", "name":"main"}}));
-        let input = |deployment: &Value, sources: bool, commit: Option<&str>, upload: Option<&str>| {
-            serde_json::from_value::<PreparationInput>(json!({
-                "deployment": deployment,
-                "sources": if sources { json!({"web": root.path()}) } else { json!({}) },
-                "source_commits": commit.map_or(json!({}), |commit| json!({"web": commit})),
-                "uploads": upload.map_or(json!({}), |digest| json!({"web": digest})),
-            }))
-            .unwrap()
-        };
+        let input =
+            |deployment: &Value, sources: bool, commit: Option<&str>, upload: Option<&str>| {
+                serde_json::from_value::<PreparationInput>(json!({
+                    "deployment": deployment,
+                    "sources": if sources { json!({"web": root.path()}) } else { json!({}) },
+                    "source_commits": commit.map_or(json!({}), |commit| json!({"web": commit})),
+                    "uploads": upload.map_or(json!({}), |digest| json!({"web": digest})),
+                }))
+                .unwrap()
+            };
         let uploads = || BTreeMap::from([(web.clone(), digest.clone())]);
         let uploaded = capture(input(&empty, true, None, Some(&digest))).unwrap();
         assert_eq!(uploaded.build.targets().count(), 1);
@@ -605,10 +614,15 @@ mod tests {
         let clean = capture(input(&git, true, Some(&commit), None)).unwrap();
         assert_ne!(clean.fingerprints[&web], fingerprint);
         let dirty = capture(input(&git, true, None, Some(&digest))).unwrap();
-        assert_eq!(dirty.fingerprints[&web], fingerprint, "the base commit is provenance only");
+        assert_eq!(
+            dirty.fingerprints[&web], fingerprint,
+            "the base commit is provenance only"
+        );
         // Changed build inputs change the fingerprint.
         let mut railpack = empty.clone();
-        *railpack.pointer_mut("/snapshots/0/config/build/buildMethod").unwrap() = json!("railpack");
+        *railpack
+            .pointer_mut("/snapshots/0/config/build/buildMethod")
+            .unwrap() = json!("railpack");
         let mut variable = empty.clone();
         variable["snapshots"][0]["resolvedEnv"] = json!({"TOKEN": "changed"});
         for changed in [railpack, variable] {
@@ -619,10 +633,14 @@ mod tests {
         }
         // The source must hold exactly the uploaded content.
         std::fs::write(root.path().join("extra"), "edit").unwrap();
-        let error = capture(input(&empty, true, None, Some(&digest))).err().unwrap();
+        let error = capture(input(&empty, true, None, Some(&digest)))
+            .err()
+            .unwrap();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{error:?}");
         // Without its content, only a matching receipt serves it.
-        let error = capture(input(&empty, false, None, Some(&digest))).err().unwrap();
+        let error = capture(input(&empty, false, None, Some(&digest)))
+            .err()
+            .unwrap();
         assert_eq!(error.code, RpcErrorCode::NotFound, "{error:?}");
         assert_eq!(error.details["preparation"]["kind"], "upload_needed");
         let receipt = |fingerprint: &str| {
@@ -632,7 +650,10 @@ mod tests {
         };
         let mut sourceless = input(&empty, false, None, Some(&digest));
         sourceless.build_receipts = serde_json::from_value(receipt(&"f".repeat(64))).unwrap();
-        assert_eq!(capture(sourceless).err().unwrap().code, RpcErrorCode::NotFound);
+        assert_eq!(
+            capture(sourceless).err().unwrap().code,
+            RpcErrorCode::NotFound
+        );
         let mut sourceless = input(&empty, false, None, Some(&digest));
         sourceless.build_receipts = serde_json::from_value(receipt(&fingerprint)).unwrap();
         let reused = capture(sourceless).unwrap();
@@ -646,7 +667,10 @@ mod tests {
             input(&git, true, Some(&commit), Some(&digest)),
             input(&image, false, None, Some(&digest)),
         ] {
-            assert_eq!(capture(refused).err().unwrap().code, RpcErrorCode::InvalidArgument);
+            assert_eq!(
+                capture(refused).err().unwrap().code,
+                RpcErrorCode::InvalidArgument
+            );
         }
     }
 
