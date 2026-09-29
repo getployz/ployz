@@ -18,7 +18,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let policy = super::enrollment_policy(matches)?;
     if matches.get_one::<String>("connect").is_some() {
         return Err(Error::usage(
-            "machine init creates a new context; do not use --connect",
+            "server add --standalone founds a new context; do not use --connect",
         ));
     }
     let options = ConnectionOptions::from_matches(root)?;
@@ -46,11 +46,9 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         .map(MachineName::parse)
         .transpose()?;
     let token_request = helpers::token_request(matches)?;
-    let cluster_network = matches
-        .get_one::<String>("network")
-        .expect("Cluster network has a default")
-        .parse()
-        .map_err(|error| Error::usage(format!("invalid Cluster network: {error}")))?;
+    let cluster_network = *matches
+        .get_one::<ipnet::Ipv4Net>("network")
+        .expect("Cluster network has a default");
     let wireguard_mtu = matches.get_one::<u32>("wg-mtu").copied();
     let yes = matches.get_flag("yes");
     let no_install = matches.get_flag("no-install");

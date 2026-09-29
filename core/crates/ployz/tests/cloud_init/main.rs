@@ -1,10 +1,11 @@
-//! `ployz cloud enroll` join and initialize paths against fake enroll HTTP.
+//! `ployz server add` join and initialize paths against fake enroll HTTP.
 
 mod catch_up;
 mod daemon_sync;
 mod founder_resumption;
 mod harness;
 mod policy;
+mod signed_in;
 
 use harness::{
     EnrollListen, EventLog, JoinDaemon, PAIRING, RESET_PUBLIC_KEY, TOKEN, founder_machine,
@@ -32,8 +33,9 @@ async fn cloud_init_join_participates() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -120,7 +122,7 @@ async fn cloud_zfs_rejects_a_remote_machine_before_join() {
     assert!(!output.status.success());
     assert!(
         String::from_utf8_lossy(&output.stderr).contains(
-            "zfs storage preparation requires running ployz cloud enroll on the Machine itself"
+            "zfs storage preparation requires running ployz server add on the Machine itself"
         ),
         "{}",
         String::from_utf8_lossy(&output.stderr)
@@ -162,8 +164,9 @@ async fn cloud_init_initialize_participates() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -301,8 +304,9 @@ async fn caddy_lookup_failure_happens_before_initialize() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -352,8 +356,9 @@ async fn cloud_init_retries_not_yet_then_joins() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -434,8 +439,9 @@ async fn cloud_init_retries_not_yet_then_initializes() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -483,8 +489,9 @@ async fn init_cloud(
     command.args([
         "--connect",
         connect,
-        "cloud",
-        "enroll",
+        "server",
+        "add",
+        "--token",
         TOKEN,
         "--cloud-url",
         enroll_url,
@@ -586,8 +593,9 @@ async fn invalid_cluster_network_does_not_reset_an_initialized_machine() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -771,8 +779,9 @@ async fn join_places_observed_ingress_on_this_machine() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -820,8 +829,9 @@ async fn partial_peer_observation_reports_incomplete_catch_up_before_placement()
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -865,8 +875,9 @@ async fn join_ingress_rejection_is_durable_and_still_places_other_globals() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -919,8 +930,9 @@ async fn join_fails_visibly_when_expected_ingress_cannot_be_placed() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -978,8 +990,9 @@ async fn join_starts_created_ingress_before_success() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -1048,8 +1061,9 @@ async fn join_against_founder(
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,

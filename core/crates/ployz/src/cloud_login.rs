@@ -251,6 +251,31 @@ pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, Login
     }
 }
 
+impl SignedIn {
+    /// POST `body` to one of Cloud's signed-in CLI endpoints as this device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoginError::Ended`] when Cloud no longer honours the sign-in, or a Cloud failure.
+    pub(crate) async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, LoginError> {
+        let response = http()?
+            .post(format!("{}{path}", self.cloud))
+            .bearer_auth(&self.token.0)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| unreachable(&self.cloud, error))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(LoginError::Ended);
+        }
+        decode(ensure_success(response).await?)
+    }
+}
+
 /// Where `ployz login` starts from.
 pub(crate) enum Start {
     /// Already signed in to this Cloud, and Cloud still honours the session.

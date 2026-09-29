@@ -151,6 +151,8 @@ export const machineEnrollmentToken = pgTable(
       mode: "date",
       withTimezone: true,
     }).notNull(),
+    /** The first Server that completed enrollment with this token. */
+    joinedMachineId: text("joined_machine_id").$type<MachineId>(),
     createdAt,
     updatedAt,
   },

@@ -31,6 +31,7 @@ pub fn command() -> Command {
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::machine::command())
         .subcommand(handlers::account::org_command())
+        .subcommand(handlers::server::command())
         .subcommand(handlers::service::command())
         .subcommand(handlers::account::token_command())
         .subcommand(handlers::volume::command())
@@ -155,15 +156,15 @@ mod tests {
 
     #[test]
     fn machine_provisioning_defaults_to_cli_version_and_accepts_overrides() {
-        for command in ["add", "init"] {
+        for command in ["add"] {
             for version in [None, Some("stable"), Some("beta"), Some("1.2.3")] {
-                let mut args = vec!["ployz", "machine", command, "root@example.com"];
+                let mut args = vec!["ployz", "server", command, "root@example.com"];
                 if let Some(version) = version {
                     args.extend(["--version", version]);
                 }
                 let matches = super::command().try_get_matches_from(args).unwrap();
                 let matches = matches
-                    .subcommand_matches("machine")
+                    .subcommand_matches("server")
                     .unwrap()
                     .subcommand_matches(command)
                     .unwrap();

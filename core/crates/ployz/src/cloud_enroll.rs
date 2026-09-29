@@ -28,7 +28,7 @@ pub(crate) enum Error {
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
     #[error(
-        "Cloud {operation} failed: {detail}; rerun the same ployz cloud enroll command without --reset (keep all other options)"
+        "Cloud {operation} failed: {detail}; rerun the same ployz server add command without --reset (keep all other options)"
     )]
     RetrySameCommand {
         operation: &'static str,
