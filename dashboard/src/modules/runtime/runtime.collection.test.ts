@@ -42,7 +42,7 @@ function observedSnapshot(): RuntimeSnapshot {
             id: "ctr-1",
             displayName: "api-1",
             machineId: "m1",
-            projectName: "production",
+            namespace: "production",
             kind: "service_container",
           },
         ],

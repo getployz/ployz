@@ -9,7 +9,7 @@ import {
 
 export const runtimeDeployPreviewSchema = Schema.Struct({
   storage: Schema.optional(Schema.mutable(Schema.Array(Schema.Json))),
-  project_name: Schema.String.check(Schema.isNonEmpty()),
+  namespace: Schema.String.check(Schema.isNonEmpty()),
   prune_refusal: Schema.optionalKey(Schema.NullOr(Schema.Literals([
     "incomplete_snapshot", "selected_services",
   ]))),
@@ -25,7 +25,7 @@ export const runtimeDeployPreviewSchema = Schema.Struct({
 export type SdkDeployPreview = EnvironmentDeploymentPreview;
 
 export function compileSdkPreparationInput(input: {
-  projectName: string;
+  namespace: string;
   snapshots: readonly EnvironmentDeploySnapshot[];
   volumes?: readonly EnvironmentDeployVolume[];
   variableProducers?: readonly EnvironmentSnapshotVariableProducer[];

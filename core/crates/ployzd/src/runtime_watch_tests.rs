@@ -12,7 +12,7 @@ use ployz_core::{
     CertificateFailureKind, CertificateHost, CertificateObservation, ClusterRoute, ContainerId,
     ContainerKind, ContainerObservation, ContainerRuntimeObservation, DockerVolume, DockerVolumeId,
     DockerVolumeName, HealthObservation, IssuanceClock, IssuanceFailure, Machine, MachineId,
-    MachineName, MachineObservation, MachineRuntime, MembershipObservation, ProjectName,
+    MachineName, MachineObservation, MachineRuntime, MembershipObservation, Namespace,
     RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, ResolvedServiceSpec, RttObservation, RttStatistics,
     SelectedEndpoint, ServiceId, ServiceName, WireGuardPublicKey, decode_runtime_watch_frame,
     derive_services, encode_runtime_watch_frame,
@@ -382,7 +382,7 @@ fn container(id: &str, service_name: &str, kind: ContainerKind) -> ContainerObse
         display_name: "api-1".into(),
         created_at_unix_nanos: 1_700_000_000_000_000_000,
         machine_id: MachineId::parse(ENTRY_ID).unwrap(),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

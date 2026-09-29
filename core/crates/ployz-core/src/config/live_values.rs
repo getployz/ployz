@@ -9,14 +9,14 @@ use super::{
     ConfigError, SavedVariableProducer, SavedVariableValue, ValuePart, ValuePartOwner,
     check_branch_name,
 };
-use crate::ProjectName;
+use crate::Namespace;
 
-/// The Project that runs a Live Node, with its frozen variable producers.
+/// The Namespace that runs a Live Node, with its frozen variable producers.
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LiveValuesOwner {
     #[ts(type = "string")]
-    pub namespace: ProjectName,
+    pub namespace: Namespace,
     pub producers: Vec<SavedVariableProducer>,
 }
 
@@ -54,10 +54,10 @@ pub struct LiveValues {
 
 const PRIVATE_DOMAIN_KEY: &str = "PLOYZ_PRIVATE_DOMAIN";
 
-/// Decode a live-values request, admitting the owner namespace under the Project name rule.
+/// Decode a live-values request, admitting the owner namespace under the Namespace rule.
 ///
 /// # Errors
-/// Returns ConfigError at `owner.namespace` for an unusable Project name, else for a bad shape.
+/// Returns ConfigError at `owner.namespace` for an unusable Namespace, else for a bad shape.
 pub fn parse_live_values_input(value: Value) -> Result<LiveValuesInput, ConfigError> {
     let namespace = value
         .pointer("/owner/namespace")
@@ -71,7 +71,7 @@ pub fn parse_live_values_input(value: Value) -> Result<LiveValuesInput, ConfigEr
 
 /// Rescope the owner's producers: used lineages keep their id so the Branch finds them; every
 /// other owner lineage moves under the owner's namespace so the Branch's Own Copies of the
-/// same lineage neither capture nor shadow them. Private addresses gain the owner's Project,
+/// same lineage neither capture nor shadow them. Private addresses gain the owner's Namespace,
 /// unless they already name one (the owner uses that node live itself). Secrets pass through
 /// untouched.
 #[must_use]
@@ -82,7 +82,7 @@ pub fn live_values(input: LiveValuesInput) -> LiveValues {
         .iter()
         .map(|lineage| lineage.lineage_id.as_str())
         .collect();
-    // ponytail: "::" cannot appear in a Project name, so scoped ids never meet authored ones.
+    // ponytail: "::" cannot appear in a Namespace, so scoped ids never meet authored ones.
     let scope = |lineage: String| {
         if used.contains(lineage.as_str()) {
             lineage
@@ -111,7 +111,7 @@ pub fn live_values(input: LiveValuesInput) -> LiveValues {
             let value = match producer.value {
                 SavedVariableValue::Literal { value } if producer.key == PRIVATE_DOMAIN_KEY => {
                     SavedVariableValue::Literal {
-                        // An address the owner itself uses live already names its Project.
+                        // An address the owner itself uses live already names its Namespace.
                         value: match value.strip_suffix(".internal") {
                             Some(host) if !host.contains('.') => {
                                 format!("{host}.{namespace}.internal")

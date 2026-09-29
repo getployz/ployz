@@ -5,8 +5,8 @@ use std::time::Duration;
 use ployz::deploy::{DeployIntent, PlanOptions};
 use ployz_core::{
     CapabilityName, ContractDescription, DESCRIBE_CONTRACT_CAPABILITY, DeployOperation,
-    DeployOutcome, ExecutionError, FailedOperation, MachineAction, MachineId, PROTOCOL_MAJOR,
-    ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode,
+    DeployOutcome, ExecutionError, FailedOperation, MachineAction, MachineId, Namespace,
+    PROTOCOL_MAJOR, RequestedServiceSpec, RpcError, RpcErrorCode,
 };
 use tokio::time::timeout;
 
@@ -90,11 +90,7 @@ async fn deploy_returns_success_for_a_completed_run() {
 
     let outcome = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             None,
         )
         .await
@@ -135,7 +131,7 @@ async fn deploy_reports_volume_ensure_as_the_container_operation_failure() {
     let outcome = client
         .run(
             DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 spec_with_volume("web", "scratch"),
                 skip_health(),
             ),
@@ -190,11 +186,7 @@ async fn deploy_planning_error_is_a_typed_rpc_error() {
 
     let error = client
         .run(
-            DeployIntent::apply_one(
-                ProjectName::parse("app").unwrap(),
-                spec("web"),
-                skip_health(),
-            ),
+            DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health()),
             None,
         )
         .await
@@ -227,7 +219,7 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
 
     let error = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -245,7 +237,7 @@ async fn preview_planning_error_is_a_typed_rpc_error() {
 }
 
 #[tokio::test]
-async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
+async fn preview_namespace_removal_reserved_is_a_typed_rpc_error() {
     let description = advertised_description();
     let session = UnixSession::start().await;
     let _machine = session
@@ -259,14 +251,14 @@ async fn preview_project_removal_reserved_is_a_typed_rpc_error() {
         .unwrap();
 
     let error = client
-        .preview_project_removal(ProjectName::system(), ployz::deploy::VolumeFate::Preserve)
+        .preview_namespace_removal(Namespace::system(), ployz::deploy::VolumeFate::Preserve)
         .await
         .unwrap_err();
 
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(
         error.message,
-        "Project 'ployz-system' is reserved for Ployz infrastructure"
+        "Namespace 'ployz-system' is reserved for Ployz infrastructure"
     );
 }
 
@@ -283,11 +275,8 @@ async fn preview_then_confirm_executes_the_shown_plan() {
     let client = unix_session::connect(&session.directory, description.machine_id.as_str())
         .await
         .unwrap();
-    let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
-        spec("web"),
-        skip_health(),
-    );
+    let intent =
+        DeployIntent::apply_one(Namespace::parse("app").unwrap(), spec("web"), skip_health());
 
     let preview = client.preview(intent).await.unwrap();
     assert_eq!(preview.operations.len(), 1);
@@ -328,7 +317,7 @@ async fn confirm_after_close_fails_closed() {
         .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))
@@ -433,7 +422,7 @@ async fn sdk_storage_shortage_preserves_numbers_and_actions_without_mutating() {
     });
     let error = client
         .preview(DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             services.iter(),
             skip_health(),
         ))
@@ -468,7 +457,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
     let session = UnixSession::start().await;
     let mut service = DiscoveryService::new(description.clone());
     let target = service.machines.first().unwrap().machine.id;
-    let project = ProjectName::parse("app").unwrap();
+    let namespace = Namespace::parse("app").unwrap();
     let mut value = serde_json::to_value(spec_with_volume("api", "data")).unwrap();
     *value.pointer_mut("/volumes/0/source").unwrap() = serde_json::json!({
         "kind":"provisioned", "name":"data", "maximum_bytes":ployz_core::STORAGE_GIB
@@ -481,7 +470,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
         .unwrap()
         .source
         .clone();
-    source.scope_to_project(&project);
+    source.scope_to_namespace(&namespace);
     let volume = super::support::created_volume(target, source.to_create_volume_request().unwrap());
     service.storage_capacity = Some(ployz_core::StorageCapacity {
         backing: ployz_core::StorageBacking::Fixed {
@@ -519,7 +508,7 @@ async fn sdk_preview_recovers_pool_before_observing_existing_docker_volume() {
         .await
         .unwrap();
     let preview = client
-        .preview(DeployIntent::apply_one(project, requested, skip_health()))
+        .preview(DeployIntent::apply_one(namespace, requested, skip_health()))
         .await
         .unwrap();
     assert_eq!(
@@ -575,7 +564,7 @@ async fn sdk_close_interrupts_running_deploy_with_uncertain_error() {
         .unwrap();
     let preview = client
         .preview(DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             spec("web"),
             skip_health(),
         ))

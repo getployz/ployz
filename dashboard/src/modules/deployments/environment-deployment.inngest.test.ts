@@ -33,7 +33,7 @@ import {
 import { DeploymentRuntimeInvalid } from "#/modules/deployments/runtime-session.server";
 
 const sdkPreview = {
-  project_name: "production",
+  namespace: "production",
   operations: [
     {
       index: 0,

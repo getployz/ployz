@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{ConfigError, EnvironmentNodeType, SavedEnvironmentIntent};
-use crate::ProjectName;
+use crate::Namespace;
 
 /// A starting selection: every preset derives its picks from the focus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -226,21 +226,21 @@ fn close_over<'a>(links: &[(&'a str, &'a str)], mut step: impl FnMut(&'a str, &'
     {}
 }
 
-/// Admit a Branch's Project namespace under the runtime's Project name rule.
+/// Admit a Branch's Namespace namespace under the runtime's Namespace rule.
 ///
 /// # Errors
 /// Returns ConfigError saying why the name would fail at deploy.
-pub fn check_branch_name(name: &str) -> Result<ProjectName, ConfigError> {
+pub fn check_branch_name(name: &str) -> Result<Namespace, ConfigError> {
     let why = if name.is_empty() {
-        "Project name is empty"
+        "Namespace is empty"
     } else if name.len() > 63 {
-        "Project name is longer than 63 characters"
+        "Namespace is longer than 63 characters"
     } else {
-        match ProjectName::parse(name) {
-            Ok(name) if name.is_reserved() => "Project name is reserved for the system Project",
+        match Namespace::parse(name) {
+            Ok(name) if name.is_reserved() => "Namespace is reserved for the system Namespace",
             Ok(name) => return Ok(name),
-            Err(_) => "Project name must be a lowercase DNS label",
+            Err(_) => "Namespace must be a lowercase DNS label",
         }
     };
-    Err(ConfigError::at("projectName", why))
+    Err(ConfigError::at("namespace", why))
 }

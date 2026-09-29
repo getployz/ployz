@@ -13,7 +13,7 @@ use ployz_core::{
     ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
     MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
@@ -756,7 +756,7 @@ impl Client {
         &self,
         machine_id: MachineId,
         kind: ContainerKind,
-        project_name: ProjectName,
+        namespace: Namespace,
         resolved_spec: ResolvedServiceSpec,
         creation_key: Option<String>,
     ) -> Result<ContainerCreated, RpcError> {
@@ -765,7 +765,7 @@ impl Client {
                 deployment_id: None,
                 creation_key,
                 kind,
-                project_name,
+                namespace,
                 resolved_spec,
             },
             &MachineTarget::from(&machine_id),
@@ -1300,7 +1300,7 @@ fn accept_stop_result(
 #[path = "cluster_tests.rs"]
 mod tests;
 
-/// One Global revision per target; Project and kind are scoped by CreateContainer.
+/// One Global revision per target; Namespace and kind are scoped by CreateContainer.
 pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
     format!(
         "global:{}:{}",

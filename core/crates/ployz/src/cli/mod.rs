@@ -28,7 +28,6 @@ pub fn command() -> Command {
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::machine::command())
-        .subcommand(handlers::project::command())
         .subcommand(handlers::service::command())
         .subcommand(handlers::volume::command())
         .subcommand(completion())
@@ -199,17 +198,6 @@ mod tests {
         for args in [
             vec![
                 "ployz",
-                "project",
-                "rm",
-                "app",
-                "--volumes",
-                "--accept-volume-loss",
-                "data",
-                "--accept-volume-loss",
-                "logs",
-            ],
-            vec![
-                "ployz",
                 "machine",
                 "rm",
                 "worker",
@@ -231,14 +219,6 @@ mod tests {
         for args in [
             vec![
                 "ployz",
-                "project",
-                "rm",
-                "app",
-                "--accept-volume-loss",
-                "data",
-            ],
-            vec![
-                "ployz",
                 "machine",
                 "rm",
                 "worker",
@@ -246,7 +226,6 @@ mod tests {
                 "--accept-volume-loss",
                 "data",
             ],
-            vec!["ployz", "project", "rm", "app", "--volumes", "data"],
             vec!["ployz", "volume", "rm", "--force", "--yes"],
         ] {
             assert!(super::command().try_get_matches_from(args).is_err());
@@ -291,55 +270,6 @@ mod tests {
             .unwrap();
         assert!(rm.get_flag("yes"));
         assert!(rm.get_many::<String>("accept-volume-loss").is_none());
-    }
-
-    #[test]
-    fn project_rm_takes_long_only_volumes() {
-        let removed = super::command()
-            .try_get_matches_from(["ployz", "project", "rm", "shop", "--volumes", "--yes"])
-            .unwrap();
-        let rm = removed
-            .subcommand_matches("project")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert_eq!(
-            rm.get_one::<String>("project").map(String::as_str),
-            Some("shop")
-        );
-        assert!(rm.get_flag("volumes"));
-        assert!(rm.get_flag("yes"));
-        let named = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "project",
-                "rm",
-                "shop",
-                "--volumes",
-                "--accept-volume-loss",
-                "shop_data",
-                "--accept-volume-loss",
-                "shop_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = named
-            .subcommand_matches("project")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap();
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["shop_data", "shop_logs"]
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "project", "rm", "shop", "-v"])
-                .is_err()
-        );
     }
 
     #[test]

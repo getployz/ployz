@@ -36,7 +36,7 @@ impl ClusterLoss {
 }
 
 #[tokio::test]
-async fn data_loss_if_cluster_destroyed_unions_project_and_machine_volumes() {
+async fn data_loss_if_cluster_destroyed_unions_namespace_and_machine_volumes() {
     let (client, loss, _worker, _down, _service, _session, _machine) = cluster_session().await;
     let observed = client.data_loss_if_cluster_destroyed().await.unwrap();
     assert_eq!(observed.data_loss, loss.all());
@@ -56,14 +56,14 @@ async fn destroy_cluster_refuses_unconfirmed_data_loss_and_names_what_was_missin
 }
 
 #[tokio::test]
-async fn destroy_cluster_resets_machines_destroys_projects() {
+async fn destroy_cluster_resets_machines_destroys_namespaces() {
     let (client, loss, worker, down, service, _session, _machine) = cluster_session().await;
     let confirmation = confirmation(loss.all());
 
     let teardown = client.destroy_cluster(&confirmation).await.unwrap();
     assert_eq!(
-        teardown.destroyed_projects,
-        [ployz_core::ProjectName::parse("shop").unwrap()]
+        teardown.destroyed_namespaces,
+        [ployz_core::Namespace::parse("shop").unwrap()]
     );
 
     assert!(!teardown.pairing_revoked);

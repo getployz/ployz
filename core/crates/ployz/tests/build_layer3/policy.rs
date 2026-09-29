@@ -9,7 +9,7 @@ const POLICY: &str = "cpu_cores: 0.5\nmemory_bytes: 536870912\n";
 const EVIDENCE: &str = "/tmp/ployz-policy-evidence";
 
 struct Host {
-    project: tempfile::TempDir,
+    namespace: tempfile::TempDir,
     cluster: Cluster,
     selected: ployz_core::MachineId,
     client: ployz::connect::Client,
@@ -32,7 +32,7 @@ impl Host {
         .await
         .unwrap();
         let host = Self {
-            project: tempfile::tempdir().unwrap(),
+            namespace: tempfile::tempdir().unwrap(),
             cluster,
             selected,
             client,
@@ -82,14 +82,14 @@ exit "$status"
     /// Build the project on the selected Machine; the error text on failure.
     async fn build(&self, succeeds: bool) -> String {
         self.shell(&format!("rm -f {EVIDENCE}/worker.* {EVIDENCE}/prepare.*"));
-        let project = self.project.path();
-        let dockerfile = project.join("Dockerfile");
+        let namespace = self.namespace.path();
+        let dockerfile = namespace.join("Dockerfile");
         let recipe = if dockerfile.exists() {
             Recipe::Dockerfile(dockerfile)
         } else {
             Recipe::Railpack { command: None }
         };
-        let result = super::capture(project, &self.image, serde_json::json!({}), recipe)
+        let result = super::capture(namespace, &self.image, serde_json::json!({}), recipe)
             .execute_remote_images(
                 &self.client,
                 self.selected,
@@ -106,7 +106,7 @@ exit "$status"
     }
 
     fn write(&self, file: &str, content: &str) {
-        fs::write(self.project.path().join(file), content).unwrap();
+        fs::write(self.namespace.path().join(file), content).unwrap();
     }
 
     fn record(&self, kind: &str, extension: &str) -> String {
@@ -212,7 +212,7 @@ async fn selected_machine_build_resource_policy_and_cache_administration() {
     host.build(false).await;
     host.memory_was_enforced("worker");
 
-    fs::remove_file(host.project.path().join("Dockerfile")).unwrap();
+    fs::remove_file(host.namespace.path().join("Dockerfile")).unwrap();
     host.write("package.json", &format!(r#"{{"name":"policy","version":"1.0.0","engines":{{"node":"22.14.0"}},"scripts":{{"build":"node build.js","start":"node index.js"}},"description":"{}"}}"#, "x".repeat(16 * 1024 * 1024)));
     host.write("index.js", "console.log('ready');");
     host.write("build.js", "const crypto=require('crypto'); for(let i=0;i<512;i++) crypto.createHash('sha256').update(Buffer.alloc(1048576)).digest(); require('fs').writeFileSync('built-at',crypto.randomUUID());");

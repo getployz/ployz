@@ -56,7 +56,7 @@ fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
         args.push(name.into());
         leaf = child;
     }
-    for id in ["project", "service", "volume-name"] {
+    for id in ["service", "volume-name"] {
         args.extend(string_values(leaf, id));
     }
     // Machine is positional for machine rm, but a selector flag for volume rm.
@@ -71,7 +71,7 @@ fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<String> {
             args.push(format!("--{id}"));
         }
     }
-    for id in ["connect", "ployz-config", "project-name"] {
+    for id in ["connect", "ployz-config", "namespace"] {
         if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
             args.extend([format!("--{id}"), value.clone()]);
         }
@@ -405,7 +405,7 @@ mod tests {
                     },
                     &[
                         "ployz".into(),
-                        "project".into(),
+                        "service".into(),
                         "rm".into(),
                         "app".into(),
                         "--volumes".into(),
@@ -625,7 +625,7 @@ mod tests {
                 "rm",
                 "db",
                 "api",
-                "--project-name",
+                "--namespace",
                 "app",
                 "--volumes",
                 "--connect",
@@ -640,7 +640,7 @@ mod tests {
         let parsed = crate::cli::command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
         assert_eq!(string_values(leaf, "service"), ["db", "api"]);
-        assert_eq!(leaf.get_one::<String>("project-name").unwrap(), "app");
+        assert_eq!(leaf.get_one::<String>("namespace").unwrap(), "app");
         assert_eq!(
             leaf.get_one::<String>("connect").unwrap(),
             "unix:///tmp/socket name"

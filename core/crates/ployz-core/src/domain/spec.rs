@@ -449,7 +449,7 @@ pub struct ServiceContainerSpec {
 pub struct ServiceStorageSpec {
     /// Selectors that the preparing Machine must still satisfy.
     pub placement: Placement,
-    /// Admitted mounts with Project-scoped managed Volume names.
+    /// Admitted mounts with Namespace-scoped managed Volume names.
     pub volumes: crate::ResolvedServiceVolumeGraph,
 }
 
@@ -464,10 +464,10 @@ impl ServiceStorageSpec {
 impl TryFrom<&RequestedServiceSpec> for ServiceStorageSpec {
     type Error = crate::ServiceVolumeGraphError;
 
-    /// Project the requirements after Project scoping.
+    /// Project the requirements after Namespace scoping.
     ///
     /// # Errors
-    /// Rejects managed Volumes whose Project scope is unresolved.
+    /// Rejects managed Volumes whose Namespace scope is unresolved.
     fn try_from(spec: &RequestedServiceSpec) -> Result<Self, Self::Error> {
         Ok(Self {
             placement: spec.placement.clone(),
@@ -583,7 +583,7 @@ impl RequestedServiceSpec {
     ///
     /// # Errors
     ///
-    /// Rejects managed sources that have not been scoped to a Project.
+    /// Rejects managed sources that have not been scoped to a Namespace.
     pub fn to_resolved(
         &self,
         service_id: ServiceId,

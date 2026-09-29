@@ -15,7 +15,7 @@ pub(super) fn plan_deploy<'a>(
     options: PlanOptions,
 ) -> Result<DeployPreview, PlanError> {
     preview_deploy(
-        &DeployIntent::apply_all(ProjectName::parse("app").unwrap(), requested, options),
+        &DeployIntent::apply_all(Namespace::parse("app").unwrap(), requested, options),
         snapshot,
     )
 }
@@ -59,8 +59,8 @@ pub(super) use ployz_core::{
     DeviceReservation, DockerVolume, DockerVolumeId, DockerVolumeName,
     DockerVolumeStorageObservation, HealthObservation, HostBind, LogDriver, MANAGED_LABEL, Machine,
     MachineId, MachineName, MachineObservation, MachinePath, MembershipObservation,
-    PROJECT_NAME_LABEL, PidMode, Placement, PlacementConstraint, PortPublication, PreDeployHook,
-    ProjectName, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
+    NAMESPACE_LABEL, Namespace, PidMode, Placement, PlacementConstraint, PortPublication,
+    PreDeployHook, ProvisionedVolumeMaximumBytes, PullPolicy, RequestedServiceSpec,
     ResolvedUpdateConfig, RestartPolicy, ServiceContainerSpec, ServiceId, ServiceMode,
     ServiceMount, ServiceName, ServiceVolume, ServiceVolumeReference, SpecChange,
     TransportProtocol, Ulimit, UpdateConfig, UpdateOrder, WireGuardPublicKey, compare_specs,
@@ -205,7 +205,7 @@ pub(super) fn make_provisioned(spec: &mut RequestedServiceSpec, reference: &str,
 }
 
 pub(super) fn app_volume(logical: &str) -> DockerVolumeName {
-    ProjectName::parse("app")
+    Namespace::parse("app")
         .unwrap()
         .volume_name(&DockerVolumeName::parse(logical).unwrap())
 }
@@ -219,7 +219,7 @@ pub(super) fn observed_volume(machine_id: MachineId, logical: &str) -> DockerVol
         options: Default::default(),
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), "app".to_owned()),
+            (NAMESPACE_LABEL.to_owned(), "app".to_owned()),
         ]),
         storage: DockerVolumeStorageObservation::Plain {
             driver: "local".into(),
@@ -238,12 +238,12 @@ pub(super) fn unowned_volume(machine_id: MachineId, logical: &str) -> DockerVolu
 }
 
 pub(super) fn scoped_spec(spec: &RequestedServiceSpec) -> RequestedServiceSpec {
-    let project = ProjectName::parse("app").unwrap();
+    let namespace = Namespace::parse("app").unwrap();
     let mut spec = spec.clone();
     let mut volumes = spec.volume_graph().volumes().to_vec();
     let mounts = spec.volume_graph().mounts().to_vec();
     for volume in &mut volumes {
-        volume.source.scope_to_project(&project);
+        volume.source.scope_to_namespace(&namespace);
     }
     spec.set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
         .unwrap();
@@ -270,7 +270,7 @@ pub(super) fn container(
         display_name: format!("{}-{hex}", requested.name),
         created_at_unix_nanos: 0,
         machine_id: machine_id(machine_hex),
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime: ContainerRuntimeObservation::Running {
             health: HealthObservation::Healthy,

@@ -26,7 +26,6 @@ ployz
 ├── service    ls · inspect · logs · exec · scale · start · stop · rm
 ├── volume     create · ls · inspect · rm
 ├── ingress    config · deploy · logs
-├── project    ls · rm
 ├── ctx        ls · show · use · rm · connection
 ├── proxy
 ├── ps

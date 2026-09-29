@@ -161,10 +161,10 @@ async fn session(cluster: &Cluster) -> Session {
     .unwrap()
 }
 
-/// One Git Service `app` in Project `build`, as Cloud freezes it. `MESSAGE`
+/// One Git Service `app` in Namespace `build`, as Cloud freezes it. `MESSAGE`
 /// reaches the Build as a variable.
 fn git_deployment(build_method: &str, message: &str) -> Value {
-    json!({"projectName": "build", "snapshots": [{
+    json!({"namespace": "build", "snapshots": [{
         "config": {"version": 2, "privateDns": "app", "source": {
             "version": 2, "type": "git", "repository": "acme/app", "repositoryId": 42,
             "access": {"type": "public"}, "rootDir": "/", "branch": {"type": "connected", "name": "main"}
@@ -199,7 +199,7 @@ async fn prepare(
 /// variables become build variables.
 fn capture(root: &Path, image: &str, variables: Value, recipe: Recipe) -> CapturedBuild {
     let intent = ployz_core::config::lower_deployment(
-        serde_json::from_value(json!({"projectName": "build", "snapshots": [{
+        serde_json::from_value(json!({"namespace": "build", "snapshots": [{
             "config": {"version": 2, "privateDns": "app", "source": {
                 "type": "image", "version": 1, "image": image, "credentials": {"type": "none"}
             }, "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"},

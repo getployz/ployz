@@ -20,8 +20,8 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
     LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
     MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    MachineStorageObservation, MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
     RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
     RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
     WireGuardPublicKey, encode_runtime_watch_frame, op,
@@ -1276,11 +1276,11 @@ pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
     }
 }
 
-pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
+pub(super) fn owned_volume(machine_id: MachineId, name: &str, namespace: &str) -> DockerVolume {
     DockerVolume {
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+            (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
         ]),
         ..docker_volume(machine_id, name)
     }

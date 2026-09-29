@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, net::Ipv4Addr, process, time::Duration};
 
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerRuntimeObservation,
-    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation, ProjectName,
+    HealthObservation, Machine, MachineId, MachineTarget, MembershipObservation, Namespace,
     ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, StopContainerRequest,
     op, select_service,
 };
@@ -56,7 +56,7 @@ async fn internal_dns_tracks_healthy_replicated_containers() {
             .create_container(
                 machine.id,
                 ContainerKind::ServiceContainer,
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 spec.clone(),
                 None,
             )
@@ -153,7 +153,7 @@ async fn assert_internal_selectors(
     for address in expected {
         assert!(searched.contains(&address.to_string()));
     }
-    let project_relative = probe
+    let namespace_relative = probe
         .cluster
         .machine_shell(
             0,
@@ -165,8 +165,8 @@ async fn assert_internal_selectors(
         .unwrap();
     for address in expected {
         assert!(
-            project_relative.contains(&address.to_string()),
-            "dns-api.internal from a Caller Project should answer {address}: {project_relative}"
+            namespace_relative.contains(&address.to_string()),
+            "dns-api.internal from a Caller Namespace should answer {address}: {namespace_relative}"
         );
     }
     probe.assert_addresses(&format!("{service_id}.id.lookup.internal"), expected);

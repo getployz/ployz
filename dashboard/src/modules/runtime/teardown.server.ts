@@ -325,14 +325,14 @@ function targetsFor(
     environments: environments.map((environment) => ({
       environmentId: environment.id,
       projectId: environment.projectId,
-      projectName: environment.namespace,
+      namespace: environment.namespace,
       cloudName: cloudEnvironmentName({
         organizationSlug: access.organization.slug,
         projectSlug: environment.projectSlug,
         environmentName: environment.name,
       }),
     })),
-    destroyRuntimeProjects:
+    destroyRuntimeNamespaces:
       access.scope !== "organization" && isConnectedRuntimeInspection(runtime),
     revokePairing: access.scope === "organization" || plan.revokePairing,
     runtimeMembership: plan.runtimeMembership,
@@ -378,7 +378,7 @@ const teardownDataLoss = Effect.fn("Teardown.dataLoss")(function* (
     } else {
       const observed = yield* Effect.all(
         graph.environments.map((environment) =>
-          runtime.client.dataLossIfProjectDestroyed(environment.namespace, true).pipe(
+          runtime.client.dataLossIfNamespaceDestroyed(environment.namespace, true).pipe(
             // Nothing of it on the servers (never deployed, or already gone): nothing there to lose.
             Effect.catchIf((error) => rpcErrorCode(error) === "not_found", () => Effect.succeed({ data_loss: [] })),
             Effect.catchIf((error) => rpcErrorCode(error) === "unavailable", () => Effect.fail(unreachable())),

@@ -111,7 +111,7 @@ function dockerVolume(loss) {
   if (teardown.pairing_revoked !== false) {
     throw new Error("direct SDK teardown must not claim Cloud pairing revocation");
   }
-  if (!Array.isArray(teardown.destroyed_projects) || !teardown.destroyed_projects.includes("shop")) {
+  if (!Array.isArray(teardown.destroyed_namespaces) || !teardown.destroyed_namespaces.includes("shop")) {
     throw new Error(`expected shop destroyed, got ${JSON.stringify(teardown)}`);
   }
   if (!teardown.machines || !Array.isArray(teardown.machines.failures)) {

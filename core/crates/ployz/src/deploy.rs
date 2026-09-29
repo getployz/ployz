@@ -6,7 +6,7 @@ use std::{
 use ployz_core::{
     BridgeEndpointCapacity, ContainerObservation, ContainerRuntimeObservation, DockerVolume,
     DockerVolumeId, DockerVolumeName, IngressHost, MachineFailure, MachineId, MachineName,
-    MachineObservation, PartialResult, PlacementConstraint, ProjectName,
+    MachineObservation, Namespace, PartialResult, PlacementConstraint,
     ProvisionedVolumeMaximumBytes, QualifiedService, RpcError, RpcErrorCode, ServiceName,
     ServiceObservation, VolumeInventory, VolumeObservationFailure, derive_services,
 };
@@ -20,11 +20,12 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, emit_outcome, remove_project};
+pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, emit_outcome};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{
-    DeployPlan, VolumeFate, data_loss_from_plan, plan_deploy, plan_project_removal, preview_deploy,
+    DeployPlan, VolumeFate, data_loss_from_plan, plan_deploy, plan_namespace_removal,
+    preview_deploy,
 };
 pub use ployz_core::{
     DeployEvent, DeployIntent, DeployOperation, DeployOutcome, DeployPreview, DeployWarning,
@@ -252,25 +253,6 @@ impl VolumeSnapshot {
                     }),
             )
     }
-
-    pub(crate) fn listing_warnings(&self) -> impl Iterator<Item = String> + '_ {
-        self.machine_failures
-            .iter()
-            .map(|failure| {
-                format!(
-                    "WARNING: Machine {} failed listing volumes: {}",
-                    failure.machine_id, failure.error.message
-                )
-            })
-            .chain(self.omissions.iter().map(|machine_id| {
-                format!("WARNING: Machine {machine_id} was omitted listing volumes")
-            }))
-            .chain(
-                self.named_failures
-                    .iter()
-                    .map(|failure| format!("WARNING: {failure}")),
-            )
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -291,13 +273,13 @@ pub struct DeploySnapshot {
 }
 
 impl DeploySnapshot {
-    /// Observer-derived Services owned by `project`. Other Projects are excluded.
+    /// Observer-derived Services owned by `namespace`. Other Namespaces are excluded.
     #[must_use]
-    pub fn services_in(&self, project: &ProjectName) -> Vec<ServiceObservation> {
+    pub fn services_in(&self, namespace: &Namespace) -> Vec<ServiceObservation> {
         derive_services(
             self.containers
                 .iter()
-                .filter(|container| container.project_name == *project)
+                .filter(|container| container.namespace == *namespace)
                 .cloned(),
         )
     }

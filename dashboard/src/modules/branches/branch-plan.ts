@@ -57,8 +57,8 @@ export function branchNameError(projectSlug: string, name: string, taken: Readon
     checkBranchName(namespace);
     return null;
   } catch (error) {
-    const why = error instanceof Error ? error.message.replace(/^projectName: /u, "") : "The name isn't valid.";
-    return why.startsWith("Project name is longer") ? "Too long: shorten the name." : `${why}.`;
+    const why = error instanceof Error ? error.message.replace(/^namespace: /u, "") : "The name isn't valid.";
+    return why.startsWith("Namespace is longer") ? "Too long: shorten the name." : `${why}.`;
   }
 }
 

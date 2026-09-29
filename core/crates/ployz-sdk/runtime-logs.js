@@ -1,7 +1,7 @@
 "use strict";
 
 function matches(container, filter = {}) {
-  return (!filter.projectName || container.project_name === filter.projectName)
+  return (!filter.namespace || container.namespace === filter.namespace)
     && (!filter.serviceId || container.labels["cloud.ployz.service.id"] === filter.serviceId)
     && (!filter.serviceName || container.resolved_spec.name === filter.serviceName)
     && (!filter.machineId || container.machine_id === filter.machineId)

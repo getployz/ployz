@@ -11,7 +11,7 @@ use ployz::{
 };
 use ployz_core::{
     ContainerKind, CreateVolumeRequest, DockerVolumeName, ListMachinesRequest, MachineTarget,
-    NameMatches, ProjectName, ResolvedServiceSpec, ServiceId, op,
+    NameMatches, Namespace, ResolvedServiceSpec, ServiceId, op,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
 use serde_json::json;
@@ -125,7 +125,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .create_container(
                 machine.machine.id,
                 ContainerKind::ServiceContainer,
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 mount_spec(index, &shared),
                 None,
             )
@@ -180,7 +180,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
             .create_container(
                 first_machine.machine.id,
                 ContainerKind::ServiceContainer,
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 mount_spec(9, &missing),
                 None,
             )

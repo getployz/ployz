@@ -1074,7 +1074,7 @@ fn ensure_names(requests: &[ployz_core::CreateContainerRequest]) -> Vec<(&str, &
         .iter()
         .map(|request| {
             (
-                request.project_name.as_str(),
+                request.namespace.as_str(),
                 request.resolved_spec.name.as_str(),
             )
         })
@@ -1095,7 +1095,7 @@ async fn connect_daemon(address: std::net::SocketAddr) -> ployz::connect::Client
 
 fn global_on(
     machine: &ployz_core::Machine,
-    project: &str,
+    namespace: &str,
     name: &str,
 ) -> ployz_core::ContainerObservation {
     let spec: ployz_core::RequestedServiceSpec = serde_json::from_value(json!({
@@ -1111,7 +1111,7 @@ fn global_on(
             ployz_core::ResolvedUpdateConfig::default(),
         )
         .expect("volume graph is scoped"),
-        ployz_core::ProjectName::parse(project).unwrap(),
+        ployz_core::Namespace::parse(namespace).unwrap(),
         'b',
     )
 }
@@ -1119,7 +1119,7 @@ fn global_on(
 fn container_on(
     machine: &ployz_core::Machine,
     spec: ployz_core::ResolvedServiceSpec,
-    project: ployz_core::ProjectName,
+    namespace: ployz_core::Namespace,
     hex: char,
 ) -> ployz_core::ContainerObservation {
     ployz_core::ContainerObservation::try_from(ployz_core::ContainerObservationParts {
@@ -1127,7 +1127,7 @@ fn container_on(
         display_name: format!("{}-{hex}", spec.name),
         created_at_unix_nanos: 1,
         machine_id: machine.id,
-        project_name: project,
+        namespace,
         kind: ployz_core::ContainerKind::ServiceContainer,
         runtime: ployz_core::ContainerRuntimeObservation::Running {
             health: ployz_core::HealthObservation::Healthy,

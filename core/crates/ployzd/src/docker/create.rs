@@ -11,12 +11,12 @@ use bollard::models::{
 };
 use ployz_core::{
     BindPropagation, BindRecursive, ContainerKind, HEALTHCHECK_DISABLE_SENTINEL, HealthcheckSpec,
-    HostBind, MachineGateway, MachineId, PortPublication, ProjectName, ResolvedServiceSpec,
+    HostBind, MachineGateway, MachineId, Namespace, PortPublication, ResolvedServiceSpec,
     ResolvedServiceVolumeGraph, TransportProtocol,
 };
 
 use super::{
-    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_PROJECT_NAME, LABEL_SERVICE_ID,
+    Error, LABEL_HOOK, LABEL_HOOK_PRE_DEPLOY, LABEL_MANAGED, LABEL_NAMESPACE, LABEL_SERVICE_ID,
     LABEL_SERVICE_NAME,
 };
 
@@ -24,7 +24,7 @@ pub(super) fn container_create_body(
     machine_id: &MachineId,
     gateway: MachineGateway,
     kind: ContainerKind,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     spec: &ResolvedServiceSpec,
 ) -> Result<ContainerCreateBody, Error> {
     let hook = match kind {
@@ -50,7 +50,7 @@ pub(super) fn container_create_body(
         .collect();
     labels.extend([
         (LABEL_MANAGED.into(), String::new()),
-        (LABEL_PROJECT_NAME.into(), project_name.to_string()),
+        (LABEL_NAMESPACE.into(), namespace.to_string()),
         (LABEL_SERVICE_ID.into(), spec.service_id.to_string()),
         (LABEL_SERVICE_NAME.into(), spec.name.to_string()),
     ]);
@@ -80,7 +80,7 @@ pub(super) fn container_create_body(
     let resources = &container.resources;
     let host_config = HostConfig {
         dns: Some(vec![gateway.0.to_string()]),
-        dns_search: Some(vec![format!("{project_name}.internal")]),
+        dns_search: Some(vec![format!("{namespace}.internal")]),
         dns_options: Some(vec!["ndots:1".into()]),
         init: container.init,
         network_mode: Some(crate::network::DOCKER_NETWORK_NAME.into()),

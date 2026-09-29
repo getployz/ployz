@@ -64,7 +64,7 @@ async fn duplicate_compatible_aliases_ensure_one_volume() {
 async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
     let (runtime, fake) = fake_runtime().await;
     let spec = spec_with_sources(vec![provisioned_source("guarded", 1_073_741_824)]);
-    let project = ployz_core::ProjectName::parse("app").unwrap();
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
 
     assert!(matches!(
         runtime
@@ -72,7 +72,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
                 &machine(),
                 container_request(
                     ployz_core::ContainerKind::ServiceContainer,
-                    &project,
+                    &namespace,
                     &spec,
                     std::future::ready(None),
                 ),
@@ -86,7 +86,7 @@ async fn storage_admission_rejects_unknown_and_stateless_before_mutation() {
                 &machine(),
                 container_request(
                     ployz_core::ContainerKind::ServiceContainer,
-                    &project,
+                    &namespace,
                     &spec,
                     std::future::ready(Some(ployz_core::MachineStorageObservation::Stateless,)),
                 ),
@@ -222,7 +222,7 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
     }
     .admit()
     .expect("valid volume declaration");
-    source.scope_to_project(&ployz_core::ProjectName::parse("app").unwrap());
+    source.scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap());
 
     runtime
         .ensure_volume_source(&MachineId::random(), &source)
@@ -240,7 +240,7 @@ async fn missing_ordinary_volume_uses_exact_declared_shape() {
             "Name":"app_ordinary",
             "Driver":"example-driver",
             "DriverOpts":{"mode":"safe"},
-            "Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
         })
     );
 }
@@ -255,7 +255,7 @@ async fn normalized_local_driver_uses_no_options() {
     }
     .admit()
     .expect("valid volume declaration");
-    source.scope_to_project(&ployz_core::ProjectName::parse("app").unwrap());
+    source.scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap());
 
     runtime
         .ensure_volume_source(&MachineId::random(), &source)
@@ -292,7 +292,7 @@ async fn missing_provisioned_volume_uses_ployz_driver_bound_and_labels() {
             "Name":"app_bounded",
             "Driver":"ployz",
             "DriverOpts":{"size":"2147483648b"},
-            "Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+            "Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
         })
     );
 }
@@ -307,7 +307,7 @@ async fn existing_managed_volume_allows_extra_labels() {
             "Driver":"example-driver",
             "Mountpoint":"/volumes/app_ordinary",
             "Options":{"mode":"safe"},
-            "Labels":{"backup":"daily","unrelated":"kept","ployz.managed":"","ployz.project.name":"app"}
+            "Labels":{"backup":"daily","unrelated":"kept","ployz.managed":"","ployz.namespace":"app"}
         }),
     );
 
@@ -329,35 +329,35 @@ async fn existing_managed_volume_refuses_every_unsafe_shape_mismatch() {
             ordinary_source("wrong-driver"),
             serde_json::json!({
                 "Name":"app_wrong-driver","Driver":"local","Mountpoint":"/volumes/app_wrong-driver",
-                "Options":{"mode":"safe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+                "Options":{"mode":"safe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
             }),
         ),
         (
             ordinary_source("wrong-options"),
             serde_json::json!({
                 "Name":"app_wrong-options","Driver":"example-driver","Mountpoint":"/volumes/app_wrong-options",
-                "Options":{"mode":"unsafe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+                "Options":{"mode":"unsafe"},"Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
             }),
         ),
         (
             ordinary_source("wrong-label"),
             serde_json::json!({
                 "Name":"app_wrong-label","Driver":"example-driver","Mountpoint":"/volumes/app_wrong-label",
-                "Options":{"mode":"safe"},"Labels":{"backup":"never","ployz.managed":"","ployz.project.name":"app"}
+                "Options":{"mode":"safe"},"Labels":{"backup":"never","ployz.managed":"","ployz.namespace":"app"}
             }),
         ),
         (
             provisioned_source("wrong-kind", 2_147_483_648),
             serde_json::json!({
                 "Name":"app_wrong-kind","Driver":"local","Mountpoint":"/volumes/app_wrong-kind",
-                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"}
+                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"}
             }),
         ),
         (
             provisioned_source("wrong-maximum", 2_147_483_648),
             serde_json::json!({
                 "Name":"app_wrong-maximum","Driver":"ployz","Mountpoint":"/volumes/app_wrong-maximum",
-                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.project.name":"app"},
+                "Options":{"size":"2147483648b"},"Labels":{"backup":"daily","ployz.managed":"","ployz.namespace":"app"},
                 "Status":{"bound_bytes":1073741824,"used_bytes":0}
             }),
         ),
@@ -505,7 +505,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
         .admit()
         .expect("valid volume declaration"),
     ]);
-    let project = ployz_core::ProjectName::parse("app").unwrap();
+    let namespace = ployz_core::Namespace::parse("app").unwrap();
 
     assert!(
         runtime
@@ -513,7 +513,7 @@ async fn a_volume_created_before_container_creation_failure_is_left_for_retry() 
                 &machine(),
                 container_request(
                     ployz_core::ContainerKind::ServiceContainer,
-                    &project,
+                    &namespace,
                     &spec,
                     std::future::ready(None),
                 ),
@@ -667,14 +667,14 @@ async fn in_use_volume_names_the_service_that_mounts_it() {
             serde_json::json!({
                 "Id": "a".repeat(64),
                 "Labels": {
-                    "ployz.project.name": "cashdash",
+                    "ployz.namespace": "cashdash",
                     "ployz.service.name": "cashdash-singlestore"
                 }
             }),
             serde_json::json!({
                 "Id": "b".repeat(64),
                 "Labels": {
-                    "ployz.project.name": "cashdash",
+                    "ployz.namespace": "cashdash",
                     "ployz.service.name": "cashdash-singlestore"
                 }
             }),

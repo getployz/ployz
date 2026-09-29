@@ -5,7 +5,7 @@ use std::num::NonZeroU64;
 use ployz_core::{
     ContainerId, ContainerKind, ContainerObservation, ContainerPath, ContainerResources,
     ContainerRuntimeObservation, DockerVolumeName, HealthObservation, Machine, MachineId,
-    MachineName, MachineStorageObservation, Placement, ProjectName, ProvisionedVolumeMaximumBytes,
+    MachineName, MachineStorageObservation, Namespace, Placement, ProvisionedVolumeMaximumBytes,
     PullPolicy, RequestedServiceSpec, ResolvedServiceSpec, ResolvedUpdateConfig, RestartPolicy,
     ServiceContainerSpec, ServiceId, ServiceMode, ServiceMount, ServiceName, ServiceObservation,
     ServiceVolume, ServiceVolumeGraph, ServiceVolumeReference, UpdateConfig, WireGuardPublicKey,
@@ -167,7 +167,7 @@ async fn initially_eligible_generation_absent_from_target_inspection_remains_mis
 }
 
 #[tokio::test]
-async fn another_projects_matching_shape_does_not_satisfy_catch_up() {
+async fn another_namespaces_matching_shape_does_not_satisfy_catch_up() {
     let joiner = machine('1', "joiner");
     let founder = machine('f', "founder");
     let shop = global_service(
@@ -283,9 +283,9 @@ fn machine(hex: char, name: &str) -> Machine {
     }
 }
 
-fn qualified(project: &str, name: &str) -> QualifiedService {
+fn qualified(namespace: &str, name: &str) -> QualifiedService {
     QualifiedService::new(
-        ProjectName::parse(project).unwrap(),
+        Namespace::parse(namespace).unwrap(),
         ServiceName::parse(name).unwrap(),
     )
 }
@@ -370,7 +370,7 @@ fn grouped(
 ) -> ServiceObservation {
     container
         .try_update(|parts| {
-            parts.project_name = identity.project.clone();
+            parts.namespace = identity.namespace.clone();
             parts.resolved_spec = spec.clone();
         })
         .unwrap();
@@ -406,7 +406,7 @@ fn container_on(
         display_name: format!("slot-{hex}"),
         created_at_unix_nanos: 0,
         machine_id: machine.id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind: ContainerKind::ServiceContainer,
         runtime,
         effective_healthcheck: None,
@@ -445,7 +445,7 @@ fn provisioned_global_spec() -> RequestedServiceSpec {
             }],
         )
         .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("app").unwrap())
+        .scope_to_namespace(&ployz_core::Namespace::parse("app").unwrap())
         .unwrap(),
     )
     .unwrap();

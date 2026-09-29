@@ -33,7 +33,7 @@ import { compileRuntimeIntent, connectedRuntime, DeploymentRuntimeInvalid, watch
 export type DeploymentRuntimeOutcome = Effect.Success<ReturnType<typeof confirmRuntimeIntent>>["outcome"];
 
 type SdkPreparedPreviewInput = {
-  readonly project_name: PreparedDeploy["project_name"];
+  readonly namespace: PreparedDeploy["namespace"];
   readonly storage?: PreparedDeploy["storage"];
   readonly prune_refusal?: PreparedDeploy["prune_refusal"];
   readonly operations: PreparedDeploy["operations"];
@@ -60,7 +60,7 @@ export const decodeSdkDeployPreview = Effect.fn(
 
 function preparedPreviewInput(prepared: SdkPreparedPreviewInput): SdkPreparedPreviewInput {
     let previewInput: SdkPreparedPreviewInput = {
-      project_name: prepared.project_name,
+      namespace: prepared.namespace,
       operations: prepared.operations,
       warnings: prepared.warnings,
       would_remove: prepared.would_remove,

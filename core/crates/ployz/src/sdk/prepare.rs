@@ -273,13 +273,13 @@ pub async fn prepare(
     crate::build::bind(&mut intent, &builds)?;
     let machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
     let plan = read(cancellation, async {
-        Ok(crate::deploy::pipeline::plan_project(client, &intent, machines.clone()).await?)
+        Ok(crate::deploy::pipeline::plan_namespace(client, &intent, machines.clone()).await?)
     })
     .await?;
     if !builds.is_empty() {
         progress(Progress::Transfer);
     }
-    let failures = crate::deploy::pipeline::push_project_images(
+    let failures = crate::deploy::pipeline::push_namespace_images(
         client,
         &builds,
         &machines,

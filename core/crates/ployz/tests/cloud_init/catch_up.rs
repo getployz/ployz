@@ -10,7 +10,7 @@ use super::harness::{
 };
 use ployz::context::{Config, Connection, Context};
 use ployz_core::{
-    ContainerId, ContainerObservation, MembershipObservation, ProjectName, ServiceId, ServiceName,
+    ContainerId, ContainerObservation, MembershipObservation, Namespace, ServiceId, ServiceName,
 };
 use serde_json::json;
 
@@ -237,7 +237,7 @@ fn assert_joined_with_incomplete_catch_up(output: &Output) {
     assert!(stderr.contains("ployz ingress deploy"), "stderr: {stderr}");
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
     assert!(
-        stderr.contains("redeploy Project Service `shop/worker`"),
+        stderr.contains("redeploy Namespace Service `shop/worker`"),
         "stderr: {stderr}"
     );
 }
@@ -249,7 +249,7 @@ fn globals_on(machine: &ployz_core::Machine) -> Vec<ContainerObservation> {
         .try_update(|parts| {
             parts.container_id = ContainerId::parse("d".repeat(64)).unwrap();
             parts.display_name = "worker-a".into();
-            parts.project_name = ProjectName::parse("shop").unwrap();
+            parts.namespace = Namespace::parse("shop").unwrap();
         })
         .unwrap();
     worker

@@ -11,7 +11,7 @@ const runtimeWatchContainerSchema = Schema.Struct({
   container_id: Schema.String,
   display_name: Schema.String,
   machine_id: Schema.String,
-  project_name: Schema.String,
+  namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });
@@ -226,7 +226,7 @@ function runtimeContainerRecordFromWatch(
     id: container.container_id,
     displayName: container.display_name,
     machineId: container.machine_id,
-    projectName: container.project_name,
+    namespace: container.namespace,
     kind: container.kind,
   };
   return container.runtime ? { ...record, runtime: container.runtime } : record;
@@ -237,7 +237,7 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
     container_id: container.container_id,
     display_name: container.display_name,
     machine_id: container.machine_id,
-    project_name: container.project_name,
+    namespace: container.namespace,
     kind: container.kind,
     runtime: container.runtime.state === "running"
       ? { state: container.runtime.state, health: container.runtime.health }

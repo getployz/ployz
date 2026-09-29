@@ -36,7 +36,7 @@ export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* 
       .where(and(eq(environment.namespace, namespace), eq(environment.organizationId, organizationId))).limit(1);
     if (!row) return yield* new NotFound({ message: "Environment was not found." });
   }
-  return { projectName: namespace, serviceId: search.serviceId, deploymentId: search.deploymentId } satisfies LogFilter;
+  return { namespace, serviceId: search.serviceId, deploymentId: search.deploymentId } satisfies LogFilter;
 });
 
 /** The response owns this scope until its consumer disconnects. */

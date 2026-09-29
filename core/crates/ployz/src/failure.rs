@@ -15,8 +15,8 @@ use crate::{
     deploy::{DeployError, PlanError},
     image::PushError,
     ingress::IngressImageError,
+    namespace::NamespaceError,
     operator::OperatorError,
-    project::ProjectError,
     provisioning::ProvisionError,
 };
 
@@ -229,7 +229,7 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
         || error.is::<ConfigError>()
-        || error.is::<ProjectError>()
+        || error.is::<NamespaceError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
     {
@@ -563,7 +563,7 @@ from_error!(
     ProvisionError,
     IngressImageError,
     RpcError,
-    ProjectError,
+    NamespaceError,
     cloud_enroll::Error,
 );
 
@@ -600,7 +600,7 @@ impl From<DeployError> for Failure {
         match error {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
-            DeployError::Project(error) => error.into(),
+            DeployError::Namespace(error) => error.into(),
         }
     }
 }

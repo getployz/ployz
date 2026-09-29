@@ -59,7 +59,7 @@ export function compileRuntimeIntent(context: DeploymentContext) {
     return yield* Effect.try({
       try: () =>
         compileSdkPreparationInput({
-          projectName: context.environment.namespace,
+          namespace: context.environment.namespace,
           snapshots,
           volumes: context.volumes,
           variableProducers: context.deployment.variableProducers ?? [],

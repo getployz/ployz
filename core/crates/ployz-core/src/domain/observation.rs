@@ -7,7 +7,7 @@ use ts_rs::TS;
 
 use super::spec::{HealthcheckSpec, ResolvedServiceSpec};
 use crate::{
-    ContainerAddress, ContainerId, MachineId, ProjectName, QualifiedService, ServiceId, ServiceName,
+    ContainerAddress, ContainerId, MachineId, Namespace, QualifiedService, ServiceId, ServiceName,
 };
 
 /// Value that replaces each environment value in a redacted observation.
@@ -147,7 +147,7 @@ pub struct ContainerObservationParts {
     #[serde(default)]
     pub created_at_unix_nanos: i64,
     pub machine_id: MachineId,
-    pub project_name: ProjectName,
+    pub namespace: Namespace,
     pub kind: ContainerKind,
     pub runtime: ContainerRuntimeObservation,
     /// Effective Docker check (including image inheritance), or the Machine HTTP probe.
@@ -186,7 +186,7 @@ impl TryFrom<ContainerObservationParts> for ContainerObservation {
         for (label, expected) in [
             ("ployz.service.id", parts.resolved_spec.service_id.as_str()),
             ("ployz.service.name", parts.resolved_spec.name.as_str()),
-            ("ployz.project.name", parts.project_name.as_str()),
+            ("ployz.namespace", parts.namespace.as_str()),
         ] {
             if parts
                 .labels
@@ -259,7 +259,7 @@ impl ContainerObservation {
     /// Logical Service identity carried by this Container.
     #[must_use]
     pub fn identity(&self) -> QualifiedService {
-        QualifiedService::new(self.project_name.clone(), self.service_name().clone())
+        QualifiedService::new(self.namespace.clone(), self.service_name().clone())
     }
 
     /// Replace every Service and pre-deploy hook environment value, keeping the keys.
@@ -525,7 +525,7 @@ mod tests {
         ContainerRuntimeObservation, HealthObservation, HookContainer, KNOWN_STATES,
         ServiceContainer, Value,
     };
-    use crate::{ContainerId, MachineId, ProjectName, ResolvedServiceSpec, ServiceId, ServiceName};
+    use crate::{ContainerId, MachineId, Namespace, ResolvedServiceSpec, ServiceId, ServiceName};
 
     #[test]
     fn is_healthy_is_running_with_healthy_or_not_configured() {
@@ -654,11 +654,11 @@ mod tests {
     }
 
     #[test]
-    fn mixed_container_observation_keeps_project_and_retained_service_name_on_the_wire() {
+    fn mixed_container_observation_keeps_namespace_and_retained_service_name_on_the_wire() {
         let service = observation(ContainerKind::ServiceContainer);
         let json = serde_json::to_value(&service).unwrap();
 
-        assert_eq!(json.get("project_name"), Some(&json!("app")));
+        assert_eq!(json.get("namespace"), Some(&json!("app")));
         assert_eq!(json.pointer("/resolved_spec/name"), Some(&json!("api")));
         assert_eq!(
             serde_json::from_value::<ContainerObservation>(json).unwrap(),
@@ -667,11 +667,11 @@ mod tests {
     }
 
     #[test]
-    fn mixed_container_observation_rejects_missing_project_name() {
+    fn mixed_container_observation_rejects_missing_namespace() {
         let mut json = serde_json::to_value(observation(ContainerKind::ServiceContainer)).unwrap();
         json.as_object_mut()
             .expect("observation serializes as an object")
-            .remove("project_name");
+            .remove("namespace");
         assert!(serde_json::from_value::<ContainerObservation>(json).is_err());
     }
 
@@ -705,15 +705,13 @@ mod tests {
                 parts
                     .labels
                     .insert("ployz.service.id".into(), "a".repeat(32));
-                parts
-                    .labels
-                    .insert("ployz.project.name".into(), "app".into());
+                parts.labels.insert("ployz.namespace".into(), "app".into());
             })
             .unwrap();
         for (label, value) in [
             ("ployz.service.name", "web".to_owned()),
             ("ployz.service.id", "b".repeat(32)),
-            ("ployz.project.name", "other".to_owned()),
+            ("ployz.namespace", "other".to_owned()),
             ("ployz.service.hook", "pre-deploy".to_owned()),
         ] {
             let mut raw = serde_json::to_value(&observed).unwrap();
@@ -818,7 +816,7 @@ mod tests {
             display_name: format!("api-{id}"),
             created_at_unix_nanos: 0,
             machine_id: MachineId::parse(id.to_string().repeat(32)).unwrap(),
-            project_name: ProjectName::parse("app").unwrap(),
+            namespace: Namespace::parse("app").unwrap(),
             kind,
             runtime: ContainerRuntimeObservation::Created,
             effective_healthcheck: None,

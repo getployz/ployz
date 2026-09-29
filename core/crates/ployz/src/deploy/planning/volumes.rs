@@ -8,9 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, MachineId,
-    MachineObservation, PlacementConstraint, PreservedVolume, ProjectName, RequestedServiceSpec,
+    MachineObservation, Namespace, PlacementConstraint, PreservedVolume, RequestedServiceSpec,
     ServiceMode, ServiceName, ServiceObservation, ServicePlacementEligibility, ServiceStorageSpec,
-    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_project,
+    ServiceVolume, ServiceVolumeGraph, VolumeSource, owned_volume_namespace,
 };
 
 use crate::deploy::{
@@ -26,7 +26,7 @@ use super::placement::PlacementReservations;
 /// independently mutable list of pins or missing Volume commitments.
 pub(super) struct VolumePlan<'snapshot> {
     snapshot: &'snapshot DeploySnapshot,
-    project_name: ProjectName,
+    namespace: Namespace,
     assignments: BTreeMap<MachineId, BTreeMap<ServiceName, ServiceStorageSpec>>,
 }
 
@@ -64,14 +64,14 @@ impl<'snapshot> VolumePlan<'snapshot> {
     /// Returns conflicting definitions, incompatible modes, or unresolved locality.
     pub(super) fn new(
         snapshot: &'snapshot DeploySnapshot,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         target: &[RequestedServiceSpec],
         requested: &[RequestedServiceSpec],
     ) -> Result<Self, PlanError> {
         reject_mixed_volume_modes(&managed_volume_uses(requested))?;
         let plan = Self {
             snapshot,
-            project_name: project_name.clone(),
+            namespace: namespace.clone(),
             assignments: BTreeMap::new(),
         };
         plan.validate_provisioned_volume_definitions(target)?;
@@ -112,7 +112,8 @@ impl<'snapshot> VolumePlan<'snapshot> {
             .or_default()
             .entry(spec.name.clone())
             .or_insert_with(|| {
-                ServiceStorageSpec::try_from(spec).expect("assigned Volume graph is Project-scoped")
+                ServiceStorageSpec::try_from(spec)
+                    .expect("assigned Volume graph is Namespace-scoped")
             });
     }
 
@@ -283,17 +284,17 @@ impl<'snapshot> VolumePlan<'snapshot> {
     }
 }
 
-/// Bind non-external named volumes to `project`: physical Docker name and ownership labels.
+/// Bind non-external named volumes to `namespace`: physical Docker name and ownership labels.
 ///
 /// # Errors
 ///
-/// Returns [`PlanError::ConflictingDockerVolumeDefinitions`] when Project scoping makes two
+/// Returns [`PlanError::ConflictingDockerVolumeDefinitions`] when Namespace scoping makes two
 /// Service Volume aliases describe incompatible sources for one Docker Volume.
 pub(super) fn scope_requested(
     mut spec: RequestedServiceSpec,
-    project: &ProjectName,
+    namespace: &Namespace,
 ) -> Result<RequestedServiceSpec, PlanError> {
-    spec.mount_graph = match spec.mount_graph.scope_to_project(project) {
+    spec.mount_graph = match spec.mount_graph.scope_to_namespace(namespace) {
         Ok(graph) => graph,
         Err(ployz_core::ServiceVolumeGraphError::IncompatibleVolumeAliases { name }) => {
             return Err(PlanError::ConflictingDockerVolumeDefinitions { name });
@@ -316,13 +317,13 @@ impl VolumePlan<'_> {
                 continue;
             }
             let result = (|| {
-                let candidates = super::placement_candidates(spec, &self.project_name, snapshot)?;
+                let candidates = super::placement_candidates(spec, &self.namespace, snapshot)?;
                 Self::record_provisioned(&mut definitions, spec, &candidates)?;
                 let mut machines = candidates
                     .into_iter()
                     .filter(|machine| {
-                        spec.placement_eligibility_in_project(
-                            &self.project_name,
+                        spec.placement_eligibility_in_namespace(
+                            &self.namespace,
                             &machine.machine,
                             machine.storage.as_ref(),
                         ) == ServicePlacementEligibility::Eligible
@@ -421,14 +422,14 @@ impl VolumePlan<'_> {
 
 /// Owned declared Docker Volumes omitted from this Deploy's target.
 pub(super) fn preserved_owned_volumes(
-    project_name: &ProjectName,
+    namespace: &Namespace,
     target: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
 ) -> Vec<PreservedVolume> {
     let declared = declared_physical_names(target);
     let mut preserved = Vec::new();
     for volume in snapshot.volume_snapshot.observations() {
-        if owned_volume_project(&volume.labels).as_ref() != Some(project_name) {
+        if owned_volume_namespace(&volume.labels).as_ref() != Some(namespace) {
             continue;
         }
         if declared.contains(&volume.id.name) {
@@ -721,7 +722,7 @@ fn volume_eligible_machine_ids(
     plan: &VolumePlan<'_>,
     options: &PlanOptions,
 ) -> Result<Vec<MachineId>, PlanError> {
-    let mut machines = super::eligible_machines(spec, &plan.project_name, snapshot, options)?;
+    let mut machines = super::eligible_machines(spec, &plan.namespace, snapshot, options)?;
     planned_volume_constraints(spec, snapshot, plan, &mut machines)?;
     Ok(machines
         .into_iter()

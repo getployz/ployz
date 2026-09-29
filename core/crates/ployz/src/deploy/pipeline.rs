@@ -10,8 +10,8 @@ use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
-    DataLossConfirmation, MachineFailure, MachineId, MachineObservation, ObservedDataLoss,
-    PortPublication, ProjectName, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
+    DataLossConfirmation, MachineFailure, MachineId, MachineObservation, Namespace,
+    ObservedDataLoss, PortPublication, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
     ServiceSelector, UnconfirmedDataLoss, select_service,
 };
 use thiserror::Error;
@@ -41,7 +41,7 @@ pub enum DeployError {
     #[error(transparent)]
     Plan(#[from] PlanError),
     #[error(transparent)]
-    Project(#[from] crate::project::ProjectError),
+    Namespace(#[from] crate::namespace::NamespaceError),
 }
 
 impl Client {
@@ -60,43 +60,43 @@ impl Client {
         preview_gathered(snapshot, warnings, &intent).await
     }
 
-    /// Calculate a Project-removal preview. Confirming executes these operations.
+    /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
-    /// Reserved names reuse [`crate::project::refuse_reserved`]. Incomplete
+    /// Reserved names reuse [`crate::namespace::refuse_reserved`]. Incomplete
     /// snapshots reuse [`DeployIntent::prune_refusal`].
     ///
     /// # Errors
     ///
-    /// Returns when the Project is reserved or snapshot gathering or planning fails.
-    pub async fn preview_project_removal(
+    /// Returns when the Namespace is reserved or snapshot gathering or planning fails.
+    pub async fn preview_namespace_removal(
         &mut self,
-        project: &ProjectName,
+        namespace: &Namespace,
         volumes: super::VolumeFate,
     ) -> Result<DeployPlan, DeployError> {
-        crate::project::refuse_reserved(project)?;
+        crate::namespace::refuse_reserved(namespace)?;
         let machines = self.machines().await?;
         let (snapshot, warnings) = gather_snapshot(self, machines).await?;
-        let mut preview = planning::prepare_project_removal(project, &snapshot, volumes)?;
+        let mut preview = planning::prepare_namespace_removal(namespace, &snapshot, volumes)?;
         preview.prepend_warnings(warnings);
         Ok(preview)
     }
 
-    /// Live Observation of Data Loss that destroying `project` would cause.
+    /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// [`super::VolumeFate::Preserve`] yields an empty list. Mutates nothing.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the Project is reserved, snapshot
+    /// Returns a generated [`RpcError`] when the Namespace is reserved, snapshot
     /// gathering fails, or destroying volumes is requested against a known
     /// incomplete snapshot.
-    pub async fn data_loss_if_project_destroyed(
+    pub async fn data_loss_if_namespace_destroyed(
         &mut self,
-        project: &ProjectName,
+        namespace: &Namespace,
         volumes: super::VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let preview = self.preview_project_removal(project, volumes).await?;
-        require_project_present(&preview)?;
+        let preview = self.preview_namespace_removal(namespace, volumes).await?;
+        require_namespace_present(&preview)?;
         observed_destroy_loss(&preview, volumes)
     }
 
@@ -108,19 +108,19 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// Returns a generated [`RpcError`] when the Namespace is reserved or not
     /// visible, the snapshot is incomplete, or the confirmation does not cover
     /// the fresh Data Loss. Execution failure is a [`DeployOutcome::Failed`].
-    pub async fn destroy_project(
+    pub async fn destroy_namespace(
         &mut self,
-        project: &ProjectName,
+        namespace: &Namespace,
         confirm_data_loss: &DataLossConfirmation,
         volumes: super::VolumeFate,
         cancellation: &CancellationToken,
         progress: Option<tokio::sync::mpsc::UnboundedSender<DeployEvent>>,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
         let preview = self
-            .prepare_project_destroy(project, confirm_data_loss, volumes)
+            .prepare_namespace_destroy(namespace, confirm_data_loss, volumes)
             .await?;
         Ok(self.confirm(&preview, cancellation, progress).await)
     }
@@ -129,17 +129,17 @@ impl Client {
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the Project is reserved or not
+    /// Returns a generated [`RpcError`] when the Namespace is reserved or not
     /// visible, the snapshot is incomplete, planning fails, or the confirmation
     /// does not cover the fresh Data Loss.
-    pub(crate) async fn prepare_project_destroy(
+    pub(crate) async fn prepare_namespace_destroy(
         &mut self,
-        project: &ProjectName,
+        namespace: &Namespace,
         confirm_data_loss: &DataLossConfirmation,
         volumes: super::VolumeFate,
     ) -> Result<DeployPlan, RpcError> {
-        let preview = self.preview_project_removal(project, volumes).await?;
-        require_project_present(&preview)?;
+        let preview = self.preview_namespace_removal(namespace, volumes).await?;
+        require_namespace_present(&preview)?;
         observed_destroy_loss(&preview, volumes)?
             .require(confirm_data_loss)
             .map_err(UnconfirmedDataLoss::into_rpc_error)?;
@@ -209,13 +209,13 @@ fn observed_destroy_loss(
     Ok(planning::data_loss_from_plan(preview))
 }
 
-fn require_project_present(preview: &DeployPreview) -> Result<(), RpcError> {
-    if project_not_found(preview) {
+fn require_namespace_present(preview: &DeployPreview) -> Result<(), RpcError> {
+    if namespace_not_found(preview) {
         return Err(RpcError {
             code: RpcErrorCode::NotFound,
             message: format!(
-                "Project '{}' was not found in this Cluster observation. No changes made.",
-                preview.project_name
+                "Namespace '{}' was not found in this Cluster observation. No changes made.",
+                preview.namespace
             ),
             details: serde_json::Value::Null,
         });
@@ -223,7 +223,7 @@ fn require_project_present(preview: &DeployPreview) -> Result<(), RpcError> {
     Ok(())
 }
 
-pub(crate) fn project_not_found(preview: &DeployPreview) -> bool {
+pub(crate) fn namespace_not_found(preview: &DeployPreview) -> bool {
     preview.prune_refusal.is_none()
         && preview.operations.is_empty()
         && preview.preserved_volumes.is_empty()
@@ -235,7 +235,7 @@ impl From<DeployError> for RpcError {
         match error {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into_rpc_error(),
-            DeployError::Project(error) => invalid_argument(error.to_string()),
+            DeployError::Namespace(error) => invalid_argument(error.to_string()),
         }
     }
 }
@@ -262,7 +262,7 @@ impl From<IngressDnsWarning> for DeployWarning {
     }
 }
 
-pub(crate) async fn push_project_images(
+pub(crate) async fn push_namespace_images(
     client: &mut Client,
     builds: &[BuiltService],
     machines: &[MachineObservation],
@@ -321,7 +321,7 @@ pub(crate) async fn push_project_images(
     Ok(failures)
 }
 
-pub(crate) async fn plan_project(
+pub(crate) async fn plan_namespace(
     client: &mut Client,
     intent: &DeployIntent,
     machines: Vec<MachineObservation>,
@@ -340,9 +340,9 @@ pub(super) async fn plan_scale(
     let (snapshot, warnings) = gather_snapshot(client, machines).await?;
     let choice = choose_scale_spec(&snapshot, selector, replicas)?;
     let Some(requested) = choice.requested else {
-        return Ok(DeployPlan::empty(choice.project_name, warnings));
+        return Ok(DeployPlan::empty(choice.namespace, warnings));
     };
-    let intent = DeployIntent::apply_one(choice.project_name, requested, options);
+    let intent = DeployIntent::apply_one(choice.namespace, requested, options);
     let (snapshot, warnings) = if intent
         .target
         .iter()
@@ -379,7 +379,7 @@ pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
 
 #[derive(Debug)]
 struct ScaleSpec {
-    project_name: ProjectName,
+    namespace: Namespace,
     requested: Option<RequestedServiceSpec>,
 }
 
@@ -399,10 +399,10 @@ fn choose_scale_spec(
         ServiceMode::Replicated { .. } => {}
         ServiceMode::Global => return Err(Failure::usage("global services cannot be scaled")),
     }
-    let project_name = service.identity.project.clone();
+    let namespace = service.identity.namespace.clone();
     if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
         return Ok(ScaleSpec {
-            project_name,
+            namespace,
             requested: None,
         });
     }
@@ -410,7 +410,7 @@ fn choose_scale_spec(
     let mut requested = observed_container.resolved_spec.to_requested();
     requested.mode = ServiceMode::Replicated { replicas };
     Ok(ScaleSpec {
-        project_name,
+        namespace,
         requested: Some(requested),
     })
 }

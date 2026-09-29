@@ -19,7 +19,7 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     let replica = operation("c");
     let preview = |operations: Vec<(&str, Value)>| {
         json!({
-            "project_name":"production", "operations":operations.into_iter().enumerate().map(|(index, (service, operation))|
+            "namespace":"production", "operations":operations.into_iter().enumerate().map(|(index, (service, operation))|
                 json!({"index":index,"machine_id":"a".repeat(32),"service_name":service,"operation":operation,"status":{"type":"pending"}})
             ).collect::<Vec<_>>(), "warnings":[]
         })

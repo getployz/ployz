@@ -139,7 +139,7 @@ fn apply_one_run_and_scale_path_rejects_full_capacity() {
         ..Default::default()
     };
     let intent = DeployIntent::apply_one(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         requested,
         PlanOptions::default(),
     );

@@ -35,15 +35,15 @@ pub enum ServicePlacementUnknownReason {
 }
 
 impl RequestedServiceSpec {
-    /// Assess role admission with the Project identity required for trusted Ingress.
+    /// Assess role admission with the Namespace identity required for trusted Ingress.
     #[must_use]
-    pub fn placement_eligibility_in_project(
+    pub fn placement_eligibility_in_namespace(
         &self,
-        project: &crate::ProjectName,
+        namespace: &crate::Namespace,
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *project == crate::QualifiedService::system_ingress().project
+        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
             && crate::validate_requested_ingress_service_spec(self).is_ok();
         placement_eligibility(
             &self.placement,
@@ -56,15 +56,15 @@ impl RequestedServiceSpec {
 }
 
 impl ResolvedServiceSpec {
-    /// Assess role admission with the Project identity required for trusted Ingress.
+    /// Assess role admission with the Namespace identity required for trusted Ingress.
     #[must_use]
-    pub fn placement_eligibility_in_project(
+    pub fn placement_eligibility_in_namespace(
         &self,
-        project: &crate::ProjectName,
+        namespace: &crate::Namespace,
         machine: &Machine,
         storage: Option<&MachineStorageObservation>,
     ) -> ServicePlacementEligibility {
-        let ingress = *project == crate::QualifiedService::system_ingress().project
+        let ingress = *namespace == crate::QualifiedService::system_ingress().namespace
             && crate::validate_ingress_service_spec(self).is_ok();
         placement_eligibility(
             &self.placement,
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn whole_specs_assess_placement_and_only_mounted_provisioned_storage() {
         let machine = machine("storage");
-        let project = crate::ProjectName::parse("shop").unwrap();
+        let namespace = crate::Namespace::parse("shop").unwrap();
         let other = Placement {
             constraints: [crate::PlacementConstraint::parse("node.id==other").unwrap()].into(),
         };
@@ -256,7 +256,7 @@ mod tests {
                     requested
                         .volume_graph()
                         .clone()
-                        .scope_to_project(&project)
+                        .scope_to_namespace(&namespace)
                         .unwrap(),
                 )
                 .unwrap();
@@ -293,14 +293,18 @@ mod tests {
                 expected
             );
             assert_eq!(
-                requested.placement_eligibility_in_project(&project, &machine, storage.as_ref()),
+                requested.placement_eligibility_in_namespace(
+                    &namespace,
+                    &machine,
+                    storage.as_ref()
+                ),
                 expected
             );
             let resolved = requested
                 .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
                 .expect("volume graph is scoped");
             assert_eq!(
-                resolved.placement_eligibility_in_project(&project, &machine, storage.as_ref()),
+                resolved.placement_eligibility_in_namespace(&namespace, &machine, storage.as_ref()),
                 expected
             );
             assert_eq!(crate::ServiceStorageSpec::from(&resolved), storage_spec);
@@ -313,35 +317,35 @@ mod tests {
         machine.accepts_services = false;
         machine.accepts_ingress = true;
         machine.accepts_builds = true;
-        let reserved = crate::QualifiedService::system_ingress().project;
-        let app = crate::ProjectName::parse("app").unwrap();
+        let reserved = crate::QualifiedService::system_ingress().namespace;
+        let app = crate::Namespace::parse("app").unwrap();
         let caddy = crate::caddy_service_spec("caddy:test".into(), Default::default());
         let denied = ServicePlacementEligibility::Ineligible(
             ServicePlacementIneligibleReason::WorkNotAccepted,
         );
         assert_eq!(
-            caddy.placement_eligibility_in_project(&reserved, &machine, None),
+            caddy.placement_eligibility_in_namespace(&reserved, &machine, None),
             ServicePlacementEligibility::Eligible
         );
         assert_eq!(
-            caddy.placement_eligibility_in_project(&app, &machine, None),
+            caddy.placement_eligibility_in_namespace(&app, &machine, None),
             denied
         );
         let mut forged = caddy.clone();
         forged.container.command = vec!["sh".into()];
         assert_eq!(
-            forged.placement_eligibility_in_project(&reserved, &machine, None),
+            forged.placement_eligibility_in_namespace(&reserved, &machine, None),
             denied
         );
         let resolved = caddy
             .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
             .unwrap();
         assert_eq!(
-            resolved.placement_eligibility_in_project(&reserved, &machine, None),
+            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
             ServicePlacementEligibility::Eligible
         );
         assert_eq!(
-            resolved.placement_eligibility_in_project(&app, &machine, None),
+            resolved.placement_eligibility_in_namespace(&app, &machine, None),
             denied
         );
         assert_eq!(
@@ -351,12 +355,12 @@ mod tests {
         machine.accepts_ingress = false;
         machine.accepts_services = true;
         assert_eq!(
-            resolved.placement_eligibility_in_project(&reserved, &machine, None),
+            resolved.placement_eligibility_in_namespace(&reserved, &machine, None),
             denied
         );
         assert_eq!(
             requested(Placement::default(), ServiceVolumeGraph::default())
-                .placement_eligibility_in_project(&app, &machine, None),
+                .placement_eligibility_in_namespace(&app, &machine, None),
             ServicePlacementEligibility::Eligible
         );
     }
