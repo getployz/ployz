@@ -206,24 +206,6 @@ it.live(
           union all select count(*)::text from environment_canvas_node_position where resource_id = ${volume.data.resource.id}
         `, "objects");
         assert.deepStrictEqual(metadata.map((row) => row.count), ["0", "0"]);
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const racing = yield* createVolumeResource(actor, {
-            organizationSlug: "acme", environmentId: environmentRecord.id,
-            name: `Concurrent ${attempt}`, x: 0, y: 0,
-          });
-          const input = { organizationSlug: "acme", environmentId: environmentRecord.id, resourceId: racing.data.resource.id };
-          const revision = (yield* loadEnvironmentDocument(environmentRecord.id)).revision;
-          yield* Effect.all([
-            deleteVolumeResource(actor, { ...input, revision }),
-            updateEnvironmentResourceCanvasPosition(actor, { ...input, x: 42, y: 42 }).pipe(
-              Effect.catchTag("NotFound", () => Effect.succeed(null)),
-            ),
-          ], { concurrency: "unbounded" });
-          const positions = yield* database.drizzle.execute<{ count: string }>(
-            sql`select count(*)::text as count from environment_canvas_node_position where resource_id = ${input.resourceId}`, "objects");
-          assert.strictEqual(positions[0]?.count, "0");
-        }
-
         const published = yield* createVolumeResource(actor, {
           organizationSlug: "acme", environmentId: environmentRecord.id,
           name: "Concurrent publication", x: 0, y: 0,

@@ -1,0 +1,48 @@
+import type { Change, ConfigCommand, DiffView, EnvironmentRef } from "@ployz/sdk";
+import { Option, Schema } from "effect";
+import { settingText } from "./store-services";
+
+/** Mounts `volume` on `service` at `path`, or detaches it (`null`), which keeps the Volume and its data. */
+export function mountChange(service: string, volume: string, path: string | null): Change {
+  const at = `${service}.mounts.${volume}`;
+  return path === null ? { op: "unset", path: at } : { op: "set", path: at, value: path };
+}
+
+/** Mounts of `volume` that the next Deploy removes, by Service and deployed path: detached, their data kept. */
+export function detachedMounts(diff: DiffView, volume: string) {
+  return diff.changes.flatMap((node) => node.type !== "service" ? [] : node.settings.flatMap((row) =>
+    row.path === `${node.name}.mounts.${volume}` && row.after === null && row.before !== null
+      ? [{ service: node.name, path: settingText(row.before) }]
+      : []));
+}
+
+/** Why a mount path won't do, before the Store says so: it must be absolute. */
+export function mountPathError(path: string) {
+  return path.startsWith("/") ? null : "Use an absolute path, such as /data.";
+}
+
+/** The command that creates a Volume with the id the caller minted, mounted nowhere yet. */
+export function createVolumeCommand(id: string, environment: EnvironmentRef, name: string): ConfigCommand {
+  // The Store checks the id is a UUID.
+  return { command: "create_volume", id, environment, name, mounts: [] };
+}
+
+const decodeVolumeLoss = Schema.decodeUnknownOption(Schema.Struct({
+  volumes: Schema.Array(Schema.Struct({
+    name: Schema.String,
+    deletes: Schema.Array(Schema.Struct({ machine_id: Schema.String })),
+  })),
+  accept: Schema.Array(Schema.String),
+  version: Schema.String,
+}));
+
+/**
+ * What a Deploy the Store refused with `confirmation_required` would delete: each Volume whose data the Servers hold,
+ * with those Servers, and what to send back to accept exactly that. Null for any other refusal.
+ */
+export function volumeLoss(refusal: { code: string; details: unknown }) {
+  if (refusal.code !== "confirmation_required") return null;
+  return Option.getOrNull(decodeVolumeLoss(refusal.details));
+}
+
+export type VolumeLoss = NonNullable<ReturnType<typeof volumeLoss>>;

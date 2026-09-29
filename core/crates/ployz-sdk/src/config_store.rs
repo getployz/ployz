@@ -4,12 +4,13 @@
 //! operations are never bound here without their own caller checks: Cloud's worker
 //! runs a Deployment in one call, so its secrets and evidence never reach JavaScript.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use ployz_core::{RpcError, RpcErrorCode};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{Actor, DeploymentId, OrganizationId, RunEvidence, RunnerId};
 use tokio::sync::Semaphore;
 
@@ -149,10 +150,12 @@ impl ConfigStore {
 
     /// Run the Organization's queued Deployment `deployment` as `runner` on one of
     /// `connections` (`Connection[]`), and resolve to its summary once its outcome is
-    /// recorded. Its Git Services build from `checkouts` (`{runtime Service name:
-    /// directory}`) at their pinned commits; `source_failure` says why Cloud could not
-    /// read them, and is recorded as the reason nothing ran. Only Cloud's worker calls
-    /// this. It takes as long as its builds and Deploy do.
+    /// recorded. Its Git Services build from `sources.checkouts` (`{runtime Service
+    /// name: directory}`) at their pinned commits, and its uploaded Services from
+    /// `sources.upload`, the directory Cloud extracted its upload to (without it, they
+    /// reuse a usable image or need a new upload); `sources.failure` says why Cloud
+    /// could not read them, and is recorded as the reason nothing ran. Only Cloud's
+    /// worker calls this. It takes as long as its builds and Deploy do.
     ///
     /// # Errors
     /// Returns `conflict` when this runner has nothing to run, or a storage error.
@@ -163,20 +166,31 @@ impl ConfigStore {
         deployment: String,
         runner: String,
         connections: serde_json::Value,
-        checkouts: Option<serde_json::Value>,
-        source_failure: Option<String>,
+        sources: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        #[derive(Default, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Sources {
+            #[serde(default)]
+            checkouts: BTreeMap<ServiceName, std::path::PathBuf>,
+            upload: Option<std::path::PathBuf>,
+            failure: Option<String>,
+        }
         let who = actor(organization)?;
         let (deployment, runner) = ids(deployment, runner)?;
         let connections = serde_json::from_value(connections)
             .map_err(|_| invalid_argument("invalid management connections"))?;
-        let checkouts = match source_failure {
+        let sources: Sources = sources
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| invalid_argument("Expected checkouts, upload and failure"))?
+            .unwrap_or_default();
+        let checkouts = match sources.failure {
             Some(reason) => Err(reason),
-            None => Ok(checkouts
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(|_| invalid_argument("Expected checkouts by Service name"))?
-                .unwrap_or_default()),
+            None => Ok(ployz::sdk::Sources {
+                checkouts: sources.checkouts,
+                upload: sources.upload,
+            }),
         };
         let summary = ployz::sdk::run_deployment(
             Arc::clone(&self.store),
@@ -206,6 +220,46 @@ impl ConfigStore {
         let (deployment, runner) = ids(deployment, runner)?;
         let store = Arc::clone(&self.store);
         self.run(move || store.record(&deployment, &runner, RunEvidence::Abandoned))
+            .await
+    }
+
+    /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
+    /// resolves to what it did (`ConfigWritten`, `automated`). Only Cloud's GitHub
+    /// workers call this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a branch head's base is stale, or a storage error.
+    #[napi]
+    pub async fn system(
+        &self,
+        organization: String,
+        event: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let event: ployz_store::SystemEvent = serde_json::from_value(whole(event))
+            .map_err(|_| invalid_argument("Expected a system event"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.system(&who.organization, &event))
+            .await
+    }
+
+    /// The head of a GitHub branch the Store last saw for the Organization, or null:
+    /// what Cloud compares a new head from. Only Cloud's GitHub workers call this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn branch_head(
+        &self,
+        organization: String,
+        repository_id: i64,
+        branch: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let repository_id = u64::try_from(repository_id)
+            .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.branch_head(&who.organization, repository_id, &branch))
             .await
     }
 }
@@ -266,8 +320,37 @@ fn unavailable(message: &str) -> Error {
 /// Evidence Cloud gathered itself (`ConfigTrusted`), or none.
 fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> {
     Ok(trusted
-        .map(serde_json::from_value)
+        .map(|trusted| serde_json::from_value(whole(trusted)))
         .transpose()
         .map_err(|_| invalid_argument("Expected Config Store evidence"))?
         .unwrap_or_default())
+}
+
+/// `value` with whole numbers as integers: JavaScript hands GitHub's IDs past 2^31
+/// over as floats, which integer fields refuse.
+fn whole(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(number) => match number.as_f64() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "only whole, non-negative values below 2^53 are converted"
+            )]
+            Some(float)
+                if float.fract() == 0.0 && (0.0..9_007_199_254_740_992.0).contains(&float) =>
+            {
+                Value::from(float as u64)
+            }
+            Some(_) | None => Value::Number(number),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(whole).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, whole(value)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::String(_) => value,
+    }
 }

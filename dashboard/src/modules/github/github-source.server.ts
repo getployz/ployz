@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, open, realpath, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readdir, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -11,6 +11,7 @@ import * as tar from "tar";
 import { GithubApi, resolveGithubBranchHead, resolveGithubRepository } from "./github-observation.api";
 import { getCachedGithubRepositoryForOrganization } from "./github.repository";
 
+/** A repository or uploaded source Cloud can't read or refuses; users read the message. */
 export class GithubSourceError extends Data.TaggedError("GithubSourceError")<{
   readonly message: string;
 }> { readonly publicErrorCategory = "validation" as const; }
@@ -35,12 +36,12 @@ function byteLimit(max: number) {
   let total = 0;
   return new Transform({ transform(chunk: Buffer, _encoding, done) {
     total += chunk.length;
-    done(total > max ? new GithubSourceError({ message: "Repository archive exceeds the source size limit." }) : null, chunk);
+    done(total > max ? new GithubSourceError({ message: "Source archive exceeds the source size limit." }) : null, chunk);
   } });
 }
 function safePath(value: string) {
   if (!value || value.includes("\\") || value.includes("\0") || path.posix.isAbsolute(value) || value.split("/").includes("..")) {
-    throw new GithubSourceError({ message: "Repository archive contains an unsafe path." });
+    throw new GithubSourceError({ message: "Source archive contains an unsafe path." });
   }
   return path.posix.normalize(value).replace(/\/$/, "");
 }
@@ -49,12 +50,9 @@ function contained(root: string, candidate: string) {
   return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-// The source is streamed to disk. Validate the complete archive before extraction,
-// including entries preceding a later symlink, rather than trusting archive order.
 export async function extractGithubSource(response: Response, directory: string, signal: AbortSignal,
   limits = SOURCE_LIMITS) {
-  if (!response.body) throw new GithubSourceError({ message: "Repository archive is empty." });
-  const archive = path.join(directory, "source.tar");
+  if (!response.body) throw new GithubSourceError({ message: "Source archive is empty." });
   const reader = response.body.getReader();
   const cancel = () => { void reader.cancel().catch(() => {}); };
   signal.addEventListener("abort", cancel, { once: true });
@@ -68,33 +66,48 @@ export async function extractGithubSource(response: Response, directory: string,
       }
     } finally { signal.removeEventListener("abort", cancel); await reader.cancel(); reader.releaseLock(); }
   }
-  await pipeline(Readable.from(chunks()), byteLimit(limits.downloadBytes), createGunzip(),
+  return extractSourceArchive(chunks(), directory, signal, { limits, uploaded: false });
+}
+
+/**
+ * An uploaded source's gzipped tar, `chunks`, extracted into `directory` under the same limits and checks as a
+ * repository's, keeping each entry's permission bits, which its content digest covers. Resolves to its root.
+ */
+export const extractUploadedSource = (chunks: AsyncIterable<Uint8Array>, directory: string, signal: AbortSignal) =>
+  extractSourceArchive(chunks, directory, signal, { limits: SOURCE_LIMITS, uploaded: true });
+
+// The source is streamed to disk. Validate the complete archive before extraction,
+// including entries preceding a later symlink, rather than trusting archive order.
+async function extractSourceArchive(chunks: AsyncIterable<Uint8Array>, directory: string, signal: AbortSignal,
+  { limits, uploaded }: { limits: typeof SOURCE_LIMITS; uploaded: boolean }) {
+  const archive = path.join(directory, "source.tar");
+  await pipeline(Readable.from(chunks), byteLimit(limits.downloadBytes), createGunzip(),
     byteLimit(limits.expandedBytes), createWriteStream(archive, { flags: "wx", mode: 0o600 }), { signal });
-  const entries = new Map<string, { type: string; link: string }>();
+  const entries = new Map<string, { type: string; link: string; mode: number }>();
   let invalid: GithubSourceError | undefined;
   const parser = new tar.Parser({ strict: true, onReadEntry(entry) {
     try {
       signal.throwIfAborted();
       const name = safePath(entry.path);
-      if (entries.size >= limits.entries || entries.has(name)) throw new GithubSourceError({ message: "Repository archive has too many or duplicate entries." });
-      if (!["File", "Directory", "SymbolicLink"].includes(entry.type)) throw new GithubSourceError({ message: "Repository archive contains an unsupported entry." });
+      if (entries.size >= limits.entries || entries.has(name)) throw new GithubSourceError({ message: "Source archive has too many or duplicate entries." });
+      if (!["File", "Directory", "SymbolicLink"].includes(entry.type)) throw new GithubSourceError({ message: "Source archive contains an unsupported entry." });
       const link = entry.type === "SymbolicLink" ? (entry.linkpath ?? "") : "";
-      if (link && (path.posix.isAbsolute(link) || link.includes("\\") || link.includes("\0"))) throw new GithubSourceError({ message: "Repository archive contains an unsafe link." });
-      entries.set(name, { type: entry.type, link });
+      if (link && (path.posix.isAbsolute(link) || link.includes("\\") || link.includes("\0"))) throw new GithubSourceError({ message: "Source archive contains an unsafe link." });
+      entries.set(name, { type: entry.type, link, mode: (entry.mode ?? 0) & 0o777 });
     } catch (error) { invalid = error instanceof GithubSourceError ? error : new GithubSourceError({ message: "Source acquisition cancelled." }); }
     entry.resume();
   } });
   await pipeline(createReadStream(archive), parser, { signal });
   if (invalid) throw invalid;
   const roots = new Set([...entries.keys()].map((name) => name.split("/")[0]));
-  if (roots.size !== 1) throw new GithubSourceError({ message: "Repository archive must have one root." });
+  if (roots.size !== 1) throw new GithubSourceError({ message: "Source archive must have one root." });
   const root = [...roots][0];
-  if (!root) throw new GithubSourceError({ message: "Repository archive is empty." });
+  if (!root) throw new GithubSourceError({ message: "Source archive is empty." });
   for (const [name, entry] of entries) {
     const ancestors = name.split("/");
     ancestors.pop();
     while (ancestors.length) {
-      if (entries.get(ancestors.join("/"))?.type === "SymbolicLink") throw new GithubSourceError({ message: "Repository archive writes through a symbolic link." });
+      if (entries.get(ancestors.join("/"))?.type === "SymbolicLink") throw new GithubSourceError({ message: "Source archive writes through a symbolic link." });
       ancestors.pop();
     }
     if (entry.type === "SymbolicLink") {
@@ -107,24 +120,29 @@ export async function extractGithubSource(response: Response, directory: string,
         const component = remaining.shift();
         if (!component || component === ".") continue;
         if (component === "..") {
-          if (resolved.length <= 1) throw new GithubSourceError({ message: "Repository symbolic link escapes its root." });
+          if (resolved.length <= 1) throw new GithubSourceError({ message: "A symbolic link escapes the source root." });
           resolved.pop();
           continue;
         }
         resolved.push(component);
         const target = entries.get(resolved.join("/"));
         if (target?.type === "SymbolicLink") {
-          if (++links > 40) throw new GithubSourceError({ message: "Repository contains cyclic or excessively nested symbolic links." });
+          if (++links > 40) throw new GithubSourceError({ message: "The source contains cyclic or excessively nested symbolic links." });
           resolved.pop();
           remaining.unshift(...target.link.split("/"));
         }
       }
     }
-    if (path.posix.basename(name) === ".gitmodules") throw new GithubSourceError({ message: "Git submodules are not supported for Cloud builds." });
+    if (!uploaded && path.posix.basename(name) === ".gitmodules") throw new GithubSourceError({ message: "Git submodules are not supported for Cloud builds." });
   }
   const unpack = path.join(directory, "checkout");
   await mkdir(unpack, { mode: 0o700 });
-  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => !("type" in entry) || entry.type !== "SymbolicLink" }), { signal });
+  await pipeline(createReadStream(archive), tar.x({ cwd: unpack, strict: true, noChmod: true, noMtime: true, filter: (_name, entry) => {
+    if (!("type" in entry)) return true;
+    // An upload's own modes come last; until then its owner may read and write everything.
+    if (uploaded && entry.mode !== undefined) entry.mode |= entry.type === "Directory" ? 0o700 : 0o600;
+    return entry.type !== "SymbolicLink";
+  } }), { signal });
   // Install validated links last; tar intentionally refuses even safe chained links.
   for (const [name, entry] of entries) {
     signal.throwIfAborted();
@@ -134,6 +152,17 @@ export async function extractGithubSource(response: Response, directory: string,
     await symlink(entry.link, destination);
   }
   await rm(archive);
+  if (uploaded) {
+    // The umask narrowed what tar created. Children first: a parent's final mode may forbid reaching them.
+    const deepestFirst = [...entries].filter(([, entry]) => entry.type !== "SymbolicLink")
+      .sort(([a], [b]) => b.split("/").length - a.split("/").length);
+    for (const [name, entry] of deepestFirst) {
+      signal.throwIfAborted();
+      // ponytail: setuid, setgid and sticky bits are dropped, so an upload holding them fails its digest check.
+      await chmod(path.join(unpack, name), entry.mode);
+    }
+    return path.join(unpack, root);
+  }
   for (const [name, entry] of entries) {
     signal.throwIfAborted();
     if (entry.type !== "File") continue;
@@ -147,6 +176,18 @@ export async function extractGithubSource(response: Response, directory: string,
     } finally { await file.close(); }
   }
   return path.join(unpack, root);
+}
+
+/** Remove an extracted upload, whose directories' own modes may forbid removing what they hold. */
+export async function removeExtractedSource(directory: string) {
+  const writable = async (dir: string) => {
+    await chmod(dir, 0o700);
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) await writable(path.join(dir, entry.name));
+    }
+  };
+  await writable(directory).catch(() => {});
+  await rm(directory, { recursive: true, force: true });
 }
 
 export async function resolveSourcePaths(repositoryDirectory: string, rootDir: string, dockerfilePath?: string) {

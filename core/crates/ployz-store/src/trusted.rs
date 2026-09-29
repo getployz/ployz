@@ -23,6 +23,10 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional)]
     pub volumes: Option<VolumeObservation>,
+    /// Who Cloud authenticated for this write: an admitted upload records them.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub uploader: Option<String>,
 }
 
 /// What the Servers answered when asked which of `sought` they hold. It is relative

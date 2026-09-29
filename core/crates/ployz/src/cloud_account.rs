@@ -335,13 +335,24 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
     operation: &str,
     body: &impl Serialize,
 ) -> Result<T, StoreCallError> {
+    let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
+    let url = format!("{}/api/config/{operation}", credential.cloud());
+    store_answer(
+        credential,
+        send(credential, Method::POST, &url, Some(&body)).await?,
+    )
+    .await
+}
+
+/// The Store's answer, its refusal verbatim, or why Cloud failed first.
+async fn store_answer<T: DeserializeOwned>(
+    credential: &Credential,
+    response: reqwest::Response,
+) -> Result<T, StoreCallError> {
     #[derive(Deserialize)]
     struct Refusal {
         error: RpcError,
     }
-    let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
-    let url = format!("{}/api/config/{operation}", credential.cloud());
-    let response = send(credential, Method::POST, &url, Some(&body)).await?;
     let status = response.status();
     let bytes = response
         .bytes()
@@ -356,6 +367,31 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
         }
     }
     Ok(answer(credential, status, &bytes)?)
+}
+
+/// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
+/// Deployment `deployment`, which the CLI admits next.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`conflict` once the Deployment was admitted or already has
+/// an upload, `invalid_argument` over the size cap), or a Cloud failure.
+pub(crate) async fn upload(
+    credential: &Credential,
+    deployment: &str,
+    archive: Vec<u8>,
+) -> Result<(), StoreCallError> {
+    let url = format!("{}/api/config/upload/{deployment}", credential.cloud());
+    let response = cloud_login::http()?
+        .post(&url)
+        .bearer_auth(credential.bearer())
+        .header(reqwest::header::CONTENT_TYPE, "application/gzip")
+        .body(archive)
+        .send()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    store_answer::<serde_json::Value>(credential, response).await?;
+    Ok(())
 }
 
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface.
