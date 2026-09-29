@@ -1,0 +1,134 @@
+import { testConfigEnvironment } from "#/test/config-environment";
+import crypto from "node:crypto";
+import { it } from "@effect/vitest";
+import type { ConfigCommand, ServiceId } from "@ployz/sdk";
+import { ConfigProvider, Effect, Layer } from "effect";
+import { Inngest } from "inngest";
+import { expect } from "vitest";
+import { callStore, cloudStore } from "#/modules/config-store/config-store.server";
+import {
+  checkInStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
+} from "#/modules/config-store/store-github-builds.server";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
+import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { Polar } from "#/modules/billing/polar-provider.server";
+import { AppConfig } from "#/server/config.server";
+import { DatabaseLive } from "#/server/database.server";
+import { fakeGithubApi } from "#/test/fake-github";
+import { postgresTestDatabase } from "#/test/postgres";
+import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+
+const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
+const PROJECT = "00000000-0000-4000-8000-00000000b002";
+const ENVIRONMENT = "00000000-0000-4000-8000-00000000b003";
+const SERVICE = "00000000-0000-4000-8000-00000000b004";
+const DEPLOYMENT = "00000000-0000-4000-8000-00000000b101";
+const BUILD = `${DEPLOYMENT}.web`;
+const HEAD = "c".repeat(40);
+const RUN = 9001;
+const WORKFLOW = "acme/web/.github/workflows/ployz-build.yml@refs/heads/main";
+const here = { project: null, environment: null };
+
+const signing = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+const jwk = { ...signing.publicKey.export({ format: "jwk" }), kid: "key-1" };
+type RunnerClaims = { repository_id: string; job_workflow_ref: string; run_id: string; event_name: string };
+/** A GitHub Actions OIDC token for the dispatched run, with `claims` overriding any claim. */
+function oidcToken(claims: Partial<RunnerClaims> = {}, key: crypto.KeyObject = signing.privateKey) {
+  const part = (json: string) => Buffer.from(json).toString("base64url");
+  const body = `${part(JSON.stringify({ alg: "RS256", kid: "key-1" }))}.${part(JSON.stringify({
+    iss: GITHUB_OIDC_ISSUER, aud: "http://localhost:3000", exp: Math.floor(Date.now() / 1000) + 300,
+    repository_id: "42", job_workflow_ref: WORKFLOW, run_id: String(RUN), event_name: "workflow_dispatch", ...claims,
+  }))}`;
+  return `${body}.${crypto.sign("RSA-SHA256", Buffer.from(body), key).toString("base64url")}`;
+}
+
+/** GitHub with `acme/web` through installation 7, without the build workflow. */
+const github = fakeGithubApi({
+  "https://api.github.com/repositories/42": { id: 42, full_name: "acme/web", default_branch: "main" },
+});
+
+it.live(
+  "a Store build goes to GitHub first; its check-in must come from the dispatched repository, workflow and run; a cancel ends it",
+  () =>
+    Effect.gen(function* () {
+      const cloud = yield* postgresTestDatabase;
+      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
+      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
+      const services = yield* Layer.build(Layer.mergeAll(
+        configLayer,
+        DatabaseLive.pipe(Layer.provide(configLayer)),
+        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
+      ));
+      const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
+        Effect.provide(services),
+        Effect.provideService(GithubApi, github.service),
+        Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
+        Effect.provideService(InngestClient, new Inngest({ id: "store-github-builds" })),
+        Effect.provideService(Polar, { mode: "self_hosted" }),
+        // No Cluster is paired: domains read as unobserved.
+        Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
+      );
+      const store = yield* provided(cloudStore);
+      const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, {
+        repositories: [{
+          repository: "acme/web", repository_id: 42, access: { type: "github-installation", installationId: 7 },
+          default_branch: "main", branches: [],
+        }],
+        domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
+      }));
+      yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
+      yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null });
+      yield* write({ command: "admit", id: DEPLOYMENT, environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      const view = () => Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: DEPLOYMENT }));
+
+      // Auto tries GitHub first: GitHub gets the pinned build.
+      yield* Effect.promise(() => store.pinSources(DEPLOYMENT, { web: HEAD }));
+      const data = { organizationId: ORGANIZATION, environmentId: ENVIRONMENT, deploymentId: DEPLOYMENT };
+      const [target] = yield* provided(planStoreGithubBuilds(data));
+      if (target === undefined) return expect.unreachable("GitHub gets the build");
+      expect(target).toEqual({
+        build: BUILD, service: "web", repository: "acme/web", repositoryId: 42, installationId: 7, hasNext: true,
+      });
+
+      // Without the build workflow GitHub is skipped at once, with why, and the servers take it.
+      expect(yield* provided(startStoreGithubBuild(ORGANIZATION, target))).toEqual({ kind: "done" });
+      expect(yield* view()).toMatchObject({
+        builds: [{ service: "web", commit: HEAD, status: "pending", message: "acme/web has no .github/workflows/ployz-build.yml on its default branch" }],
+      });
+      // A skipped build is no longer GitHub's to plan.
+      expect(yield* provided(planStoreGithubBuilds(data))).toEqual([]);
+
+      // A build GitHub holds: only its dispatched run's token checks in.
+      yield* write({ command: "admit", id: "00000000-0000-4000-8000-00000000b102", environment: here, services: [], version: null, retry: null, accept_volume_loss: [] });
+      const next = `00000000-0000-4000-8000-00000000b102.web`;
+      yield* Effect.promise(() => store.pinSources("00000000-0000-4000-8000-00000000b102", { web: HEAD }));
+      yield* Effect.promise(() => store.githubDispatched(next, {
+        run_id: RUN, run_url: "https://github.com/acme/web/actions/runs/9001", workflow_ref: WORKFLOW, repository: "acme/web", installation_id: 7,
+      }));
+      const request = (token: string) =>
+        new Request(`http://localhost:3000/api/builds/${next}/check-in`, { method: "POST", headers: { authorization: `Bearer ${token}` } });
+      const rejection = (token: string) => provided(Effect.flip(checkInStoreGithubBuild(request(token), next)));
+      expect(yield* rejection(oidcToken({}, crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey))).toMatchObject({ _tag: "Unauthorized" });
+      expect(yield* rejection(oidcToken({ repository_id: "43" }))).toMatchObject({ _tag: "Forbidden", message: "The token is for another repository" });
+      expect(yield* rejection(oidcToken({ job_workflow_ref: WORKFLOW.replace("main", "evil") })))
+        .toMatchObject({ _tag: "Forbidden", message: "The token is for another workflow or branch" });
+      expect(yield* rejection(oidcToken({ run_id: "9002" }))).toMatchObject({ _tag: "Forbidden", message: "The token is for another run" });
+      expect(yield* rejection(oidcToken({ event_name: "push" }))).toMatchObject({ _tag: "Forbidden", message: "The run was not dispatched by Ployz" });
+      // The right run with no Server to mint a grant: the runner retries its check-in.
+      expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "BuildGrantUnavailable" });
+      // Build Steps before the check-in are refused.
+      const steps = yield* provided(Effect.flip(recordStoreGithubBuildSteps(request(oidcToken()), next, JSON.stringify({ from: 0, events: [] }))));
+      expect(steps).toMatchObject({ _tag: "Conflict", message: "This build has not checked in" });
+
+      // Cancelling the Deployment ends the build GitHub holds; a late check-in is refused.
+      const cancelled = yield* provided(callStore(ORGANIZATION, "00000000-0000-4000-8000-00000000b0ff", {
+        operation: "write", command: { command: "cancel", deployment: "00000000-0000-4000-8000-00000000b102" },
+      }));
+      expect(cancelled).toMatchObject({ ok: true });
+      expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ status: "failed" });
+      expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
+    }),
+  60_000,
+);

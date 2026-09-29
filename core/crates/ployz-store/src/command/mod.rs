@@ -80,6 +80,8 @@ pub enum Command {
     CopyNode(crate::CopyNode),
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch),
+    /// Set the Organization's Build Order, at once.
+    SetBuildOrder(crate::SetBuildOrder),
 }
 
 impl Command {
@@ -108,7 +110,8 @@ impl Command {
             | Self::RemoveDomain(_)
             | Self::UpdateBranch(_)
             | Self::CopyNode(_)
-            | Self::KeepBranch(_) => Vec::new(),
+            | Self::KeepBranch(_)
+            | Self::SetBuildOrder(_) => Vec::new(),
         }
     }
 }
@@ -146,6 +149,8 @@ pub enum Written {
     Automated(crate::Automated),
     /// A Branch was made, updated, given an Own Copy, or kept.
     Branch(crate::Branched),
+    /// The Build Order was set; it applies to the next build.
+    BuildOrder(crate::BuildOrderView),
 }
 
 pub(crate) fn run(
@@ -192,6 +197,9 @@ pub(crate) fn run(
         }
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
+        Command::SetBuildOrder(set) => {
+            crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
+        }
     }
 }
 

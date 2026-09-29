@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, BuildReport, BuildStatus, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
+    Actor, BuildReport, BuildStatus, Builder, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
     DeploymentSummary, RunEvidence, RunnerId,
 };
 use serde_json::Value;
@@ -57,6 +57,10 @@ struct Target {
     source: Option<PathBuf>,
     /// The upload's digest, for an uploaded Service.
     upload: Option<String>,
+    /// The Server the servers try first.
+    preferred_machine: Option<ployz_core::MachineId>,
+    /// An uploaded Service whose Build Order has GitHub, which can't build it.
+    github_skipped: bool,
 }
 
 /// Run Deployment `deployment` of `who` as `runner` on one of `connections`, and
@@ -90,7 +94,7 @@ pub async fn run_deployment(
         run.store(move |store| store.claim(&deployment, &runner))
             .await?
     };
-    let targets = match checkouts
+    let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
         .and_then(|sources| targets(&claimed, sources))
     {
@@ -107,7 +111,7 @@ pub async fn run_deployment(
         Ok(session) => session,
         Err(error) => return run.not_executed(error.message).await,
     };
-    let recorded = run.execute(&session, claimed, targets).await;
+    let recorded = run.execute(&session, claimed, targets, built).await;
     session.close().await;
     recorded
 }
@@ -141,13 +145,17 @@ impl Run {
         session: &Session,
         claimed: Claimed,
         targets: Vec<Target>,
+        built: BTreeMap<ServiceName, BuildReceipt>,
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
-        let prepared = if targets.is_empty() {
+        let prepared = if targets.is_empty() && built.is_empty() {
             session.preview(claimed.intent).await
         } else {
             match self.build(session, &claimed, &targets).await? {
-                Ok(receipts) => self.prepare(session, claimed, targets, receipts).await,
+                Ok(mut receipts) => {
+                    receipts.extend(built);
+                    self.prepare(session, claimed, targets, receipts).await
+                }
                 Err(unbuilt) => return self.unbuilt(unbuilt).await,
             }
         };
@@ -228,7 +236,7 @@ impl Run {
                 uploads: one(service, target.upload.clone()),
                 build_receipts: one(service, hint.clone()),
                 build_index: index,
-                preferred_machine: None,
+                preferred_machine: target.preferred_machine,
             };
             builds.push((target, hint, session.build(input, None)?));
         }
@@ -288,9 +296,9 @@ impl Run {
         let service = &target.service;
         self.report(service, BuildStatus::Building, None, String::new())
             .await?;
-        // ponytail: uploaded builds only ever run on Servers; GitHub's Builder walk
-        // skips them with this reason once it exists here.
-        let mut log = if target.upload.is_some() {
+        // GitHub can't build uploaded source: the walk skips it, and says so when the
+        // Build Order has it.
+        let mut log = if target.github_skipped {
             "GitHub can't build uploaded source: it builds on your Servers\n".to_owned()
         } else {
             String::new()
@@ -429,9 +437,43 @@ impl Run {
 
 /// What `claimed` builds: each Git Service from its checkout at its pin, and each
 /// uploaded Service from the upload, if Cloud still holds it.
-fn targets(claimed: &Claimed, sources: Sources) -> Result<Vec<Target>, Unbuilt> {
+/// What to build on the Servers, and the images GitHub already built, by Service.
+/// A build GitHub failed, or one whose walk leaves the Servers out, fails them all.
+fn targets(
+    claimed: &Claimed,
+    sources: Sources,
+) -> Result<(Vec<Target>, BTreeMap<ServiceName, BuildReceipt>), Unbuilt> {
     let mut targets = Vec::new();
+    let mut built = BTreeMap::new();
+    let mut failed = Vec::new();
     for source in &claimed.sources {
+        let receipt = claimed
+            .receipts
+            .get(&source.service)
+            .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt.clone()).ok());
+        match (source.status, receipt) {
+            (Some(BuildStatus::Built | BuildStatus::Reused), Some(receipt)) => {
+                built.insert(source.service.clone(), receipt);
+                continue;
+            }
+            (Some(BuildStatus::Failed), _) => {
+                let why = source.message.as_deref().unwrap_or("its build failed");
+                failed.push(format!("{}: {why}", source.service));
+                continue;
+            }
+            _ => {}
+        }
+        if !source.builders.contains(&Builder::Servers) {
+            let why = source
+                .message
+                .as_deref()
+                .map_or_else(String::new, |message| format!("{message}. "));
+            failed.push(format!(
+                "{}: {why}No other Builder in your Build Order can take it",
+                source.service
+            ));
+            continue;
+        }
         let (Some(commit), Some(checkout)) =
             (&source.commit, sources.checkouts.get(&source.service))
         else {
@@ -445,10 +487,18 @@ fn targets(claimed: &Claimed, sources: Sources) -> Result<Vec<Target>, Unbuilt> 
             commit: Some(commit.clone()),
             source: Some(checkout.clone()),
             upload: None,
+            preferred_machine: source.preferred_machine,
+            github_skipped: false,
         });
     }
+    if !failed.is_empty() {
+        return Err(Unbuilt::Failed(format!(
+            "Build failed. {}",
+            failed.join("; ")
+        )));
+    }
     if claimed.uploads.is_empty() {
-        return Ok(targets);
+        return Ok((targets, built));
     }
     let Some(upload) = &claimed.deployment.upload else {
         return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
@@ -458,8 +508,10 @@ fn targets(claimed: &Claimed, sources: Sources) -> Result<Vec<Target>, Unbuilt> 
         commit: None,
         source: sources.upload.clone(),
         upload: Some(upload.digest.clone()),
+        preferred_machine: None,
+        github_skipped: claimed.build_order.contains(&Builder::Github),
     }));
-    Ok(targets)
+    Ok((targets, built))
 }
 
 /// `value` as a one-entry map for `service`, or an empty one.
@@ -479,7 +531,7 @@ fn upload_needed(error: &RpcError) -> Option<Vec<ServiceName>> {
 }
 
 /// Lowering input `input` narrowed to Service `service`: what its own build takes.
-fn only(input: &Value, service: &ServiceName) -> Value {
+pub(super) fn only(input: &Value, service: &ServiceName) -> Value {
     let mut input = input.clone();
     if let Some(snapshots) = input.get_mut("snapshots").and_then(Value::as_array_mut) {
         snapshots.retain(|snapshot| {
@@ -496,7 +548,7 @@ fn only(input: &Value, service: &ServiceName) -> Value {
 }
 
 /// What one build progress event adds to its log.
-fn log_line(event: &Value) -> String {
+pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
@@ -540,7 +592,7 @@ async fn remove_volumes(
         .unwrap_or_default()
 }
 
-fn internal(message: &str) -> RpcError {
+pub(super) fn internal(message: &str) -> RpcError {
     RpcError {
         code: RpcErrorCode::Internal,
         message: message.to_owned(),

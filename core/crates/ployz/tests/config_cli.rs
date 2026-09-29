@@ -1595,3 +1595,29 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let archive = UPLOADS.lock().unwrap().get(id).cloned().unwrap();
     assert_eq!(archive.get(..2), Some(&[0x1f, 0x8b][..]), "a gzip");
 }
+
+#[test]
+fn an_agent_reads_and_sets_the_build_order_at_once() {
+    for store in &targets() {
+        let auto = ok(store, &["org", "build-order"]);
+        assert_eq!(auto["build_order"], Value::Null);
+        assert_eq!(auto["builders"], json!(["github", "servers"]));
+        assert!(auto.get("immediate").is_none());
+
+        let set = ok(store, &["org", "build-order", "servers-only"]);
+        assert_eq!(set["build_order"], "servers-only");
+        assert_eq!(set["builders"], json!(["servers"]));
+        assert_eq!(set["immediate"], true);
+        assert_eq!(
+            ok(store, &["org", "build-order"])["build_order"],
+            "servers-only"
+        );
+
+        assert_eq!(
+            ok(store, &["org", "build-order", "auto"])["build_order"],
+            Value::Null
+        );
+        let (code, _) = ployz(Some(store), &["org", "build-order", "gitlab-first"]);
+        assert_eq!(code, Some(2));
+    }
+}

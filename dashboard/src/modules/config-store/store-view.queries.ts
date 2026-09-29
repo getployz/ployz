@@ -33,6 +33,7 @@ const refreshedBy = {
   removals: ["store_environment", "store_deployment"],
   // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
   branch: ["store_environment", "store_deployment"],
+  build_order: ["store_organization"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
