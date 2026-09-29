@@ -17,7 +17,7 @@ export type StoreDeploymentServices = AppConfig | Database | SecretEncryption | 
 export class StoreDeploymentRunFailure extends Data.TaggedError("StoreDeploymentRunFailure")<{ readonly cause: unknown }> {}
 
 /** Cloud could not read a Git Service's source; users read the message. */
-class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
+export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
 
 const storeCall = <A>(call: () => Promise<A>) =>
   Effect.tryPromise({ try: call, catch: (cause) => new StoreDeploymentRunFailure({ cause }) });
@@ -34,12 +34,12 @@ const identity = (organizationId: string, source: GitSource) => ({
 
 /**
  * Pin each Git Service of the Deployment to its branch's head, unless it is pinned already (a pin never moves, so a
- * retried run reads the same commit), then check out every pin for the runner until the scope closes.
+ * retried run reads the same commit). Resolves to every source with its pin.
  */
-const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
+export const pinStoreSources = Effect.fn("StoreDeployment.pinSources")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
-  let sources = yield* storeCall(() => store.deploymentSources(deploymentId));
+  const sources = yield* storeCall(() => store.deploymentSources(deploymentId));
   const heads: Record<string, string> = {};
   for (const source of sources) {
     if (source.commit !== null) continue;
@@ -48,7 +48,14 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
     }
     heads[source.service] = yield* fromGithub(resolveGithubSourceSha({ ...identity(organizationId, source), branch: source.branch }));
   }
-  if (Object.keys(heads).length > 0) sources = yield* storeCall(() => store.pinSources(deploymentId, heads));
+  return Object.keys(heads).length > 0 ? yield* storeCall(() => store.pinSources(deploymentId, heads)) : sources;
+});
+
+/** Pin the Deployment's Git Services, then check out every pin for the runner until the scope closes. */
+const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
+  store: ConfigStore, organizationId: string, deploymentId: string,
+) {
+  const sources = yield* pinStoreSources(store, organizationId, deploymentId);
   const checkouts: Record<string, string> = {};
   for (const source of sources) {
     if (source.commit === null) return yield* new SourceUnreadable({ message: `${source.service} has no pinned commit.` });
@@ -61,7 +68,7 @@ const checkoutSources = Effect.fn("StoreDeployment.checkoutSources")(function* (
 
 /** The Store's refusal when this runner has nothing to run: its Deployment was replaced, cancelled or ended, another
  * runner owns it, or this one lost track of it after preparing it. */
-function isConflict(cause: unknown): cause is { readonly message: string } {
+export function isConflict(cause: unknown): cause is { readonly message: string } {
   return typeof cause === "object" && cause !== null && "code" in cause && cause.code === "conflict";
 }
 

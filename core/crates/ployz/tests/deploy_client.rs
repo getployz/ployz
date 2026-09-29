@@ -1241,3 +1241,115 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     );
     server.abort();
 }
+
+/// A Git Service GitHub couldn't take, in an Organization that builds on GitHub only,
+/// never builds on the Servers: the runner records why nothing ran.
+#[tokio::test]
+async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
+    use ployz_core::config::ServiceGitAccess;
+    use ployz_store::{
+        Actor, Admit, AuthorizedRepository, BuildOrder, Command, ConfigStore, CreateGitService,
+        CreateProject, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef,
+        GithubBuildId, GithubEnd, OrganizationId, Outcome, ProjectId, ProjectName, RunnerId,
+        SealingKey, ServiceId, SetBuildOrder, Trusted,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor {
+        organization: OrganizationId::parse("org").unwrap(),
+    };
+    store
+        .create_project(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    let trusted = Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: "acme/web".into(),
+            repository_id: 11,
+            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: "main".into(),
+            branches: Vec::new(),
+        }],
+        ..Trusted::default()
+    };
+    store
+        .create_git_service(
+            &who,
+            &CreateGitService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                repository: "acme/web".into(),
+                branch: None,
+            },
+            &trusted,
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Command::SetBuildOrder(SetBuildOrder {
+                build_order: Some(BuildOrder::GithubOnly),
+            }),
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .admit(
+            &who,
+            &Admit {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: None,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    let web = ployz_core::ServiceName::parse("web").unwrap();
+    store
+        .pin(&id, &[(web.clone(), "a".repeat(40))].into())
+        .unwrap();
+    let build = GithubBuildId {
+        deployment: id.clone(),
+        service: web,
+    };
+    let skipped = GithubEnd::Skipped {
+        message: "acme/web has no build workflow".into(),
+    };
+    store.github_end(&build, None, &skipped).unwrap();
+
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let summary = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        who.clone(),
+        id.clone(),
+        RunnerId::parse("cloud-run-1").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Failed);
+    let Some(Outcome::NotExecuted { reason, .. }) = store.deployment(&who, &id).unwrap().outcome
+    else {
+        panic!("nothing ran")
+    };
+    assert_eq!(
+        reason,
+        "Build failed. web: acme/web has no build workflow. No other Builder in your Build Order can take it"
+    );
+    server.abort();
+}

@@ -4,17 +4,17 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
-    CopyNode, CreateBranch, CreateEnvironment, CreateGitService, CreateProject, CreateService,
-    CreateVolume, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
-    DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, KeepBranch,
-    NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated,
-    ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView, RemoveDomain,
-    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
-    ServiceView, ServicesQuery, ServicesView, Start, Trusted, UpdateBranch, VolumeQuery,
-    VolumeStaged, VolumeView, VolumesQuery, VolumesView,
+    Actor, AddDomain, Admit, Branched, BuildLogQuery, BuildLogView, BuildOrderQuery,
+    BuildOrderView, Cancel, Command, ConfigStore, CopyNode, CreateBranch, CreateEnvironment,
+    CreateGitService, CreateProject, CreateService, CreateVolume, DeploymentId, DeploymentQuery,
+    DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView, DiffQuery, DiffView,
+    Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView, DomainsQuery,
+    DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
+    EnvironmentView, KeepBranch, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery,
+    PlanView, ProjectCreated, ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView,
+    RemoveDomain, RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery,
+    ServiceStaged, ServiceView, ServicesQuery, ServicesView, SetBuildOrder, Start, Trusted,
+    UpdateBranch, VolumeQuery, VolumeStaged, VolumeView, VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -250,6 +250,21 @@ impl Store {
     pub(crate) fn cancel(&self, cancel: &Cancel) -> Result<DeploymentSummary, StoreCallError> {
         let request = Command::Cancel(cancel.clone());
         self.call("write", &request, |store, who| store.cancel(who, cancel))
+    }
+
+    pub(crate) fn build_order(&self) -> Result<BuildOrderView, StoreCallError> {
+        let request = Query::BuildOrder(BuildOrderQuery::default());
+        self.call("read", &request, |store, who| store.build_order(who))
+    }
+
+    pub(crate) fn set_build_order(
+        &self,
+        set: &SetBuildOrder,
+    ) -> Result<BuildOrderView, StoreCallError> {
+        let request = Command::SetBuildOrder(set.clone());
+        self.call("write", &request, |store, who| {
+            store.set_build_order(who, set)
+        })
     }
 
     pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {
