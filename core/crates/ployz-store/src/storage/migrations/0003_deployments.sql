@@ -20,7 +20,6 @@ CREATE TABLE config_deployment (
     services TEXT NOT NULL,
     nodes TEXT NOT NULL,
     namespace TEXT NOT NULL,
-    intent TEXT NOT NULL,
     run TEXT NOT NULL,
     UNIQUE (environment_id, number)
 );

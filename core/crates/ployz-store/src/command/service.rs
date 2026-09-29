@@ -144,7 +144,7 @@ mod tests {
     /// Node Introductions have no read yet (Discard uses them), so this reads the row.
     #[test]
     fn a_node_introduction_keeps_the_service_as_created() {
-        let store = ConfigStore::open("sqlite::memory:").unwrap();
+        let store = ConfigStore::open("sqlite::memory:", crate::SealingKey::new(b"test").unwrap()).unwrap();
         let who = Actor {
             organization: OrganizationId::parse("org").unwrap(),
         };

@@ -121,6 +121,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
+                        if row.path.starts_with("env.") {
+                            row.before = shown_env(row.before);
+                            row.after = shown_env(row.after);
+                        }
                         row.path = match ServiceSetting::ALL
                             .into_iter()
                             .find(|setting| setting.field() == row.path)
@@ -142,6 +146,15 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .collect(),
     };
     Ok(Review { view, saved, head })
+}
+
+/// A variable change as `get` shows values: text, or `{"secret": true}`.
+fn shown_env(value: serde_json::Value) -> serde_json::Value {
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("secret") => json!({ "secret": true }),
+        Some(_) => value.get("value").cloned().unwrap_or_default(),
+        None => value,
+    }
 }
 
 /// Refuse unless `version` still names this review; the refusal carries the fresh one.
