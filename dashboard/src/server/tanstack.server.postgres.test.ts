@@ -9,7 +9,7 @@ import { Inngest } from "inngest";
 import { Client } from "pg";
 import { createServer } from "vite";
 import { expect, it } from "vitest";
-import { cloudStore } from "#/modules/config-store/config-store.server";
+import { CloudStoreLive, cloudStore } from "#/modules/config-store/store-sdk.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
@@ -101,7 +101,7 @@ it(
           await store.write(organization.id, { command: "create_project", id: randomUUID(), name: "ssr-project", default_environment: randomUUID() });
           await store.write(organization.id, { command: "create_environment", id: randomUUID(), project: "ssr-project", name: "ssr-production" });
         });
-      }).pipe(Effect.provide(Layer.merge(configLayer, databaseLayer)));
+      }).pipe(Effect.provide(CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)))));
 
       yield* Effect.promise(async () => {
         const previousDatabaseUrl = process.env["DATABASE_URL"];

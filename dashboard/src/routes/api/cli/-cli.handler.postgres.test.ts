@@ -17,6 +17,7 @@ import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { callStore } from "#/modules/config-store/config-store.server";
+import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -111,7 +112,8 @@ const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Pl
     Layer.succeed(GithubApi, github.service),
     ployz,
   );
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services);
+  const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services, store);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -544,7 +546,7 @@ it.live(
         const alice = yield* signUp("alice");
         const bob = yield* signUp("bob");
         const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
-        const enroll = (as: As, body: unknown) => {
+        const enroll = (as: As, body: Readonly<Record<string, string | boolean>>) => {
           const headers = new Headers();
           if (as.cookie !== undefined) headers.set("cookie", as.cookie);
           if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);

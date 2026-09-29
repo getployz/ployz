@@ -1,8 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore, ConfigWritten, SystemEvent } from "@ployz/sdk";
 import { Data, Effect } from "effect";
-import { cloudStore } from "#/modules/config-store/config-store.server";
-import type { StoreDeploymentServices } from "#/modules/config-store/store-deployment.server";
+import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import {
   compareInstallationRepositoryCommits,
   fetchInstallationCheckSuite,
@@ -18,20 +17,9 @@ import type {
 } from "#/modules/github/github-ingestion.contracts";
 import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
-import { storeTry } from "#/modules/config-store/store-sdk.server";
 
-/** What Cloud's GitHub workers need to feed the Store. */
-export type StoreGithubServices = StoreDeploymentServices;
-
-export class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly cause: unknown }> {}
-
-const storeCall = <A>(call: () => Promise<A>) =>
-  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
-
-function isConflict(cause: unknown): cause is StoreGithubFailure {
-  return cause instanceof StoreGithubFailure && typeof cause.cause === "object" && cause.cause !== null
-    && "code" in cause.cause && cause.cause.code === "conflict";
-}
+/** GitHub told Cloud something it can't use yet; the worker retries. */
+export class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly message: string }> {}
 
 /** GitHub's `updated_at` as the Store orders facts by it. */
 export const githubTimestamp = (at: string) => new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -70,14 +58,14 @@ export const descendsFrom = (installationId: number, repository: GithubResolvedR
 const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
 ) {
-  const { standing } = yield* storeCall(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
+  const { standing } = yield* storeTry(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
   for (const number of standing) {
     const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, number).pipe(
       Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
     );
     const { updatedAt } = live ?? {};
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
-    yield* storeCall(() => store.system(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, null)));
+    yield* storeTry(() => store.system(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, null)));
   }
 });
 
@@ -85,7 +73,7 @@ const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
 const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData, repository: GithubResolvedRepository, head: string,
 ) {
-  const { merged } = yield* storeCall(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
+  const { merged } = yield* storeTry(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
   const carried: string[] = [];
   for (const commit of merged) {
     if (yield* descendsFrom(payload.installationId, repository, commit, head)) carried.push(commit);
@@ -94,7 +82,7 @@ const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
 });
 
 /** The Deployments an observation admitted, as Cloud dispatches them to runners. */
-function admitted(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
+export function admitted(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
   if (written.written !== "automated") return [];
   return written.admitted.map((deployed) => ({
     organizationId, environmentId: deployed.environment, deploymentId: deployed.deployment.id,
@@ -112,7 +100,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
   yield* freezeMerged(store, organizationId, payload);
   const merged = head === null ? [] : yield* mergedInto(store, organizationId, payload, repository, head);
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const base = yield* storeCall(() => store.branchHead(organizationId, payload.repositoryId, payload.branch));
+    const base = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, payload.branch));
     // No changed paths (a force-push, diverged or long history) deploys every Service that follows the branch.
     let changed: string[] | null = null;
     if (base !== null && head !== null && base !== head && !payload.forced) {
@@ -125,13 +113,13 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
     const event: SystemEvent = {
       event: "branch_head", repository_id: payload.repositoryId, branch: payload.branch, base, head, changed, merged,
     };
-    const written = yield* storeCall(() => store.system(organizationId, event)).pipe(
+    const written = yield* storeTry(() => store.system(organizationId, event)).pipe(
       Effect.map((written) => ({ written })),
-      Effect.catchIf(isConflict, () => Effect.succeed(null)),
+      Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
     if (written !== null) return admitted(organizationId, written.written);
   }
-  return yield* new StoreGithubFailure({ cause: "The branch's head kept moving while Cloud compared it." });
+  return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });
 
 /**
@@ -170,7 +158,7 @@ export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")
   };
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of organizations) {
-    const written = yield* storeCall(() => store.system(organizationId, event));
+    const written = yield* storeTry(() => store.system(organizationId, event));
     deployments.push(...admitted(organizationId, written));
   }
   return deployments;

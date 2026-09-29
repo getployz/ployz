@@ -9,6 +9,7 @@ import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/mac
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
+import { Unauthorized } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 
 /** One dial or Clear per Server; a Server that doesn't answer in time is unreachable or unconfirmed. */
@@ -19,6 +20,12 @@ const SERVER_CONCURRENCY = 4;
 export function serverAccessLabel(credentialId: string) {
   return `cli-${credentialId.replaceAll("-", "").slice(0, 28)}`;
 }
+
+/** Provisioning and revoking one credential's holders take turns, so a revocation never misses a fresh holder. */
+const lockCredential = (credentialId: string) => Effect.gen(function* () {
+  const { drizzle } = yield* Database;
+  yield* drizzle.execute(sql`select pg_advisory_xact_lock(hashtext(${`server-access:${credentialId}`}))`);
+});
 
 /** Set `label` on one Server through Cloud's own `cloud` slot. */
 const setHolder = (connection: Connection, label: string) =>
@@ -35,7 +42,8 @@ const setHolder = (connection: Connection, label: string) =>
 export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (caller: Caller) {
   const loaded = yield* loadOrganizationConnections(caller.organization.id);
   if (loaded.kind === "missing") return { connections: [], unreachable: [] };
-  const { drizzle } = yield* Database;
+  const database = yield* Database;
+  const { drizzle } = database;
   const encryption = yield* SecretEncryption;
   const held = new Map((yield* drizzle.select({
     machineId: serverAccess.machineId,
@@ -54,19 +62,36 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
     const management = yield* setHolder(cloud, label).pipe(Effect.option);
     if (management._tag === "None") return { machine_id: machineId, management: null };
     // ponytail: two first uses racing both Set; the later key wins and the earlier command may need a rerun.
-    // A revocation racing this insert is caught by the next retireServerAccess sweep.
+    // Recorded, then checked, under the credential's lock: a revocation that finished meanwhile revokes it at once,
+    // and the Clear below (or the next retry) takes it off the Server.
     const encryptedCapability = encryption.encrypt(management.value);
-    yield* drizzle.insert(serverAccess).values({
-      organizationId: caller.organization.id,
-      machineId,
-      credentialId: caller.credential.id,
-      credentialKind: caller.credential.kind,
-      userId: caller.userId,
-      encryptedCapability,
-    }).onConflictDoUpdate({
-      target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId],
-      set: { encryptedCapability, revokedAt: null, updatedAt: new Date() },
-    });
+    const revoked = yield* database.transaction(Effect.gen(function* () {
+      const { drizzle: tx } = yield* Database;
+      yield* lockCredential(caller.credential.id);
+      yield* tx.insert(serverAccess).values({
+        organizationId: caller.organization.id,
+        machineId,
+        credentialId: caller.credential.id,
+        credentialKind: caller.credential.kind,
+        userId: caller.userId,
+        encryptedCapability,
+      }).onConflictDoUpdate({
+        target: [serverAccess.organizationId, serverAccess.credentialId, serverAccess.machineId],
+        set: { encryptedCapability, revokedAt: null, updatedAt: new Date() },
+      });
+      return (yield* tx.update(serverAccess)
+        .set({ revokedAt: new Date(), encryptedCapability: null, updatedAt: new Date() })
+        .where(and(
+          eq(serverAccess.organizationId, caller.organization.id),
+          eq(serverAccess.credentialId, caller.credential.id),
+          eq(serverAccess.machineId, machineId),
+          not(stillAuthorized),
+        )).returning({ machineId: serverAccess.machineId })).length > 0;
+    }));
+    if (revoked) {
+      yield* retireCredentialServerAccess(caller.credential.id);
+      return yield* new Unauthorized();
+    }
     return { machine_id: machineId, management: management.value };
   }), { concurrency: SERVER_CONCURRENCY });
   return {
@@ -90,11 +115,17 @@ const stillAuthorized = sql`(exists (select 1 from ${member}
  * removal): Cloud forgets its capability at once, then tries one bounded Clear per Server. A Clear that doesn't
  * confirm leaves the revocation pending for the next retry.
  */
-export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (scope?: SQL) {
-  const { drizzle } = yield* Database;
-  yield* drizzle.update(serverAccess)
-    .set({ revokedAt: new Date(), encryptedCapability: null, updatedAt: new Date() })
-    .where(and(isNull(serverAccess.revokedAt), not(stillAuthorized), scope));
+export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (scope?: SQL, credentialId?: string) {
+  const database = yield* Database;
+  const { drizzle } = database;
+  yield* database.transaction(Effect.gen(function* () {
+    // One credential's revocation waits for its provisioning in flight; a sweep's catches one at the next.
+    if (credentialId !== undefined) yield* lockCredential(credentialId);
+    const { drizzle: tx } = yield* Database;
+    yield* tx.update(serverAccess)
+      .set({ revokedAt: new Date(), encryptedCapability: null, updatedAt: new Date() })
+      .where(and(isNull(serverAccess.revokedAt), not(stillAuthorized), scope));
+  }));
   const pending = yield* drizzle.select({
     organizationId: serverAccess.organizationId,
     machineId: serverAccess.machineId,
@@ -132,7 +163,7 @@ export const retireServerAccess = Effect.fn("ServerAccess.retire")(function* (sc
 
 /** Retire one credential's holders, on every Server of every Organization it reached. */
 export const retireCredentialServerAccess = (credentialId: string) =>
-  retireServerAccess(eq(serverAccess.credentialId, credentialId));
+  retireServerAccess(eq(serverAccess.credentialId, credentialId), credentialId);
 
 /** Revoked credentials of the Organization whose Servers haven't confirmed the Clear yet. */
 export const pendingServerRevocations = Effect.fn("ServerAccess.pending")(function* (organizationId: string) {

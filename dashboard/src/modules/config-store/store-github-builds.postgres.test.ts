@@ -1,24 +1,18 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import crypto from "node:crypto";
 import { it } from "@effect/vitest";
 import type { ConfigCommand, ServiceId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer } from "effect";
-import { Inngest } from "inngest";
+import { Effect, Layer } from "effect";
 import { expect } from "vitest";
-import { callStore, cloudStore } from "#/modules/config-store/config-store.server";
+import { asTestDouble } from "#/lib/test-double";
+import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
 import {
   checkInStoreGithubBuild, planStoreGithubBuilds, recordStoreGithubBuildSteps, startStoreGithubBuild,
 } from "#/modules/config-store/store-github-builds.server";
-import { GithubApi } from "#/modules/github/github-observation.api";
 import { GITHUB_OIDC_ISSUER, GithubOidcKeys } from "#/modules/github/github-oidc.server";
-import { InngestClient } from "#/modules/inngest/client";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { Polar } from "#/modules/billing/polar-provider.server";
-import { AppConfig } from "#/server/config.server";
-import { DatabaseLive } from "#/server/database.server";
+import { type ConnectedRuntimeClient, OrganizationRuntime, type OrganizationRuntimeService } from "#/modules/runtime/organization-runtime.server";
 import { fakeGithubApi } from "#/test/fake-github";
-import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -53,22 +47,10 @@ it.live(
   "a Store build goes to GitHub first; its check-in must come from the dispatched repository, workflow and run; a cancel ends it",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
+      const services = yield* Layer.build(yield* storeTestCloud({ github: github.service }));
       const provided = <A, E, R>(program: Effect.Effect<A, E, R>) => program.pipe(
         Effect.provide(services),
-        Effect.provideService(GithubApi, github.service),
         Effect.provideService(GithubOidcKeys, { keys: Effect.succeed([jwk]) }),
-        Effect.provideService(InngestClient, new Inngest({ id: "store-github-builds" })),
-        Effect.provideService(Polar, { mode: "self_hosted" }),
-        // No Cluster is paired: domains read as unobserved.
-        Effect.provideService(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
       );
       const store = yield* provided(cloudStore);
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command, {
@@ -129,6 +111,27 @@ it.live(
       expect(cancelled).toMatchObject({ ok: true });
       expect(yield* Effect.promise(() => store.githubBuild(next))).toMatchObject({ status: "failed" });
       expect(yield* rejection(oidcToken())).toMatchObject({ _tag: "Conflict" });
+
+      // A walk that starts with the Servers leaves the build to them, unless no Server takes builds: then GitHub.
+      yield* write({ command: "set_build_order", build_order: "servers-then-github" });
+      const serversFirst = "00000000-0000-4000-8000-00000000b103";
+      yield* write({ command: "admit", id: serversFirst, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* Effect.promise(() => store.pinSources(serversFirst, { web: HEAD }));
+      const plan = { ...data, deploymentId: serversFirst };
+      expect(yield* provided(planStoreGithubBuilds(plan))).toEqual([]);
+      const noBuilders = asTestDouble<OrganizationRuntimeService>()({
+        cancel: () => Effect.void,
+        open: () => Effect.succeed({ status: "connected" as const, connected: asTestDouble<ConnectedRuntimeClient>()({
+          watchFirstFrame: () => Effect.succeed({ machines: [{ machine: { accepts_builds: false } }] }),
+        }) }),
+      });
+      expect(yield* provided(planStoreGithubBuilds(plan).pipe(Effect.provideService(OrganizationRuntime, noBuilders))))
+        .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
+
+      // An admission carries how many Servers could run it: none here.
+      const admission = { operation: "write", command: { command: "start", deployment: serversFirst } } as const;
+      const trusted = yield* provided(gatherTrusted(ORGANIZATION, null, admission, (query) => store.read(ORGANIZATION, query)));
+      expect(trusted.servers).toBe(0);
     }),
   60_000,
 );
