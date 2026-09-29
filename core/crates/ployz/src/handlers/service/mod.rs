@@ -494,7 +494,7 @@ struct ServiceActionOutcome {
     /// One entry per Container the action reached.
     changed: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
-    failures: Vec<ContainerFailure>,
+    container_failures: Vec<ContainerFailure>,
     partial: bool,
 }
 
@@ -532,7 +532,7 @@ impl ServiceActionOutcome {
     fn result<'a>(&'a self, live: &'a LiveServices<RpcError>) -> ServiceActionResult<'a> {
         ServiceActionResult {
             changed: &self.changed,
-            container_failures: &self.failures,
+            container_failures: &self.container_failures,
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             volumes: None,
@@ -557,7 +557,7 @@ async fn apply_service_action(
         .collect::<HashSet<_>>();
     let mut changed = Vec::new();
     let mut rows = Vec::new();
-    let mut failures = Vec::new();
+    let mut container_failures = Vec::new();
     let mut partial = false;
     for service in services {
         let outcomes = client
@@ -586,7 +586,7 @@ async fn apply_service_action(
                 "WARNING: {} failed for {} on {}: {}",
                 action, failure.error.container_id, failure.machine_id, failure.error.error.message
             );
-            failures.push(ContainerFailure {
+            container_failures.push(ContainerFailure {
                 machine_id: failure.machine_id,
                 container_id: failure.error.container_id,
                 error: failure.error.error,
@@ -615,7 +615,7 @@ async fn apply_service_action(
     Ok(ServiceActionOutcome {
         affected: changed.into_iter().collect(),
         changed: rows,
-        failures,
+        container_failures,
         partial,
     })
 }

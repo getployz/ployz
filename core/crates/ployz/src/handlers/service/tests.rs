@@ -805,7 +805,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
     let outcome = ServiceActionOutcome {
         affected: HashSet::new(),
         changed: Vec::new(),
-        failures: vec![ContainerFailure {
+        container_failures: vec![ContainerFailure {
             machine_id: failed_id,
             container_id,
             error: error.clone(),

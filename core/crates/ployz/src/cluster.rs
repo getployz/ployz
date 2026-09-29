@@ -661,12 +661,11 @@ impl Client {
         }
     }
 
-    /// Fill in each reachable Machine's storage. The result carries the Machines
-    /// that failed (`failures`) or did not answer in time (`omissions`).
+    /// Fill in each reachable Machine's storage; returns the Machines left without it.
     pub(crate) async fn observe_machine_storage(
         &self,
         machines: &mut [MachineObservation],
-    ) -> PartialResult<(), RpcError> {
+    ) -> StorageGaps {
         let mut tasks = JoinSet::new();
         for (index, machine) in machines.iter().enumerate() {
             if machine.membership.invites_rpc() {
@@ -677,11 +676,7 @@ impl Client {
                 ));
             }
         }
-        let mut result = PartialResult {
-            successes: Vec::new(),
-            failures: Vec::new(),
-            omissions: Vec::new(),
-        };
+        let mut result = StorageGaps::default();
         while let Some(observed) = tasks.join_next().await {
             let (index, observed) = observed.expect("Machine storage observation does not panic");
             let Some(machine) = machines.get_mut(index) else {
@@ -1075,6 +1070,14 @@ fn machine_did_not_respond(machine_id: MachineId) -> RpcError {
         message: format!("Machine {machine_id} did not respond"),
         details: Value::Null,
     }
+}
+
+/// Machines whose storage observation failed (`failures`) or did not answer in
+/// time (`omissions`).
+#[derive(Debug, Default)]
+pub(crate) struct StorageGaps {
+    pub failures: Vec<MachineFailure<RpcError>>,
+    pub omissions: Vec<MachineId>,
 }
 
 /// `None` when the Machine did not answer within the storage budget.
