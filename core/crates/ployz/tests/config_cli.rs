@@ -16,8 +16,8 @@ use std::process::Command;
 use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
-    Actor, AuthorizedRepository, Command as StoreCommand, ConfigStore, OrganizationId, RunnerId,
-    SealingKey, Trusted, Written,
+    Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
+    ConfigStore, DomainEvidence, Hostname, OrganizationId, RunnerId, SealingKey, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -166,12 +166,14 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
     reader.read_exact(&mut body)?;
     let (status, reply) = match (organization, path.as_str()) {
         (None, _) => (401, json!({ "code": "UNAUTHORIZED" })),
-        (Some(who), "/api/config/read") => {
-            answer(store.read(&who, &serde_json::from_slice(&body).unwrap()))
-        }
+        (Some(who), "/api/config/read") => answer(store.read_trusted(
+            &who,
+            &serde_json::from_slice(&body).unwrap(),
+            &evidence(&who),
+        )),
         (Some(who), "/api/config/write") => {
             let command: StoreCommand = serde_json::from_slice(&body).unwrap();
-            let written = store.write_trusted(&who, &command, &github());
+            let written = store.write_trusted(&who, &command, &evidence(&who));
             if let (StoreCommand::Admit(_), Ok(written)) = (&command, &written) {
                 dispatch(store, who, written);
             }
@@ -210,6 +212,22 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+/// What this Cloud knows for `who`: its GitHub, and its Cluster Domain
+/// `acme.ployz.app`, ready. Only Organization `pro` may add custom domains.
+fn evidence(who: &Actor) -> Trusted {
+    Trusted {
+        domains: DomainEvidence {
+            custom_domains: who.organization.as_str() == "pro",
+            cluster_domain: Some(ClusterDomain {
+                name: Hostname::parse("acme.ployz.app").unwrap(),
+                status: ClusterDomainStatus::Ready,
+            }),
+            ..DomainEvidence::default()
+        },
+        ..github()
+    }
 }
 
 fn github() -> Trusted {
@@ -348,6 +366,62 @@ fn an_agent_adds_lists_renames_and_removes_services() {
                 .len(),
             1
         );
+    }
+}
+
+#[test]
+fn an_agent_adds_checks_and_removes_domains() {
+    for store in &targets() {
+        let cloud = matches!(store, Target::Cloud { .. });
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+
+        let generated = ok(store, &["domain", "add", "web", "--port", "8080"]);
+        assert_eq!(generated["domain"]["kind"], json!("generated"));
+        assert_eq!(generated["domain"]["prefix"], json!("web"));
+        // Only Cloud holds a Cluster Domain, so only it names the hostname.
+        let hostname = if cloud {
+            json!("web.acme.ployz.app")
+        } else {
+            json!(null)
+        };
+        assert_eq!(generated["domain"]["hostname"], hostname);
+        assert_eq!(generated["staged"], json!(["web"]));
+        assert_eq!(generated["next"], json!("ployz deploy"));
+        let again = ok(store, &["domain", "add", "web"]);
+        assert_eq!((&again["staged"], again.get("next")), (&json!([]), None));
+
+        // The hidden Store stands for a self-hosted Cloud; hosted Cloud needs Pro.
+        let args = ["domain", "add", "web", "App.Example.com"];
+        if cloud {
+            let refused = error(store, &args);
+            assert_eq!(refused["code"], json!("unsupported"));
+            assert_eq!(refused["details"]["next"], json!("ployz billing upgrade"));
+        } else {
+            assert_eq!(
+                ok(store, &args)["domain"]["hostname"],
+                json!("app.example.com")
+            );
+        }
+        let usage = failed(store, &["domain", "add", "web", "not a host"], 2);
+        assert!(!usage["message"].as_str().unwrap().contains("not a host"));
+
+        let listed = ok(store, &["domain", "ls"]);
+        let first = &listed["domains"][0];
+        assert_eq!(first["status"], json!("setting_up"));
+        assert_eq!(first["action"], json!({ "type": "deploy" }));
+        assert_eq!(listed["next"], json!("ployz deploy"));
+        let checked = ok(store, &["domain", "check", "web"]);
+        assert_eq!(
+            checked["domain"]["reason"],
+            json!("Live after your next deploy")
+        );
+        let missing = error(store, &["domain", "check", "nope"]);
+        assert_eq!(missing["code"], json!("not_found"));
+
+        let removed = ok(store, &["domain", "rm", "web"]);
+        assert_eq!(removed["domain"]["port"], json!(8080));
+        assert_eq!(removed["next"], json!("ployz deploy"));
     }
 }
 

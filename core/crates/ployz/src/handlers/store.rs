@@ -4,13 +4,14 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, Admit, Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject,
-    CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited,
+    Actor, AddDomain, Admit, Command, ConfigStore, CreateEnvironment, CreateGitService,
+    CreateProject, CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
+    DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
+    DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
     EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, NamespaceQuery,
     NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated, ProjectName, Publish,
-    Published, Query, RemoveService, RenameService, SealingKey, ServiceQuery, ServiceStaged,
-    ServiceView, ServicesQuery, ServicesView, Trusted,
+    Published, Query, RemoveDomain, RemoveService, RenameService, SealingKey, ServiceQuery,
+    ServiceStaged, ServiceView, ServicesQuery, ServicesView, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -198,6 +199,42 @@ impl Store {
         self.call("read", &request, |store, who| store.deployment(who, id))
     }
 
+    /// Cloud checks the custom-domain capability; the hidden local Store stands for
+    /// a self-hosted Cloud, which always has it.
+    pub(crate) fn add_domain(&self, add: &AddDomain) -> Result<DomainStaged, StoreCallError> {
+        let request = Command::AddDomain(add.clone());
+        self.call("write", &request, |store, who| {
+            store.add_domain(who, add, &self_hosted())
+        })
+    }
+
+    pub(crate) fn remove_domain(
+        &self,
+        remove: &RemoveDomain,
+    ) -> Result<DomainStaged, StoreCallError> {
+        let request = Command::RemoveDomain(remove.clone());
+        self.call("write", &request, |store, who| {
+            store.remove_domain(who, remove, &self_hosted())
+        })
+    }
+
+    /// Cloud observes the Cluster for each domain's status; the hidden local Store
+    /// sees nothing of it.
+    pub(crate) fn domains(&self, query: &DomainsQuery) -> Result<DomainsView, StoreCallError> {
+        let request = Query::Domains(query.clone());
+        self.call("read", &request, |store, who| {
+            store.domains(who, query, &self_hosted())
+        })
+    }
+
+    /// One domain, which Cloud re-checks first: its DNS, and the Cluster Domain.
+    pub(crate) fn domain(&self, query: &DomainQuery) -> Result<DomainView, StoreCallError> {
+        let request = Query::Domain(query.clone());
+        self.call("read", &request, |store, who| {
+            store.domain(who, query, &self_hosted())
+        })
+    }
+
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
     pub(crate) fn local(&self) -> Option<&ConfigStore> {
@@ -221,6 +258,18 @@ impl Store {
                 runtime.block_on(cloud_account::config_store(credential, operation, request))
             }
         }
+    }
+}
+
+/// What the hidden local Store knows of domains: like a self-hosted Cloud, custom
+/// domains are allowed; it has no Cluster Domain and observes no Servers.
+fn self_hosted() -> Trusted {
+    Trusted {
+        domains: DomainEvidence {
+            custom_domains: true,
+            ..DomainEvidence::default()
+        },
+        ..Trusted::default()
     }
 }
 
