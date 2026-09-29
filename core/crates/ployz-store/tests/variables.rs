@@ -1,6 +1,10 @@
 //! Variables and sealed secrets through the Store's interface only, on SQLite and on
 //! Postgres (see `backend`): what reads show, what edits accept, and that plaintext
 //! leaves the Store only through `claim`.
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed JSON results use indexing; missing entries must fail the test."
+)]
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
@@ -178,11 +182,18 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
         json!(diff),
         json!(plan),
         json!(store.deployment(&who(), &id).unwrap()),
-        json!(store.deployments(&who(), &DeploymentsQuery::default()).unwrap()),
+        json!(
+            store
+                .deployments(&who(), &DeploymentsQuery::default())
+                .unwrap()
+        ),
     ];
     for read in reads {
         let text = read.to_string();
-        assert!(!text.contains("s3cr3t") && !text.contains("ciphertext"), "{text}");
+        assert!(
+            !text.contains("s3cr3t") && !text.contains("ciphertext"),
+            "{text}"
+        );
     }
     if let Some(path) = url.strip_prefix("sqlite:") {
         drop(store);
@@ -195,14 +206,19 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
 }
 
 fn claim_unseals(store: &ConfigStore, id: &DeploymentId) {
-    let claimed = store.claim(id, &RunnerId::parse("runner").unwrap()).unwrap();
+    let claimed = store
+        .claim(id, &RunnerId::parse("runner").unwrap())
+        .unwrap();
     assert_eq!(environment_of(&claimed, "web")["PASSWORD"], SECRET);
     let api = environment_of(&claimed, "api");
     assert_eq!(api["DATABASE_URL"], format!("postgres://{SECRET}@db/app"));
     assert_eq!(api["WEB"], "web.internal");
     // A Service waits for the Services its variables reference.
     let api = ServiceName::parse("api").unwrap();
-    assert_eq!(claimed.intent.dependencies()[&api][0].service.as_str(), "web");
+    assert_eq!(
+        claimed.intent.dependencies()[&api][0].service.as_str(),
+        "web"
+    );
 }
 
 #[test]
@@ -250,7 +266,12 @@ fn a_secret_is_kept_by_its_marker_and_never_becomes_plain() {
     )
     .unwrap();
     assert_eq!(staged(&edited), ["web.env.PLAIN", "web.env.TOKEN"]);
-    for bad in [json!(null), json!(3), json!({ "secret": "" }), json!({ "secret": false })] {
+    for bad in [
+        json!(null),
+        json!(3),
+        json!({ "secret": "" }),
+        json!({ "secret": false }),
+    ] {
         let error = set(&store, &[("web.env.TOKEN", bad)]).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     }
@@ -282,7 +303,10 @@ fn references_and_exports_round_trip_through_get_and_patch() {
             ("web.env.HOST", json!("web.internal")),
             ("web.env.HOST.exported", json!("true")),
             ("web.env.KEY", json!({ "secret": SECRET })),
-            ("api.env.URL", json!("http://${{ web.HOST }}/ $${{ not.A_REF }}")),
+            (
+                "api.env.URL",
+                json!("http://${{ web.HOST }}/ $${{ not.A_REF }}"),
+            ),
         ],
     )
     .unwrap();

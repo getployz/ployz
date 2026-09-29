@@ -192,7 +192,10 @@ mod tests {
         let service = schema(Some("web")).unwrap();
         let variable = [
             ("web.env.K".to_owned(), schema(Some("web.env.K")).unwrap()),
-            ("web.env.K.exported".to_owned(), schema(Some("web.env.K.exported")).unwrap()),
+            (
+                "web.env.K.exported".to_owned(),
+                schema(Some("web.env.K.exported")).unwrap(),
+            ),
         ];
         let properties = service["properties"].as_object().unwrap().clone();
         for (name, property) in properties.into_iter().chain(variable) {
@@ -225,12 +228,15 @@ mod tests {
                 .all(|key| object.contains_key(key.as_str().unwrap()));
             return required
                 && object.iter().all(|(key, value)| {
-                    let own = schema.get("properties").and_then(|properties| properties.get(key));
+                    let own = schema
+                        .get("properties")
+                        .and_then(|properties| properties.get(key));
                     // Every pattern is a name pattern; the test does not check names.
                     let pattern = schema
                         .get("patternProperties")
                         .and_then(|patterns| patterns.as_object()?.values().next());
-                    own.or(pattern).is_some_and(|schema| satisfies(value, schema))
+                    own.or(pattern)
+                        .is_some_and(|schema| satisfies(value, schema))
                 });
         }
         if schema["type"] == "boolean" {

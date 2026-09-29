@@ -148,7 +148,10 @@ fn restore(
     };
     let head_node = config(Some(&head));
     let saved_node = config(saved);
-    if matches!(path.target(), Some(Target::Variable(_) | Target::Exported(_))) {
+    if matches!(
+        path.target(),
+        Some(Target::Variable(_) | Target::Exported(_))
+    ) {
         return Err(error::invalid(
             "Discard a variable with its Service",
             json!({ "example": format!("ployz discard {}", path.service()) }),

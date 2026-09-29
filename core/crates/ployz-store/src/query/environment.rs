@@ -12,8 +12,8 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
-use crate::variables::{self, VariableKey};
 use crate::storage::Tx;
+use crate::variables::{self, VariableKey};
 
 /// Read an Environment's Working State, narrowed to `SERVICE` or `SERVICE.SETTING`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -114,7 +114,8 @@ pub(crate) fn environment(
             variables::find(service, key)?;
         }
         for variable in variables::sorted(service) {
-            let key = VariableKey::parse(&variable.key).map_err(|_| crate::error::corrupt("variable"))?;
+            let key =
+                VariableKey::parse(&variable.key).map_err(|_| crate::error::corrupt("variable"))?;
             row(
                 Target::Variable(key.clone()),
                 variables::shown(variable, &environment.working),

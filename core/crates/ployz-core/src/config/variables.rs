@@ -159,8 +159,8 @@ fn template_token(text: &str) -> Option<(Option<&str>, &str, &str)> {
         Some(_) => return None,
         None => (None, first, after),
     };
-    let valid_key = key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && !key.contains('-');
+    let valid_key =
+        key.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && !key.contains('-');
     let after = after.trim_start().strip_prefix("}}")?;
     valid_key.then_some((owner, key, after))
 }
@@ -283,10 +283,16 @@ mod tests {
         assert_eq!(ghost.parts, [text("x=${{ ghost.Y }}")]);
         assert_eq!(ghost.unresolved, ["ghost"]);
         assert_eq!(parse("echo $${{ FOO }}").parts, [text("echo ${{ FOO }}")]);
-        for malformed in ["${{ not-valid", "${{ web. }}", "${{ _x.Y }}", "${{ 9X }}", "${{ a-b }}"] {
+        for malformed in [
+            "${{ not-valid",
+            "${{ web. }}",
+            "${{ _x.Y }}",
+            "${{ 9X }}",
+            "${{ a-b }}",
+        ] {
             assert_eq!(parse(malformed).parts, [text(malformed)], "{malformed}");
         }
         assert!(parse("").parts.is_empty());
-        assert_eq!(parse("é${{ K }}ü").parts[2], text("ü"));
+        assert_eq!(parse("é${{ K }}ü").parts.last(), Some(&text("ü")));
     }
 }

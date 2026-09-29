@@ -628,6 +628,8 @@ fn the_wire_and_typed_forms_agree() {
 
 #[test]
 fn only_postgres_and_sqlite_urls_open() {
-    let error = ConfigStore::open("mysql://localhost/store", backend::key()).err().unwrap();
+    let error = ConfigStore::open("mysql://localhost/store", backend::key())
+        .err()
+        .unwrap();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 }

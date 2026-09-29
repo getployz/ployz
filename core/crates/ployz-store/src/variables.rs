@@ -116,7 +116,10 @@ pub(crate) fn find<'intent>(
         .iter()
         .find(|variable| variable.key == key.as_str())
         .ok_or_else(|| {
-            let keys = service.variables.iter().map(|variable| variable.key.as_str());
+            let keys = service
+                .variables
+                .iter()
+                .map(|variable| variable.key.as_str());
             error::not_found(
                 format!("{} has no variable {key}", service.slug),
                 json!({
@@ -139,14 +142,24 @@ pub(crate) fn set(
 ) -> Result<bool, RpcError> {
     let (input, exported) = match value {
         Value::Object(mut fields) if !fields.contains_key("secret") => {
-            if fields.keys().any(|field| field != "value" && field != "exported") {
+            if fields
+                .keys()
+                .any(|field| field != "value" && field != "exported")
+            {
                 return Err(invalid(key, "expected only value and exported"));
             }
-            let exported = fields.remove("exported").map(|flag| exported_flag(key, flag));
+            let exported = fields
+                .remove("exported")
+                .map(|flag| exported_flag(key, flag));
             let input = fields.remove("value").map(|value| input(key, value));
             (input.transpose()?, exported.transpose()?)
         }
-        value => (Some(input(key, value)?), None),
+        value @ (Value::Null
+        | Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_)) => (Some(input(key, value)?), None),
     };
     let intent = &environment.working;
     let current = environment
@@ -216,7 +229,10 @@ pub(crate) fn set(
         }
     };
     let next = SavedVariableIntent {
-        id: current.map_or_else(|| uuid::Uuid::new_v4().to_string(), |current| current.id.clone()),
+        id: current.map_or_else(
+            || uuid::Uuid::new_v4().to_string(),
+            |current| current.id.clone(),
+        ),
         key: key.as_str().to_owned(),
         description: current.and_then(|current| current.description.clone()),
         exported: exported.unwrap_or_else(|| current.is_some_and(|current| current.exported)),
@@ -227,7 +243,10 @@ pub(crate) fn set(
         return Ok(false);
     }
     let variables = &mut environment.service_mut(service)?.variables;
-    match variables.iter_mut().find(|variable| variable.key == next.key) {
+    match variables
+        .iter_mut()
+        .find(|variable| variable.key == next.key)
+    {
         Some(variable) => *variable = next,
         None => variables.push(next),
     }
@@ -446,7 +465,10 @@ fn cycle(compiled: &CompiledEnvironmentIntent, path: &[String]) -> RpcError {
         })
         .collect::<Vec<_>>();
     error::invalid(
-        format!("Variables reference each other in a cycle: {}", names.join(" -> ")),
+        format!(
+            "Variables reference each other in a cycle: {}",
+            names.join(" -> ")
+        ),
         json!({ "cycle": names }),
     )
 }

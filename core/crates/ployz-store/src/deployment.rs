@@ -20,10 +20,10 @@ use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
 use crate::review::{self, Head};
-use crate::sealing::SealingKey;
-use crate::variables;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
+use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx};
+use crate::variables;
 
 /// Where a Deployment is in its life.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
