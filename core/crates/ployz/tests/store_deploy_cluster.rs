@@ -384,7 +384,10 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                 id.clone(),
                 RunnerId::parse(format!("cloud-{n}")).unwrap(),
                 vec![Connection::tcp(address)],
-                Ok(checkouts),
+                Ok(ployz::sdk::Sources {
+                    checkouts,
+                    upload: None,
+                }),
             )
             .await
             .unwrap();
@@ -436,6 +439,175 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             ("web".to_owned(), BuildStatus::Reused),
         ])
     );
+}
+
+/// Cloud's runner builds an uploaded Service on a Server, never GitHub. Once Cloud no
+/// longer holds the upload, a later Deployment reuses the image while its build inputs
+/// hold, and otherwise records that it needs a new upload.
+#[tokio::test]
+#[ignore = "informing: requires the privileged Ployz testkit image with Buildx"]
+async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() {
+    use ployz_core::ServiceName;
+    use ployz_store::{
+        Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
+        DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
+        ProjectName, RunnerId, SealingKey, ServiceId, SettingPath, UploadedSource,
+    };
+
+    let plan =
+        ClusterPlan::new(&format!("l3-store-cloud-upload-{}", std::process::id()), 1).unwrap();
+    let cluster = Cluster::create(plan).unwrap();
+    cluster.initialize_entry().await.unwrap();
+    let address = cluster.api_socket_address(0).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let url = format!("sqlite:{}", dir.path().join("store.db").display());
+    let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
+    let who = Actor {
+        organization: OrganizationId::parse("org").unwrap(),
+    };
+    store
+        .create_project(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    let set = |setting: &str, value: Value| {
+        store
+            .edit(
+                &who,
+                &Edit {
+                    environment: EnvironmentRef::default(),
+                    expect: None,
+                    changes: vec![Change::Set {
+                        path: SettingPath::parse(setting).unwrap(),
+                        value,
+                    }],
+                },
+            )
+            .unwrap();
+    };
+    set("app.buildMethod", json!("dockerfile"));
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(
+        source.path().join("Dockerfile"),
+        "FROM alpine:3.23.3\nCOPY payload /payload\nCMD [\"sleep\", \"600\"]\n",
+    )
+    .unwrap();
+    std::fs::write(source.path().join("payload"), "uploaded").unwrap();
+    let digest = ployz::build::content_digest(source.path()).unwrap();
+
+    let deploy = |n: u8, upload: bool| {
+        let store = Arc::clone(&store);
+        let who = who.clone();
+        let dir = upload.then(|| source.path().to_owned());
+        let digest = digest.clone();
+        async move {
+            let id =
+                DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
+            store
+                .admit(
+                    &who,
+                    &Admit {
+                        id: id.clone(),
+                        environment: EnvironmentRef::default(),
+                        services: Vec::new(),
+                        version: None,
+                        upload: upload.then_some(UploadedSource {
+                            digest,
+                            base: None,
+                            uploader: None,
+                        }),
+                        retry: None,
+                    },
+                )
+                .unwrap();
+            ployz::sdk::run_deployment(
+                Arc::clone(&store),
+                who.clone(),
+                id.clone(),
+                RunnerId::parse(format!("cloud-{n}")).unwrap(),
+                vec![Connection::tcp(address)],
+                Ok(ployz::sdk::Sources {
+                    checkouts: std::collections::BTreeMap::new(),
+                    upload: dir,
+                }),
+            )
+            .await
+            .unwrap();
+            store.deployment(&who, &id).unwrap()
+        }
+    };
+    let built = deploy(1, true).await;
+    assert_eq!(
+        built.deployment.status,
+        DeploymentStatus::Applied,
+        "{built:?}"
+    );
+    assert_eq!(built.builds.len(), 1);
+    assert_eq!(built.builds[0].commit, None);
+    assert_eq!(built.builds[0].status, BuildStatus::Built);
+    let log = store
+        .build_log(
+            &who,
+            &ployz_store::BuildLogQuery {
+                deployment: built.deployment.id.clone(),
+                service: ServiceName::parse("app").unwrap(),
+            },
+        )
+        .unwrap();
+    assert!(
+        log.log.starts_with("GitHub can't build uploaded source"),
+        "{}",
+        log.log
+    );
+    let payload = cluster
+        .machine_shell(
+            0,
+            "docker exec $(docker ps -q --filter label=ployz.namespace=shop-production | head -1) \
+             cat /payload",
+        )
+        .unwrap();
+    assert_eq!(payload.trim(), "uploaded");
+
+    // The upload is gone once its Deployment ended; the image still serves.
+    set("app.replicas", json!(2));
+    let reused = deploy(2, false).await;
+    assert_eq!(
+        reused.deployment.status,
+        DeploymentStatus::Applied,
+        "{reused:?}"
+    );
+    assert_eq!(reused.builds[0].status, BuildStatus::Reused);
+    assert_eq!(reused.deployment.upload, built.deployment.upload);
+
+    // A changed build input rejects the old image: only a new upload builds it.
+    set("app.env.MESSAGE", json!("changed"));
+    let refused = deploy(3, false).await;
+    assert_eq!(
+        refused.deployment.status,
+        DeploymentStatus::Failed,
+        "{refused:?}"
+    );
+    let Some(Outcome::NotExecuted { needs_upload, .. }) = refused.outcome else {
+        panic!("nothing executed: {refused:?}");
+    };
+    assert_eq!(needs_upload, vec![ServiceName::parse("app").unwrap()]);
 }
 
 /// [`run`], with its exit code and JSON (null when stdout isn't one).

@@ -224,6 +224,23 @@ impl Store {
         self.call("read", &request, |store, who| store.removals(who, query))
     }
 
+    /// Hand Cloud `archive`, the source Deployment `deployment` builds from, before
+    /// admitting it. The hidden local Store's runner reads the directory itself.
+    pub(crate) fn upload(
+        &self,
+        deployment: &DeploymentId,
+        archive: Vec<u8>,
+    ) -> Result<(), StoreCallError> {
+        match self {
+            Self::Local(..) => Ok(()),
+            Self::Cloud(runtime, credential) => runtime.block_on(cloud_account::upload(
+                credential,
+                deployment.as_str(),
+                archive,
+            )),
+        }
+    }
+
     pub(crate) fn start(&self, start: &Start) -> Result<DeploymentSummary, StoreCallError> {
         let request = Command::Start(start.clone());
         self.call("write", &request, |store, who| store.start(who, start))

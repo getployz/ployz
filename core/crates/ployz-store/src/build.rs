@@ -1,6 +1,7 @@
-//! Git builds. Before a Deployment's runner reads a Git Service's source, Cloud pins
-//! the commit it builds. A pin never moves, so every retry of the Deployment builds
-//! the same commit. The runner reports each build's progress and log here.
+//! Git and uploaded builds. Before a Deployment's runner reads a Git Service's source,
+//! Cloud pins the commit it builds. A pin never moves, so every retry of the Deployment
+//! builds the same commit. Services without a source of their own build from the
+//! Deployment's upload. The runner reports each build's progress and log here.
 
 use std::collections::BTreeMap;
 
@@ -90,7 +91,8 @@ pub struct BuildReport {
 pub struct BuildView {
     /// The Service's name when admitted.
     pub service: String,
-    pub commit: String,
+    /// The commit it builds; none when it builds from the Deployment's upload.
+    pub commit: Option<String>,
     pub status: BuildStatus,
     /// Why it failed.
     pub message: Option<String>,
@@ -171,17 +173,29 @@ pub(crate) fn pins(
 ) -> Result<BTreeMap<ServiceName, String>, RpcError> {
     rows(tx, id)?
         .into_iter()
+        .filter(|row| !row.commit.is_empty())
         .map(|row| Ok((row.service, row.commit)))
         .collect()
 }
 
-/// Record a runner's report on one pinned build of `stored`, which it claimed.
+/// Record a runner's report on one pinned or uploaded build of `stored`, which it
+/// claimed.
 pub(crate) fn record(
     tx: &mut dyn Tx,
     stored: &Stored,
     report: &BuildReport,
 ) -> Result<(), RpcError> {
     let id = &stored.summary.id;
+    if uploads_of(tx, stored)?.contains(&report.service) {
+        tx.execute(
+            "INSERT INTO config_build \
+             (deployment_id, service, organization_id, commit_sha, status, message, log) \
+             SELECT id, ?2, organization_id, '', 'pending', '', '' \
+             FROM config_deployment WHERE id = ?1 \
+             ON CONFLICT (deployment_id, service) DO NOTHING",
+            &[id.as_str().into(), report.service.as_str().into()],
+        )?;
+    }
     let Some(row) = rows(tx, id)?
         .into_iter()
         .find(|row| row.service == report.service)
@@ -270,7 +284,7 @@ impl BuildRow {
                 .iter()
                 .find(|node| node.service.as_ref() == Some(&self.service))
                 .map_or_else(|| self.service.to_string(), |node| node.name.clone()),
-            commit: self.commit.clone(),
+            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
             status: self.status,
             message: (!self.message.is_empty()).then(|| self.message.clone()),
         }
@@ -298,6 +312,19 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
         })
     })
     .collect()
+}
+
+/// The Services `stored` targets that have no source of their own: they build from
+/// its upload.
+pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<ServiceName>, RpcError> {
+    let saved = deployment::saved_at(tx, &stored.environment, stored.summary.saved)?;
+    Ok(saved
+        .services
+        .iter()
+        .filter(|service| stored.nodes.iter().any(|node| node.id == service.id))
+        .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
+        .map(|service| service.config.private_dns.clone())
+        .collect())
 }
 
 pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSource>, RpcError> {

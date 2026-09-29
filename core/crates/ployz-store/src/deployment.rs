@@ -116,6 +116,11 @@ pub struct UploadedSource {
     /// Provenance only: it never identifies the build.
     #[serde(default)]
     pub base: Option<UploadBase>,
+    /// Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
+    /// caller sends. Provenance only.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub uploader: Option<String>,
 }
 
 /// Where an upload came from: "base abc123", plus "+ changes" when it differs from it.
@@ -200,8 +205,13 @@ pub enum Outcome {
         #[serde(default)]
         volumes: Vec<String>,
     },
-    /// Nothing executed: preparation failed first.
-    NotExecuted { reason: String },
+    /// Nothing executed: preparation failed first. `needs_upload` names the Services
+    /// that can build only from a new upload.
+    NotExecuted {
+        reason: String,
+        #[serde(default)]
+        needs_upload: Vec<ServiceName>,
+    },
 }
 
 /// Evidence a runner records about the Deployment it claimed.
@@ -225,8 +235,11 @@ pub enum RunEvidence {
     /// The build receipts preparation produced, by runtime Service name. Each replaces
     /// that Service's latest receipt in the Environment.
     Built(BTreeMap<ServiceName, Value>),
-    /// Progress and log output of one pinned Git build.
+    /// Progress and log output of one Git or uploaded build.
     Build(BuildReport),
+    /// Nothing executed: these uploaded Services have no upload to build from and no
+    /// usable image to reuse.
+    UploadNeeded(Vec<ServiceName>),
 }
 
 /// A claimed Deployment and the frozen Deploy Intent its runner executes.
@@ -245,6 +258,8 @@ pub struct Claimed {
     /// The Docker Volumes to delete once the Deploy succeeds: exactly those whose
     /// loss admission accepted, each on its Server.
     pub deletes: Vec<DockerVolumeId>,
+    /// The Services it builds from `deployment.upload`, by runtime name.
+    pub uploads: Vec<ServiceName>,
 }
 
 /// One node a Deployment targets, as frozen at admission.
@@ -801,6 +816,7 @@ pub(crate) fn claim(
         }
     }
     let sources = build::sources_of(tx, &stored)?;
+    let uploads = build::uploads_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
     let (input, mut intent) = lower(
         &stored.environment,
@@ -848,6 +864,7 @@ pub(crate) fn claim(
         receipts,
         sources,
         deletes,
+        uploads,
     }))
 }
 
@@ -968,7 +985,29 @@ pub(crate) fn record(
             finish(
                 tx,
                 stored,
-                Outcome::NotExecuted { reason },
+                Outcome::NotExecuted {
+                    reason,
+                    needs_upload: Vec::new(),
+                },
+                DeploymentStatus::Failed,
+            )
+        }
+        RunEvidence::UploadNeeded(services) => {
+            let names = services
+                .iter()
+                .map(ServiceName::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            finish(
+                tx,
+                stored,
+                Outcome::NotExecuted {
+                    reason: format!(
+                        "Upload the source again: {names} has no upload to build from and no \
+                         usable image to reuse"
+                    ),
+                    needs_upload: services,
+                },
                 DeploymentStatus::Failed,
             )
         }
@@ -982,7 +1021,10 @@ pub(crate) fn record(
                 return finish(
                     tx,
                     stored,
-                    Outcome::NotExecuted { reason },
+                    Outcome::NotExecuted {
+                        reason,
+                        needs_upload: Vec::new(),
+                    },
                     DeploymentStatus::Failed,
                 );
             }

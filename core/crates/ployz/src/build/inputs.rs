@@ -365,7 +365,23 @@ fn copy(
 ///
 /// # Errors
 /// Fails on unreadable entries and sockets or special files.
-pub(crate) fn content_digest(root: &Path) -> Result<String, Error> {
+pub fn content_digest(root: &Path) -> Result<String, Error> {
+    let digest = (|| {
+        let paths = uploaded_paths(root)?;
+        fingerprint(
+            root,
+            Some(&Selection {
+                paths,
+                ignore: Vec::new(),
+            }),
+        )
+    })()
+    .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?;
+    Ok(hex::encode(digest))
+}
+
+/// Every path an upload of `root` holds, relative to it: all but a top-level `.git`.
+fn uploaded_paths(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
     fn walk(path: &Path, root: &Path, paths: &mut BTreeSet<PathBuf>) -> io::Result<()> {
         for entry in fs::read_dir(path)? {
             let entry = entry?.path();
@@ -380,19 +396,28 @@ pub(crate) fn content_digest(root: &Path) -> Result<String, Error> {
         }
         Ok(())
     }
-    let digest = (|| {
-        let mut paths = BTreeSet::new();
-        walk(root, root, &mut paths)?;
-        fingerprint(
-            root,
-            Some(&Selection {
-                paths,
-                ignore: Vec::new(),
-            }),
-        )
+    let mut paths = BTreeSet::new();
+    walk(root, root, &mut paths)?;
+    Ok(paths)
+}
+
+/// An upload of `root` as Cloud takes it: a gzipped tar of what [`content_digest`]
+/// covers, under one top-level `source` directory, with modes and links as they are.
+///
+/// # Errors
+/// Fails on unreadable entries.
+pub(crate) fn upload_archive(root: &Path) -> Result<Vec<u8>, Error> {
+    (|| {
+        let gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut archive = tar::Builder::new(gzip);
+        archive.follow_symlinks(false);
+        archive.append_path_with_name(root, "source")?;
+        for path in uploaded_paths(root)? {
+            archive.append_path_with_name(root.join(&path), Path::new("source").join(&path))?;
+        }
+        archive.into_inner()?.finish()
     })()
-    .map_err(|error| Error::Io(format!("read uploaded source: {error}")))?;
-    Ok(hex::encode(digest))
+    .map_err(|error| Error::Io(format!("archive uploaded source: {error}")))
 }
 
 // Open every component without following links, so a source edit cannot turn a
@@ -527,6 +552,29 @@ mod tests {
         for edit in edits {
             assert!(seen.insert(changed(edit)), "every edit changes the digest");
         }
+    }
+
+    #[test]
+    fn an_upload_archive_unpacks_to_the_same_digest_without_git() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        fs::create_dir(root.join("bin")).unwrap();
+        fs::write(root.join("bin/run"), "#!/bin/sh").unwrap();
+        fs::set_permissions(root.join("bin/run"), fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(root.join("bin"), fs::Permissions::from_mode(0o770)).unwrap();
+        symlink("bin/run", root.join("run")).unwrap();
+        fs::create_dir(root.join(".git")).unwrap();
+        let archive = upload_archive(root).unwrap();
+        let unpacked = tempfile::tempdir().unwrap();
+        let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive.as_slice()));
+        tar.set_preserve_permissions(true);
+        tar.unpack(unpacked.path()).unwrap();
+        let source = unpacked.path().join("source");
+        assert!(!source.join(".git").exists(), ".git is never uploaded");
+        assert_eq!(
+            content_digest(&source).unwrap(),
+            content_digest(root).unwrap()
+        );
     }
 
     #[test]
