@@ -127,6 +127,11 @@ impl Failure {
         })
     }
 
+    /// This failure with a new message, keeping its `--json` code.
+    pub(crate) fn reworded(&self, message: impl Into<Cow<'static, str>>) -> Self {
+        Self::coded(self.report().code, message)
+    }
+
     /// One product line for a follow-on failure. `terminate` prints it once.
     pub fn warned(context: impl fmt::Display, cause: impl fmt::Display) -> Self {
         Self::coded(

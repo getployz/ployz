@@ -126,6 +126,23 @@ pub(crate) fn emit<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
     }
 }
 
+/// Print a committed `result`, with `follow_up_error` when a step after the commit
+/// failed; that failure then makes the command partial.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error, or the follow-up failure.
+pub(crate) fn emit_committed(
+    mut result: serde_json::Value,
+    follow_up: Result<(), Failure>,
+) -> Result<(), Failure> {
+    if let (Err(error), Some(fields)) = (&follow_up, result.as_object_mut()) {
+        fields.insert("follow_up_error".into(), serde_json::json!(error.report()));
+    }
+    emit(&result)?;
+    follow_up
+}
+
 /// Print one line of a streamed JSON result; a no-op without `--json`.
 ///
 /// # Errors
