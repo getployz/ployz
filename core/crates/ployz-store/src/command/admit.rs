@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use super::{Command, replayable};
 use crate::Actor;
-use crate::deployment::{self, DeploymentSummary};
+use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::id::DeploymentId;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
@@ -27,6 +27,10 @@ pub struct Admit {
     /// Refuse with `conflict` unless this is still the latest `diff` version.
     #[serde(default)]
     pub version: Option<String>,
+    /// A new upload for Services without a source of their own; none keeps the
+    /// Environment's latest.
+    #[serde(default)]
+    pub upload: Option<UploadedSource>,
 }
 
 pub(crate) fn admit(
@@ -58,5 +62,14 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         &admit.services,
         namespace,
     )?;
-    deployment::admit(tx, who, &admit.id, id, saved, &admit.services, &frozen)
+    deployment::admit(
+        tx,
+        who,
+        &admit.id,
+        id,
+        saved,
+        &admit.services,
+        admit.upload.as_ref(),
+        &frozen,
+    )
 }
