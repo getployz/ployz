@@ -73,7 +73,7 @@ fn ployz(target: Option<&Target>, args: &[&str]) -> (Option<i32>, Value) {
         || isolated(home.path()),
         |target| target.command(home.path()),
     );
-    let output = command.args(args).arg("--json").output().unwrap();
+    let output = command.arg("--json").args(args).output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let json = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
@@ -488,10 +488,10 @@ fn an_ambiguous_project_names_the_rerun() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["project", "new", "blog"]);
-        let error = error(store, &["env", "new", "staging"]);
-        assert_eq!(error.get("code"), Some(&json!("ambiguous")));
+        let refused = error(store, &["env", "new", "staging"]);
+        assert_eq!(refused.get("code"), Some(&json!("ambiguous")));
         assert_eq!(
-            error.get("details"),
+            refused.get("details"),
             Some(&json!({
                 "projects": ["blog", "shop"],
                 "next": "ployz env new staging --project PROJECT",
@@ -499,17 +499,7 @@ fn an_ambiguous_project_names_the_rerun() {
         );
 
         // The hint is built from accepted words, so rejected values and raw `--` stay out.
-        let next = |args: &[&str]| {
-            let home = tempfile::tempdir().unwrap();
-            let output = store
-                .command(home.path())
-                .arg("--json")
-                .args(args)
-                .output()
-                .unwrap();
-            let json: Value = serde_json::from_slice(&output.stdout).unwrap();
-            json.pointer("/error/details/next").cloned().unwrap()
-        };
+        let next = |args: &[&str]| error(store, args)["details"]["next"].clone();
         assert_eq!(
             next(&["set", "--env", "production", "web.replicas=SECRET-CANARY"]),
             json!("ployz set 'web.replicas=VALUE' --project PROJECT --env production")
@@ -517,6 +507,19 @@ fn an_ambiguous_project_names_the_rerun() {
         assert_eq!(
             next(&["get", "--", "web"]),
             json!("ployz get web --project PROJECT")
+        );
+        // Guard flags survive the rerun, so a guarded write never turns blind.
+        assert_eq!(
+            next(&["set", "web.replicas=2", "--expect", "3"]),
+            json!("ployz set 'web.replicas=VALUE' --expect 3 --project PROJECT")
+        );
+        assert_eq!(
+            next(&["publish", "--version", "4:1:none"]),
+            json!("ployz publish --version 4:1:none --project PROJECT")
+        );
+        assert_eq!(
+            next(&["get", "--all"]),
+            json!("ployz get --all --project PROJECT")
         );
     }
 }
