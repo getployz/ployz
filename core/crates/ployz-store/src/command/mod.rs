@@ -84,6 +84,10 @@ pub enum Command {
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
+    /// Delete a Project nothing of which runs on the Servers.
+    RemoveProject(crate::RemoveProject),
+    /// Forget an Organization's configuration once it has no Project.
+    RemoveOrganization(crate::RemoveOrganization),
 }
 
 impl Command {
@@ -114,7 +118,9 @@ impl Command {
             | Self::CopyNode(_)
             | Self::KeepBranch(_)
             | Self::SetDefaultEnvironment(_)
-            | Self::RemoveEnvironment(_) => Vec::new(),
+            | Self::RemoveEnvironment(_)
+            | Self::RemoveProject(_)
+            | Self::RemoveOrganization(_) => Vec::new(),
         }
     }
 }
@@ -156,6 +162,10 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
+    /// A Project was deleted.
+    ProjectRemoved(crate::ProjectRemoved),
+    /// An Organization's configuration was forgotten.
+    OrganizationRemoved(crate::OrganizationRemoved),
 }
 
 pub(crate) fn run(
@@ -207,6 +217,12 @@ pub(crate) fn run(
         }
         Command::RemoveEnvironment(remove) => {
             crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
+        }
+        Command::RemoveProject(remove) => {
+            crate::teardown::remove_project(tx, who, remove).map(Written::ProjectRemoved)
+        }
+        Command::RemoveOrganization(_) => {
+            crate::teardown::remove_organization(tx, who).map(Written::OrganizationRemoved)
         }
     }
 }
