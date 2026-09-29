@@ -57,6 +57,7 @@ fn evidence() -> Trusted {
                 branches: Vec::new(),
             },
         ],
+        ..Trusted::default()
     }
 }
 

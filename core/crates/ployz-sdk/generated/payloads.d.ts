@@ -1,6 +1,16 @@
 // Generated from the Rust wire types by `cargo test -p ployz --test sdk_payloads`.
 // Do not edit.
 
+export type AddDomain = { environment: EnvironmentRef, service: ServiceName,
+/**
+ * A custom hostname; none generates one.
+ */
+hostname: Hostname | null,
+/**
+ * The container port it reaches; none follows the container's `PORT`.
+ */
+port: number | null, };
+
 export type Admit = { id: DeploymentId, environment: EnvironmentRef,
 /**
  * Deploy only these Services; none deploys every Service.
@@ -199,6 +209,10 @@ export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
+export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
+
+export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" } | { "kind": "no_servers" } | { "kind": "no_public_ip" } | { "kind": "port_80", addresses: Array<string>, } | { "kind": "https_down" };
+
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
@@ -207,7 +221,30 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain;
+
+export type ConfigDomainEvidence = {
+/**
+ * Whether the Organization may add custom domains: Pro, or a self-hosted Cloud.
+ */
+custom_domains: boolean,
+/**
+ * The Organization's Cluster Domain, once reserved.
+ */
+cluster_domain: ClusterDomain | null,
+/**
+ * The Cluster's certificates as its Runtime Watch reported them; none when Cloud
+ * couldn't observe the Cluster.
+ */
+certificates: Array<CertificateObservation> | null,
+/**
+ * Public addresses of the Servers that accept ingress.
+ */
+ingress_addresses: Array<string>,
+/**
+ * What DNS answered just now, for the hostnames a check looked up.
+ */
+lookups: Array<DnsLookup>, };
 
 export type ConfigMount = { config_name: string,
 /**
@@ -215,7 +252,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -223,11 +260,15 @@ export type ConfigTrusted = {
 /**
  * Repositories the calling Organization may read, with the branches Cloud saw.
  */
-repositories: Array<AuthorizedRepository>, };
+repositories: Array<AuthorizedRepository>,
+/**
+ * What Cloud observed of the Organization's public domains and traffic.
+ */
+domains: ConfigDomainEvidence, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -573,6 +614,18 @@ environment: EnvironmentSummary,
  */
 saved: Revision | null, };
 
+export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
+
+export type DnsRecord = {
+/**
+ * `CNAME`, `A` or `AAAA`.
+ */
+type: string,
+/**
+ * Relative to the registrable domain; `@` is its apex.
+ */
+name: string, value: string, };
+
 export type DockerVolume = { id: DockerVolumeId, options: { [key in string]: string }, labels: { [key in string]: string },
 /**
  * Current storage kind and Provisioned Volume usage evidence.
@@ -600,6 +653,52 @@ bound_bytes: number,
  * Current referenced ZFS dataset bytes.
  */
 used_bytes: number, };
+
+export type Domain = { service: ServiceName,
+/**
+ * The container port it reaches; none follows the container's `PORT`.
+ */
+port: number | null, } & ({ "kind": "generated", prefix: string, hostname: string | null, } | { "kind": "custom", hostname: Hostname, });
+
+export type DomainAction = { "type": "deploy" } | { "type": "add_server" } | { "type": "dns", records: Array<DnsRecord>, };
+
+export type DomainQuery = { environment: EnvironmentRef,
+/**
+ * Its hostname, or a generated domain's prefix.
+ */
+domain: string, };
+
+export type DomainRow = { status: DomainStatus,
+/**
+ * One short phrase on why, when it isn't plainly ready.
+ */
+reason: string | null, action: DomainAction | null, service: ServiceName,
+/**
+ * The container port it reaches; none follows the container's `PORT`.
+ */
+port: number | null, } & ({ "kind": "generated", prefix: string, hostname: string | null, } | { "kind": "custom", hostname: Hostname, });
+
+export type DomainStaged = { environment: EnvironmentSummary, domain: Domain,
+/**
+ * Its Service, when this changed it; empty when it already was so.
+ */
+staged: Array<SettingPath>,
+/**
+ * What took effect at once: never anything here.
+ */
+immediate: Array<SettingPath>, };
+
+export type DomainStatus = "ready" | "setting_up" | "needs_attention";
+
+export type DomainView = { environment: EnvironmentSummary, domain: DomainRow, };
+
+export type DomainsQuery = { environment: EnvironmentRef,
+/**
+ * Only this Service's.
+ */
+service: ServiceName | null, };
+
+export type DomainsView = { environment: EnvironmentSummary, domains: Array<DomainRow>, };
 
 export type Edit = {
 /**
@@ -749,6 +848,8 @@ export type HookContainer = ContainerObservation;
 export type HookFailure = { "type": "cancelled", stop_error: RpcError | null, } | { "type": "timed_out", stop_error: RpcError | null, } | { "type": "exit", code: number, };
 
 export type HostBind = { "kind": "all" } | { "kind": "address", address: string, } | { "kind": "prefix", prefix: string, };
+
+export type Hostname = string;
 
 export type HttpHealthcheck = { path: string, port: number, timeout_seconds: number, };
 
@@ -1235,6 +1336,12 @@ export type RegistryAuth = { username?: string,
  * The password or access token.
  */
 password: string, };
+
+export type RemoveDomain = { environment: EnvironmentRef,
+/**
+ * Its hostname, or a generated domain's prefix.
+ */
+domain: string, };
 
 export type RemoveService = {
 /**
