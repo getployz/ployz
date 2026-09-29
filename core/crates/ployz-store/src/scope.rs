@@ -1,23 +1,26 @@
 //! Resolving which Project and Environment a request means, and loading and saving
 //! an Environment's Working State document.
 
-use ployz_core::config::{SavedEnvironmentIntent, parse_environment_intent};
-use ployz_core::{Namespace, RpcError};
+use ployz_core::config::{SavedEnvironmentIntent, SavedServiceIntent, parse_environment_intent};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
-use crate::storage::{Row, Tx};
+use crate::storage::Tx;
 
 /// Which Environment a request addresses. An omitted Project means the
 /// Organization's only Project; an omitted Environment means the Project's
 /// Default Environment.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EnvironmentRef {
+    /// The Project, by name.
     #[serde(default)]
     pub project: Option<ProjectName>,
+    /// The Environment, by name within the Project.
     #[serde(default)]
     pub environment: Option<EnvironmentName>,
 }
@@ -25,10 +28,13 @@ pub struct EnvironmentRef {
 /// An Environment as every result names it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentSummary {
+    /// Its durable identity.
     pub id: EnvironmentId,
+    /// The Project it belongs to.
     pub project: ProjectName,
+    /// Its name within the Project.
     pub name: EnvironmentName,
-    pub namespace: Namespace,
+    /// Working State's revision after the request.
     pub revision: Revision,
 }
 
@@ -42,6 +48,33 @@ pub(crate) struct Project {
 pub(crate) struct Environment {
     pub(crate) summary: EnvironmentSummary,
     pub(crate) working: SavedEnvironmentIntent,
+}
+
+impl Environment {
+    /// The Service named `name` in Working State.
+    pub(crate) fn service(&self, name: &ServiceName) -> Result<&SavedServiceIntent, RpcError> {
+        let services = &self.working.services;
+        services
+            .iter()
+            .find(|service| service.slug == name.as_str())
+            .ok_or_else(|| crate::settings::no_service(name, &self.summary.name, &self.working))
+    }
+
+    /// The Service named `name` in Working State, to change.
+    pub(crate) fn service_mut(
+        &mut self,
+        name: &ServiceName,
+    ) -> Result<&mut SavedServiceIntent, RpcError> {
+        // Search, then borrow mutably: returning a borrow from a search that can fail
+        // would keep `self` borrowed for the error path too.
+        self.service(name)?;
+        Ok(self
+            .working
+            .services
+            .iter_mut()
+            .find(|service| service.slug == name.as_str())
+            .expect("found above"))
+    }
 }
 
 pub(crate) fn project(
@@ -70,7 +103,10 @@ pub(crate) fn project(
         }),
         [] => Err(match name {
             Some(name) => error::not_found(format!("No Project named {name}"), json!({})),
-            None => error::not_found("This Organization has no Project yet", json!({})),
+            None => error::not_found(
+                "This Organization has no Project yet",
+                json!({ "next": "ployz project new NAME" }),
+            ),
         }),
         rows => Err(error::ambiguous(
             "Name a Project: this Organization has more than one",
@@ -85,65 +121,70 @@ pub(crate) fn environment(
     who: &Actor,
     at: &EnvironmentRef,
 ) -> Result<Environment, RpcError> {
-    let project = project(tx, who, at.project.as_ref())?;
-    let columns = "SELECT id, name, namespace, working_revision, working FROM config_environment";
-    let rows = match &at.environment {
-        Some(name) => tx.query(
-            &format!("{columns} WHERE project_id = ?1 AND name = ?2"),
-            &[project.id.as_str().into(), name.as_str().into()],
-        )?,
-        None => tx.query(
-            &format!("{columns} WHERE id = ?1"),
-            &[project.default_environment.as_str().into()],
-        )?,
-    };
-    let Some(row) = rows.first() else {
-        let name = at
-            .environment
-            .as_ref()
-            .map_or("default", EnvironmentName::as_str);
-        return Err(error::not_found(
-            format!("No Environment named {name} in Project {}", project.name),
-            json!({}),
-        ));
-    };
-    loaded(project.name, row)
+    let (project, id) = resolve(tx, who, at)?;
+    load(tx, project, &id)
 }
 
 /// Resolve, lock and load an Environment for a write. Concurrent writers to the same
 /// Environment wait here until this transaction ends, so they apply in turn to the
-/// latest Working State. The lock is a row update, portable to every adapter.
+/// latest Working State. The lock is a row update, portable to every adapter, taken
+/// before the load so that under Postgres the load sees any writer that committed first.
 pub(crate) fn lock(
     tx: &mut dyn Tx,
     who: &Actor,
     at: &EnvironmentRef,
 ) -> Result<Environment, RpcError> {
-    let found = environment(tx, who, at)?;
+    let (project, id) = resolve(tx, who, at)?;
     tx.execute(
         "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
-        &[found.summary.id.as_str().into()],
+        &[id.as_str().into()],
     )?;
-    // Reload: under Postgres another writer may have committed while this one waited.
-    let rows = tx.query(
-        "SELECT id, name, namespace, working_revision, working FROM config_environment WHERE id = ?1",
-        &[found.summary.id.as_str().into()],
-    )?;
-    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
-    loaded(found.summary.project, row)
+    load(tx, project, &id)
 }
 
-fn loaded(project: ProjectName, row: &Row) -> Result<Environment, RpcError> {
-    let working = serde_json::from_str(row.text(4)?)
+/// Which Environment `at` names, without reading its Working State.
+fn resolve(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    at: &EnvironmentRef,
+) -> Result<(ProjectName, EnvironmentId), RpcError> {
+    let project = project(tx, who, at.project.as_ref())?;
+    let Some(name) = &at.environment else {
+        return Ok((project.name, project.default_environment));
+    };
+    let rows = tx.query(
+        "SELECT id FROM config_environment WHERE project_id = ?1 AND name = ?2",
+        &[project.id.as_str().into(), name.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Err(error::not_found(
+            format!("No Environment named {name} in Project {}", project.name),
+            json!({ "next": format!("ployz env new {name} --project {}", project.name) }),
+        ));
+    };
+    Ok((project.name, stored(EnvironmentId::parse(row.text(0)?))?))
+}
+
+fn load(
+    tx: &mut dyn Tx,
+    project: ProjectName,
+    id: &EnvironmentId,
+) -> Result<Environment, RpcError> {
+    let rows = tx.query(
+        "SELECT name, working_revision, working FROM config_environment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
+    let working = serde_json::from_str(row.text(2)?)
         .ok()
         .and_then(|value| parse_environment_intent(value).ok())
         .ok_or_else(|| error::corrupt("Working State"))?;
     Ok(Environment {
         summary: EnvironmentSummary {
-            id: stored(EnvironmentId::parse(row.text(0)?))?,
+            id: id.clone(),
             project,
-            name: stored(EnvironmentName::parse(row.text(1)?))?,
-            namespace: Namespace::parse(row.text(2)?).map_err(|_| error::corrupt("Namespace"))?,
-            revision: Revision(u64::try_from(row.int(3)?).map_err(|_| error::corrupt("revision"))?),
+            name: stored(EnvironmentName::parse(row.text(0)?))?,
+            revision: Revision(u64::try_from(row.int(1)?).map_err(|_| error::corrupt("revision"))?),
         },
         working,
     })
@@ -155,7 +196,7 @@ pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Re
     let document = serde_json::to_value(&environment.working).expect("Working State is JSON");
     environment.working = parse_environment_intent(document)
         .map_err(|error| error::invalid(error.message, json!({ "path": error.path })))?;
-    environment.summary.revision = Revision(environment.summary.revision.0 + 1);
+    environment.summary.revision = environment.summary.revision.next();
     tx.execute(
         "UPDATE config_environment SET working_revision = ?1, working = ?2 WHERE id = ?3",
         &[

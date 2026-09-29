@@ -1,14 +1,15 @@
 //! Creating Projects and Environments.
 
+use ployz_core::RpcError;
 use ployz_core::config::SavedEnvironmentIntent;
-use ployz_core::{Namespace, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::{Command, replayable};
 use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
-use crate::scope::{self, EnvironmentSummary};
+use crate::scope::{self, EnvironmentSummary, Project};
 use crate::storage::Tx;
 
 /// The Default Environment every new Project starts with.
@@ -16,40 +17,64 @@ const DEFAULT_ENVIRONMENT: &str = "production";
 
 /// Create a Project with its Default Environment, `production`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateProject {
+    /// The new Project's ID.
     pub id: ProjectId,
+    /// Its name, unique in the Organization.
     pub name: ProjectName,
+    /// The ID of its Default Environment, created with it.
     pub default_environment: EnvironmentId,
 }
 
 /// The new Project and its Default Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProjectCreated {
+    /// The Project.
     pub project: ProjectSummary,
+    /// Its Default Environment.
     pub environment: EnvironmentSummary,
 }
 
+/// A Project as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProjectSummary {
+    /// Its durable identity.
     pub id: ProjectId,
+    /// Its name.
     pub name: ProjectName,
 }
 
 /// Create an empty Environment in a Project.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateEnvironment {
+    /// The new Environment's ID.
     pub id: EnvironmentId,
+    /// The Project to create it in; omitted means the Organization's only Project.
     #[serde(default)]
     pub project: Option<ProjectName>,
+    /// Its name, unique in the Project.
     pub name: EnvironmentName,
 }
 
+/// The new, empty Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EnvironmentCreated {
+    /// The Environment.
     pub environment: EnvironmentSummary,
 }
 
-pub(super) fn create_project(
+pub(crate) fn create_project(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    create: &CreateProject,
+) -> Result<ProjectCreated, RpcError> {
+    let command = Command::CreateProject(create.clone());
+    replayable(tx, who, &command, |tx| insert_project(tx, who, create))
+}
+
+fn insert_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
@@ -77,14 +102,14 @@ pub(super) fn create_project(
             create.default_environment.as_str().into(),
         ],
     )?;
+    let project = Project {
+        id: create.id.clone(),
+        name: create.name.clone(),
+        default_environment: create.default_environment.clone(),
+    };
     let name = EnvironmentName::parse(DEFAULT_ENVIRONMENT).expect("a valid name");
-    let default_environment = insert_environment(
-        tx,
-        who,
-        (&create.id, &create.name),
-        &create.default_environment,
-        name,
-    )?;
+    let default_environment =
+        insert_environment(tx, who, &project, &create.default_environment, name)?;
     Ok(ProjectCreated {
         project: ProjectSummary {
             id: create.id.clone(),
@@ -94,7 +119,18 @@ pub(super) fn create_project(
     })
 }
 
-pub(super) fn create_environment(
+pub(crate) fn create_environment(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    create: &CreateEnvironment,
+) -> Result<EnvironmentCreated, RpcError> {
+    let command = Command::CreateEnvironment(create.clone());
+    replayable(tx, who, &command, |tx| {
+        insert_new_environment(tx, who, create)
+    })
+}
+
+fn insert_new_environment(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateEnvironment,
@@ -113,40 +149,18 @@ pub(super) fn create_environment(
             json!({ "project": project.name, "environment": create.name }),
         ));
     }
-    let environment = insert_environment(
-        tx,
-        who,
-        (&project.id, &project.name),
-        &create.id,
-        create.name.clone(),
-    )?;
+    let environment = insert_environment(tx, who, &project, &create.id, create.name.clone())?;
     Ok(EnvironmentCreated { environment })
 }
 
-/// Insert an empty Environment deployed to the Namespace `PROJECT-ENVIRONMENT`.
+/// Insert an empty Environment.
 fn insert_environment(
     tx: &mut dyn Tx,
     who: &Actor,
-    (project_id, project): (&ProjectId, &ProjectName),
+    project: &Project,
     id: &EnvironmentId,
     name: EnvironmentName,
 ) -> Result<EnvironmentSummary, RpcError> {
-    let namespace = Namespace::parse(format!("{project}-{name}")).map_err(|_| {
-        error::invalid(
-            "The Project and Environment names together must fit a 63-character Namespace",
-            json!({ "project": project, "environment": name }),
-        )
-    })?;
-    let taken = tx.query(
-        "SELECT id FROM config_environment WHERE organization_id = ?1 AND namespace = ?2",
-        &[who.organization.as_str().into(), namespace.as_str().into()],
-    )?;
-    if !taken.is_empty() {
-        return Err(error::conflict(
-            format!("Another Environment already deploys to Namespace {namespace}"),
-            json!({ "namespace": namespace }),
-        ));
-    }
     let working = SavedEnvironmentIntent {
         version: 1,
         environment_slug: name.to_string(),
@@ -156,14 +170,13 @@ fn insert_environment(
     let revision = Revision(1);
     tx.execute(
         "INSERT INTO config_environment \
-         (id, organization_id, project_id, name, namespace, working_revision, working) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+         (id, organization_id, project_id, name, working_revision, working) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
-            project_id.as_str().into(),
+            project.id.as_str().into(),
             name.as_str().into(),
-            namespace.as_str().into(),
             scope::revision_param(revision)?.into(),
             serde_json::to_string(&working)
                 .expect("Working State is JSON")
@@ -173,9 +186,8 @@ fn insert_environment(
     )?;
     Ok(EnvironmentSummary {
         id: id.clone(),
-        project: project.clone(),
+        project: project.name.clone(),
         name,
-        namespace,
         revision,
     })
 }

@@ -15,12 +15,14 @@ use crate::error;
 use crate::id::Revision;
 use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{ServiceSetting, SettingPath};
+use crate::settings::{self, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Put Working State in Saved State without deploying it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Publish {
+    /// The Environment to publish.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Refuse with `conflict` unless this is still the latest `diff` version.
@@ -28,8 +30,10 @@ pub struct Publish {
     pub version: Option<String>,
 }
 
+/// The Saved revision Working State is now in.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Published {
+    /// The Environment.
     pub environment: EnvironmentSummary,
     /// The Saved revision that now holds Working State.
     pub saved: Revision,
@@ -39,25 +43,29 @@ pub struct Published {
 
 /// Undo staged changes: all of them, one Service's, or one Setting's.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Discard {
+    /// The Environment to discard in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// `SERVICE` or `SERVICE.SETTING`; none discards everything.
     #[serde(default)]
-    pub path: Option<String>,
+    pub path: Option<SettingPath>,
     /// Refuse with `conflict` unless this is still the latest `diff` version.
     #[serde(default)]
     pub version: Option<String>,
 }
 
+/// The Environment after a discard.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Discarded {
+    /// The Environment.
     pub environment: EnvironmentSummary,
     /// The latest Saved revision, which follows the discard so the next Deploy ships it.
     pub saved: Option<Revision>,
 }
 
-pub(super) fn publish(
+pub(crate) fn publish(
     tx: &mut dyn Tx,
     who: &Actor,
     publish: &Publish,
@@ -79,7 +87,7 @@ pub(super) fn publish(
     })
 }
 
-pub(super) fn discard(
+pub(crate) fn discard(
     tx: &mut dyn Tx,
     who: &Actor,
     discard: &Discard,
@@ -88,19 +96,16 @@ pub(super) fn discard(
     let review = review::review(tx, &environment)?;
     review::check(&review, discard.version.as_deref())?;
     let Review { saved, head, .. } = review;
-    let (working, restored) = match discard.path.as_deref() {
+    let (working, restored) = match &discard.path {
         // Everything returns to Head, in Working and Saved State alike.
         None => (head.intent.clone(), saved.as_ref().map(|_| head.intent)),
-        Some(path) => {
-            let path = SettingPath::parse(path)?;
-            restore(
-                tx,
-                &environment,
-                &path,
-                saved.as_ref().map(|saved| &saved.intent),
-                head.intent,
-            )?
-        }
+        Some(path) => restore(
+            tx,
+            &environment,
+            path,
+            saved.as_ref().map(|saved| &saved.intent),
+            head.intent,
+        )?,
     };
     let mut revision = saved.as_ref().map(|saved| saved.revision);
     if let Some(restored) = restored {
@@ -132,14 +137,9 @@ fn restore(
     let id = [working, &head]
         .into_iter()
         .flat_map(|intent| &intent.services)
-        .find(|service| service.slug == path.service.as_str())
+        .find(|service| service.slug == path.service().as_str())
         .map(|service| service.id.clone())
-        .ok_or_else(|| {
-            error::not_found(
-                format!("No Service named {} in Environment {}", path.service, environment.summary.name),
-                json!({ "services": working.services.iter().map(|service| &service.slug).collect::<Vec<_>>() }),
-            )
-        })?;
+        .ok_or_else(|| settings::no_service(path.service(), &environment.summary.name, working))?;
     let config = |intent: Option<&SavedEnvironmentIntent>| {
         intent
             .and_then(|intent| intent.services.iter().find(|service| service.id == id))
@@ -147,13 +147,13 @@ fn restore(
     };
     let head_node = config(Some(&head));
     let saved_node = config(saved);
-    let field = path.setting.map(ServiceSetting::field);
+    let field = path.setting().map(ServiceSetting::field);
     // A new node's Setting resets to its Introduction, and stays unpublished.
     let introduction = field.is_some() && head_node.is_none();
     if introduction && saved_node.is_some() {
         return Err(error::conflict(
             "This Setting has no discard baseline: its Service is published but not deployed",
-            json!({ "path": SettingPath::of(path.service.as_str(), path.setting.expect("a Setting")) }),
+            json!({ "path": path }),
         ));
     }
     let baseline = if introduction {
@@ -175,7 +175,7 @@ fn restore(
                     "Discard would leave an invalid Environment: {}",
                     error.message
                 ),
-                json!({ "service": path.service }),
+                json!({ "service": path.service() }),
             )
         })
     };

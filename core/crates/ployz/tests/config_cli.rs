@@ -39,8 +39,12 @@ fn ok(store: &Path, args: &[&str]) -> Value {
 }
 
 fn error(store: &Path, args: &[&str]) -> Value {
+    failed(store, args, 1)
+}
+
+fn failed(store: &Path, args: &[&str], exit: i32) -> Value {
     let (code, json) = ployz(Some(store), args);
-    assert_eq!(code, Some(1), "{args:?}: {json}");
+    assert_eq!(code, Some(exit), "{args:?}: {json}");
     json.get("error").cloned().unwrap()
 }
 
@@ -52,13 +56,25 @@ fn an_agent_creates_and_edits_an_image_service() {
     let created = ok(&store, &["project", "new", "shop"]);
     assert_eq!(created.pointer("/project/name"), Some(&json!("shop")));
     assert_eq!(
-        created.pointer("/environment/namespace"),
-        Some(&json!("shop-production"))
+        created.pointer("/environment/name"),
+        Some(&json!("production"))
     );
 
     let added = ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
     assert_eq!(added.pointer("/service/name"), Some(&json!("web")));
-    assert_eq!(added.get("staged"), Some(&json!(["web"])));
+    assert_eq!(
+        added.get("staged"),
+        Some(&json!([
+            "web.cpuLimit",
+            "web.image",
+            "web.maxRetries",
+            "web.memLimit",
+            "web.preDeployCommand",
+            "web.replicas",
+            "web.restartPolicy",
+            "web.startCommand"
+        ]))
+    );
     assert_eq!(added.get("immediate"), Some(&json!([])));
 
     let set = ok(
@@ -127,16 +143,38 @@ fn a_stale_revision_conflicts_and_names_the_read_that_refreshes_it() {
 fn mistakes_fail_with_their_codes() {
     let dir = tempfile::tempdir().unwrap();
     let store = dir.path().join("store.db");
+    let no_project = error(&store, &["get"]);
+    assert_eq!(no_project.get("code"), Some(&json!("not_found")));
     assert_eq!(
-        error(&store, &["get"]).get("code"),
-        Some(&json!("not_found")),
-        "no Project yet"
+        no_project.pointer("/details/next"),
+        Some(&json!("ployz project new NAME"))
     );
     ok(&store, &["project", "new", "shop"]);
     ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
+    let no_env = error(&store, &["get", "--env", "preview"]);
+    assert_eq!(
+        no_env.pointer("/details/next"),
+        Some(&json!("ployz env new preview --project shop"))
+    );
+
+    let malformed = failed(&store, &["set", "web.replicas"], 2);
+    assert_eq!(malformed.get("code"), Some(&json!("invalid_argument")));
+    let bad_revision = failed(
+        &store,
+        &["set", "web.replicas=2", "--expect", "SECRET-CANARY"],
+        2,
+    );
+    let bad_name = error(
+        &store,
+        &["service", "add", "SECRET-CANARY", "--image", "nginx:1"],
+    );
+    for error in [bad_revision, bad_name] {
+        assert_eq!(error.get("code"), Some(&json!("invalid_argument")));
+        assert!(!error.to_string().contains("CANARY"), "echoed: {error}");
+    }
+
     for (args, code) in [
-        (&["set", "web.replicas"][..], "invalid_argument"),
-        (&["set", "web.replicas=lots"], "invalid_argument"),
+        (&["set", "web.replicas=lots"][..], "invalid_argument"),
         (&["set", "web.nope=1"], "invalid_argument"),
         (&["set", "api.replicas=1"], "not_found"),
         (&["project", "new", "shop"], "conflict"),
@@ -338,4 +376,21 @@ fn setting_paths_complete_from_the_store_and_the_catalog() {
     };
     assert_eq!(complete("w").trim(), "web.");
     assert_eq!(complete("web.me").trim(), "web.memLimit");
+}
+
+#[test]
+fn an_ambiguous_project_names_the_rerun() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = dir.path().join("store.db");
+    ok(&store, &["project", "new", "shop"]);
+    ok(&store, &["project", "new", "blog"]);
+    let error = error(&store, &["env", "new", "staging"]);
+    assert_eq!(error.get("code"), Some(&json!("ambiguous")));
+    assert_eq!(
+        error.get("details"),
+        Some(&json!({
+            "projects": ["blog", "shop"],
+            "next": "ployz env new staging --json --project PROJECT",
+        }))
+    );
 }

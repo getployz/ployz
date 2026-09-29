@@ -1,9 +1,9 @@
 //! `ployz project`: Projects in the Config Store.
 
 use clap::{ArgMatches, Command};
-use ployz_store::{CreateProject, EnvironmentId, ProjectId, ProjectName, Written};
+use ployz_store::{CreateProject, EnvironmentId, ProjectId, ProjectName};
 
-use super::config::{mint, store};
+use super::store::{failed, mint, store};
 use super::{Error, leaf_matches, required};
 use crate::cli::positional;
 use crate::output::say;
@@ -30,17 +30,12 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let name = ProjectName::parse(required(leaf_matches(root), "name")?)?;
     let (store, actor) = store()?;
-    let Written::Project(created) = store.write(
-        &actor,
-        ployz_store::Command::CreateProject(CreateProject {
-            id: ProjectId::parse(mint())?,
-            name,
-            default_environment: EnvironmentId::parse(mint())?,
-        }),
-    )?
-    else {
-        unreachable!("a Project create writes a Project");
+    let create = CreateProject {
+        id: ProjectId::parse(mint())?,
+        name,
+        default_environment: EnvironmentId::parse(mint())?,
     };
+    let created = store.create_project(&actor, &create).map_err(failed)?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",

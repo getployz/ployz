@@ -8,13 +8,16 @@ use crate::review::{self, DiffView};
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
 
+/// Review an Environment's changes.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DiffQuery {
+    /// The Environment to review.
     #[serde(default)]
     pub environment: EnvironmentRef,
 }
 
-pub(super) fn run(tx: &mut dyn Tx, who: &Actor, query: &DiffQuery) -> Result<DiffView, RpcError> {
+pub(crate) fn diff(tx: &mut dyn Tx, who: &Actor, query: &DiffQuery) -> Result<DiffView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     Ok(review::review(tx, &environment)?.view)
 }

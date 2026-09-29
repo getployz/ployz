@@ -11,8 +11,7 @@ use ployz_core::RpcError;
 
 use crate::error;
 
-/// One migration per ticket, applied once, in order. Statements split on `;`, so a
-/// migration never puts `;` inside a string literal.
+/// One migration per ticket, applied once, in order, each as one batch.
 const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0001_config_store",
@@ -71,17 +70,19 @@ pub(crate) trait Tx {
     fn execute(&mut self, sql: &str, params: &[Param<'_>]) -> Result<usize, RpcError>;
     /// Run a query and return every row.
     fn query(&mut self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Row>, RpcError>;
+    /// Run a script of parameterless statements, as the driver splits it.
+    fn batch(&mut self, sql: &str) -> Result<(), RpcError>;
 }
 
 /// A bound parameter. Only the column types the schema uses exist.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Param<'a> {
-    Text(&'a str),
+pub(crate) enum Param<'text> {
+    Text(&'text str),
     Int(i64),
 }
 
-impl<'a> From<&'a str> for Param<'a> {
-    fn from(value: &'a str) -> Self {
+impl<'text> From<&'text str> for Param<'text> {
+    fn from(value: &'text str) -> Self {
         Self::Text(value)
     }
 }
@@ -133,9 +134,7 @@ fn migrate(tx: &mut dyn Tx) -> Result<(), RpcError> {
         if !applied.is_empty() {
             continue;
         }
-        for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            tx.execute(statement, &[])?;
-        }
+        tx.batch(sql)?;
         tx.execute(
             "INSERT INTO config_migration (name) VALUES (?1)",
             &[(*name).into()],

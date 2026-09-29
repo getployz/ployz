@@ -60,10 +60,14 @@ impl From<AuthoredServiceConfig> for ServiceConfig {
     }
 }
 
-const fn default_max_retries() -> u8 {
+/// How often an on-failure restart policy restarts a replica when authored config names none.
+#[must_use]
+pub const fn default_max_retries() -> u8 {
     10
 }
-const fn default_replicas() -> u8 {
+/// How many replicas a Service runs when its authored config names none.
+#[must_use]
+pub const fn default_replicas() -> u8 {
     1
 }
 
