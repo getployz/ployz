@@ -264,7 +264,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
     setAdding("");
   };
   return (
-    <Field data-changed={change ? true : undefined}>
+    <Field>
       <FieldLabel>{setting.title}</FieldLabel>
       <FieldDescription>{setting.description}</FieldDescription>
       {list.length ? (
@@ -282,6 +282,7 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
       ) : null}
       <div className="flex items-center gap-2">
         <Input aria-label={`New ${setting.title.toLowerCase()}`} placeholder="/src/**" className="flex-1" value={adding}
+          data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}
           onChange={(event) => setAdding(event.target.value)}
           onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); add(); } }} />
         <Button type="button" variant="outline" onClick={add}><PlusIcon data-icon="inline-start" />Add</Button>
