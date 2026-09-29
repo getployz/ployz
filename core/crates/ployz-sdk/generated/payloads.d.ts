@@ -205,7 +205,11 @@ export type BuildLogView = { deployment: DeploymentId, log: string,
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -219,7 +223,11 @@ export type BuildView = {
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -353,7 +361,11 @@ domains: ConfigDomainEvidence,
 /**
  * Which Servers hold the Docker Volumes a Deploy would delete, when it deletes any.
  */
-volumes?: VolumeObservation, };
+volumes?: VolumeObservation,
+/**
+ * Who Cloud authenticated for this write: an admitted upload records them.
+ */
+uploader?: string | null, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView;
 
@@ -1344,7 +1356,7 @@ export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array
  * The Volumes it applied: every Service mounting a kept one confirmed, and
  * every Docker Volume of a removed one deleted.
  */
-volumes: Array<string>, } | { "type": "not_executed", reason: string, };
+volumes: Array<string>, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
@@ -2065,7 +2077,12 @@ digest: string,
  * The commit the directory was checked out at, if it was a Git checkout.
  * Provenance only: it never identifies the build.
  */
-base: UploadBase | null, };
+base: UploadBase | null,
+/**
+ * Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
+ * caller sends. Provenance only.
+ */
+uploader?: string | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 
