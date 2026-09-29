@@ -1,5 +1,5 @@
 import { queryOptions, useMutationState, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
-import type { Change, ConfigQuery, DiffQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery } from "@ployz/sdk";
+import type { Change, ConfigQuery, ConfigView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -22,25 +22,37 @@ const refreshedBy = {
   deployment: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
-  // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, read afresh.
+  // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, which
+  // change with no Store write, so a domains view also polls while one is on its way (`DOMAIN_POLL_MS`).
   domains: ["store_environment", "store_deployment"],
   domain: ["store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
+
+/** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
+const DOMAIN_POLL_MS = 30_000;
+
+/** A domains view with a domain that time, Ployz or the user's DNS will move on: certificates, DNS, the Cluster Domain. */
+function settling(result: StoreResult<ConfigView> | undefined) {
+  return result?.ok === true && result.value.view === "domains"
+    && result.value.domains.some((domain) => domain.status !== "ready" && domain.action?.type !== "deploy");
+}
 
 export const storeViewPrefix = (organizationSlug: string) => ["store-view", organizationSlug] as const;
 
 /**
  * One bounded Store view: an Environment's Settings, its diff or plan, one page of its Deployments, one Deployment.
  * A refusal (`not_found`, `ambiguous`) is the view's answer, not a failed read. The Organization change stream
- * refetches it when a table behind it changes; no timer.
+ * refetches it when a table behind it changes; only a settling domains view polls.
  */
 export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
+  const queryFn = async ({ signal }: { signal: AbortSignal }) =>
+    // SAFETY: the Store answers each query kind with the view of the same name.
+    await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>;
   return queryOptions({
     queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, query] as const,
     staleTime: Infinity,
-    queryFn: async ({ signal }) =>
-      // SAFETY: the Store answers each query kind with the view of the same name.
-      await readStoreViewServerFn({ data: { organizationSlug, query }, signal }) as StoreResult<StoreViewOf<Q>>,
+    refetchInterval: (cached) => settling(cached.state.data) ? DOMAIN_POLL_MS : false,
+    queryFn,
   });
 }
 
@@ -157,6 +169,11 @@ export function servicesQuery(environment: EnvironmentRef): { query: "services" 
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
 export function diffQuery(environment: EnvironmentRef): { query: "diff" } & DiffQuery {
   return { query: "diff", environment };
+}
+
+/** An Environment's public domains with their status: the Networking section of every Service drawer. */
+export function domainsQuery(environment: EnvironmentRef): { query: "domains" } & DomainsQuery {
+  return { query: "domains", environment, service: null };
 }
 
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DiffView, ServiceId, ServiceListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, ServiceId, ServiceListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 import { serviceSetting, settingChange, settingError } from "./catalog";
-import { newServiceName, serviceChanges } from "./store-services";
+import { domainChanged, newServiceName, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
   ({ id: `${name}-id` as ServiceId, name, private_dns: privateDns, source: "image", change: null });
@@ -43,4 +43,23 @@ it("reads one Service's pink trail from the Environment's diff, a rename under `
   expect([...changes.keys()]).toEqual(["name", "replicas"]);
   expect(changes.get("name")?.before).toBe("web");
   expect(serviceChanges(diff, "b").size).toBe(0);
+});
+
+it("marks the domains the next Deploy changes: the generated one by its list, a custom one by its route's hostname", () => {
+  const route = (hostname: string, targetPort: number | null) => ({ id: `${hostname}-id`, hostname, targetPort });
+  const diff = asTestDouble<DiffView>()({
+    changes: [{ type: "service", id: "a", name: "web", lifecycle: "update", comparison: "head", settings: [
+      { path: "web.routes.old-id", kind: "delete", before: route("old.acme.com", null), after: null, canRestore: true },
+      { path: "web.routes.api-id", kind: "update", before: route("api.acme.com", 3000), after: route("api.acme.com", 8080), canRestore: true },
+    ] }],
+  });
+  const domain = (fields: Partial<DomainRow>) =>
+    asTestDouble<DomainRow>()({ service: "web", port: null, status: "ready", reason: null, action: null, ...fields });
+  const changes = serviceChanges(diff, "a");
+  expect(domainChanged(changes, domain({ kind: "custom", hostname: "api.acme.com" }))).toBe(true);
+  expect(domainChanged(changes, domain({ kind: "custom", hostname: "old.acme.com" }))).toBe(true);
+  expect(domainChanged(changes, domain({ kind: "custom", hostname: "www.acme.com" }))).toBe(false);
+  expect(domainChanged(changes, domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(false);
+  const listChanged = { path: "web.managedHostnames", kind: "update" as const, before: [], after: [{ prefix: "web", targetPort: null }], canRestore: true };
+  expect(domainChanged(new Map([["managedHostnames", listChanged]]), domain({ kind: "generated", prefix: "web", hostname: null }))).toBe(true);
 });
