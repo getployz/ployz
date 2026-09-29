@@ -7,6 +7,7 @@ mod edit;
 mod project;
 mod review;
 mod service;
+mod volume;
 
 use ployz_core::RpcError;
 use serde::de::DeserializeOwned;
@@ -26,6 +27,8 @@ pub use review::{Discard, Discarded, Publish, Published};
 pub(crate) use review::{discard, publish};
 pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
 pub(crate) use service::{create_service, insert_service, remove_service, rename_service, summary};
+pub use volume::{CreateVolume, Mount, RemoveVolume, VolumeStaged, VolumeSummary};
+pub(crate) use volume::{create_volume, remove_volume, summary as volume_summary};
 
 use crate::error;
 use crate::storage::Tx;
@@ -48,6 +51,10 @@ pub enum Command {
     RenameService(RenameService),
     /// Remove a Service from Working State; a Deploy removes it.
     RemoveService(RemoveService),
+    /// Create a Volume, optionally mounted into Services.
+    CreateVolume(CreateVolume),
+    /// Remove a Volume from Working State; a Deploy deletes its data.
+    RemoveVolume(RemoveVolume),
     /// Set and unset Settings in one Environment.
     Edit(Edit),
     /// Save Working State as the next Saved revision.
@@ -72,9 +79,11 @@ impl Command {
             Self::CreateService(create) => vec![create.id.as_str()],
             Self::Admit(admit) => vec![admit.id.as_str()],
             Self::CreateGitService(create) => vec![create.id.as_str()],
+            Self::CreateVolume(create) => vec![create.id.as_str()],
             Self::Edit(_)
             | Self::RenameService(_)
             | Self::RemoveService(_)
+            | Self::RemoveVolume(_)
             | Self::Publish(_)
             | Self::Discard(_)
             | Self::Cancel(_) => Vec::new(),
@@ -97,6 +106,10 @@ pub enum Written {
     ServiceRenamed(ServiceStaged),
     /// A Service was removed from Working State.
     ServiceRemoved(ServiceStaged),
+    /// A Volume was created.
+    Volume(VolumeStaged),
+    /// A Volume was removed from Working State.
+    VolumeRemoved(VolumeStaged),
     /// Settings were edited.
     Edited(Edited),
     /// Working State was published.
@@ -129,10 +142,12 @@ pub(crate) fn run(
         Command::RemoveService(remove) => {
             remove_service(tx, who, remove).map(Written::ServiceRemoved)
         }
+        Command::CreateVolume(create) => create_volume(tx, who, create).map(Written::Volume),
+        Command::RemoveVolume(remove) => remove_volume(tx, who, remove).map(Written::VolumeRemoved),
         Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
-        Command::Admit(request) => admit(tx, who, request).map(Written::Deployment),
+        Command::Admit(request) => admit(tx, who, request, trusted).map(Written::Deployment),
         Command::Cancel(request) => cancel(tx, who, request).map(Written::Deployment),
     }
 }

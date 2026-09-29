@@ -11,6 +11,7 @@ use crate::Actor;
 use crate::deployment::{self, DeploymentSummary};
 use crate::error;
 use crate::id::DeploymentId;
+use crate::removal::{self, VolumeLoss};
 use crate::review::{self, NodeChange};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -90,12 +91,30 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
     let environment = scope::environment(tx, who, &query.environment)?;
     let review = review::review(tx, &environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    let target = canonicalize_environment_intent(environment.working.clone());
+    // Which Docker Volumes a removal deletes only the Servers can say.
+    let removed: Vec<VolumeLoss> = if query.services.is_empty() {
+        removal::removed(&review.head.applied, &target, &namespace)?
+    } else {
+        Vec::new()
+    }
+    .into_iter()
+    .map(|volume| VolumeLoss {
+        volume,
+        deletes: Vec::new(),
+    })
+    .collect();
+    let mut unresolved = vec!["operations".to_owned()];
+    if !removed.is_empty() {
+        unresolved.push("volume data".to_owned());
+    }
     let frozen = deployment::freeze(
         &environment.summary.id,
-        &canonicalize_environment_intent(environment.working.clone()),
+        &target,
         &review.head.applied,
         &query.services,
         namespace.clone(),
+        &removed,
     )?;
     let changes = review
         .view
@@ -108,7 +127,7 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         version: review.view.version,
         namespace,
         changes,
-        unresolved: vec!["operations".to_owned()],
+        unresolved,
     })
 }
 

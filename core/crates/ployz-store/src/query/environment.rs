@@ -11,6 +11,7 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::id::VolumeName;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
@@ -122,6 +123,18 @@ pub(crate) fn environment(
                 Apply::Staged,
             );
         }
+        if let Some(Target::Mount(volume)) = only {
+            environment.volume(volume)?;
+        }
+        for (volume, path) in mounts(service, &environment.working) {
+            let volume = VolumeName::parse(volume).map_err(|_| crate::error::corrupt("Volume"))?;
+            row(
+                Target::Mount(volume),
+                Value::String(path),
+                Value::Null,
+                Apply::Staged,
+            );
+        }
     }
     Ok(EnvironmentView {
         environment: environment.summary,
@@ -146,5 +159,32 @@ pub(crate) fn values(
     if !env.is_empty() {
         values.insert("env".to_owned(), Value::Object(env));
     }
+    let mounts: Map<String, Value> = mounts(service, intent)
+        .into_iter()
+        .map(|(volume, path)| (volume, Value::String(path)))
+        .collect();
+    if !mounts.is_empty() {
+        values.insert("mounts".to_owned(), Value::Object(mounts));
+    }
     values
+}
+
+/// Where `service` mounts Volumes, as (Volume name, path), sorted by name.
+pub(crate) fn mounts(
+    service: &SavedServiceIntent,
+    intent: &SavedEnvironmentIntent,
+) -> Vec<(String, String)> {
+    let mut mounts: Vec<(String, String)> = service
+        .volume_attachments
+        .iter()
+        .filter_map(|mount| {
+            let volume = intent
+                .volumes
+                .iter()
+                .find(|volume| volume.resource_id == mount.volume_resource_id)?;
+            Some((volume.name.clone(), mount.mount_path.clone()))
+        })
+        .collect();
+    mounts.sort();
+    mounts
 }

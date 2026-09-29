@@ -6,6 +6,7 @@ pub(crate) mod deployment;
 mod diff;
 mod environment;
 mod service;
+mod volume;
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,10 @@ pub use service::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
 pub(crate) use service::{service, services};
+pub use volume::{
+    RemovalsQuery, RemovalsView, VolumeListing, VolumeQuery, VolumeView, VolumesQuery, VolumesView,
+};
+pub(crate) use volume::{removals, volume, volumes};
 
 use crate::Actor;
 use crate::storage::Tx;
@@ -48,6 +53,12 @@ pub enum Query {
     Service(ServiceQuery),
     /// Where an Environment runs on the Servers.
     Namespace(NamespaceQuery),
+    /// An Environment's Volumes.
+    Volumes(VolumesQuery),
+    /// One Volume.
+    Volume(VolumeQuery),
+    /// The deployed Volumes a full Deploy would remove.
+    Removals(RemovalsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -71,6 +82,12 @@ pub enum View {
     Service(ServiceView),
     /// An Environment's Namespace.
     Namespace(NamespaceView),
+    /// An Environment's Volumes.
+    Volumes(VolumesView),
+    /// One Volume.
+    Volume(VolumeView),
+    /// What a full Deploy would remove.
+    Removals(RemovalsView),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, RpcError> {
@@ -85,5 +102,8 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         Query::Services(query) => services(tx, who, query).map(View::Services),
         Query::Service(query) => service(tx, who, query).map(View::Service),
         Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
+        Query::Volumes(query) => volumes(tx, who, query).map(View::Volumes),
+        Query::Volume(query) => volume(tx, who, query).map(View::Volume),
+        Query::Removals(query) => removals(tx, who, query).map(View::Removals),
     }
 }

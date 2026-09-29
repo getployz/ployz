@@ -118,6 +118,20 @@ fn service() -> Value {
             "x-ployz-data-loss": false,
         }),
     );
+    properties.insert(
+        "mounts".to_owned(),
+        json!({
+            "title": "Mounts",
+            "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create a Volume with `ployz volume add`. Unset detaches it: the Volume and its data stay.",
+            "type": "object",
+            "patternProperties": { NODE_NAME: mount() },
+            "additionalProperties": false,
+            "examples": [{ "data": "/var/lib/data" }],
+            "x-ployz-apply": "staged",
+            "x-ployz-secret": false,
+            "x-ployz-data-loss": false,
+        }),
+    );
     json!({
         "title": "Service",
         "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
@@ -127,8 +141,23 @@ fn service() -> Value {
     })
 }
 
+fn mount() -> Value {
+    json!({
+        "title": "Mount path",
+        "description": "The absolute path the Volume is mounted at in the Service's containers. Unset detaches it: the Volume and its data stay.",
+        "type": "string",
+        "pattern": "^/",
+        "minLength": 1,
+        "examples": ["/var/lib/data"],
+        "x-ployz-apply": "staged",
+        "x-ployz-secret": false,
+        "x-ployz-data-loss": false,
+    })
+}
+
 fn target(target: &Target) -> Value {
     match target {
+        Target::Mount(_) => mount(),
         Target::Setting(one) => setting(*one),
         Target::Variable(_) => variables::schema(),
         Target::Exported(_) => json!({
@@ -195,6 +224,10 @@ mod tests {
             (
                 "web.env.K.exported".to_owned(),
                 schema(Some("web.env.K.exported")).unwrap(),
+            ),
+            (
+                "web.mounts.data".to_owned(),
+                schema(Some("web.mounts.data")).unwrap(),
             ),
         ];
         let properties = service["properties"].as_object().unwrap().clone();

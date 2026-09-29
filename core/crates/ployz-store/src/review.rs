@@ -54,6 +54,19 @@ pub struct NodeChange {
     pub comparison: Option<ReviewComparisonRole>,
     /// Its changed Settings, by `SERVICE.SETTING` path.
     pub settings: Vec<ServiceSettingChange>,
+    /// What the change does to Volume data: `deleted` for a deployed Volume it
+    /// removes, `kept` for a Service that stops mounting a Volume that stays.
+    pub data: Option<DataEffect>,
+}
+
+/// What a staged change does to data on the Servers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum DataEffect {
+    /// Deploying it deletes a Volume's data, once each loss is accepted by name.
+    Deleted,
+    /// A Volume is detached, and it keeps its data.
+    Kept,
 }
 
 /// One Saved revision.
@@ -91,12 +104,15 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
         node_introductions: project("introductions", &introductions),
     })
     .map_err(|_| error::corrupt("Environment document"))?;
+    let intents = [&environment.working, &head.intent];
     let name = |node: &ReviewNodeIdentity| {
-        [&environment.working, &head.intent]
+        let services = intents
             .into_iter()
             .flat_map(|intent| &intent.services)
             .find(|service| service.id == node.id)
-            .map(|service| service.slug.clone())
+            .map(|service| service.slug.clone());
+        services
+            .or_else(|| volume_name(&intents, &node.id))
             .unwrap_or_default()
     };
     let mut view = DiffView {
@@ -117,13 +133,26 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             .into_iter()
             .map(|group| {
                 let name = name(&group.node);
-                let settings = group
+                let settings: Vec<ServiceSettingChange> = group
                     .settings
                     .into_iter()
                     .map(|mut row| {
                         if row.path.starts_with("env.") {
                             row.before = shown_env(row.before);
                             row.after = shown_env(row.after);
+                        }
+                        if let Some(volume) = row.path.strip_prefix("mounts.") {
+                            row.path = format!(
+                                "{name}.mounts.{}",
+                                volume_name(&intents, volume).unwrap_or_default()
+                            );
+                            row.before = row.before.get("mountPath").cloned().unwrap_or_default();
+                            row.after = row.after.get("mountPath").cloned().unwrap_or_default();
+                            return row;
+                        }
+                        if group.node.node_type == EnvironmentNodeType::Volume {
+                            row.path = format!("volumes.{name}.{}", row.path);
+                            return row;
                         }
                         row.path = match ServiceSetting::ALL
                             .into_iter()
@@ -139,12 +168,14 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                         row
                     })
                     .collect();
+                let data = data_effect(&group.node, group.lifecycle, &settings, &head.applied);
                 NodeChange {
                     node: group.node,
                     name,
                     lifecycle: group.lifecycle,
                     comparison: group.comparison,
                     settings,
+                    data,
                 }
             })
             .collect(),
@@ -187,7 +218,46 @@ fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEn
                 lifecycle: ReviewLifecycleKind::Update,
                 comparison: Some(ReviewComparisonRole::Head),
                 settings: vec![row],
+                data: None,
             }),
+        }
+    }
+}
+
+/// The name of Volume `id` in Working State or Head.
+fn volume_name(intents: &[&SavedEnvironmentIntent; 2], id: &str) -> Option<String> {
+    intents
+        .iter()
+        .flat_map(|intent| &intent.volumes)
+        .find(|volume| volume.resource_id == id)
+        .map(|volume| volume.name.clone())
+}
+
+/// A deployed Volume removed deletes data; a Service removed, or one of its mounts
+/// dropped, keeps the Volume.
+fn data_effect(
+    node: &ReviewNodeIdentity,
+    lifecycle: ReviewLifecycleKind,
+    settings: &[ServiceSettingChange],
+    applied: &SavedEnvironmentIntent,
+) -> Option<DataEffect> {
+    match node.node_type {
+        EnvironmentNodeType::Volume => (lifecycle == ReviewLifecycleKind::Delete
+            && applied
+                .volumes
+                .iter()
+                .any(|volume| volume.resource_id == node.id))
+        .then_some(DataEffect::Deleted),
+        EnvironmentNodeType::Service => {
+            let detached = settings
+                .iter()
+                .any(|row| row.path.contains(".mounts.") && row.after.is_null());
+            let removed_with_mounts = lifecycle == ReviewLifecycleKind::Delete
+                && applied
+                    .services
+                    .iter()
+                    .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
+            (detached || removed_with_mounts).then_some(DataEffect::Kept)
         }
     }
 }
@@ -251,14 +321,21 @@ pub(crate) fn introductions(
     environment: &Environment,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let rows = tx.query(
-        "SELECT node FROM config_node_introduction WHERE environment_id = ?1 AND node_type = 'service'",
+        "SELECT node, node_type FROM config_node_introduction WHERE environment_id = ?1",
         &[environment.summary.id.as_str().into()],
     )?;
     let mut intent = empty(&environment.working);
     for row in rows {
-        intent.services.push(
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Node Introduction"))?,
-        );
+        let corrupt = |_| error::corrupt("Node Introduction");
+        if row.text(1)? == "volume" {
+            intent
+                .volumes
+                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
+        } else {
+            intent
+                .services
+                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
+        }
     }
     Ok(intent)
 }
