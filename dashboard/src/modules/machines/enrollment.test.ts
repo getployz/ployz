@@ -15,7 +15,7 @@ const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
 
 describe("machine enrollment command", () => {
-  it("pastes ployz cloud enroll with the token", () => {
+  it("pastes ployz server add with the token", () => {
     const minted = mintedEnrollment({
       origin: "https://ployz.dev",
       token: "pmet_secret",
@@ -23,7 +23,7 @@ describe("machine enrollment command", () => {
     });
 
     expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh && sudo ployz cloud enroll 'pmet_secret'",
+      "curl -fsSL https://ployz.sh/ | sh && sudo ployz server add --token 'pmet_secret'",
     );
     expect(minted.expiresAt).toBe("2026-08-19T00:00:00.000Z");
   });

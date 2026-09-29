@@ -19,6 +19,14 @@ export const MintMachineEnrollmentInput = Schema.Struct({
 export type MintMachineEnrollmentInput =
   typeof MintMachineEnrollmentInput.Type;
 
+export const ReadMachineEnrollmentInput = Schema.Struct({
+  organizationSlug: OrganizationSlug,
+  id: Schema.String.check(Schema.isUUID()),
+});
+
+export type ReadMachineEnrollmentInput =
+  typeof ReadMachineEnrollmentInput.Type;
+
 export const ResetPendingEnrollmentInput = Schema.Struct({
   organizationSlug: OrganizationSlug,
   confirmedFounderStoppedOrErased: Schema.Literal(true),
@@ -216,7 +224,7 @@ export function buildMachineJoinCommand(input: {
   const host = new URL(input.origin).hostname;
   const cloudUrlFlag =
     host === DEFAULT_CLOUD_URL_HOST ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | sh && sudo ployz cloud enroll '${input.token}'${cloudUrlFlag}`;
+  return `curl -fsSL ${INSTALLER_URL} | sh && sudo ployz server add --token '${input.token}'${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {
