@@ -20,8 +20,9 @@ Services; the CLI has no deploy, build, or image command.
 
 ```text
 ployz
-├── cloud      enroll
-├── machine    init · add · ls · inspect · logs · rename · rm · rtt · update
+├── server     add
+├── cloud      reset
+├── machine    ls · inspect · logs · rename · rm · rtt · update
 │              upgrade [inspect] · build-cache-clear
 ├── service    ls · inspect · logs · exec · scale · start · stop · rm
 ├── volume     create · ls · inspect · rm
@@ -36,7 +37,7 @@ ployz
 
 `crates/ployz/tests/cli_shape.rs` pins this tree; there are no aliases.
 
-`ployz machine add` saves subnet assignments beside its configuration file in
+`ployz server add --standalone` saves subnet assignments beside its configuration file in
 `<config-stem>.enrollment/` before publishing or joining. Commands using that
 store serialize allocation, including pending work; retry with the same identity
 and inputs to resume after a network failure. Context aliases and renames share

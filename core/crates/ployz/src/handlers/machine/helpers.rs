@@ -60,7 +60,7 @@ pub(super) fn configure_ssh_key(
     Ok(connection)
 }
 
-pub(super) async fn connect_direct(
+pub(in crate::handlers) async fn connect_direct(
     matches: &ArgMatches,
     connection: &Connection,
 ) -> Result<Client, ConnectError> {

@@ -27,7 +27,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
         [
             "build",
             "cloud",
-            "cloud enroll",
+            "cloud reset",
             // Shell tooling, not a Cluster operation.
             "completion",
             "ctx",
@@ -39,9 +39,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "login",
             "logout",
             "machine",
-            "machine add",
             "machine build-cache-clear",
-            "machine init",
             "machine inspect",
             "machine logs",
             "machine ls",
@@ -51,6 +49,8 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "project",
             "project ls",
             "project rm",
+            "server",
+            "server add",
             "service",
             "service exec",
             "service inspect",
@@ -355,9 +355,9 @@ fn compose_workflows_and_inputs_are_not_accepted() {
 fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rejected() {
     for path in [
         vec!["machine", "update", "node"],
-        vec!["machine", "init"],
-        vec!["machine", "add", "root@node"],
-        vec!["cloud", "enroll", "pmet_test"],
+        vec!["server", "add", "--standalone"],
+        vec!["server", "add", "root@node"],
+        vec!["server", "add", "--token", "pmet_test"],
     ] {
         let mut args = vec!["ployz"];
         args.extend(path);

@@ -15,6 +15,7 @@ pub(crate) mod login;
 pub(crate) mod machine;
 mod operator;
 pub(crate) mod project;
+pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod volume;
 
@@ -238,6 +239,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("logout", "") => Some((login::logout, Json::Supported)),
         ("machine", rest) => machine::handler(rest),
         ("project", rest) => project::handler(rest),
+        ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
         ("volume", rest) => volume::handler(rest),
         _ => None,
@@ -274,8 +276,9 @@ mod tests {
                 "ployz",
                 "--ployz-config",
                 "/tmp/a config.yaml",
-                "machine",
-                "init",
+                "server",
+                "add",
+                "--standalone",
                 "root@host",
                 "--context",
                 "staging",
@@ -300,7 +303,7 @@ mod tests {
     #[should_panic(expected = "recovery hint does not parse")]
     fn setup_recovery_refuses_a_command_outside_the_tree() {
         let matches = command()
-            .try_get_matches_from(["ployz", "machine", "init", "root@host"])
+            .try_get_matches_from(["ployz", "server", "add", "--standalone", "root@host"])
             .unwrap();
         recovery_command(leaf_matches(&matches), "staging", &["no-such", "command"]);
     }
@@ -372,8 +375,9 @@ mod tests {
             .clone()
             .try_get_matches_from([
                 "ployz",
-                "machine",
-                "init",
+                "server",
+                "add",
+                "--standalone",
                 "--yes",
                 "--storage",
                 "none",
@@ -398,8 +402,9 @@ mod tests {
             .clone()
             .try_get_matches_from([
                 "ployz",
-                "machine",
-                "init",
+                "server",
+                "add",
+                "--standalone",
                 "--no-install",
                 "--yes",
                 "--storage",
@@ -416,39 +421,37 @@ mod tests {
     }
 
     #[test]
-    fn machine_enrollment_accepts_only_supported_storage_choices() {
-        for action in ["add", "init"] {
-            for storage in ["none", "zfs"] {
-                let parsed = command()
-                    .try_get_matches_from([
-                        "ployz",
-                        "machine",
-                        action,
-                        "root@example.test",
-                        "--storage",
-                        storage,
-                    ])
-                    .unwrap();
-                assert_eq!(
-                    leaf_matches(&parsed)
-                        .get_one::<ployz_core::StorageChoice>("storage")
-                        .map(|choice| choice.as_str()),
-                    Some(storage),
-                );
-            }
-            assert!(
-                command()
-                    .try_get_matches_from([
-                        "ployz",
-                        "machine",
-                        action,
-                        "root@example.test",
-                        "--storage",
-                        "other",
-                    ])
-                    .is_err()
+    fn server_add_accepts_only_supported_storage_choices() {
+        for storage in ["none", "zfs"] {
+            let parsed = command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "add",
+                    "root@example.test",
+                    "--storage",
+                    storage,
+                ])
+                .unwrap();
+            assert_eq!(
+                leaf_matches(&parsed)
+                    .get_one::<ployz_core::StorageChoice>("storage")
+                    .map(|choice| choice.as_str()),
+                Some(storage),
             );
         }
+        assert!(
+            command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "add",
+                    "root@example.test",
+                    "--storage",
+                    "other",
+                ])
+                .is_err()
+        );
     }
 
     #[test]
@@ -470,52 +473,47 @@ mod tests {
     }
 
     #[test]
-    fn cloud_enroll_takes_a_positional_token() {
+    fn server_add_takes_a_token_or_prints_a_command() {
         assert!(command().try_get_matches_from(["ployz", "cloud"]).is_err());
-        assert!(
-            command()
-                .try_get_matches_from(["ployz", "init", "--cloud", "pmet_test"])
-                .is_err()
-        );
         let parsed = command()
-            .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
+            .try_get_matches_from(["ployz", "server", "add", "--token", "pmet_test"])
             .unwrap();
-        let cloud = parsed.subcommand_matches("cloud").unwrap();
+        let add = leaf_matches(&parsed);
         assert_eq!(
-            cloud.get_one::<String>("cloud-url").map(String::as_str),
-            Some("ployz.dev")
-        );
-        let enroll = cloud.subcommand_matches("enroll").unwrap();
-        assert_eq!(
-            enroll.get_one::<String>("token").map(String::as_str),
+            add.get_one::<String>("token").map(String::as_str),
             Some("pmet_test")
         );
         assert_eq!(
-            enroll.get_one::<ipnet::Ipv4Net>("network").copied(),
+            add.get_one::<ipnet::Ipv4Net>("network").copied(),
             Some("10.210.0.0/16".parse().unwrap())
         );
-        assert!(
-            command()
-                .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_x", "root@host"])
-                .is_err()
-        );
-        assert!(
-            command()
-                .try_get_matches_from([
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_x",
-                    "--ssh-key",
-                    "/tmp/key"
-                ])
-                .is_err()
-        );
+        for conflicting in [
+            ["ployz", "server", "add", "--token", "pmet_x", "--command"].as_slice(),
+            ["ployz", "server", "add", "--command", "root@host"].as_slice(),
+            ["ployz", "server", "add", "--wait", "id", "root@host"].as_slice(),
+            [
+                "ployz",
+                "server",
+                "add",
+                "--standalone",
+                "--token",
+                "pmet_x",
+            ]
+            .as_slice(),
+            ["ployz", "server", "add", "--network", "not-a-cidr"].as_slice(),
+        ] {
+            assert!(
+                command().try_get_matches_from(conflicting).is_err(),
+                "{conflicting:?}"
+            );
+        }
         let flags = command()
             .try_get_matches_from([
                 "ployz",
-                "cloud",
-                "enroll",
+                "server",
+                "add",
+                "root@host",
+                "--token",
                 "pmet_x",
                 "--name",
                 "edge",
@@ -532,57 +530,31 @@ mod tests {
                 "example.test",
             ])
             .unwrap();
-        let enroll = flags
-            .subcommand_matches("cloud")
-            .unwrap()
-            .subcommand_matches("enroll")
-            .unwrap();
-        assert_eq!(enroll.get_one::<String>("name").unwrap(), "edge");
+        let add = leaf_matches(&flags);
+        assert_eq!(add.get_one::<String>("destination").unwrap(), "root@host");
+        assert_eq!(add.get_one::<String>("name").unwrap(), "edge");
         assert_eq!(
-            enroll.get_one::<ipnet::Ipv4Net>("network").copied(),
-            Some("10.220.0.0/16".parse().unwrap())
-        );
-        assert_eq!(
-            enroll.get_one::<ployz_core::StorageChoice>("storage"),
+            add.get_one::<ployz_core::StorageChoice>("storage"),
             Some(&ployz_core::StorageChoice::Zfs)
         );
-        assert_eq!(enroll.get_one::<bool>("accepts-ingress"), Some(&false));
-        assert!(enroll.get_flag("reset"));
-        assert!(enroll.get_flag("yes"));
-        assert_eq!(enroll.get_one::<u32>("wg-mtu").copied(), Some(1400));
+        assert_eq!(add.get_one::<bool>("accepts-ingress"), Some(&false));
+        assert!(add.get_flag("reset"));
+        assert_eq!(add.get_one::<u32>("wg-mtu").copied(), Some(1400));
         assert_eq!(
-            enroll.get_one::<String>("cloud-url").map(String::as_str),
+            add.get_one::<String>("cloud-url").map(String::as_str),
             Some("example.test")
         );
     }
 
     #[test]
-    fn cloud_enroll_rejects_an_invalid_cluster_network() {
-        assert!(
-            command()
-                .try_get_matches_from([
-                    "ployz",
-                    "cloud",
-                    "enroll",
-                    "pmet_test",
-                    "--reset",
-                    "--yes",
-                    "--network",
-                    "not-a-cidr",
-                ])
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn cloud_enroll_without_a_daemon_requires_sudo() {
+    fn server_add_with_a_token_and_no_daemon_requires_sudo() {
         if crate::provisioning::process_is_root() {
             return;
         }
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "cloud", "enroll", "pmet_test"])
+            .try_get_matches_from(["ployz", "server", "add", "--token", "pmet_test"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
@@ -591,13 +563,39 @@ mod tests {
     }
 
     #[test]
+    fn cloud_reset_fails_closed_with_the_command_to_confirm() {
+        let mut command = command();
+        let matches = command
+            .clone()
+            .try_get_matches_from(["ployz", "cloud", "reset"])
+            .unwrap();
+        let error = dispatch(&matches, &mut command).unwrap_err().report();
+        assert_eq!(
+            error
+                .details
+                .get("next")
+                .and_then(serde_json::Value::as_str),
+            Some("ployz cloud reset --yes")
+        );
+    }
+
+    #[test]
     fn founding_commands_reject_the_removed_ingress_backend_option() {
         for arguments in [
-            ["ployz", "machine", "init", "--ingress-backend", "caddy"].as_slice(),
             [
                 "ployz",
-                "cloud",
-                "enroll",
+                "server",
+                "add",
+                "--standalone",
+                "--ingress-backend",
+                "caddy",
+            ]
+            .as_slice(),
+            [
+                "ployz",
+                "server",
+                "add",
+                "--token",
                 "pmet_test",
                 "--ingress-backend",
                 "caddy",
@@ -685,7 +683,7 @@ mod tests {
             let error = command()
                 .try_get_matches_from([
                     "ployz",
-                    "machine",
+                    "server",
                     "add",
                     "root@example.com",
                     "--version",

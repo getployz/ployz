@@ -190,11 +190,6 @@ impl CredentialStore {
 ///
 /// Returns [`LoginError::SignedOut`], [`LoginError::Expired`] or [`LoginError::Denied`]
 /// when there is nothing to act with, or a Cloud or store failure.
-// TODO(#1236): Cloud-backed commands call this for their bearer.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Cloud-backed commands land after sign-in")
-)]
 pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, LoginError> {
     match store.load()? {
         None => Err(LoginError::SignedOut),
@@ -205,6 +200,31 @@ pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, Login
                 .await?
                 .ok_or(LoginError::AwaitingApproval { url })
         }
+    }
+}
+
+impl SignedIn {
+    /// POST `body` to one of Cloud's signed-in CLI endpoints as this device.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoginError::Ended`] when Cloud no longer honours the sign-in, or a Cloud failure.
+    pub(crate) async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, LoginError> {
+        let response = http()?
+            .post(format!("{}{path}", self.cloud))
+            .bearer_auth(&self.token.0)
+            .json(body)
+            .send()
+            .await
+            .map_err(|error| unreachable(&self.cloud, error))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(LoginError::Ended);
+        }
+        decode(ensure_success(response).await?)
     }
 }
 

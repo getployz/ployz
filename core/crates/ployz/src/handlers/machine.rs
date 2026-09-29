@@ -6,8 +6,7 @@ use std::{
 use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
 
 use crate::cli::{
-    base, connection_args, env, log_flags, machine_policy_flags, many, positional, switch, value,
-    volume_acceptance,
+    base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, MachineName, MachineTarget, MachineUpdate,
@@ -33,7 +32,7 @@ mod upgrade;
 
 pub(super) use add::add;
 pub(super) use helpers::{
-    confirm, initialize, join, machine_name, readiness_timeout_message, reset,
+    confirm, connect_direct, initialize, join, machine_name, readiness_timeout_message, reset,
 };
 pub(super) use init::init;
 pub(super) use inspect::{inspect, list};
@@ -392,8 +391,6 @@ mod tests {
 pub(crate) fn command() -> Command {
     base("machine", "Manage machines")
         .arg_required_else_help(true)
-        .subcommand(machine_add())
-        .subcommand(machine_init())
         .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(
@@ -434,19 +431,6 @@ pub(crate) fn command() -> Command {
         )
 }
 
-fn machine_add() -> Command {
-    provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
-}
-
-fn machine_init() -> Command {
-    let command = Command::new("init")
-        .about("Initialise a cluster on this Machine or a remote machine")
-        .args(connection_args(false))
-        .arg(value("context", Some('c')).default_value("default"))
-        .arg(value("network", None).default_value("10.210.0.0/16"));
-    provisioning_flags(command).arg(positional("destination", false))
-}
-
 fn machine_upgrade() -> Command {
     base("upgrade", "Upgrade explicitly selected machines")
         .arg_required_else_help(true)
@@ -462,7 +446,7 @@ fn machine_upgrade() -> Command {
         )
 }
 
-fn provisioning_flags(command: Command) -> Command {
+pub(super) fn provisioning_flags(command: Command) -> Command {
     machine_policy_flags(command)
         .arg(value("name", None))
         .arg(switch("no-install", None))
@@ -491,8 +475,6 @@ fn provisioning_flags(command: Command) -> Command {
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::Supported;
     Some(match path {
-        "add" => (add, Supported),
-        "init" => (init, Supported),
         "build-cache-clear" => (clear_build_cache, Supported),
         "inspect" => (inspect, Supported),
         "logs" => (super::operator::machine_logs, Supported),
