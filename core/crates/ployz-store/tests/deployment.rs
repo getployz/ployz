@@ -14,8 +14,8 @@ use ployz_store::{
     DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
     Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
     PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
-    Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start,
-    Trusted, UploadBase, UploadedSource, View, Written,
+    Revision, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
+    Start, Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -43,7 +43,7 @@ fn shop() -> (ConfigStore, Actor) {
             .create_service(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
@@ -861,7 +861,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
@@ -951,7 +951,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,

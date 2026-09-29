@@ -14,7 +14,7 @@ use ts_rs::TS;
 use super::{Command, replayable};
 use crate::Actor;
 use crate::error;
-use crate::id::ServiceId;
+use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
@@ -25,7 +25,7 @@ use crate::storage::Tx;
 #[serde(deny_unknown_fields)]
 pub struct CreateService {
     /// The new Service's ID, also its lineage.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
@@ -78,7 +78,7 @@ pub struct ServiceStaged {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
     /// Its durable identity.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// Its name, which Setting paths address it by.
     pub name: ServiceName,
     /// Its Private DNS name, fixed at creation.
@@ -114,7 +114,7 @@ pub(crate) fn create_service(
 pub(crate) fn insert_service(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &ServiceId,
+    id: &ServiceLineageId,
     environment: &EnvironmentRef,
     name: &ServiceName,
     source: ServiceSource,
@@ -249,7 +249,7 @@ fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
 
 pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {
     Ok(ServiceSummary {
-        id: ServiceId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
+        id: ServiceLineageId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
         name: ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service name"))?,
         private_dns: node.config.private_dns.clone(),
     })
@@ -261,7 +261,7 @@ mod tests {
 
     use crate::{
         Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
-        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceId, SettingPath,
+        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceLineageId, SettingPath,
     };
 
     /// Node Introductions have no read yet (Discard uses them), so this reads the row.
@@ -285,7 +285,7 @@ mod tests {
             .create_service(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(3)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse("web").unwrap(),
                     image: Some("nginx:1".into()),

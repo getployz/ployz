@@ -10,7 +10,7 @@ use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DeploymentsQuery, DiffQuery, Edit, Edited, EnvironmentId, EnvironmentQuery, EnvironmentRef,
-    OrganizationId, PlanQuery, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId,
+    OrganizationId, PlanQuery, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId,
     SettingPath,
 };
 use serde_json::{Value, json};
@@ -41,7 +41,7 @@ fn shop(store: &ConfigStore) {
             .create_service(
                 &who(),
                 &CreateService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),

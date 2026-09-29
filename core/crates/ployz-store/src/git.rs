@@ -21,7 +21,7 @@ use ts_rs::TS;
 
 use super::command::{Command, replayable};
 use crate::error;
-use crate::id::ServiceId;
+use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
@@ -64,7 +64,7 @@ impl Trusted {
 #[serde(deny_unknown_fields)]
 pub struct CreateGitService {
     /// The new Service's ID, also its lineage.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,

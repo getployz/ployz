@@ -344,7 +344,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
         Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildStatus, Change, ConfigStore,
         CreateGitService, CreateProject, Deploy, DeploymentId, DeploymentStatus, Edit,
         EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId,
-        SealingKey, ServiceId, SettingPath, Trusted,
+        SealingKey, ServiceLineageId, SettingPath, Trusted,
     };
 
     let plan = ClusterPlan::new(&format!("l3-store-git-{}", std::process::id()), 1).unwrap();
@@ -388,7 +388,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             .create_git_service(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(*name).unwrap(),
@@ -531,7 +531,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     use ployz_store::{
         Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, Deploy,
         DeploymentId, DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
-        Outcome, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId, SettingPath,
+        Outcome, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId, SettingPath,
         UploadedSource,
     };
 
@@ -559,7 +559,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,

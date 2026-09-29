@@ -109,7 +109,7 @@ store_string!(
 store_string!(
     /// A Service's durable identity, minted by the caller that creates it. It is
     /// also the lineage of the Service it creates.
-    ServiceId, "a Service ID (a UUID)", is_uuid, "ployz_core::ServiceId"
+    ServiceLineageId, "a Service ID (a UUID)", is_uuid
 );
 store_string!(
     /// A Volume's durable identity, minted by the caller that creates it. It is also

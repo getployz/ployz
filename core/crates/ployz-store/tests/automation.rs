@@ -10,7 +10,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
-    ProjectId, ProjectName, Publish, ServiceId, SettingPath, SystemEvent, Trusted, Written,
+    ProjectId, ProjectName, Publish, ServiceLineageId, SettingPath, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -54,7 +54,7 @@ fn shop() -> (ConfigStore, Actor) {
             .create_git_service(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),

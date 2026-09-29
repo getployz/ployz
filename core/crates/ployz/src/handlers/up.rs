@@ -10,7 +10,7 @@ use clap::{ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     AddDomain, CreateProject, CreateService, DeploymentView, DomainName, DomainsQuery,
-    EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceId, ServicesQuery,
+    EnvironmentId, EnvironmentRef, ProjectId, ProjectName, ServiceLineageId, ServicesQuery,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -207,7 +207,7 @@ fn add_service(
 ) -> Result<(), Error> {
     store
         .create_service(&CreateService {
-            id: ServiceId::parse(mint())?,
+            id: ServiceLineageId::parse(mint())?,
             environment: environment.clone(),
             name: name.clone(),
             image: None,

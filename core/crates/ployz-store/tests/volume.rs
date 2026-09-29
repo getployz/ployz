@@ -14,8 +14,8 @@ use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
-    RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted,
-    VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId, SettingPath,
+    Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -48,7 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("web").unwrap(),
                 image: Some("postgres:17".into()),

@@ -13,8 +13,8 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName,
     EnvironmentRef, Landed, Move, MovePick, MoveQuery, OrganizationId, PickChoice, ProjectId,
-    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState, ServiceId,
-    SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
+    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState,
+    ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
@@ -72,7 +72,7 @@ fn shop() -> (ConfigStore, Actor) {
             .create_git_service(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse(name).unwrap(),
                     repository: backend::repo_name("acme/web"),
