@@ -319,8 +319,6 @@ On a PR Environment the same sheet adds "PR #142 · {title} ↗" under the title
 
 Bar text stays minimal: fewer words on mobile, and explanations belong in a panel, never in the bar.
 
-The canvas lays itself out; nodes are never dragged. When an edit moves a node to a new place, it glides there in about 200ms, instantly under reduced motion. That glide is functional, not flair: it has no tint or highlight and only answers "where did it go?".
-
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 
 ## Do's and Don'ts
