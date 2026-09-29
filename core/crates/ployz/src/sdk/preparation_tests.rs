@@ -69,6 +69,7 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .into_iter()
             .map(|name| (name, "a".repeat(40)))
             .collect(),
+        uploads: BTreeMap::new(),
         build_receipts: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
@@ -1033,6 +1034,7 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         deployment,
         sources: BTreeMap::from([(name.clone(), root.clone())]),
         source_commits: BTreeMap::from([(name.clone(), commit)]),
+        uploads: BTreeMap::new(),
         build_receipts: receipts,
         build_index: 0,
         preferred_machine: None,
@@ -1211,6 +1213,107 @@ async fn one_image_build_returns_the_receipt_prepare_reuses() {
         .await
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(builds.definitions.lock().unwrap().len(), 1);
+    session.close().await;
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+/// An uploaded Service with no source of its own: `source` is Empty.
+#[expect(clippy::indexing_slicing, reason = "A fixed fixture.")]
+fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
+    let mut snapshot = git("one", "dockerfile");
+    snapshot["config"]["source"] = json!({"type": "empty", "version": 1, "rootDir": "/"});
+    let name = ServiceName::parse("one").unwrap();
+    crate::sdk::PreparationInput {
+        deployment: json!({"namespace": "example", "snapshots": [snapshot]}),
+        sources: if with_source {
+            BTreeMap::from([(name.clone(), root.to_owned())])
+        } else {
+            BTreeMap::new()
+        },
+        source_commits: BTreeMap::new(),
+        uploads: BTreeMap::from([(name, crate::build::content_digest(root).unwrap())]),
+        build_receipts: BTreeMap::new(),
+        build_index: 0,
+        preferred_machine: None,
+    }
+}
+
+#[tokio::test]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Fixed fixtures; a missing entry must fail the test."
+)]
+async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
+    let (root, service, builds) = fixture();
+    let (session, server) = session(service).await;
+    let name = ServiceName::parse("one").unwrap();
+    let built = session
+        .prepare(uploaded(&root, true))
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    let receipts = built.build_receipts().clone();
+    built.close();
+    assert_eq!(builds.definitions.lock().unwrap().len(), 1);
+
+    // Build and prepare both reuse the held image without the upload.
+    let mut sourceless = uploaded(&root, false);
+    sourceless.build_receipts = receipts.clone();
+    let crate::sdk::BuildOutcome::Built { receipt } = session
+        .build(sourceless, None)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap()
+    else {
+        panic!("a usable receipt serves the build");
+    };
+    assert_eq!(receipt.fingerprint, receipts[&name].fingerprint);
+    let mut sourceless = uploaded(&root, false);
+    sourceless.build_receipts = receipts.clone();
+    let reused = session
+        .prepare(sourceless)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    assert_eq!(
+        reused.build_receipts()[&name].fingerprint,
+        receipt.fingerprint
+    );
+    assert!(reused.preview().operations.iter().any(|row| {
+        row.operation
+            .spec()
+            .is_some_and(|spec| spec.container.image.contains(&receipt.image.reference))
+    }));
+    reused.close();
+    assert_eq!(
+        builds.definitions.lock().unwrap().len(),
+        1,
+        "nothing rebuilt"
+    );
+
+    // An image that no longer runs on every placement, or is gone, needs a new upload.
+    let mut incompatible = receipts.clone();
+    incompatible.get_mut(&name).unwrap().image.platforms = vec!["linux/arm64".into()];
+    let gone = || builds.stores.lock().unwrap().clear();
+    for (receipts, before) in [(incompatible, (&|| {}) as &dyn Fn()), (receipts, &gone)] {
+        before();
+        let mut sourceless = uploaded(&root, false);
+        sourceless.build_receipts = receipts;
+        let error = session
+            .prepare(sourceless)
+            .unwrap()
+            .finished()
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.code, RpcErrorCode::NotFound, "{error:?}");
+        assert_eq!(error.details["preparation"]["services"], json!(["one"]));
+    }
     assert_eq!(builds.definitions.lock().unwrap().len(), 1);
     session.close().await;
     server.abort();

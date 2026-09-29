@@ -511,6 +511,7 @@ async fn railpack_preparation_derives_machine_platforms() {
             deployment,
             sources: BTreeMap::from([(name, root.to_owned())]),
             source_commits: BTreeMap::new(),
+            uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,

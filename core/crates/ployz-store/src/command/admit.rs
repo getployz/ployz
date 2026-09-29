@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 use super::{Command, replayable};
 use crate::Actor;
-use crate::deployment::{self, DeploymentSummary};
+use crate::deployment::{self, DeploymentSummary, UploadedSource};
 use crate::id::DeploymentId;
 use crate::registry;
 use crate::review;
@@ -28,6 +28,11 @@ pub struct Admit {
     /// Refuse with `conflict` unless this is still the latest `diff` version.
     #[serde(default)]
     pub version: Option<String>,
+    /// A new upload for Services without a source of their own; none keeps the
+    /// Environment's latest.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub upload: Option<UploadedSource>,
 }
 
 /// Cancel a Deployment: a queued one never runs, and a running one stops.
@@ -76,5 +81,5 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         namespace,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
-    deployment::admit(tx, who, &admit.id, id, saved, &admit.services, &frozen)
+    deployment::admit(tx, who, admit, id, saved, &frozen)
 }

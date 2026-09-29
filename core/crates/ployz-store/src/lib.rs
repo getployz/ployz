@@ -24,7 +24,7 @@ use ployz_core::RpcError;
 pub use command::*;
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
-    RunEvidence,
+    RunEvidence, UploadBase, UploadedSource,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;

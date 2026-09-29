@@ -119,6 +119,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
+                upload: None,
             },
         )
         .unwrap();

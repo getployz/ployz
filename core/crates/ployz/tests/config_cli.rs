@@ -804,6 +804,61 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
     }
 }
 
+#[test]
+fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
+    let source = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(source.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    git(&["init", "-q"]);
+    git(&["add", "."]);
+    git(&["commit", "-qm", "base"]);
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(source.path())
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head = String::from_utf8(head.stdout).unwrap().trim().to_owned();
+    std::fs::write(source.path().join("app.txt"), "not committed").unwrap();
+    let dir = source.path().to_str().unwrap();
+    let unreachable = ["--connect", "tcp://127.0.0.1:1", "--ssh-timeout", "1"];
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "app"]);
+        let mut args = vec!["deploy", "--upload", dir];
+        args.extend(unreachable);
+        match store {
+            Target::Local(_) => {
+                // The CLI runs it; no Server answers, so nothing was built or ran.
+                let (code, deployed) = ployz(Some(store), &args);
+                assert_eq!(code, Some(3), "{deployed}");
+                let upload = &deployed["upload"];
+                assert_eq!(upload["base"], json!({"commit": head, "changed": true}));
+                let digest = upload["digest"].as_str().unwrap();
+                assert!(ployz_core::is_lower_hex(digest, 64), "{digest}");
+                // A later deploy without a new upload reuses the latest one's images.
+                let mut again = vec!["deploy"];
+                again.extend(unreachable);
+                let (code, redeployed) = ployz(Some(store), &again);
+                assert_eq!(code, Some(3), "{redeployed}");
+                assert_eq!(&redeployed["upload"], upload);
+            }
+            Target::Cloud { .. } => {
+                assert_eq!(error(store, &args)["code"], json!("unsupported"));
+            }
+        }
+    }
+}
+
 /// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.
 fn in_dir(
     store: &Target,

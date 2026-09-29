@@ -108,6 +108,8 @@ export type PreparationInput = {
   deployment: Parameters<typeof import("./config").lowerDeployment>[0];
   sources: Record<string, string>;
   source_commits?: Record<string, string>;
+  /** Uploaded Source content digests, keyed by config.privateDns. A `sources` directory must hold exactly that content; without one only a matching, usable receipt serves it. */
+  uploads?: Record<string, string>;
   build_receipts?: BuildReceipts;
   /** This build's position among its attempt's builds; builds without a warm Machine spread across Machines by it. */
   build_index?: number;
@@ -170,8 +172,8 @@ export type RunningDeploy = AsyncIterable<DeployEvent> & {
 };
 
 export declare function connect(options: ConnectOptions): Promise<Client>;
-/** Fingerprints a build of these pinned commits would carry, keyed by Service; no checkout needed. */
-export declare function buildFingerprints(input: Pick<PreparationInput, "deployment"> & { source_commits: Record<string, string> }): Record<string, string>;
+/** Fingerprints a build of these pinned commits and uploads would carry, keyed by Service; no source needed. */
+export declare function buildFingerprints(input: Pick<PreparationInput, "deployment" | "uploads"> & { source_commits: Record<string, string> }): Record<string, string>;
 /** The ployz version every fingerprint covers; a GitHub runner installs exactly this one. */
 export declare function ployzVersion(): string;
 /** The tag a Build Grant push retains `digest` under in `repository`, as Image Cleanup knows it. */

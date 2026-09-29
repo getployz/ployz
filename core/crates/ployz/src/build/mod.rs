@@ -17,6 +17,7 @@ use serde::Serialize;
 use thiserror::Error;
 
 use inputs::BuildInputs;
+pub(crate) use inputs::content_digest;
 
 mod ignore;
 mod inputs;
