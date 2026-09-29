@@ -6,7 +6,8 @@ import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import type { StoreRefusal } from "./store.contract";
-import { cachedRevision, environmentKey, listOptimistically, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
+import { cachedRevision, environmentKey, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
+import { applyOptimistic } from "./store-optimistic";
 
 /** A Store refusal thrown to a write's caller: `code` and `details` as the Store gave them. */
 export class StoreRefused extends Error {
@@ -98,23 +99,16 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       return observeFailure({ isPersisted: { promise } });
     },
     /**
-     * A command whose outcome matters before the page moves on (publish, discard, deploy). One naming an Environment
-     * runs after that Environment's pending edits; one that reads or writes another Environment too (a Move, a new
-     * Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once every Store
-     * view of the Organization has refetched. A refusal toasts here, unless its code is one the caller `handles`, and
-     * rejects with `StoreRefused`.
-     * UI that awaits it is a listed command in the boundary test; creates need not wait, because the caller mints the new id.
+     * Any other command: shown at once in the cached views (`applyOptimistic`), saved in the background. One naming an
+     * Environment runs after that Environment's pending edits; one that reads or writes another Environment too (a
+     * Move, a new Branch, a copied node: often the implied Parent) runs after every pending edit. It persists once every
+     * Store view of the Organization has refetched, which also replaces the guess. A refusal toasts here, unless its code
+     * is one the caller `handles`, rolls the views back, and rejects with `StoreRefused`. UI that awaits it (a Deploy,
+     * a destructive confirmation, an external service) is a listed command in the boundary test.
      */
-    /**
-     * Creates a Service or Volume with the id the caller minted: listed at once in the Environment's cached view,
-     * saved in the background, and gone again (with a toast) if the Store refuses it.
-     */
-    create(command: ConfigCommand & { command: "create_service" | "create_git_service" | "create_volume" }) {
-      listOptimistically(scope, organizationSlug, command);
-      return this.commit(command);
-    },
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
+      applyOptimistic(queryClient, organizationSlug, command);
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
       const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return send(command); } : () => send(command);
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,

@@ -214,16 +214,24 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
   const into = branch.parent;
 
   async function save() {
+    const saved = writer.commit({
+      command: "move", move: "save", from: store, version: view.version,
+      picks: movePicks(rows.picks.map(({ row, pick }) => ({ key: row.key, ticked: pick.ticked, choice: row.choice, option: pick.option, value: pick.value }))),
+    }).isPersisted.promise;
+    if (!(deletable && deleteAfter)) {
+      // Saved in the background: the Parent shows the changes to deploy, and a refusal is the writer's toast.
+      saved.catch(() => undefined);
+      onClose();
+      await onSaved(false);
+      return;
+    }
     setPending(true);
     try {
-      // Awaited: Save rewrites the Parent, and the page moves on once it has.
-      await writer.commit({
-        command: "move", move: "save", from: store, version: view.version,
-        picks: movePicks(rows.picks.map(({ row, pick }) => ({ key: row.key, ticked: pick.ticked, choice: row.choice, option: pick.option, value: pick.value }))),
-      }).isPersisted.promise;
+      // Awaited: closing the Branch after is destructive, so it waits until the Parent has what was saved.
+      await saved;
       toast.success(`Saved to ${into}`);
       onClose();
-      await onSaved(deletable && deleteAfter);
+      await onSaved(true);
     } catch {
       // The writer toasted the refusal; a stale review shows the fresh rows.
     } finally {

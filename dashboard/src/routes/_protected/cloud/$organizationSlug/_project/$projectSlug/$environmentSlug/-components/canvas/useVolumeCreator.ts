@@ -70,7 +70,7 @@ export function useVolumeCreator(
   }) {
     const id = crypto.randomUUID();
     place({ environmentId, resourceType: "volume", resourceId: id, ...input.position });
-    writer.create(createVolumeCommand(id, store, slugifySegment(input.name) || "data"));
+    writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data"));
   }
 
   return {
