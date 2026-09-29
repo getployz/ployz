@@ -9,8 +9,10 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
-use super::{Error, leaf_matches};
+use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{env, positional, value};
+use crate::cloud_account::{self, Credential, StoreCallError};
+use crate::cloud_login::CredentialStore;
 use crate::output::say;
 
 /// The Organization of the hidden in-process Store.
@@ -82,20 +84,58 @@ pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error>
     })
 }
 
-/// The Config Store this command writes to. Only the hidden in-process SQLite
-/// Store exists yet; Cloud's arrives with its HTTPS transport.
-pub(crate) fn store() -> Result<(ConfigStore, Actor), Error> {
-    let Ok(url) = std::env::var(env::STORE) else {
-        return Err(Error::coded(
-            RpcErrorCode::Unsupported,
-            "This command needs Ployz Cloud's Config Store, which this CLI cannot reach yet",
-        ));
-    };
-    let store = ConfigStore::open(&url)?;
-    let actor = Actor {
-        organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
-    };
-    Ok((store, actor))
+/// The Config Store a command reads and writes: Cloud's over HTTPS, as
+/// `PLOYZ_TOKEN` or this device's sign-in, or the hidden in-process SQLite Store
+/// when `PLOYZ_STORE` is set.
+pub(crate) enum Store {
+    Local(ConfigStore, Actor),
+    Cloud(tokio::runtime::Runtime, Credential),
+}
+
+impl Store {
+    pub(crate) fn read(&self, query: &Query) -> Result<View, StoreCallError> {
+        match self {
+            Self::Local(store, actor) => store.read(actor, query).map_err(StoreCallError::Refused),
+            Self::Cloud(runtime, credential) => {
+                runtime.block_on(cloud_account::config_store(credential, "read", query))
+            }
+        }
+    }
+
+    pub(crate) fn write(&self, command: ployz_store::Command) -> Result<Written, StoreCallError> {
+        match self {
+            Self::Local(store, actor) => {
+                store.write(actor, command).map_err(StoreCallError::Refused)
+            }
+            Self::Cloud(runtime, credential) => {
+                runtime.block_on(cloud_account::config_store(credential, "write", &command))
+            }
+        }
+    }
+}
+
+impl From<StoreCallError> for Error {
+    fn from(error: StoreCallError) -> Self {
+        match error {
+            StoreCallError::Refused(error) => error.into(),
+            StoreCallError::Cloud(error) => error.into(),
+        }
+    }
+}
+
+pub(crate) fn store(root: &ArgMatches) -> Result<Store, Error> {
+    if let Ok(url) = std::env::var(env::STORE) {
+        let actor = Actor {
+            organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
+        };
+        return Ok(Store::Local(ConfigStore::open(&url)?, actor));
+    }
+    let credentials = CredentialStore::beside(&config_path(leaf_matches(root))?);
+    let token = std::env::var(env::TOKEN).ok();
+    let cloud = std::env::var(env::CLOUD_URL).ok();
+    let runtime = runtime()?;
+    let credential = runtime.block_on(cloud_account::credential(&credentials, token, cloud))?;
+    Ok(Store::Cloud(runtime, credential))
 }
 
 /// Mint the ID a create is keyed by, so a retried request replays instead of repeating.
@@ -105,12 +145,12 @@ pub(crate) fn mint() -> String {
 
 pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let query = Query::Environment(EnvironmentQuery {
         environment: environment(matches)?,
         path: matches.get_one::<String>("path").cloned(),
     });
-    let View::Environment(view) = store.read(&actor, &query)?;
+    let View::Environment(view) = store.read(&query)?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -146,7 +186,7 @@ pub(super) fn set(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    edit(matches, changes)
+    edit(root, changes)
 }
 
 pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
@@ -157,19 +197,16 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
         .flatten()
         .map(|path| Change::Unset { path: path.clone() })
         .collect();
-    edit(matches, changes)
+    edit(root, changes)
 }
 
-fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
-    let (store, actor) = store()?;
-    let written = store.write(
-        &actor,
-        ployz_store::Command::Edit(Edit {
-            environment: environment(matches)?,
-            expect: matches.get_one::<u64>("expect").copied().map(Revision),
-            changes,
-        }),
-    );
+fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let written = store(root)?.write(ployz_store::Command::Edit(Edit {
+        environment: environment(matches)?,
+        expect: matches.get_one::<u64>("expect").copied().map(Revision),
+        changes,
+    }));
     let Written::Edited(edited) = written.map_err(|error| stale(error, matches))? else {
         unreachable!("an edit writes an edit");
     };
@@ -193,8 +230,10 @@ fn report(edited: &Edited) -> Result<(), Error> {
 }
 
 /// A refused `--expect` names the command that shows the fresh state.
-fn stale(error: ployz_core::RpcError, matches: &ArgMatches) -> Error {
-    let mut error = error;
+fn stale(error: StoreCallError, matches: &ArgMatches) -> Error {
+    let StoreCallError::Refused(mut error) = error else {
+        return error.into();
+    };
     if error.code == RpcErrorCode::Conflict
         && let Some(details) = error.details.as_object_mut()
     {

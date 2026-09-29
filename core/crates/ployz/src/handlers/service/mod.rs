@@ -769,9 +769,7 @@ fn service_add() -> Command {
 fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ployz_core::ServiceName::parse(required(matches, "name")?)?;
-    let (store, actor) = super::config::store()?;
-    let ployz_store::Written::Service(created) = store.write(
-        &actor,
+    let ployz_store::Written::Service(created) = super::config::store(root)?.write(
         ployz_store::Command::CreateService(ployz_store::CreateService {
             id: ployz_store::ServiceId::parse(super::config::mint())?,
             environment: super::config::environment(matches)?,

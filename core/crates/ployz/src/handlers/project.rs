@@ -29,15 +29,12 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
 
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let name = ProjectName::parse(required(leaf_matches(root), "name")?)?;
-    let (store, actor) = store()?;
-    let Written::Project(created) = store.write(
-        &actor,
-        ployz_store::Command::CreateProject(CreateProject {
+    let Written::Project(created) =
+        store(root)?.write(ployz_store::Command::CreateProject(CreateProject {
             id: ProjectId::parse(mint())?,
             name,
             default_environment: EnvironmentId::parse(mint())?,
-        }),
-    )?
+        }))?
     else {
         unreachable!("a Project create writes a Project");
     };
