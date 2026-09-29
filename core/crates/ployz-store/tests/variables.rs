@@ -115,6 +115,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
+            retry: None,
         },
     )?;
     Ok(id)
