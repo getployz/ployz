@@ -90,6 +90,8 @@ pub enum Command {
     RemoveProject(crate::RemoveProject),
     /// Forget an Organization's configuration once it has no Project.
     RemoveOrganization(crate::RemoveOrganization),
+    /// Change a Project's PR plan for one repository.
+    SetPrPlan(crate::SetPrPlan),
 }
 
 impl Command {
@@ -123,7 +125,8 @@ impl Command {
             | Self::SetDefaultEnvironment(_)
             | Self::RemoveEnvironment(_)
             | Self::RemoveProject(_)
-            | Self::RemoveOrganization(_) => Vec::new(),
+            | Self::RemoveOrganization(_)
+            | Self::SetPrPlan(_) => Vec::new(),
         }
     }
 }
@@ -173,6 +176,8 @@ pub enum Written {
     ProjectRemoved(crate::ProjectRemoved),
     /// An Organization's configuration was forgotten.
     OrganizationRemoved(crate::OrganizationRemoved),
+    /// A PR plan changed: the Project's PR plans after it.
+    PrPlans(crate::PrPlansView),
 }
 
 pub(crate) fn run(
@@ -231,6 +236,9 @@ pub(crate) fn run(
         }
         Command::RemoveOrganization(_) => {
             crate::teardown::remove_organization(tx, who).map(Written::OrganizationRemoved)
+        }
+        Command::SetPrPlan(set) => {
+            crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)
         }
     }
 }

@@ -405,6 +405,22 @@ impl Store {
         })
     }
 
+    pub(crate) fn pr_plans(
+        &self,
+        query: &ployz_store::PrPlansQuery,
+    ) -> Result<ployz_store::PrPlansView, StoreCallError> {
+        let request = Query::PrPlans(query.clone());
+        self.call("read", &request, |store, who| store.pr_plans(who, query))
+    }
+
+    pub(crate) fn set_pr_plan(
+        &self,
+        set: &ployz_store::SetPrPlan,
+    ) -> Result<ployz_store::PrPlansView, StoreCallError> {
+        let request = Command::SetPrPlan(set.clone());
+        self.call("write", &request, |store, who| store.set_pr_plan(who, set))
+    }
+
     pub(crate) fn keep_branch(&self, keep: &KeepBranch) -> Result<Branched, StoreCallError> {
         let request = Command::KeepBranch(keep.clone());
         self.call("write", &request, |store, who| store.keep_branch(who, keep))
