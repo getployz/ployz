@@ -35,6 +35,7 @@ const refreshedBy = {
   branch: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
+  projects: ["store_project", "store_environment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
