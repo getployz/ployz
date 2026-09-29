@@ -23,11 +23,12 @@ import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-comp
  * What a Service's card says, from what the next Deploy does to it; else how it runs (`runtime`, null before any
  * runtime evidence of it).
  */
-export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null) {
+export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null, uploaded = false) {
   if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
   if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
   if (service.change === "update") return { state: "changed", text: `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
-  if (service.source === "empty") return { state: undefined, text: "Empty", badge: null } as const;
+  if (service.source === "empty" && !uploaded) return { state: undefined, text: "Empty", badge: null } as const;
+  if (!runtime && uploaded) return { state: undefined, text: "Uploaded", badge: null } as const;
   if (!runtime) return { state: undefined, text: "Deployed", badge: null } as const;
   const containers = `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"}`;
   return serviceOnline(runtime)
@@ -36,7 +37,7 @@ export function storeServiceStatus(service: ServiceListing, changeCount: number,
 }
 
 /** A Config Store Service on the canvas and in its phone list: opens its drawer, right-click removes it. */
-export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdentity, selected, className }: StoreCanvasService & {
+export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdentity, uploaded, selected, className }: StoreCanvasService & {
   selected: boolean;
   className: string;
 }) {
@@ -44,7 +45,7 @@ export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdenti
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service.name);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
-  const status = storeServiceStatus(service, changeCount, runtime);
+  const status = storeServiceStatus(service, changeCount, runtime, uploaded);
   const dot = getServiceStatusClasses(status.state);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
