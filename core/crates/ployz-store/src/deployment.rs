@@ -5,8 +5,8 @@
 
 use ployz_core::config::{
     CompiledNodeConfig, SavedEnvironmentIntent, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent,
-    parse_runtime_preview, project_runtime_outcome,
+    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
+    project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, ExecutionError, Namespace, RpcError, ServiceName,
@@ -421,7 +421,8 @@ pub(crate) fn claim(
             save(tx, &stored)?;
         }
     }
-    let intent = serde_json::from_str(&stored.intent).map_err(|_| error::corrupt("Deploy Intent"))?;
+    let intent =
+        serde_json::from_str(&stored.intent).map_err(|_| error::corrupt("Deploy Intent"))?;
     Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -556,9 +557,9 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         "SELECT node FROM config_applied WHERE environment_id = ?1 ORDER BY node_id",
         &[id.as_str().into()],
     )? {
-        applied.services.push(
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Applied State"))?,
-        );
+        applied
+            .services
+            .push(serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Applied State"))?);
     }
     let ended = tx
         .query(
@@ -610,9 +611,7 @@ pub(crate) fn view(
     id: &DeploymentId,
 ) -> Result<DeploymentView, RpcError> {
     let rows = tx.query(
-        &format!(
-            "SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"
-        ),
+        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
     let stored = stored(rows.first().ok_or_else(|| missing(id))?)?;
@@ -637,7 +636,9 @@ pub(crate) fn view(
             id: node.id.clone(),
             name: node.name.clone(),
             outcome: match (&stored.run.outcome, stored.summary.status) {
-                (Some(Outcome::Executed { confirmed, .. }), _) if confirmed.contains(&node.service) => {
+                (Some(Outcome::Executed { confirmed, .. }), _)
+                    if confirmed.contains(&node.service) =>
+                {
                     NodeStatus::Applied
                 }
                 (Some(_), _) | (None, DeploymentStatus::Superseded) => NodeStatus::NotApplied,
@@ -771,7 +772,10 @@ fn saved_at(
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     let rows = tx.query(
         "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
-        &[environment.as_str().into(), revision_param(revision)?.into()],
+        &[
+            environment.as_str().into(),
+            revision_param(revision)?.into(),
+        ],
     )?;
     rows.first()
         .and_then(|row| row.text(0).ok())

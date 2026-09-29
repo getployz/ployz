@@ -1,7 +1,9 @@
 //! Admission, runner ownership, replay and partial Node Outcomes, through the Store's
 //! interface only, on in-memory SQLite.
 
-use ployz_core::{DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{
+    DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
+};
 use ployz_store::{
     Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Edit,
@@ -171,7 +173,10 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     assert_eq!(claimed.intent.target.len(), 2);
     assert!(claimed.intent.options.selected.is_empty());
     assert_eq!(store.claim(&id(1), &a).unwrap(), claimed);
-    assert_eq!(code(store.claim(&id(1), &runner("runner-b"))), RpcErrorCode::Conflict);
+    assert_eq!(
+        code(store.claim(&id(1), &runner("runner-b"))),
+        RpcErrorCode::Conflict
+    );
 
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
@@ -184,8 +189,15 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
         code(store.record(&id(1), &runner("runner-b"), succeeded(&["web", "api"]))),
         RpcErrorCode::Conflict
     );
-    let recorded = store.record(&id(1), &a, succeeded(&["web", "api"])).unwrap();
-    assert_eq!(recorded, store.record(&id(1), &a, succeeded(&["web", "api"])).unwrap());
+    let recorded = store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    assert_eq!(
+        recorded,
+        store
+            .record(&id(1), &a, succeeded(&["web", "api"]))
+            .unwrap()
+    );
     let Written::Deployment(recorded) = recorded else {
         unreachable!("a record writes a Deployment")
     };
@@ -213,12 +225,18 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     let a = runner("runner-a");
     store.claim(&id(1), &a).unwrap();
     // Recording an outcome before its preview is refused.
-    assert_eq!(code(store.record(&id(1), &a, succeeded(&["web"]))), RpcErrorCode::Conflict);
+    assert_eq!(
+        code(store.record(&id(1), &a, succeeded(&["web"]))),
+        RpcErrorCode::Conflict
+    );
     store
         .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
         .unwrap();
     // Evidence that doesn't match the preview is refused.
-    assert_eq!(code(store.record(&id(1), &a, succeeded(&["web"]))), RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        code(store.record(&id(1), &a, succeeded(&["web"]))),
+        RpcErrorCode::InvalidArgument
+    );
     let partial = RunEvidence::Executed(Box::new(outcome(json!({
         "type": "failed", "completed": [operation("web")],
         "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
@@ -251,7 +269,11 @@ fn nothing_executed_applies_nothing() {
     let a = runner("runner-a");
     store.claim(&id(1), &a).unwrap();
     store
-        .record(&id(1), &a, RunEvidence::NotExecuted("No Server answered".into()))
+        .record(
+            &id(1),
+            &a,
+            RunEvidence::NotExecuted("No Server answered".into()),
+        )
         .unwrap();
     assert_eq!(
         nodes(&store, &who, 1),
@@ -268,7 +290,10 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     let (store, who) = shop();
     let first = admit(&store, &who, 1, &[], None).unwrap();
     assert_eq!(admit(&store, &who, 1, &[], None).unwrap(), first);
-    assert_eq!(code(admit(&store, &who, 1, &["web"], None)), RpcErrorCode::Conflict);
+    assert_eq!(
+        code(admit(&store, &who, 1, &["web"], None)),
+        RpcErrorCode::Conflict
+    );
 
     // The newest admission replaces the pending one.
     let reviewed = diff(&store, &who).version;
@@ -282,7 +307,10 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
         store.deployment(&who, &id(1)).unwrap().deployment.status,
         DeploymentStatus::Superseded
     );
-    assert_eq!(code(store.claim(&id(1), &runner("runner-a"))), RpcErrorCode::Conflict);
+    assert_eq!(
+        code(store.claim(&id(1), &runner("runner-a"))),
+        RpcErrorCode::Conflict
+    );
 }
 
 #[test]
@@ -295,7 +323,12 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
     store.claim(&id(2), &runner("runner-b")).unwrap();
     let replaced = store.deployment(&who, &id(1)).unwrap();
     assert_eq!(replaced.deployment.status, DeploymentStatus::Unknown);
-    assert!(replaced.nodes.iter().all(|node| node.outcome == NodeStatus::Unknown));
+    assert!(
+        replaced
+            .nodes
+            .iter()
+            .all(|node| node.outcome == NodeStatus::Unknown)
+    );
     assert_eq!(
         code(store.record(&id(1), &a, RunEvidence::Prepared(preview(&["web"])))),
         RpcErrorCode::Conflict
@@ -316,12 +349,18 @@ fn a_targeted_deploy_and_its_plan_cover_only_the_named_services() {
         .unwrap();
     assert_eq!(plan.version, diff(&store, &who).version);
     assert_eq!(
-        plan.changes.iter().map(|change| change.name.as_str()).collect::<Vec<_>>(),
+        plan.changes
+            .iter()
+            .map(|change| change.name.as_str())
+            .collect::<Vec<_>>(),
         ["web"]
     );
     assert_eq!(plan.unresolved, ["operations"]);
     assert_eq!(plan.namespace.as_str(), "shop-production");
-    assert_eq!(code(admit(&store, &who, 1, &["nope"], None)), RpcErrorCode::NotFound);
+    assert_eq!(
+        code(admit(&store, &who, 1, &["nope"], None)),
+        RpcErrorCode::NotFound
+    );
 
     admit(&store, &who, 1, &["web"], None).unwrap();
     let claimed = store.claim(&id(1), &runner("runner-a")).unwrap();
@@ -358,11 +397,21 @@ fn deployments_page_newest_first_within_the_organization() {
     };
     let first = page(None);
     assert_eq!(
-        first.deployments.iter().map(|d| d.number).collect::<Vec<_>>(),
+        first
+            .deployments
+            .iter()
+            .map(|d| d.number)
+            .collect::<Vec<_>>(),
         [3, 2]
     );
     let last = page(first.next_cursor.clone());
-    assert_eq!(last.deployments.iter().map(|d| d.number).collect::<Vec<_>>(), [1]);
+    assert_eq!(
+        last.deployments
+            .iter()
+            .map(|d| d.number)
+            .collect::<Vec<_>>(),
+        [1]
+    );
     assert_eq!(last.next_cursor, None);
     let bad_limit = store.deployments(
         &who,
@@ -375,5 +424,8 @@ fn deployments_page_newest_first_within_the_organization() {
     let stranger = Actor {
         organization: OrganizationId::parse("other").unwrap(),
     };
-    assert_eq!(code(store.deployment(&stranger, &id(1))), RpcErrorCode::NotFound);
+    assert_eq!(
+        code(store.deployment(&stranger, &id(1))),
+        RpcErrorCode::NotFound
+    );
 }

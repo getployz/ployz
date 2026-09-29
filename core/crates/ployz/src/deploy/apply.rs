@@ -59,6 +59,7 @@ pub(crate) async fn apply_requested(
             format!("Running service {}", requested.name),
             Ink::human(),
             &cancellation,
+            |_| {},
         )
         .await,
         &format!("Deployed to {context}"),
@@ -167,9 +168,33 @@ async fn confirm_and_execute(
             format!("Deploying to {}", gate.context),
             Ink::human(),
             cancellation,
+            |_| {},
         )
         .await,
         &format!("Deployed to {}", gate.context),
+    )
+}
+
+/// Execute an admitted plan with live progress, handing every event to `tap` as well.
+pub(crate) async fn execute(
+    client: &Client,
+    preview: &DeployPlan,
+    context: &str,
+    cancel: &CancellationToken,
+    tap: impl FnMut(&DeployEvent),
+) -> Result<Outcome, ApplyError> {
+    print_warnings(preview);
+    finish(
+        stream_confirm(
+            client,
+            preview,
+            format!("Deploying to {context}"),
+            Ink::human(),
+            cancel,
+            tap,
+        )
+        .await,
+        &format!("Deployed to {context}"),
     )
 }
 
@@ -179,6 +204,7 @@ async fn stream_confirm(
     title: String,
     ink: Ink,
     cancel: &CancellationToken,
+    mut tap: impl FnMut(&DeployEvent),
 ) -> (DeployOutcome<ExecutionError>, ProgressPrinter) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let execute = client.confirm(preview, cancel, Some(tx));
@@ -188,11 +214,13 @@ async fn stream_confirm(
         tokio::select! {
             event = rx.recv() => {
                 if let Some(event) = event {
+                    tap(&event);
                     printer.print(&event);
                 }
             }
             outcome = &mut execute => {
                 while let Ok(event) = rx.try_recv() {
+                    tap(&event);
                     printer.print(&event);
                 }
                 break outcome;

@@ -39,8 +39,8 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
     let View::Diff(view) = store.read(&actor, &query)? else {
         unreachable!("a diff reads a diff");
     };
-    let hint = (!view.changes.is_empty() && !view.published)
-        .then(|| next(matches, &["publish", "--version", &view.version]));
+    let hint = (!view.changes.is_empty())
+        .then(|| next(matches, &["deploy", "--expect-version", &view.version]));
     crate::output::finish(&Next::new(&view, hint.clone()), || {
         let where_ = format!("{}/{}", view.environment.project, view.environment.name);
         if view.changes.is_empty() {
@@ -78,7 +78,8 @@ pub(super) fn publish(root: &ArgMatches) -> Result<(), Error> {
     else {
         unreachable!("a publish writes a publish");
     };
-    crate::output::finish(&published, || {
+    let hint = Some(next(matches, &["deploy"]));
+    crate::output::finish(&Next::new(&published, hint), || {
         let where_ = format!(
             "{}/{}",
             published.environment.project, published.environment.name

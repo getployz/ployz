@@ -94,8 +94,7 @@ impl ConfigStore {
     /// # Errors
     /// As [`Self::read`]; `not_found` for a Deployment of another Organization.
     pub fn deployment(&self, who: &Actor, id: &DeploymentId) -> Result<DeploymentView, RpcError> {
-        self.storage
-            .read(|tx| deployment::view(tx, who, id))
+        self.storage.read(|tx| deployment::view(tx, who, id))
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent.
