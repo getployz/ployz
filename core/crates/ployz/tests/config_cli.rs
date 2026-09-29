@@ -745,6 +745,23 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
 }
 
 #[test]
+fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "nginx", "--image", "nginx"]);
+        ok(store, &["publish"]);
+        ok(store, &["set", "nginx.preDeployCommand=Jenje"]);
+        let diff = ok(store, &["diff"]);
+        let nginx = &diff["changes"][0];
+        assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(nginx["settings"][0]["path"], json!("nginx.preDeployCommand"));
+        ok(store, &["discard", "nginx.preDeployCommand"]);
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");
+    }
+}
+
+#[test]
 fn a_stale_revision_conflicts_and_names_the_read_that_refreshes_it() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

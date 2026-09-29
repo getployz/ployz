@@ -61,12 +61,13 @@ fn compare(
 
 pub fn project_environment_changes(input: ChangeSetInput) -> Result<ReviewChangeSet, ConfigError> {
     let head = input.submitted.as_ref().unwrap_or(&input.applied);
+    // A node never deployed compares against its introduction, published or not, so
+    // every edit of it is a change; once deployed, never again.
     let mut introductions = projections(&input.node_introductions);
     for node in input
         .applied
         .nodes
         .iter()
-        .chain(input.saved.iter().flat_map(|state| &state.nodes))
         .filter(|node| node.config.is_some())
     {
         introductions.remove(&node.node.key());
@@ -171,24 +172,36 @@ mod tests {
     }
 
     #[test]
-    fn saved_or_applied_nodes_never_reset_to_introduction_when_absent_from_head() {
-        for (saved, applied, submitted) in [
-            (Some(state(Some(5))), state(None), None),
-            (None, state(Some(5)), Some(state(None))),
-        ] {
-            let review = project_environment_changes(ChangeSetInput {
-                working: state(Some(7)),
-                applied,
-                saved,
-                submitted,
-                node_introductions: state(Some(1)),
-            })
-            .unwrap();
-            let group = review.groups.first().expect("new node has a change group");
-            assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
-            assert_eq!(group.comparison, None);
-            assert!(group.settings.is_empty());
-            assert_eq!(review.total_count, 1);
-        }
+    fn a_published_node_never_deployed_still_compares_against_its_introduction() {
+        let review = project_environment_changes(ChangeSetInput {
+            working: state(Some(7)),
+            applied: state(None),
+            saved: Some(state(Some(5))),
+            submitted: None,
+            node_introductions: state(Some(1)),
+        })
+        .unwrap();
+        let group = review.groups.first().expect("new node has a change group");
+        assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
+        assert_eq!(group.comparison, Some(ReviewComparisonRole::Introduction));
+        assert_eq!(group.settings.len(), 1);
+        assert_eq!(review.total_count, 2);
+    }
+
+    #[test]
+    fn applied_nodes_never_reset_to_introduction_when_absent_from_head() {
+        let review = project_environment_changes(ChangeSetInput {
+            working: state(Some(7)),
+            applied: state(Some(5)),
+            saved: None,
+            submitted: Some(state(None)),
+            node_introductions: state(Some(1)),
+        })
+        .unwrap();
+        let group = review.groups.first().expect("new node has a change group");
+        assert_eq!(group.lifecycle, ReviewLifecycleKind::Create);
+        assert_eq!(group.comparison, None);
+        assert!(group.settings.is_empty());
+        assert_eq!(review.total_count, 1);
     }
 }

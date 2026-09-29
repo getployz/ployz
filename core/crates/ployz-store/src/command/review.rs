@@ -192,14 +192,9 @@ fn restore(
         EnvironmentNodeType::Service => intent.services.iter().any(|service| service.id == id),
         EnvironmentNodeType::Volume => intent.volumes.iter().any(|volume| volume.resource_id == id),
     };
-    // A new node's part resets to its Introduction, and stays unpublished.
+    // A part of a node never deployed resets to its Introduction; Saved State follows
+    // only where it holds the node already.
     let introduction = part.is_some() && !holds(&head);
-    if introduction && saved.is_some_and(holds) {
-        return Err(error::conflict(
-            "This has no discard baseline: its Service is published but not deployed",
-            json!({ "path": path }),
-        ));
-    }
     let baseline = if introduction {
         review::introductions(tx, environment)?
     } else {
@@ -215,6 +210,7 @@ fn restore(
     };
     // Saved State follows, except for a part Saved State holds as it is at Head already.
     let saved_follows = match (part, saved) {
+        (_, Some(saved)) if introduction && !holds(saved) => false,
         (None, _) => true,
         (Some(Target::Setting(setting)), Some(saved)) => {
             let config = |intent: &SavedEnvironmentIntent| {
@@ -236,7 +232,7 @@ fn restore(
         (Some(_), None) => false,
     };
     let saved = match saved {
-        Some(saved) if saved_follows && !introduction => Some(restore(saved)?),
+        Some(saved) if saved_follows => Some(restore(saved)?),
         Some(_) | None => None,
     };
     Ok((restore(working)?, saved))
