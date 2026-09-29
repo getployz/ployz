@@ -62,7 +62,7 @@ export const gatherGitEvidence = Effect.fn("ConfigStore.gatherGitEvidence")(func
   command: typeof GitCommand.Type | undefined,
   read: (query: ConfigQuery) => Promise<ConfigView>,
 ) {
-  const trusted: ConfigTrusted = { repositories: [] };
+  const trusted: Pick<ConfigTrusted, "repositories"> = { repositories: [] };
   if (command === undefined) return trusted;
   const environment = command.command === "edit" ? command.environment : undefined;
   const branches = new Map<string, Set<string>>();

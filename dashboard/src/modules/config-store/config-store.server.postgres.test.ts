@@ -5,10 +5,14 @@ import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
-import { Polar } from "#/modules/billing/polar-provider.server";
+import { organizationBillingState } from "#/modules/billing/tables";
+import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
+import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
 import { callStoreAsMember, handleConfigRequest } from "#/modules/config-store/config-store.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
@@ -36,19 +40,28 @@ const github = fakeGithubApi({
 
 /** Cloud with the Config Store in its database. */
 const cloudLayer = Effect.fn(function* (
-  overrides: { readonly NODE_ENV?: string } = {},
+  overrides: { readonly NODE_ENV?: string; readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
   inngest = new Inngest({ id: "config-store-test" }),
 ) {
   const cloud = yield* postgresTestDatabase;
-  const env = { ...testConfigEnvironment(), NODE_ENV: overrides.NODE_ENV ?? "test", DATABASE_URL: cloud.url.href };
+  const env = {
+    ...testConfigEnvironment(),
+    NODE_ENV: overrides.NODE_ENV ?? "test",
+    DATABASE_URL: cloud.url.href,
+    // No Hosted DNS answers unless a test starts one.
+    PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/",
+  };
   const provider = ConfigProvider.fromEnv({ env });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const services = Layer.mergeAll(
     configLayer,
     DatabaseLive.pipe(Layer.provide(configLayer)),
-    Layer.succeed(Polar, { mode: "self_hosted" }),
+    Layer.succeed(Polar, overrides.polar ?? { mode: "self_hosted" }),
     Layer.succeed(InngestClient, inngest),
     Layer.succeed(GithubApi, github.service),
+    Layer.succeed(SecretEncryption, makeSecretEncryption("config-store-test-encryption-secret")),
+    // No Cluster is paired: domains read as unobserved.
+    Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
   );
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
 });
@@ -61,6 +74,8 @@ type Reply = {
   readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
   readonly values?: Readonly<Record<string, string | number>>;
   readonly error?: { readonly code: string; readonly details: { readonly revision?: number; readonly next?: string } | null };
+  readonly domain?: { readonly kind: string; readonly prefix?: string; readonly hostname: string | null };
+  readonly domains?: ReadonlyArray<{ readonly hostname: string | null; readonly status: string; readonly action: { readonly type: string } | null }>;
 };
 
 /** One CLI request; `json` is the Store's result, or its refusal under `error`. */
@@ -339,5 +354,74 @@ it.live(
         assert.strictEqual(down.json.error?.code, "unavailable");
       }).pipe(Effect.provide(layer));
     }),
+  60_000,
+);
+
+it.live(
+  "domains: custom ones need Pro, and a generated one reserves the Cluster Domain when it is first admitted",
+  () =>
+    Effect.gen(function* () {
+      const hostedDns = yield* Effect.acquireRelease(Effect.promise(startFakeHostedDns), (fake) => Effect.promise(() => fake.close()));
+      const inngest = new Inngest({ id: "config-store-test" });
+      const sent: Array<{ readonly name: string }> = [];
+      vi.spyOn(inngest, "send").mockImplementation(async (event) => {
+        sent.push(...[event].flat());
+        return { ids: [] };
+      });
+      const hosted: PolarService = {
+        mode: "hosted",
+        productId: "pro",
+        listActiveSubscriptions: () => Effect.die("the capability reads the cached row"),
+        createCheckout: () => Effect.die("not used"),
+        createCustomerPortal: () => Effect.die("not used"),
+      };
+      const layer = yield* cloudLayer({ polar: hosted, hostedDnsUrl: hostedDns.url }, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const custom: ConfigCommand = { command: "add_domain", environment: here, service: "web", hostname: "app.example.com", port: null };
+        const refused = yield* request("write", alice, custom);
+        assert.strictEqual(refused.status, 501);
+        assert.strictEqual(refused.json.error?.code, "unsupported");
+        assert.strictEqual(refused.json.error?.details?.next, "ployz billing upgrade");
+
+        const database = yield* Database;
+        const [owner] = yield* database.drizzle.select({ organization: member.organizationId }).from(member);
+        yield* database.drizzle.insert(organizationBillingState).values({
+          organizationId: owner?.organization ?? assert.fail("no Organization"),
+          hasActiveSubscription: true,
+          activeSubscriptionId: "sub",
+          currentPeriodEnd: new Date(Date.now() + 86_400_000),
+          syncedAt: new Date(),
+        });
+        assert.strictEqual((yield* request("write", alice, custom)).status, 200);
+
+        const generated = yield* request("write", alice, { ...custom, hostname: null });
+        // No Cluster Domain yet: only admission reserves one.
+        assert.deepInclude(generated.json.domain, { kind: "generated", prefix: "web", hostname: null });
+        assert.lengthOf(hostedDns.requests, 0);
+        const listed = yield* request("read", alice, { query: "domains", environment: here, service: null });
+        assert.deepStrictEqual(listed.json.domains?.map((domain) => [domain.status, domain.action?.type]), [
+          ["setting_up", "deploy"],
+          ["setting_up", "deploy"],
+        ]);
+
+        const admit: ConfigCommand = {
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+        };
+        assert.strictEqual((yield* request("write", alice, admit)).status, 200);
+        assert.lengthOf(hostedDns.requests.filter((call) => call.method === "POST"), 1);
+        const deploying = yield* request("read", alice, { query: "domains", environment: here, service: null });
+        const hostname = deploying.json.domains?.[1]?.hostname ?? "";
+        assert.match(hostname, /^web\.[a-z0-9-]+\.ployz\.test$/);
+
+        // A check asks for a Cluster Domain sync before it reads the domain afresh.
+        sent.length = 0;
+        const checked = yield* request("read", alice, { query: "domain", environment: here, domain: "web" });
+        assert.strictEqual(checked.json.domain?.hostname, hostname);
+        assert.deepStrictEqual(sent.map((event) => event.name), ["cluster-domain/sync.requested"]);
+      }).pipe(Effect.provide(layer));
+    }).pipe(Effect.scoped),
   60_000,
 );

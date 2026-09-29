@@ -22,6 +22,9 @@ const refreshedBy = {
   deployment: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
+  // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, read afresh.
+  domains: ["store_environment", "store_deployment"],
+  domain: ["store_environment", "store_deployment"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 export const storeViewPrefix = (organizationSlug: string) => ["store-view", organizationSlug] as const;
