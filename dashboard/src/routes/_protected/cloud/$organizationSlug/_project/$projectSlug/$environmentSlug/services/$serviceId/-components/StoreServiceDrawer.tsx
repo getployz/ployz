@@ -232,6 +232,15 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
 
+  if (state.service.source === "uploaded") {
+    return (
+      <Field>
+        <FieldLabel>Source</FieldLabel>
+        <FieldDescription>Uploaded from a directory with <code>ployz up</code>; run it again there to ship new code.</FieldDescription>
+      </Field>
+    );
+  }
+
   if (state.service.source === "empty") {
     return (
       <FieldGroup>

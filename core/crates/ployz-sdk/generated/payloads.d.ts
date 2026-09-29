@@ -2698,7 +2698,7 @@ export type Skipped = { environment: EnvironmentId,
  */
 reason: string, };
 
-export type SourceKind = "empty" | "git" | "image";
+export type SourceKind = "empty" | "uploaded" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
 
