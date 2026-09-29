@@ -231,12 +231,15 @@ async fn machine_add_with_membership(
 
 fn assert_joined_with_incomplete_catch_up(output: &Output) {
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Machine joined"), "stderr: {stderr}");
+    assert!(stderr.contains("Server joined"), "stderr: {stderr}");
     assert!(
         stderr.contains("remains a Cluster member"),
         "stderr: {stderr}"
     );
-    assert!(stderr.contains("ployz ingress deploy"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("--accepts-ingress=true`"),
+        "stderr: {stderr}"
+    );
     assert!(stderr.contains("shop/worker"), "stderr: {stderr}");
     assert!(
         stderr.contains("redeploy Namespace Service `shop/worker`"),

@@ -40,8 +40,6 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env",
             "env new",
             "get",
-            "ingress",
-            "ingress deploy",
             "login",
             "logout",
             "org",
@@ -454,37 +452,4 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
             );
         }
     }
-}
-
-#[test]
-fn ingress_deploy_accepts_repeated_constraints_and_rejects_legacy_machine_selection() {
-    let matches = ployz::cli::command()
-        .try_get_matches_from([
-            "ployz",
-            "ingress",
-            "deploy",
-            "--constraint",
-            "node.labels.region==west",
-            "--constraint",
-            "node.labels.retired!=true",
-        ])
-        .unwrap();
-    let deploy = matches
-        .subcommand_matches("ingress")
-        .unwrap()
-        .subcommand_matches("deploy")
-        .unwrap();
-    assert_eq!(
-        deploy
-            .get_many::<String>("constraint")
-            .unwrap()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["node.labels.region==west", "node.labels.retired!=true"]
-    );
-    assert!(
-        ployz::cli::command()
-            .try_get_matches_from(["ployz", "ingress", "deploy", "--machine", "edge",])
-            .is_err()
-    );
 }

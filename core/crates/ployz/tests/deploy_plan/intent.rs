@@ -499,6 +499,42 @@ fn system_namespace_deploy_still_replaces_its_own_ingress() {
 }
 
 #[test]
+fn unchanged_ingress_follows_a_role_change_on_only_that_server() {
+    let ingress = ployz_core::caddy_service_spec("caddy:2.10.2".into(), Default::default());
+    let system = |hex, machine_hex| {
+        let mut container = container(hex, machine_hex, &ingress, &service_id('a'));
+        container
+            .try_update(|parts| parts.namespace = Namespace::system())
+            .unwrap();
+        container
+    };
+    let mut dropped = machine('2', "dropped");
+    dropped.machine.accepts_ingress = false;
+
+    let plan = preview_deploy(
+        &DeployIntent::apply_one(Namespace::system(), ingress.clone(), PlanOptions::default()),
+        &DeploySnapshot {
+            machines: vec![machine('1', "kept"), dropped, machine('3', "gained")],
+            containers: vec![system('c', '1'), system('d', '2')],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert!(!targets_container(&plan, &container_id('c')));
+    assert!(targets_container(&plan, &container_id('d')));
+    let runs = plan
+        .operations
+        .iter()
+        .filter_map(|row| match &row.operation {
+            DeployOperation::RunContainer { machine_id, .. } => Some(*machine_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(runs, [machine_id('3')]);
+}
+
+#[test]
 fn cloud_lowering_orders_dependency_before_migration_and_container() {
     let snapshots: Vec<_> = ["web", "db"].into_iter().map(|name| serde_json::json!({
         "serviceId": name,
