@@ -1,9 +1,5 @@
 #[cfg(unix)]
-use std::io::{BufRead, BufReader};
-#[cfg(unix)]
 use std::process::{Command as ProcessCommand, Stdio};
-
-use clap_complete::{Shell, generate};
 
 #[test]
 fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
@@ -41,6 +37,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "discard",
             "env",
             "env new",
+            "explain",
             "get",
             "ingress",
             "ingress deploy",
@@ -60,6 +57,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "project",
             "project new",
             "publish",
+            "schema",
             "server",
             "server add",
             "service",
@@ -177,19 +175,15 @@ fn each_short_flag_has_one_meaning_across_the_tree() {
 }
 
 #[test]
-fn native_completion_is_generated_for_every_supported_shell() {
-    for shell in [
-        Shell::Bash,
-        Shell::Elvish,
-        Shell::Fish,
-        Shell::PowerShell,
-        Shell::Zsh,
-    ] {
-        let mut output = Vec::new();
-        generate(shell, &mut ployz::cli::command(), "ployz", &mut output);
-        let output = String::from_utf8(output).unwrap();
-        assert!(!output.is_empty(), "empty {shell:?} completion");
-        assert!(output.contains("ployz"), "unnamed {shell:?} completion");
+fn completion_hooks_the_binary_for_every_supported_shell() {
+    for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(["completion", shell])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}");
+        let output = String::from_utf8(output.stdout).unwrap();
+        assert!(output.contains("PLOYZ_COMPLETE"), "{shell} hook: {output}");
     }
 }
 
@@ -389,20 +383,16 @@ fn message(json: &serde_json::Value) -> &str {
 
 #[cfg(unix)]
 #[test]
-fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
+fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
     let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["completion", "bash"])
-        .stdout(Stdio::piped())
+        .args(["schema"])
+        .stdout(Stdio::from(writer))
         .spawn()
         .unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let mut first_line = String::new();
-    output.read_line(&mut first_line).unwrap();
-    drop(output);
-
-    assert!(!first_line.is_empty());
     assert_eq!(child.wait().unwrap().signal(), Some(13));
 }
 

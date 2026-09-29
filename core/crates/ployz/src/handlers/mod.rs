@@ -2,12 +2,14 @@ use std::{future::Future, path::Path, pin::Pin};
 
 use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
 use clap::{ArgMatches, Command};
-use clap_complete::{Shell, generate};
+use clap_complete::Shell;
+use clap_complete::env::Shells;
 
 use crate::failure::{Failure, USAGE_EXIT};
 
 pub(crate) mod account;
 pub(crate) mod build;
+pub(crate) mod catalog;
 pub(crate) mod cloud;
 pub(crate) mod config;
 pub(crate) mod context;
@@ -83,17 +85,24 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     handler(matches)
 }
 
+/// Print the shell hook that asks `ployz` itself for completions, so Setting paths
+/// and Service names complete from the catalog and the Store.
 fn completion(root: &ArgMatches) -> Result<(), Error> {
     let shell = leaf_matches(root)
         .get_one::<Shell>("shell")
         .copied()
         .ok_or_else(|| Error::usage("completion shell is required"))?;
-    generate(
-        shell,
-        &mut crate::cli::command(),
+    let shells = Shells::builtins();
+    let completer = shells
+        .completer(&shell.to_string())
+        .ok_or_else(|| Error::usage("unsupported completion shell"))?;
+    completer.write_registration(
+        crate::cli::env::COMPLETE,
+        "ployz",
+        "ployz",
         "ployz",
         &mut std::io::stdout(),
-    );
+    )?;
     Ok(())
 }
 
@@ -242,6 +251,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("diff", "") => Some((review::diff, Json::Supported)),
         ("discard", "") => Some((review::discard, Json::Supported)),
         ("env", rest) => env::handler(rest),
+        ("explain", "") => Some((catalog::explain, Json::Supported)),
         ("get", "") => Some((config::get, Json::Supported)),
         ("ingress", rest) => ingress::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
@@ -250,6 +260,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("publish", "") => Some((review::publish, Json::Supported)),
+        ("schema", "") => Some((catalog::schema, Json::Supported)),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
         ("set", "") => Some((config::set, Json::Supported)),

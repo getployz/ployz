@@ -12,7 +12,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::Revision;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{Apply, SettingPath};
+use crate::settings::{self, Apply, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Apply every change to one Environment, all or none.
@@ -26,7 +26,7 @@ pub struct Edit {
     pub changes: Vec<Change>,
 }
 
-/// One change to one Setting, addressed as `SERVICE.SETTING`.
+/// One change, addressed as `SERVICE.SETTING`, or as `SERVICE` for a patch.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Change {
@@ -34,10 +34,13 @@ pub enum Change {
     Set { path: String, value: Value },
     /// Return a Setting to its default.
     Unset { path: String },
+    /// Set several Settings of one Service from an object shaped like `get`'s
+    /// `values`. Omitted Settings stay as they are; `null` never clears one.
+    Patch { path: String, value: Value },
 }
 
-/// The Environment after an edit, and which Setting paths are staged until a Deploy
-/// and which applied immediately. An edit that changed nothing keeps the revision.
+/// The Environment after an edit, and which Setting paths it changed: staged until
+/// a Deploy, or applied immediately. An edit that changed nothing keeps the revision.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Edited {
     pub environment: EnvironmentSummary,
@@ -66,35 +69,26 @@ pub(super) fn run(tx: &mut dyn Tx, who: &Actor, edit: &Edit) -> Result<Edited, R
     }
     let before = environment.working.clone();
     let (mut staged, mut immediate) = (Vec::new(), Vec::new());
-    for change in &edit.changes {
-        let (path, value) = match change {
-            Change::Set { path, value } => (path, Some(value)),
-            Change::Unset { path } => (path, None),
-        };
-        let path = SettingPath::parse(path)?;
-        let Some(setting) = path.setting else {
-            return Err(error::invalid(
-                "Name a Setting: SERVICE.SETTING",
-                json!({ "example": format!("{}.replicas", path.service) }),
-            ));
-        };
+    for (path, setting, value) in expand(&edit.changes)? {
         let services = &mut environment.working.services;
         let Some(service) = services
             .iter()
             .position(|service| service.slug == path.service.as_str())
             .and_then(|index| services.get_mut(index))
         else {
-            return Err(error::not_found(
-                format!(
-                    "No Service named {} in Environment {}",
-                    path.service, environment.summary.name
-                ),
-                json!({ "services": services.iter().map(|service| &service.slug).collect::<Vec<_>>() }),
+            return Err(settings::no_service(
+                &path.service,
+                &environment.summary.name,
+                &environment.working,
             ));
         };
+        let was = setting.value(&service.config);
         match value {
-            Some(value) => setting.set(&mut service.config, value.clone())?,
+            Some(value) => setting.set(&mut service.config, value)?,
             None => setting.unset(&mut service.config)?,
+        }
+        if setting.value(&service.config) == was {
+            continue;
         }
         let path = SettingPath::of(&service.slug, setting);
         let list = match setting.apply() {
@@ -113,4 +107,57 @@ pub(super) fn run(tx: &mut dyn Tx, who: &Actor, edit: &Edit) -> Result<Edited, R
         staged,
         immediate,
     })
+}
+
+/// Every change as one Setting to set (with its value) or unset.
+fn expand(
+    changes: &[Change],
+) -> Result<Vec<(SettingPath, ServiceSetting, Option<Value>)>, RpcError> {
+    let mut expanded = Vec::new();
+    for change in changes {
+        match change {
+            Change::Set { path, value } => {
+                let (path, setting) = one(path)?;
+                expanded.push((path, setting, Some(value.clone())));
+            }
+            Change::Unset { path } => {
+                let (path, setting) = one(path)?;
+                expanded.push((path, setting, None));
+            }
+            Change::Patch { path, value } => {
+                let path = SettingPath::parse(path)?;
+                if path.setting.is_some() {
+                    return Err(error::invalid(
+                        "A patch addresses a Service: set SERVICE --patch",
+                        json!({ "example": path.service }),
+                    ));
+                }
+                let Some(object) = value.as_object() else {
+                    return Err(error::invalid(
+                        "A patch is a JSON object of Settings",
+                        json!({ "example": { "replicas": 3 } }),
+                    ));
+                };
+                for (name, value) in object {
+                    let setting = ServiceSetting::parse(name)?;
+                    expanded.push((path.clone(), setting, Some(value.clone())));
+                }
+            }
+        }
+    }
+    Ok(expanded)
+}
+
+fn one(path: &str) -> Result<(SettingPath, ServiceSetting), RpcError> {
+    let path = SettingPath::parse(path)?;
+    let Some(setting) = path.setting else {
+        return Err(error::invalid(
+            "Name a Setting: SERVICE.SETTING",
+            json!({
+                "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+                "example": format!("{}.replicas", path.service),
+            }),
+        ));
+    };
+    Ok((path, setting))
 }
