@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ProtectedRouteRouteImport } from './routes/_protected/route'
 import { Route as PublicRouteRouteImport } from './routes/_public/route'
+import { Route as DeviceRouteImport } from './routes/device'
 import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/cloud/route'
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
@@ -57,6 +58,11 @@ const ProtectedRouteRoute = ProtectedRouteRouteImport.update({
 } as any)
 const PublicRouteRoute = PublicRouteRouteImport.update({
   id: '/_public',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeviceRoute = DeviceRouteImport.update({
+  id: '/device',
+  path: '/device',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ProtectedCloudRouteRoute = ProtectedCloudRouteRouteImport.update({
@@ -318,6 +324,7 @@ const ProtectedCloudOrganizationSlugProjectProjectSlugEnvironmentSlugCanvasServi
 
 export interface FileRoutesByFullPath {
   '/': typeof PublicIndexRoute
+  '/device': typeof DeviceRoute
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
@@ -356,6 +363,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
+  '/device': typeof DeviceRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
@@ -393,6 +401,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_protected': typeof ProtectedRouteRouteWithChildren
   '/_public': typeof PublicRouteRouteWithChildren
+  '/device': typeof DeviceRoute
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
@@ -437,6 +446,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/device'
     | '/cloud'
     | '/dashboard'
     | '/auth'
@@ -475,6 +485,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/device'
     | '/dashboard'
     | '/auth'
     | '/cloud/$organizationSlug'
@@ -511,6 +522,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_protected'
     | '/_public'
+    | '/device'
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
@@ -555,6 +567,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ProtectedRouteRoute: typeof ProtectedRouteRouteWithChildren
   PublicRouteRoute: typeof PublicRouteRouteWithChildren
+  DeviceRoute: typeof DeviceRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
@@ -580,6 +593,13 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof PublicRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/device': {
+      id: '/device'
+      path: '/device'
+      fullPath: '/device'
+      preLoaderRoute: typeof DeviceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_protected/cloud': {
@@ -1056,6 +1076,7 @@ const ApiEnrollTokenRouteWithChildren = ApiEnrollTokenRoute._addFileChildren(
 const rootRouteChildren: RootRouteChildren = {
   ProtectedRouteRoute: ProtectedRouteRouteWithChildren,
   PublicRouteRoute: PublicRouteRouteWithChildren,
+  DeviceRoute: DeviceRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
