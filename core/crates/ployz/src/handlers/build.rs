@@ -5,7 +5,9 @@
 
 use std::{collections::BTreeMap, path::Path, process::Command};
 
-use clap::ArgMatches;
+use clap::{ArgMatches, ValueHint};
+
+use crate::cli::{env, value};
 use ployz_core::{
     BuildGrant, RETAINED_DIGEST_TAG_PREFIX, ServiceName,
     config::{ServiceSource, parse_service_config},
@@ -276,4 +278,40 @@ async fn docker(args: &[&str]) -> Result<(), Error> {
         stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
     }
     .into())
+}
+
+pub(crate) fn command() -> clap::Command {
+    clap::Command::new("build")
+        .about("Build one Git Service and push it into a Machine with a Build Grant")
+        .long_about("Build one Git Service and push it into a Machine with a Build Grant.\n\nChecks out --commit and refuses to build unless the build inputs match --fingerprint. When the GitHub Actions cache runtime (ACTIONS_RUNTIME_TOKEN and its cache URLs) is in the environment, Buildx uses the GitHub Actions cache.")
+        .arg(
+            value("grant", None)
+                .env(env::BUILD_GRANT)
+                .hide_env_values(true)
+                .required(true)
+                .help("Build Grant naming the receiving Machine; prefer the environment variable"),
+        )
+        .arg(
+            value("deployment", None)
+                .required(true)
+                .value_hint(ValueHint::FilePath)
+                .help("Frozen deployment JSON holding exactly one Git-sourced Service"),
+        )
+        .arg(value("commit", None).required(true).help("Commit to build"))
+        .arg(
+            value("fingerprint", None)
+                .required(true)
+                .help("Expected build-input fingerprint; the build is refused on mismatch"),
+        )
+        .arg(
+            value("source", None)
+                .default_value(".")
+                .value_hint(ValueHint::DirPath)
+                .help("Repository working tree of the Service"),
+        )
+        .arg(
+            value("events", None)
+                .value_hint(ValueHint::FilePath)
+                .help("Also write build progress to this file, one JSON line per event"),
+        )
 }
