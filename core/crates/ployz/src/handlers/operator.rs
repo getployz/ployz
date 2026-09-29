@@ -228,31 +228,33 @@ pub fn machine_logs(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub fn proxy(root: &ArgMatches) -> Result<(), Error> {
+/// Forward a loopback port to a healthy container of the Service until interrupted.
+pub fn port_forward(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
     let service = ServiceSelector::parse(
         leaf.get_one::<String>("service")
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
+    let service = in_scope(service, scope(root, &["service", "port-forward"])?.as_ref())?;
     let ports = parse_proxy_ports(
         leaf.get_one::<String>("port")
-            .ok_or_else(|| Error::usage("proxy port is required"))?,
+            .ok_or_else(|| Error::usage("port is required"))?,
     )?;
     with_client(root, |client| {
-        Box::pin(async move { run_proxy(client, &service, ports).await })
+        Box::pin(async move { run_port_forward(client, &service, ports).await })
     })
 }
 
-async fn run_proxy(
+async fn run_port_forward(
     client: &mut crate::connect::Client,
     service_selector: &ServiceSelector,
     ports: ProxyPorts,
 ) -> Result<(), Error> {
-    if !matches!(client.connection().transport(), Transport::Ssh { .. }) {
+    if matches!(client.connection().transport(), Transport::Tcp(_)) {
         return Err(Error::coded(
             ployz_core::RpcErrorCode::Unsupported,
-            format!("proxy dialing is unsupported over {}", client.connection()),
+            format!("port-forward is unsupported over {}", client.connection()),
         ));
     }
     let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -271,30 +273,42 @@ async fn run_proxy(
         ports.local,
     ))
     .await?;
-    crate::output::say!(
-        "{} -> {remote} ({service_selector}/{})",
-        listener.local_addr()?,
-        container.container_id
-    );
+    let local = listener.local_addr()?;
+    if crate::output::json() {
+        crate::output::emit_line(&serde_json::json!({
+            "local": local,
+            "remote": remote,
+            "service": service_selector.to_string(),
+            "container": container.container_id,
+        }))?;
+    } else {
+        crate::output::say!(
+            "{local} -> {remote} ({service_selector}/{}); Ctrl-C stops",
+            container.container_id
+        );
+    }
+    let mut connections = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (mut local, _) = result?;
                 let client = client.clone();
                 let remote = remote.to_string();
-                tokio::spawn(async move {
+                connections.spawn(async move {
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                eprintln!("WARNING: proxy connection to {remote} failed: {error}");
+                                eprintln!("WARNING: port-forward connection to {remote} failed: {error}");
                             }
                         }
-                        Err(error) => eprintln!("WARNING: proxy connection to {remote} failed: {error}"),
+                        Err(error) => eprintln!("WARNING: port-forward connection to {remote} failed: {error}"),
                     }
                 });
             }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
             result = tokio::signal::ctrl_c() => {
                 result?;
+                // Dropping the set aborts every open connection and its tunnel.
                 return Ok(());
             }
         }

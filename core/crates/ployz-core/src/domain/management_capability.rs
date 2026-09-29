@@ -13,6 +13,22 @@ pub const DEFAULT_RELAY_URL: &str = "https://relay.ployz.dev";
 /// ALPN of the Machine RPC stream on the management transport.
 pub const MANAGEMENT_ALPN: &[u8] = b"ployz/rpc/1";
 
+/// ALPN of a port-forward tunnel on the management transport: one connection per TCP
+/// stream, admitted by the same Management Client keys as [`MANAGEMENT_ALPN`].
+///
+/// The client opens one bidirectional stream and writes a one-byte length followed by
+/// the target `ip:port` in ASCII. The Machine answers [`TUNNEL_OPEN`] once it is
+/// connected, then relays bytes; otherwise it closes the connection with
+/// [`TUNNEL_FAILED`] and the reason.
+pub const TUNNEL_ALPN: &[u8] = b"ployz/tunnel/1";
+
+/// The byte a Machine writes once a tunnel's target accepted the TCP connection.
+pub const TUNNEL_OPEN: u8 = 0;
+
+/// QUIC application close code on [`TUNNEL_ALPN`] for a target that is malformed,
+/// outside the Cluster network, or unreachable. The close reason says which.
+pub const TUNNEL_FAILED: u32 = 0x53;
+
 const PREFIX: &str = "ployz1:";
 const BODY_LEN: usize = 64;
 

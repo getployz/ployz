@@ -3,7 +3,7 @@ mod management;
 
 pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::ManagementRelay;
-use management::connect_management;
+use management::{connect_management, dial_tunnel};
 
 use std::{
     borrow::Cow,
@@ -170,9 +170,13 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Management(_) | Transport::Tcp(_) => {
-                Err(ConnectError::ProxyUnsupported(connection.to_string()))
-            }
+            Transport::Management(capability) => tokio::time::timeout(
+                Duration::from_secs(15),
+                dial_tunnel(capability, &self.relay, address),
+            )
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "tunnel open timed out"))?,
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)
