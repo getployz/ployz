@@ -5,10 +5,10 @@ use serde::Serialize;
 
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{env, switch, value};
-use crate::cloud_login::{self, Account, CredentialStore, Organization, Pending, SignedIn, Start};
+use crate::cloud_login::{
+    self, Account, CredentialStore, DEFAULT_CLOUD, Organization, Pending, SignedIn, Start,
+};
 use crate::output::{say, say_inline};
-
-const DEFAULT_CLOUD: &str = "ployz.dev";
 
 pub(crate) fn login_command() -> Command {
     Command::new("login")
@@ -119,7 +119,7 @@ pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
-fn open_browser(url: &str) {
+pub(super) fn open_browser(url: &str) {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
