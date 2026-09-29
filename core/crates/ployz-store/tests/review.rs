@@ -4,9 +4,10 @@
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
-    Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, Publish, Published, Revision, ServiceLineageId, SettingPath, Trusted,
+    Actor, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DiffQuery, DiffView,
+    Discard, Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
+    OrganizationId, ProjectId, ProjectName, Publish, Published, Revision, ServiceLineageId,
+    SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -295,4 +296,83 @@ fn discard_names_what_it_cannot_find() {
         error.details,
         json!({ "did_you_mean": "web", "valid_children": ["web", "api"] })
     );
+}
+
+#[test]
+fn simultaneous_publishers_save_one_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(PROJECT).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+            },
+        )
+        .unwrap();
+    let version = diff(&store, &who).version;
+    let published: Vec<Result<Published, RpcError>> = std::thread::scope(|threads| {
+        let publishers: Vec<_> = (0..2)
+            .map(|_| {
+                let (url, who, version) = (&url, &who, &version);
+                threads.spawn(move || {
+                    let store = ConfigStore::open(url, backend::key()).unwrap();
+                    publish(&store, who, Some(version))
+                })
+            })
+            .collect();
+        publishers
+            .into_iter()
+            .map(|one| one.join().unwrap())
+            .collect()
+    });
+    // They take turns: one saves what it reviewed; the other's review is stale.
+    let [first, second] = published.try_into().unwrap();
+    let (saved, refused) = match (first, second) {
+        (Ok(saved), Err(refused)) | (Err(refused), Ok(saved)) => (saved, refused),
+        other => panic!("one publisher wins: {other:?}"),
+    };
+    assert_eq!((saved.saved, saved.created), (Revision(1), true));
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn discard_keeps_mounts_it_does_not_name() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
+    // web was introduced before it mounted data: discarding the mount takes it out.
+    discard(&store, &who, Some("web.mounts.data"), None).unwrap();
+    assert_eq!(value(&store, &who, "web.mounts.data"), None);
 }
