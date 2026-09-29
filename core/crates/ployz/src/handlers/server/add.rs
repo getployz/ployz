@@ -119,14 +119,9 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
         })?;
         catch_up.map_err(|error| {
-            let recovery =
-                super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
             Error::coded(
                 error.code(),
-                format!(
-                    "{}\nFor ingress, continue with: {recovery}",
-                    crate::global_catch_up::joined_catch_up_error(error)
-                ),
+                crate::global_catch_up::joined_catch_up_error(error, &assigned),
             )
         })
     })();
@@ -153,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_add_reports_added_when_follow_on_ingress_deploy_fails() {
+    fn server_add_reports_the_added_server() {
         let assigned = assigned_machine("edge", 'a');
         assert_eq!(
             added_machine_line(&assigned),
@@ -163,17 +158,22 @@ mod tests {
 
     #[test]
     fn catch_up_failure_after_add_reports_joined_membership() {
+        let assigned = assigned_machine("edge", 'a');
         let error = crate::global_catch_up::joined_catch_up_error(
             crate::global_catch_up::CatchUpError::new(
                 crate::failure::Failure::usage("deploy timed out".to_owned()),
                 vec![ployz_core::QualifiedService::system_ingress()],
             ),
+            &assigned,
         );
-        assert!(error.contains("Machine joined"));
+        assert!(error.contains("Server joined"));
         assert!(error.contains("remains a Cluster member"));
         assert!(
-            error.contains("`ployz ingress deploy`"),
-            "failure must tell the operator to run `ingress deploy`, got {error:?}"
+            error.contains(&format!(
+                "`ployz server set {} --accepts-ingress=true`",
+                assigned.id
+            )),
+            "failure must tell the operator how the Ingress Proxy follows the role, got {error:?}"
         );
         assert!(
             error.contains("deploy timed out"),

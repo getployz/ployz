@@ -36,26 +36,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
         assert!(config.contains(INGRESS_VERIFY_PATH));
     }
 
-    cli(
-        &direct,
-        &[
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:2.10.2",
-            "--machine",
-            machines[0].id.as_str(),
-        ],
-    );
-    let caddy_id = wait_service(&mut client, "ingress", 1).await;
-    assert!(
-        wait_running(&mut client, &caddy_id, 1)
-            .await
-            .iter()
-            .all(|container| container.resolved_spec.container.image == "caddy:2.10.2")
-    );
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
-    assert_eq!(wait_service(&mut client, "ingress", 3).await, caddy_id);
+    cli(&direct, &ingress_role(&machines[0]));
+    let caddy_id = wait_service(&mut client, "ingress", 3).await;
     assert!(
         wait_running(&mut client, &caddy_id, 3)
             .await
@@ -172,7 +154,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     .await
     .unwrap();
 
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     let api: ResolvedServiceSpec = serde_json::from_value(serde_json::json!({
@@ -234,17 +216,7 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
     assert!(curl_https(&cluster, 0, &first_cert).trim() != "ok");
 
     let second = cluster.add_machine(0, 1, "machine-2").await.unwrap();
-    cli(
-        &direct,
-        &[
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:2.10.2",
-            "--machine",
-            second.id.as_str(),
-        ],
-    );
+    cli(&direct, &ingress_role(&second));
     wait_config(&mut client, &second, |config| {
         config.contains("tls /config/caddy/certs/secure.example.test-")
     })
@@ -316,6 +288,18 @@ async fn assert_membership_blind(
             .config()
             .contains(&format!("{}:8080", retained_address.0))
     );
+}
+
+/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
+fn ingress_role(server: &Machine) -> [&str; 6] {
+    [
+        "server",
+        "set",
+        server.id.as_str(),
+        "--accepts-ingress=true",
+        "--ingress-image",
+        "caddy:2.10.2",
+    ]
 }
 
 fn cli(direct: &str, args: &[&str]) -> String {

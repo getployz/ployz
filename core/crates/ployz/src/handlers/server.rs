@@ -21,6 +21,7 @@ use crate::{
     cloud_login::{CredentialStore, LoginError},
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
     context::{Config, ConnectionSource, SelectedConnections},
+    ingress::IngressImage,
     output::{self, say},
 };
 
@@ -162,10 +163,20 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
     let update = parse_update(matches)?;
-    update_target(root, selector, update)
-}
-
-fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Result<(), Error> {
+    let image = matches.get_one::<String>("ingress-image");
+    let role = format!(
+        "--accepts-ingress={}",
+        update.accepts_ingress.unwrap_or(true)
+    );
+    let mut args = vec!["server", "set", selector, role.as_str()];
+    args.extend(
+        image
+            .iter()
+            .flat_map(|image| ["--ingress-image", image.as_str()]),
+    );
+    let rerun = rerun(matches, &args);
+    let ingress = IngressImage::given_or(image.cloned(), IngressImage::Keep);
+    let accepts_ingress = update.accepts_ingress;
     let selector = MachineTarget::parse(selector)?;
     with_client(root, |client| {
         Box::pin(async move {
@@ -175,16 +186,72 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
                     &selector,
                     Some(TARGET_RPC_TIMEOUT),
                 )
-                .await?;
-            output::finish(&json!({ "server": machine.machine }), || {
-                say!(
-                    "Updated Server {} ({})",
-                    machine.machine.name,
-                    machine.machine.id
-                );
-            })
+                .await?
+                .machine;
+            say!("Updated Server {} ({})", machine.name, machine.id);
+            // The update is committed; the Ingress Proxy following a role change is a follow-up.
+            let Some(accepts) = accepts_ingress else {
+                return output::emit(&json!({ "server": machine }));
+            };
+            let followed = async {
+                wait_for_ingress_role(client, &machine.id, accepts).await?;
+                crate::ingress::follow_roles(client, ingress).await
+            }
+            .await;
+            output::emit_committed(
+                json!({ "server": machine, "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
+                followed
+                    .map(drop)
+                    .map_err(|error| ingress_incomplete("Server updated", &error, rerun)),
+            )
         })
     })
+}
+
+/// Wait until this entry sees the Server's new ingress role, so the deploy plans from it.
+async fn wait_for_ingress_role(
+    client: &mut Client,
+    id: &ployz_core::MachineId,
+    accepts: bool,
+) -> Result<(), Error> {
+    // ponytail: fixed 30 s bound; the role replicates within seconds on a healthy Cluster.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let machines = client.machines().await?;
+        if machines
+            .iter()
+            .any(|entry| entry.machine.id == *id && entry.machine.accepts_ingress == accepts)
+        {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(Error::unavailable(
+                "this entry Server has not yet observed the new ingress role",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+/// The exact rerun of a Server command, keeping an explicit `--context`.
+pub(super) fn rerun(matches: &ArgMatches, args: &[&str]) -> String {
+    let context = matches.get_one::<String>("context");
+    let args = std::iter::once("ployz").chain(args.iter().copied()).chain(
+        context
+            .map(|context| ["--context", context.as_str()])
+            .into_iter()
+            .flatten(),
+    );
+    shell_words::join(args)
+}
+
+/// A committed Server change whose Ingress Proxy follow-up failed: name it and the exact rerun.
+pub(super) fn ingress_incomplete(committed: &str, error: &Error, next: String) -> Error {
+    Error::detailed(
+        error.report().code,
+        format!("{committed}; the Ingress Proxy did not follow: {error}\nContinue with: {next}"),
+        json!({ "next": next }),
+    )
 }
 
 fn parse_update(matches: &ArgMatches) -> Result<MachineUpdate, Error> {
@@ -348,7 +415,8 @@ pub(crate) fn command() -> Command {
                 ),
         )
         .subcommand(
-            machine_policy_flags(base("set", "Change a Server's name, labels, roles, public IP or build concurrency"))
+            machine_policy_flags(base("set", "Change a Server's name, labels, roles, public IP or build concurrency")
+                .long_about("Change a Server's name, labels, roles, public IP or build concurrency. Changing --accepts-ingress also moves the Ingress Proxy onto or off that Server; rerun the same command to finish a move that failed."))
                 .arg(many("label-rm", None).value_name("KEY"))
                 .arg(value("name", None))
                 .arg(value("public-ip", None).value_name("IP|none"))
@@ -358,10 +426,12 @@ pub(crate) fn command() -> Command {
                         .help("Builds this Server runs at once; auto follows its roles and RAM"),
                 )
                 .arg(many("wg-endpoint", None))
+                .arg(ingress_image())
                 .arg(positional("server", true)),
         )
         .subcommand(
             base("upgrade", "Upgrade the daemon on explicitly selected Servers, one at a time")
+                .long_about("Upgrade the daemon on explicitly selected Servers, one at a time, stopping at the first failure. When every daemon upgraded and any selected Server holds the ingress role, the Ingress Proxy then moves to the latest Caddy image on every Server with that role.")
                 .arg_required_else_help(true)
                 .arg(
                     positional("version", true)
@@ -373,8 +443,14 @@ pub(crate) fn command() -> Command {
                         .num_args(1..)
                         .action(ArgAction::Append)
                         .help("Server name or ID, in upgrade order"),
-                ),
+                )
+                .arg(ingress_image()),
         )
+}
+
+/// Pin the Caddy image the Ingress Proxy is deployed with (offline test clusters).
+fn ingress_image() -> Arg {
+    value("ingress-image", None).value_name("IMAGE").hide(true)
 }
 
 pub(super) fn provisioning_flags(command: Command) -> Command {

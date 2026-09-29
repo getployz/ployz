@@ -29,7 +29,7 @@ async fn custom_https_hostname_obtains_a_certificate_from_a_fake_ca() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     let http_id = ServiceId::random();
@@ -112,7 +112,7 @@ async fn several_machines_order_once_and_every_machine_answers() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 2).await;
 
     let app_id = ServiceId::random();
@@ -188,17 +188,7 @@ async fn down_machine_does_not_block_ordering() {
 
     let direct = cluster.api_address(living_index).unwrap();
     let mut client = connect(&direct).await;
-    cli(
-        &direct,
-        &[
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:2.10.2",
-            "--machine",
-            living.id.as_str(),
-        ],
-    );
+    cli(&direct, &ingress_role(living));
     wait_service(&mut client, "ingress", 1).await;
 
     let app_id = ServiceId::random();
@@ -236,7 +226,7 @@ async fn certificate_renews_before_expiry_without_restart() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
@@ -285,7 +275,7 @@ async fn machines_holding_the_same_certificate_renew_once() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 2).await;
     let app_id = ServiceId::random();
     create_and_start(
@@ -338,7 +328,7 @@ async fn failed_renewal_keeps_serving_the_existing_certificate() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
@@ -385,7 +375,7 @@ async fn joining_machine_serves_existing_certificate() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
     let app_id = ServiceId::random();
     create_and_start(
@@ -438,7 +428,7 @@ async fn published_material_is_served_never_renewed_and_clear_returns_it_to_acme
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     // Past two thirds of its lifetime: ACME-issued material this old renews at once.
@@ -491,7 +481,7 @@ async fn published_wildcard_covers_hostnames_so_acme_orders_nothing() {
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     let (certificate, private_key) = past_renewal_material("*.example.com");
@@ -639,7 +629,7 @@ async fn hostname_resolving_elsewhere_is_refused_then_issues_when_dns_points_her
 
     let direct = cluster.api_address(0).unwrap();
     let mut client = connect(&direct).await;
-    cli(&direct, &["ingress", "deploy", "--image", "caddy:2.10.2"]);
+    cli(&direct, &ingress_role(&first));
     wait_service(&mut client, "ingress", 1).await;
 
     point_dns(
@@ -742,6 +732,18 @@ async fn connect(direct: &str) -> ployz::connect::Client {
     )
     .await
     .unwrap()
+}
+
+/// Give `server` the ingress role; the Ingress Proxy follows it with the preloaded Caddy image.
+fn ingress_role(server: &Machine) -> [&str; 6] {
+    [
+        "server",
+        "set",
+        server.id.as_str(),
+        "--accepts-ingress=true",
+        "--ingress-image",
+        "caddy:2.10.2",
+    ]
 }
 
 fn cli(direct: &str, args: &[&str]) {
