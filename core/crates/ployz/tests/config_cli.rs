@@ -992,7 +992,14 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
                 assert_eq!(&redeployed["upload"], upload);
             }
             Target::Cloud { .. } => {
-                assert_eq!(error(store, &args)["code"], json!("unsupported"));
+                // Cloud takes the upload first and names who sent it; its runner reaches no Server.
+                let (code, deployed) = ployz(Some(store), &args);
+                assert_eq!(code, Some(3), "{deployed}");
+                assert_eq!(
+                    deployed["upload"]["base"],
+                    json!({"commit": head, "changed": true})
+                );
+                assert_eq!(deployed["upload"]["uploader"], json!("alice"));
             }
         }
     }

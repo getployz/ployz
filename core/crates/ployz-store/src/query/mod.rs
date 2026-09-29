@@ -81,7 +81,7 @@ pub enum View {
     /// A page of Deployments.
     Deployments(DeploymentsView),
     /// One Deployment.
-    Deployment(crate::DeploymentView),
+    Deployment(Box<crate::DeploymentView>),
     /// One Git build with its log.
     BuildLog(crate::BuildLogView),
     /// An Environment's Services.
@@ -114,7 +114,7 @@ pub(crate) fn run(
         Query::Plan(query) => deployment::plan(tx, who, query).map(View::Plan),
         Query::Deployments(query) => deployment::page(tx, who, query).map(View::Deployments),
         Query::Deployment(query) => {
-            crate::deployment::view(tx, who, &query.id).map(View::Deployment)
+            crate::deployment::view(tx, who, &query.id).map(|view| View::Deployment(Box::new(view)))
         }
         Query::BuildLog(query) => crate::deployment::build_log(tx, who, query).map(View::BuildLog),
         Query::Services(query) => services(tx, who, query).map(View::Services),
