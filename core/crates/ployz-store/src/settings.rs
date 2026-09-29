@@ -38,6 +38,8 @@ pub(crate) enum ServiceSetting {
     MaxRetries,
     MemLimit,
     PreDeployCommand,
+    /// Who builds a Git Service first; see [`crate::builders`].
+    PreferredBuilder,
     /// What an image Service's private image is pulled with; see [`crate::registry`].
     RegistryCredential,
     Replicas,
@@ -49,12 +51,13 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 16] = [
         Self::CpuLimit,
         Self::Image,
         Self::MaxRetries,
         Self::MemLimit,
         Self::PreDeployCommand,
+        Self::PreferredBuilder,
         Self::RegistryCredential,
         Self::Replicas,
         Self::RestartPolicy,
@@ -74,6 +77,7 @@ impl ServiceSetting {
             Self::MaxRetries => "maxRetries",
             Self::MemLimit => "memLimit",
             Self::PreDeployCommand => "preDeployCommand",
+            Self::PreferredBuilder => "preferredBuilder",
             Self::RegistryCredential => "registryCredential",
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
@@ -90,6 +94,7 @@ impl ServiceSetting {
             Self::MaxRetries => "Max retries",
             Self::MemLimit => "Memory limit",
             Self::PreDeployCommand => "Pre-deploy command",
+            Self::PreferredBuilder => "Preferred Builder",
             Self::RegistryCredential => "Registry credentials",
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
@@ -106,6 +111,9 @@ impl ServiceSetting {
             Self::MemLimit => "Most memory each replica may use, in GB. Unset means no limit.",
             Self::PreDeployCommand => {
                 "Runs once in a new replica before a Deploy starts the Service."
+            }
+            Self::PreferredBuilder => {
+                "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID. Then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build."
             }
             Self::RegistryCredential => {
                 "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -."
@@ -127,6 +135,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PreferredBuilder
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand => self.name(),
@@ -144,7 +153,7 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Git(_) => Apply::Staged,
-            Self::RegistryCredential => Apply::Immediate,
+            Self::RegistryCredential | Self::PreferredBuilder => Apply::Immediate,
         }
     }
 
@@ -155,6 +164,7 @@ impl ServiceSetting {
             | Self::Image
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PreferredBuilder
             | Self::RegistryCredential
             | Self::StartCommand => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
@@ -175,6 +185,10 @@ impl ServiceSetting {
             Self::PreDeployCommand | Self::StartCommand => {
                 json!({ "type": "string", "minLength": 1, "maxLength": 2000 })
             }
+            Self::PreferredBuilder => json!({
+                "type": "string",
+                "anyOf": [{ "const": "github" }, { "pattern": "^[0-9a-f]{32}$" }],
+            }),
             Self::RestartPolicy => json!({
                 "type": "string",
                 "enum": ["always", "no", "on-failure", "unless-stopped"],
@@ -200,6 +214,7 @@ impl ServiceSetting {
             Self::MaxRetries => json!([3]),
             Self::MemLimit => json!([0.5, 4]),
             Self::PreDeployCommand => json!(["npm run migrate"]),
+            Self::PreferredBuilder => json!(["github"]),
             Self::RegistryCredential => json!([{ "secret": true }]),
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
@@ -219,7 +234,9 @@ impl ServiceSetting {
             Self::Git(
                 GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
             ) => !matches!(config.source, ServiceSource::Image { .. }),
-            Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
+            Self::Git(_) | Self::PreferredBuilder => {
+                matches!(config.source, ServiceSource::Git { .. })
+            }
             Self::CpuLimit
             | Self::MaxRetries
             | Self::MemLimit
@@ -239,7 +256,10 @@ impl ServiceSetting {
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
                 return self.shown(json!(credentials));
             }
-            (Self::Image | Self::RegistryCredential, _) => return Value::Null,
+            // Kept outside Working State: queries read it with [`crate::builders::preferred_value`].
+            (Self::Image | Self::RegistryCredential, _) | (Self::PreferredBuilder, _) => {
+                return Value::Null;
+            }
             _ => {}
         }
         // Every other Setting is the stored field of the same name.
@@ -264,6 +284,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PreferredBuilder
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand => value,

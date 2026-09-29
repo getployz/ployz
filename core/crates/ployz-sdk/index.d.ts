@@ -8,6 +8,10 @@ import type {
   ConfigWritten,
   DeploymentSummary,
   GitSource,
+  GithubBuild,
+  GithubClaims,
+  GithubRun,
+  BuildStatus,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -282,7 +286,32 @@ export interface ConfigStore {
   ): Promise<DeploymentSummary>;
   /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
   abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
+  /**
+   * Cloud's worker only: start GitHub build `build` (`DEPLOYMENT.SERVICE`). An earlier image may serve it (`reused`);
+   * GitHub may be unable to take it (`skipped`, recorded for the next Builder); else dispatch on `runner`.
+   */
+  githubStart(build: string, connections: Connection[]): Promise<GithubStart>;
+  /** Cloud's worker only: hand the build to its dispatched run; rejects `conflict` when it is no longer wanted. */
+  githubDispatched(build: string, run: GithubRun): Promise<null>;
+  /** Cloud only: a build handed to GitHub. */
+  githubBuild(build: string): Promise<GithubBuild>;
+  /** Cloud's worker only: GitHub can't take the build before any run; the next Builder takes it. */
+  githubSkip(build: string, message: string): Promise<BuildStatus>;
+  /**
+   * The check-in route only, with the OIDC claims Cloud verified: the runner's Build Grant and build inputs, secrets
+   * included. Rejects `unauthenticated` for another repository, workflow or run; `conflict` when refused.
+   */
+  githubCheckIn(build: string, claims: GithubClaims, connections: Connection[]): Promise<GithubCheckIn>;
+  /** The steps route only: take a runner's report (`{from, events, platforms?, installFailed?}`). */
+  githubReport(build: string, claims: GithubClaims, report: unknown): Promise<{ received: number; ended: boolean }>;
+  /** Cloud only: end a build whose run reported its end, completed or timed out: end its grant, write its receipt. */
+  githubFinish(build: string, timedOut: boolean, connections: Connection[]): Promise<GithubFinish>;
+  /** Cloud only: end the grants of a Deployment's builds still on GitHub and fail them; cancel the returned runs. */
+  githubCancel(deployment: string, connections: Connection[]): Promise<GithubBuild[]>;
 }
+export type GithubStart = { kind: "reused" } | { kind: "dispatch"; runner: string } | { kind: "skipped"; message: string };
+export type GithubCheckIn = { grant: string; commit: string; fingerprint: string; ployzVersion: string; deployment: PreparationInput["deployment"] };
+export type GithubFinish = "waiting" | { ended: BuildStatus };
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.
  * Secrets are sealed with a key derived from `sealingSecret` (Cloud's encryption secret).

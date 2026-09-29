@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
+use crate::builders;
 use crate::error;
 use crate::id::Revision;
 use crate::registry;
@@ -123,6 +124,19 @@ pub(crate) fn edit(
                 if changed && !list.contains(&path) {
                     list.push(path.clone());
                 }
+            }
+            continue;
+        }
+        if let Some(Target::Setting(setting @ ServiceSetting::PreferredBuilder)) = path.target() {
+            let node = environment.service(service)?;
+            if !setting.applies(&node.config) {
+                return Err(setting.invalid("only a Service built from a repository has one"));
+            }
+            let (environment_id, node_id) = (environment.summary.id.clone(), node.id.clone());
+            if builders::set_preferred(tx, who, &environment_id, &node_id, value.as_ref())?
+                && !immediate.contains(&path)
+            {
+                immediate.push(path.clone());
             }
             continue;
         }

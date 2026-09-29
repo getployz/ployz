@@ -211,6 +211,25 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "preferredBuilder": {
+          "anyOf": [
+            {
+              "const": "github"
+            },
+            {
+              "pattern": "^[0-9a-f]{32}$"
+            }
+          ],
+          "description": "Who builds this Service first: \"github\" for GitHub Actions, or a Server's Machine ID. Then the Organization's Build Order, without it. Unset follows the Build Order. Applies to the next build.",
+          "examples": [
+            "github"
+          ],
+          "title": "Preferred Builder",
+          "type": "string",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "registryCredential": {
           "additionalProperties": false,
           "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -.",

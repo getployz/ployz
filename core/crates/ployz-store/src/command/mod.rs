@@ -65,6 +65,8 @@ pub enum Command {
     AddDomain(crate::AddDomain),
     /// Take a public domain off its Service.
     RemoveDomain(crate::RemoveDomain),
+    /// Set the Organization's Build Order, at once.
+    SetBuildOrder(crate::SetBuildOrder),
 }
 
 impl Command {
@@ -87,7 +89,8 @@ impl Command {
             | Self::Start(_)
             | Self::Cancel(_)
             | Self::AddDomain(_)
-            | Self::RemoveDomain(_) => Vec::new(),
+            | Self::RemoveDomain(_)
+            | Self::SetBuildOrder(_) => Vec::new(),
         }
     }
 }
@@ -117,6 +120,8 @@ pub enum Written {
     Deployment(crate::DeploymentSummary),
     /// A public domain was added or removed.
     Domain(crate::DomainStaged),
+    /// The Build Order was set; it applies to the next build.
+    BuildOrder(crate::BuildOrderView),
 }
 
 pub(crate) fn run(
@@ -152,6 +157,9 @@ pub(crate) fn run(
         }
         Command::RemoveDomain(remove) => {
             crate::domain::remove_domain(tx, who, remove, trusted).map(Written::Domain)
+        }
+        Command::SetBuildOrder(set) => {
+            crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
         }
     }
 }

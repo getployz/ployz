@@ -54,6 +54,8 @@ pub enum Query {
     Domains(crate::DomainsQuery),
     /// One public domain, which Cloud observes afresh first.
     Domain(crate::DomainQuery),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -83,6 +85,8 @@ pub enum View {
     Domains(crate::DomainsView),
     /// One public domain.
     Domain(crate::DomainView),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderView),
 }
 
 pub(crate) fn run(
@@ -105,5 +109,6 @@ pub(crate) fn run(
         Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
         Query::Domains(query) => crate::domain::domains(tx, who, query, trusted).map(View::Domains),
         Query::Domain(query) => crate::domain::domain(tx, who, query, trusted).map(View::Domain),
+        Query::BuildOrder(_) => crate::builders::build_order(tx, who).map(View::BuildOrder),
     }
 }
