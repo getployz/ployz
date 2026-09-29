@@ -1,7 +1,7 @@
-import type { BranchOption, BranchPlanView, EnvironmentView, JsonValue, LiveNode, MoveChoice, MovePick, MoveRow } from "@ployz/sdk";
+import type { BranchOption, BranchPlanView, JsonValue, LiveNode, MoveChoice, MovePick, MoveRow } from "@ployz/sdk";
 import type { BranchPlan } from "@ployz/sdk/config";
 import catalog from "@ployz/sdk/catalog.json";
-import { asRecord, asString } from "#/lib/json";
+import { asRecord } from "#/lib/json";
 
 /** One changed setting of one node as a sheet or news row words it: `before` is the receiver's, `after` what would land. */
 export type PresentedRow = { key: string; lineageId: string; node: string; label: string; before: string; after: string };
@@ -77,14 +77,7 @@ export function planOf(view: BranchPlanView): BranchPlan {
   };
 }
 
-/**
- * A Branch's Live Nodes as the canvas draws them, each with the Services here that read it: their variables reference
- * it by name (`${{ db.URL }}`).
- */
-export function liveNodes(live: readonly LiveNode[], settings: EnvironmentView, services: ReadonlyArray<{ id: string; name: string }>) {
-  return live.map((node) => ({
-    ...node,
-    usedBy: services.filter((service) => settings.settings.some((row) => row.path.startsWith(`${service.name}.env.`)
-      && asString(row.value)?.includes(`\${{ ${node.name}.`))).map((service) => service.id),
-  }));
+/** A Branch's Live Nodes as the canvas draws them, each with the ids of the Services here the Store says read it. */
+export function liveNodes(live: readonly LiveNode[], services: ReadonlyArray<{ id: string; name: string }>) {
+  return live.map((node) => ({ ...node, usedBy: services.filter((service) => node.used_by.includes(service.name)).map((service) => service.id) }));
 }

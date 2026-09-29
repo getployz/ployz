@@ -84,7 +84,7 @@ function CanvasWithData() {
       changeCount: serviceChanges(diff, service.id).size,
     })),
     volumes: volumes.volumes,
-    live: branch.ok ? liveNodes(branch.value.live, settings, services.services) : [],
+    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId);
