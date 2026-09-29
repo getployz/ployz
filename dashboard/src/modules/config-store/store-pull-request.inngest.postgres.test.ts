@@ -1,22 +1,16 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, ConfigTrusted, ServiceId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import type { ConfigCommand, JsonValue, ConfigTrusted, ServiceId } from "@ployz/sdk";
+import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
-import { expect } from "vitest";
-import { cloudStore } from "#/modules/config-store/config-store.server";
-import { createStorePullRequest } from "#/modules/config-store/store-pull-request.inngest";
-import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
-import { githubInstallation } from "#/modules/github/tables";
-import { member, user } from "#/modules/identity/tables";
+import { expect, vi } from "vitest";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { requestChecks } from "#/modules/config-store/config-store.server";
+import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
-import { organization } from "#/modules/organization/tables";
-import { AppConfig } from "#/server/config.server";
-import { Database, DatabaseLive } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { fakeGithubApiBy } from "#/test/fake-github";
+import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000c001";
 const PROJECT = "00000000-0000-4000-8000-00000000c002";
@@ -28,22 +22,18 @@ const here = { project: null, environment: null };
 type PullState = { state: "open" | "closed"; updated_at: string };
 
 /** GitHub with `acme/web` (42) through installation 7: pull request 5 as `pull` says; check runs land in `posted`. */
-function github(pull: PullState, posted: unknown[]): GithubApiService {
-  return {
-    json: (request) => {
-      if (request.url.endsWith("/check-runs")) posted.push(request.body);
-      const answer = request.url.endsWith("/pulls/5")
-        ? {
-          number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: HEAD },
-          base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
-        }
-        : request.url.includes("/check-runs?")
-          ? { check_runs: [] }
-          : request.url.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
-      return Schema.decodeUnknownEffect(request.schema)(answer).pipe(Effect.orDie);
-    },
-    archive: () => Effect.die("no checkout in this test"),
-  };
+function github(pull: PullState, posted: unknown[]) {
+  return fakeGithubApiBy(({ url, body }): JsonValue => {
+    if (url.endsWith("/check-runs")) posted.push(body);
+    return url.endsWith("/pulls/5")
+      ? {
+        number: 5, title: "Add search", user: { login: "ada", type: "User" }, head: { ref: "search", sha: HEAD },
+        base: { ref: "main" }, merged: false, merge_commit_sha: null, commits: 1, ...pull,
+      }
+      : url.includes("/check-runs?")
+        ? { check_runs: [] }
+        : url.endsWith("/check-runs") ? { id: 99 } : { id: 42, full_name: "acme/web", private: true };
+  }).service;
 }
 
 const delivery = (id: string) => ({
@@ -58,24 +48,16 @@ it.live(
   "pull requests reach the Store: a PR Environment deploys on open, its check is published, a late open never reopens it",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
-      yield* Effect.gen(function* () {
-        const { drizzle } = yield* Database;
-        const [owner] = yield* drizzle.insert(user).values({ email: "ada@example.test", name: "Ada" }).returning();
-        yield* drizzle.insert(organization).values({ id: ORGANIZATION, name: "Shop", slug: "shop" });
-        yield* drizzle.insert(member).values({ userId: owner?.id ?? "", organizationId: ORGANIZATION, role: "owner" });
-        yield* drizzle.insert(githubInstallation).values({
-          userId: owner?.id ?? "", installationId: 7, accountLogin: "acme", accountType: "Organization",
-        });
-      }).pipe(Effect.provide(services));
-
+      const pull: PullState = { state: "open", updated_at: "2026-09-29T10:00:00Z" };
+      const posted: unknown[] = [];
+      const checks = new Inngest({ id: "store-pull-request-checks" });
+      const requested: unknown[] = [];
+      vi.spyOn(checks, "send").mockImplementation(async (event) => {
+        requested.push(event);
+        return { ids: [] };
+      });
+      const services = yield* Layer.build(yield* storeTestCloud({ github: github(pull, posted), inngest: checks }));
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -93,10 +75,8 @@ it.live(
         copy: null, setup: null, remove_on_close: null, include_bots: null,
       });
 
-      const pull: PullState = { state: "open", updated_at: "2026-09-29T10:00:00Z" };
-      const posted: unknown[] = [];
       const runner: Parameters<typeof createStorePullRequest>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
-        Effect.provide(services), Effect.provideService(GithubApi, github(pull, posted)))));
+        Effect.provide(services))));
       const inngest = new Inngest({ id: "store-pull-request-test" });
       const dispatched: string[] = [];
       const run = (id: string) => Effect.promise(async () =>
@@ -110,7 +90,7 @@ it.live(
         }).execute()).result as { admitted: string[]; removals: string[]; check: string });
       const environments = () => Effect.promise(async () => {
         const view = await store.read(ORGANIZATION, { query: "environments", project: null });
-        return view.view === "environments" ? view.environments.map((listing) => listing.name) : [];
+        return view.environments.map((listing) => listing.name);
       });
 
       // Opened: the PR Environment deploys, and the check says nothing waits to be saved.
@@ -120,6 +100,12 @@ it.live(
       expect(dispatched).toEqual(["open"]);
       expect(yield* environments()).toEqual(["pr-5", "production"]);
       expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No changes for production" } }]);
+
+      // Any later write may move the check: Cloud asks for it again.
+      yield* requestChecks(ORGANIZATION).pipe(Effect.provide(services));
+      expect(requested).toEqual([[{ name: "config/pr-check.requested", data: {
+        organizationId: ORGANIZATION, repositoryId: 42, number: 5, pullRequestKey: "42:5",
+      } }]]);
 
       // Closed: never deployed, so it goes at once; no check for a closed pull request.
       Object.assign(pull, { state: "closed", updated_at: "2026-09-29T11:00:00Z" });

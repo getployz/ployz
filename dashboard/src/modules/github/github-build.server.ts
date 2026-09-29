@@ -113,12 +113,12 @@ export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (in
 /** The GitHub repositories the Organization's Services build from: each Project's PR plans list its repositories. */
 const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(function* (actor: Actor, organizationSlug: string) {
   const projects = yield* callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "projects" } });
-  if (!projects.ok || !("view" in projects.value) || projects.value.view !== "projects") return [];
+  if (!projects.ok) return [];
   const plans = yield* Effect.forEach(projects.value.projects, (project) =>
     callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "pr_plans", project: project.name } }), { concurrency: 4 });
   const found = new Map<string, { installationId: number; repositoryId: number; fullName: string }>();
   for (const result of plans) {
-    if (!result.ok || !("view" in result.value) || result.value.view !== "pr_plans") continue;
+    if (!result.ok) continue;
     for (const plan of result.value.plans) {
       found.set(`${plan.installation_id}:${plan.repository_id}`,
         { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository });
