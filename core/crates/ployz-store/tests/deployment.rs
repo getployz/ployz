@@ -948,6 +948,16 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         RpcErrorCode::InvalidArgument
     );
     store.record(&id(1), &a, built(receipt.clone())).unwrap();
+    // Built from an upload, it lists as uploaded, not empty.
+    let listed = store
+        .services(&who, &ployz_store::ServicesQuery::default())
+        .unwrap();
+    let app = listed
+        .services
+        .iter()
+        .find(|listing| listing.service.name.as_str() == "app")
+        .unwrap();
+    assert_eq!(app.source, ployz_store::SourceKind::Uploaded);
     store
         .record(&id(1), &a, RunEvidence::NotExecuted("stopped".into()))
         .unwrap();

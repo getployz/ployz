@@ -79,7 +79,8 @@ function CanvasWithData() {
   const store = {
     services: services.services.map((service): StoreCanvasService => ({
       service,
-      subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
+      subtitle: service.source === "uploaded" ? "Uploaded"
+        : settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
       changeCount: serviceChanges(diff, service.id).size,
     })),
     volumes: volumes.volumes,
