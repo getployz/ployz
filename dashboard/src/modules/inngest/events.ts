@@ -91,6 +91,7 @@ export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const prCheckRequestedEvent = "pr-environments/check.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
+export const configPrCheckRequestedEvent = "config/pr-check.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -144,6 +145,15 @@ export type PrCheckRequestedEventData = {
   pullRequestKey: string;
 };
 
+/** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
+export type ConfigPrCheckRequestedEventData = {
+  organizationId: string;
+  repositoryId: number;
+  number: number;
+  /** `repositoryId:number`: one pull request's posts run one at a time. */
+  pullRequestKey: string;
+};
+
 /** A Config Store Deployment was admitted; Cloud's worker runs it. */
 export type ConfigDeploymentAdmittedEventData = {
   organizationId: string;
@@ -184,6 +194,10 @@ export const githubRepositoriesSyncRequestedEventType = eventType(
 export const organizationBillingSyncRequestedEventType = eventType(
   organizationBillingSyncRequestedEvent,
   { schema: staticSchema<OrganizationBillingSyncRequestedEventData>() },
+);
+export const configPrCheckRequestedEventType = eventType(
+  configPrCheckRequestedEvent,
+  { schema: staticSchema<ConfigPrCheckRequestedEventData>() },
 );
 export const configDeploymentAdmittedEventType = eventType(
   configDeploymentAdmittedEvent,
@@ -334,6 +348,13 @@ export function createOrganizationBillingSyncRequestedEvent(
 }
 
 /** Keyed by the Deployment, so admitting it again (a replayed request) sends nothing new. */
+export function createConfigPrCheckRequestedEvent(input: { organizationId: string; repositoryId: number; number: number }) {
+  return {
+    name: configPrCheckRequestedEvent,
+    data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies ConfigPrCheckRequestedEventData,
+  } as const;
+}
+
 export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {
   return { id: `config-deployment-admitted-${data.deploymentId}`, name: configDeploymentAdmittedEvent, data } as const;
 }
@@ -514,6 +535,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
+  | ReturnType<typeof createConfigPrCheckRequestedEvent>
   | ReturnType<typeof createConfigDeploymentStartedEvent>
   | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>

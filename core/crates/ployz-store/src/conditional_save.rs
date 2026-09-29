@@ -1,0 +1,1062 @@
+//! Conditional Saves: a PR Environment's Save into one of its Destinations that
+//! goes live with the pull request's merge.
+//!
+//! Saving records the picked rows, core's picks and what landing needs (the PR
+//! Environment's side as saved, sealed values included), so landing and a later
+//! take never read the PR Environment, which may be gone by then. A save stands
+//! while the PR Environment's Working State and the pull request's target branch
+//! are what they were; edits in the Destination never withdraw it. When the pull
+//! request closes it freezes with the merge commit if it merged and still stands,
+//! else it drops. A frozen save lands with the first push to the target branch
+//! whose head contains the merge commit (Cloud observes the ancestry): before the
+//! Deployment that push admits in its Destination, with the deploy that push waits
+//! for CI with, or at once where the push deploys nothing. A Destination that
+//! doesn't deploy the branch on push saves it at the merge.
+//!
+//! Landing, per picked row: the Destination left it alone, or has an undeployed
+//! edit of it → saved, the edit on top; it changed it live (neither its Saved nor
+//! its Working State holds the value saved against) → not saved but staged,
+//! `staged`; both → not saved, the pull request's value only a `hint` a take
+//! stages. Landed rows stay marked until the Destination's next Saved revision.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use ployz_core::RpcError;
+use ployz_core::config::{
+    BranchChanges, BranchHostnames, BranchPick, BranchRole, SavedEnvironmentIntent,
+    ServiceGitBranch, ServiceSource,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use ts_rs::TS;
+
+use crate::branch::{self, Move, MoveQuery, MoveRow, MoveView, Moved, Moving, When};
+use crate::id::{EnvironmentId, ProjectId, Revision};
+use crate::pull_request::{self, PullRequest, PullRequestRef};
+use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::storage::Tx;
+use crate::{Actor, deployment, error, policy, review, teardown};
+
+/// A Conditional Save, as a Move answers it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ConditionalSave {
+    /// Pass to [`Move::take`] to use a hint it left.
+    pub id: String,
+    #[ts(type = "number")]
+    pub pull_request: u64,
+    /// The rows it holds.
+    pub rows: Vec<String>,
+    pub state: SaveState,
+}
+
+/// Where a Conditional Save is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveState {
+    /// Waiting for the merge, with its PR Environment.
+    Standing,
+    /// Merged: waiting for a push of the merge commit.
+    Frozen,
+    /// Landed: what it left beside the Destination's own changes.
+    Landed,
+}
+
+/// How a landed row stands in the Destination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum Landed {
+    /// Staged in Working State as a change to deploy.
+    Staged,
+    /// The Destination's own edit stays; take the pull request's value to stage it.
+    Hint,
+}
+
+/// A pull request's value a landed Conditional Save left in an Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PullRequestHint {
+    /// The Conditional Save: pass to [`Move::take`].
+    pub save: String,
+    #[ts(type = "number")]
+    pub pull_request: u64,
+    /// `NODE.path`, as a Move names it.
+    pub row: String,
+    /// The pull request's value; secrets read `{"secret": true}`.
+    pub value: Value,
+    pub landed: Landed,
+}
+
+/// What Cloud checks before telling the Store about a push to a branch.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct PendingSaves {
+    /// Pull requests into the branch with a Conditional Save standing: Cloud reports
+    /// each that merged first, so its saves freeze.
+    #[ts(type = "number[]")]
+    pub standing: Vec<u64>,
+    /// Merge commits of frozen ones: Cloud reports which the new head contains
+    /// ([`crate::BranchHead::merged`]).
+    pub merged: Vec<String>,
+}
+
+/// A Conditional Save as stored.
+#[derive(Serialize, Deserialize)]
+struct Stored {
+    rows: Vec<Row>,
+    /// Core's picks, sealed values included.
+    picks: Vec<BranchPick>,
+    /// The PR Environment's side as saved; `provided` is the receiver's at landing.
+    landing: Moving,
+    /// The PR Environment.
+    from: EnvironmentSummary,
+    /// The Destination's Saved revision landing published.
+    #[serde(default)]
+    landed: Option<Revision>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Row {
+    /// Core's row key.
+    key: String,
+    /// The Destination's value the save was reviewed against (core's, redacted).
+    into: Value,
+    shown: MoveRow,
+    #[serde(default)]
+    landed: Option<Landed>,
+}
+
+struct Found {
+    environment: EnvironmentId,
+    state: SaveState,
+    number: u64,
+    stored: Stored,
+}
+
+/// Whether a Move is a Conditional Save: asked `at_merge`, or from a PR Environment
+/// with `when` omitted. A PR Environment never saves now.
+pub(crate) fn at_merge(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: Option<&EnvironmentRef>,
+    when: Option<When>,
+) -> Result<bool, RpcError> {
+    if when == Some(When::AtMerge) {
+        return Ok(true);
+    }
+    let Some(from) = from else {
+        return Ok(false);
+    };
+    let from = scope::environment(tx, who, from)?;
+    let pr = pull_request::of(tx, &from.summary.id)?.is_some();
+    if pr && when == Some(When::Now) {
+        return Err(error::invalid(
+            format!(
+                "{} is a PR Environment: its changes go live with its merge (when at_merge)",
+                from.summary.name
+            ),
+            json!({}),
+        ));
+    }
+    Ok(pr)
+}
+
+/// A Conditional Save's sides: the PR Environment and the Destination.
+struct Sides {
+    pr: Environment,
+    into: Environment,
+    facts: PullRequest,
+    row: branch::Row,
+}
+
+fn sides(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    from: Option<&EnvironmentRef>,
+    into: Option<&EnvironmentRef>,
+    lock: bool,
+) -> Result<Sides, RpcError> {
+    let Some(from) = from else {
+        return Err(error::invalid(
+            "Name the PR Environment to save from",
+            json!({}),
+        ));
+    };
+    let pr = scope::environment(tx, who, from)?;
+    let Some((repository_id, number)) = pull_request::of(tx, &pr.summary.id)? else {
+        return Err(error::invalid(
+            format!(
+                "{} is not a PR Environment: its changes save now",
+                pr.summary.name
+            ),
+            json!({}),
+        ));
+    };
+    let facts = pull_request::facts(tx, who, repository_id, number)?
+        .ok_or_else(|| error::corrupt("pull request"))?;
+    let project = project_of(tx, &pr.summary.id)?;
+    let destinations =
+        pull_request::destinations_of(tx, &project, repository_id, &facts.target_branch)?;
+    let mut names = Vec::new();
+    for id in &destinations {
+        names.push(scope::load_by_id(tx, id)?.summary.name.to_string());
+    }
+    let into = match into {
+        Some(at) => scope::environment(tx, who, at)?.summary.id,
+        None => match destinations.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                return Err(error::conflict(
+                    format!(
+                        "Nothing deploys {} now: there is nowhere to save into",
+                        facts.target_branch
+                    ),
+                    json!({}),
+                ));
+            }
+            _ => {
+                return Err(error::invalid(
+                    format!("Name the Destination: {}", names.join(", ")),
+                    json!({ "valid_children": names }),
+                ));
+            }
+        },
+    };
+    if !destinations.contains(&into) {
+        return Err(error::conflict(
+            format!(
+                "That Environment doesn't deploy {}: save into one that does",
+                facts.target_branch
+            ),
+            json!({ "valid_children": names }),
+        ));
+    }
+    let mut ids = [pr.summary.id.clone(), into];
+    ids.sort();
+    let mut loaded = Vec::new();
+    for id in &ids {
+        loaded.push(match lock {
+            true => scope::lock_id(tx, who, id)?,
+            false => scope::load_by_id(tx, id)?,
+        });
+    }
+    let (pr, into) = match loaded.remove(0) {
+        first if first.summary.id == pr.summary.id => (first, loaded.remove(0)),
+        first => (loaded.remove(0), first),
+    };
+    let row = branch::row(tx, &pr.summary.id)?.ok_or_else(|| error::corrupt("Branch"))?;
+    Ok(Sides {
+        pr,
+        into,
+        facts,
+        row,
+    })
+}
+
+/// The PR Environment's Working State into the Destination's over its base, with
+/// its Parent's deployed values on offer, as the review shows it.
+fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
+    let parent = scope::load_by_id(tx, &sides.row.parent)?;
+    let applied = deployment::head(tx, &parent)?.applied;
+    let deployed = !(applied.services.is_empty() && applied.volumes.is_empty());
+    Ok(Moving {
+        source: sides.pr.summary.id.clone(),
+        branch: sides.pr.summary.id.clone(),
+        nothing: format!("Nothing to save into {}", sides.into.summary.name),
+        from: sides.pr.working.clone(),
+        base: sides.row.base.clone(),
+        parent: deployed.then_some(applied),
+        provided: branch::used_live(&sides.into.working).into_keys().collect(),
+        from_kept: false,
+        hostnames: BranchHostnames {
+            from: branch::suffix(tx, &sides.pr)?,
+            into: branch::suffix(tx, &sides.into)?,
+        },
+        update: false,
+    })
+}
+
+pub(crate) fn view(tx: &mut dyn Tx, who: &Actor, query: &MoveQuery) -> Result<MoveView, RpcError> {
+    let sides = sides(tx, who, query.from.as_ref(), query.into.as_ref(), false)?;
+    let moving = moving(tx, &sides)?;
+    let changes = moving.compare(&sides.into.working, None)?;
+    let rows = changes
+        .rows
+        .iter()
+        .filter_map(|row| branch::move_row(&moving, &sides.pr, &sides.into, row))
+        .collect();
+    Ok(MoveView {
+        version: branch::version(&sides.into, &changes.review),
+        from: sides.pr.summary,
+        into: sides.into.summary,
+        rows,
+    })
+}
+
+/// Save a PR Environment's picked changes for one Destination, replacing its save
+/// there; `picks: []` withdraws it.
+pub(crate) fn save(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
+    let sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
+    let checks = vec![PullRequestRef {
+        repository_id: sides.facts.repository_id,
+        number: sides.facts.number,
+    }];
+    let withdraw = request.picks.as_ref().is_some_and(Vec::is_empty);
+    let replace = |tx: &mut dyn Tx| {
+        tx.execute(
+            "DELETE FROM config_conditional_save \
+             WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
+            &[
+                sides.pr.summary.id.as_str().into(),
+                sides.into.summary.id.as_str().into(),
+            ],
+        )
+    };
+    if withdraw {
+        replace(tx)?;
+        return Ok(Moved {
+            branch: Some(branch::view(tx, &sides.pr)?),
+            from: sides.pr.summary,
+            into: sides.into.summary,
+            staged: Vec::new(),
+            conditional_save: None,
+            checks,
+        });
+    }
+    if !sides.facts.open {
+        return Err(error::conflict(
+            format!("PR #{} is closed", sides.facts.number),
+            json!({}),
+        ));
+    }
+    if pull_request::closing(tx, &sides.pr.summary.id)? {
+        return Err(error::conflict(
+            format!("{} is closing", sides.pr.summary.name),
+            json!({}),
+        ));
+    }
+    if let Some(removal) = teardown::removing(tx, &sides.pr.summary.id)? {
+        return Err(teardown::being_removed(&sides.pr, &removal));
+    }
+    let moving = moving(tx, &sides)?;
+    let changes = moving.compare(&sides.into.working, None)?;
+    let version = branch::version(&sides.into, &changes.review);
+    if request
+        .version
+        .as_ref()
+        .is_some_and(|asked| *asked != version)
+    {
+        return Err(error::conflict(
+            "Changed since you reviewed: review the move again",
+            json!({ "version": version }),
+        ));
+    }
+    let picks = branch::picks(
+        &moving,
+        &sides.into.working,
+        &changes.rows,
+        request.picks.as_deref(),
+    )?;
+    // Core refuses picks it couldn't land, such as a new Service's variable without it.
+    moving.compare(&sides.into.working, Some(picks.clone()))?;
+    let picked: BTreeSet<String> = picks.iter().map(|pick| pick.key.clone()).collect();
+    let rows: Vec<Row> = changes
+        .rows
+        .iter()
+        .filter(|row| picked.contains(&row.key.to_string()))
+        .filter_map(|row| {
+            Some(Row {
+                key: row.key.to_string(),
+                into: row.into.clone(),
+                shown: branch::move_row(&moving, &sides.pr, &sides.into, row)?,
+                landed: None,
+            })
+        })
+        .collect();
+    let names = rows.iter().map(|row| row.shown.row.clone()).collect();
+    let stored = Stored {
+        rows,
+        picks,
+        landing: moving,
+        from: sides.pr.summary.clone(),
+        landed: None,
+    };
+    replace(tx)?;
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO config_conditional_save (id, organization_id, environment_id, state, \
+         pr_environment_id, repository_id, number, target_branch, working_revision, merge_commit, \
+         saved_at, saved) VALUES (?1, ?2, ?3, 'standing', ?4, ?5, ?6, ?7, ?8, '', ?9, ?10)",
+        &[
+            id.as_str().into(),
+            who.organization.as_str().into(),
+            sides.into.summary.id.as_str().into(),
+            sides.pr.summary.id.as_str().into(),
+            pull_request::repository(sides.facts.repository_id)?.into(),
+            pull_request::number(sides.facts.number)?.into(),
+            sides.facts.target_branch.as_str().into(),
+            scope::revision_param(sides.pr.summary.revision)?.into(),
+            deployment::now().into(),
+            document(&stored).as_str().into(),
+        ],
+    )?;
+    Ok(Moved {
+        branch: Some(branch::view(tx, &sides.pr)?),
+        from: sides.pr.summary,
+        into: sides.into.summary,
+        staged: Vec::new(),
+        conditional_save: Some(ConditionalSave {
+            id,
+            pull_request: sides.facts.number,
+            rows: names,
+            state: SaveState::Standing,
+        }),
+        checks,
+    })
+}
+
+/// Stage the picked hints (omitted: every one) of a landed Conditional Save in its
+/// Destination: the pull request's value replaces the Destination's own edit.
+pub(crate) fn take(tx: &mut dyn Tx, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
+    let id = request.take.as_deref().unwrap_or_default();
+    if request.from.is_some() || request.when.is_some() || request.version.is_some() {
+        return Err(error::invalid(
+            "A take names the Conditional Save, its rows and at most the Destination",
+            json!({}),
+        ));
+    }
+    let missing = || error::not_found(format!("No Conditional Save {id}"), json!({}));
+    let found = load(tx, who, id)?.ok_or_else(missing)?;
+    let mut into = scope::lock_id(tx, who, &found.environment)?;
+    if let Some(at) = &request.into
+        && scope::environment(tx, who, at)?.summary.id != into.summary.id
+    {
+        return Err(error::invalid(
+            format!("Conditional Save {id} landed in {}", into.summary.name),
+            json!({}),
+        ));
+    }
+    // Read again under the Destination's lock.
+    let found = load(tx, who, id)?.ok_or_else(missing)?;
+    let latest = review::latest_saved(tx, &into.summary.id)?.map(|saved| saved.revision);
+    let gone = || {
+        error::conflict(
+            "That value isn't there to use any more: read the diff again",
+            json!({}),
+        )
+    };
+    let mut stored = found.stored;
+    if found.state != SaveState::Landed || stored.landed != latest {
+        return Err(gone());
+    }
+    let hints: Vec<&Row> = stored
+        .rows
+        .iter()
+        .filter(|row| row.landed == Some(Landed::Hint))
+        .collect();
+    let mut chosen = BTreeSet::new();
+    match &request.picks {
+        None => chosen.extend(hints.iter().map(|row| row.key.clone())),
+        Some(asked) => {
+            for pick in asked {
+                if pick.choice.is_some() {
+                    return Err(error::invalid(
+                        format!("{}: a take lands the pull request's value", pick.row),
+                        json!({ "row": pick.row }),
+                    ));
+                }
+                let under = |name: &str| {
+                    name == pick.row
+                        || name
+                            .strip_prefix(pick.row.as_str())
+                            .is_some_and(|rest| rest.starts_with('.'))
+                };
+                let found: Vec<&&Row> = hints.iter().filter(|row| under(&row.shown.row)).collect();
+                if found.is_empty() {
+                    let names = hints.iter().map(|row| row.shown.row.as_str());
+                    return Err(error::not_found(
+                        format!("No hint named {} to take", pick.row),
+                        json!({
+                            "did_you_mean": error::did_you_mean(&pick.row, names.clone()),
+                            "valid_children": names.collect::<Vec<_>>(),
+                        }),
+                    ));
+                }
+                chosen.extend(found.into_iter().map(|row| row.key.clone()));
+            }
+        }
+    }
+    if chosen.is_empty() {
+        return Err(gone());
+    }
+    let picks: Vec<BranchPick> = stored
+        .picks
+        .iter()
+        .filter(|pick| chosen.contains(&pick.key))
+        .cloned()
+        .collect();
+    let next = against(&stored.landing, &into.working, Some(picks.clone()))?.next;
+    let staged = branch::land(
+        tx,
+        who,
+        &mut into,
+        &stored.landing.source,
+        &stored.landing.from,
+        next,
+        &picks,
+    )?;
+    for row in &mut stored.rows {
+        if chosen.contains(&row.key) {
+            row.landed = Some(Landed::Staged);
+        }
+    }
+    write(tx, id, &stored)?;
+    Ok(Moved {
+        from: stored.from.clone(),
+        into: into.summary,
+        staged,
+        branch: None,
+        conditional_save: Some(ConditionalSave {
+            id: id.to_owned(),
+            pull_request: found.number,
+            rows: stored
+                .rows
+                .iter()
+                .map(|row| row.shown.row.clone())
+                .collect(),
+            state: SaveState::Landed,
+        }),
+        checks: Vec::new(),
+    })
+}
+
+/// The pull request closed: each of its Conditional Saves freezes with the merge
+/// commit if it merged and still stands where it is still a Destination, and drops
+/// otherwise. Frozen ones land at once where nothing deploys the target branch on
+/// push, or where the head Cloud found the merge commit in
+/// ([`PullRequest::merge_reached`]) deployed nothing; the next push that contains
+/// the merge commit carries the rest. Runs before its PR Environments close.
+pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Result<(), RpcError> {
+    let rows = tx.query(
+        "SELECT id, pr_environment_id, environment_id, working_revision, target_branch \
+         FROM config_conditional_save \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3 AND state = 'standing' \
+         ORDER BY saved_at, id",
+        &[
+            who.organization.as_str().into(),
+            pull_request::repository(event.repository_id)?.into(),
+            pull_request::number(event.number)?.into(),
+        ],
+    )?;
+    let mut frozen = Vec::new();
+    for row in rows {
+        let id = row.text(0)?.to_owned();
+        let pr = environment_id(row.text(1)?)?;
+        let into = environment_id(row.text(2)?)?;
+        let environment = scope::lock_id(tx, who, &pr)?;
+        let project = project_of(tx, &pr)?;
+        let stands = match &event.merge_commit {
+            Some(_) => {
+                u64::try_from(row.int(3)?).ok() == Some(environment.summary.revision.0)
+                    && row.text(4)? == event.target_branch
+                    && !pull_request::closing(tx, &pr)?
+                    && pull_request::destinations_of(
+                        tx,
+                        &project,
+                        event.repository_id,
+                        &event.target_branch,
+                    )?
+                    .contains(&into)
+            }
+            None => false,
+        };
+        if stands {
+            tx.execute(
+                "UPDATE config_conditional_save \
+                 SET state = 'frozen', pr_environment_id = '', merge_commit = ?2 WHERE id = ?1",
+                &[
+                    id.as_str().into(),
+                    event.merge_commit.as_deref().unwrap_or_default().into(),
+                ],
+            )?;
+            frozen.push((id, into));
+        } else {
+            delete(tx, &id)?;
+        }
+    }
+    for (id, into) in frozen {
+        let mut destination = scope::lock_id(tx, who, &into)?;
+        if !deploys_on_push(tx, &into, event.repository_id, &event.target_branch)? {
+            land(tx, who, &id, &mut destination)?;
+            continue;
+        }
+        let Some(reached) = &event.merge_reached else {
+            continue;
+        };
+        let head = crate::automation::head(
+            tx,
+            &who.organization,
+            event.repository_id,
+            &event.target_branch,
+        )?;
+        if head.as_ref() != Some(reached) {
+            // A later push carries it.
+            continue;
+        }
+        // A deploy waiting for CI at that head lands it; else that head deployed
+        // nothing here, so it saves now.
+        if !wait_with(tx, &into, event, reached, &id)? {
+            land(tx, who, &id, &mut destination)?;
+        }
+    }
+    Ok(())
+}
+
+/// Attach frozen save `id` to the deploy waiting for CI at `head` in `into`.
+fn wait_with(
+    tx: &mut dyn Tx,
+    into: &EnvironmentId,
+    event: &PullRequest,
+    head: &str,
+    id: &str,
+) -> Result<bool, RpcError> {
+    let key: [crate::storage::Param<'_>; 4] = [
+        into.as_str().into(),
+        pull_request::repository(event.repository_id)?.into(),
+        event.target_branch.as_str().into(),
+        head.into(),
+    ];
+    let rows = tx.query(
+        "SELECT saves FROM config_waiting_deploy \
+         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
+        &key,
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(false);
+    };
+    let mut saves: Vec<String> =
+        serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("waiting deploy"))?;
+    saves.push(id.to_owned());
+    let [environment, repository, branch, head] = key;
+    tx.execute(
+        "UPDATE config_waiting_deploy SET saves = ?5 \
+         WHERE environment_id = ?1 AND repository_id = ?2 AND branch = ?3 AND head = ?4",
+        &[
+            environment,
+            repository,
+            branch,
+            head,
+            serde_json::to_string(&saves).expect("JSON").as_str().into(),
+        ],
+    )?;
+    Ok(true)
+}
+
+/// Whether `environment` deploys `branch` on push: a Service of its latest Saved
+/// State follows it with auto-deploy on.
+fn deploys_on_push(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    repository_id: u64,
+    branch: &str,
+) -> Result<bool, RpcError> {
+    let Some(saved) = review::latest_saved(tx, environment)? else {
+        return Ok(false);
+    };
+    for service in &saved.intent.services {
+        let follows = matches!(
+            &service.config.source,
+            ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
+                if *at == repository_id && name == branch
+        );
+        if follows && policy::load(tx, environment, &service.id)?.auto_deploy {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The frozen saves a push of `branch` carries, by Destination: those whose merge
+/// commit Cloud found in the new head, oldest first.
+pub(crate) fn carried(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: u64,
+    branch: &str,
+    merged: &[String],
+) -> Result<BTreeMap<EnvironmentId, Vec<String>>, RpcError> {
+    let mut carried: BTreeMap<EnvironmentId, Vec<String>> = BTreeMap::new();
+    if merged.is_empty() {
+        return Ok(carried);
+    }
+    let rows = tx.query(
+        "SELECT id, environment_id, merge_commit FROM config_conditional_save \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND target_branch = ?3 AND state = 'frozen' \
+         ORDER BY saved_at, id",
+        &[
+            who.organization.as_str().into(),
+            pull_request::repository(repository_id)?.into(),
+            branch.into(),
+        ],
+    )?;
+    for row in rows {
+        let commit = row.text(2)?;
+        if merged.iter().any(|merged| merged == commit) {
+            carried
+                .entry(environment_id(row.text(1)?)?)
+                .or_default()
+                .push(row.text(0)?.to_owned());
+        }
+    }
+    Ok(carried)
+}
+
+pub(crate) fn pending(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: u64,
+    branch: &str,
+) -> Result<PendingSaves, RpcError> {
+    let rows = tx.query(
+        "SELECT DISTINCT state, number, merge_commit FROM config_conditional_save \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND target_branch = ?3 \
+         AND state IN ('standing', 'frozen') ORDER BY state, number, merge_commit",
+        &[
+            who.organization.as_str().into(),
+            pull_request::repository(repository_id)?.into(),
+            branch.into(),
+        ],
+    )?;
+    let mut pending = PendingSaves::default();
+    for row in rows {
+        match row.text(0)? {
+            "standing" => {
+                let number = u64::try_from(row.int(1)?).map_err(|_| error::corrupt("number"))?;
+                if !pending.standing.contains(&number) {
+                    pending.standing.push(number);
+                }
+            }
+            _ => {
+                let commit = row.text(2)?.to_owned();
+                if !pending.merged.contains(&commit) {
+                    pending.merged.push(commit);
+                }
+            }
+        }
+    }
+    Ok(pending)
+}
+
+/// Land frozen save `id` in `destination`, whose lock the caller holds.
+pub(crate) fn land(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &str,
+    destination: &mut Environment,
+) -> Result<(), RpcError> {
+    let Some(found) = load(tx, who, id)? else {
+        return Ok(());
+    };
+    if found.state != SaveState::Frozen || found.environment != destination.summary.id {
+        return Ok(());
+    }
+    let mut stored = found.stored;
+    let Some(latest) = review::latest_saved(tx, &destination.summary.id)? else {
+        // Nothing saved there to land onto.
+        return delete(tx, id);
+    };
+    let values_in = |into: &SavedEnvironmentIntent| -> Result<BTreeMap<String, Value>, RpcError> {
+        Ok(against(&stored.landing, into, None)?
+            .rows
+            .into_iter()
+            .filter(|row| matches!(row.role, BranchRole::Move { .. }))
+            .map(|row| (row.key.to_string(), row.into))
+            .collect())
+    };
+    let in_saved = values_in(&latest.intent)?;
+    let in_working = values_in(&destination.working)?;
+    let reviewed: BTreeMap<&str, &Value> = stored
+        .rows
+        .iter()
+        .map(|row| (row.key.as_str(), &row.into))
+        .collect();
+    let same = |left: Option<&Value>, right: Option<&Value>| {
+        left.unwrap_or(&Value::Null) == right.unwrap_or(&Value::Null)
+    };
+    let unchanged = |key: &str| {
+        let reviewed = reviewed.get(key).copied();
+        same(in_saved.get(key), reviewed) || same(in_working.get(key), reviewed)
+    };
+    let lineage = |key: &str| {
+        key.split_once(':')
+            .map_or(key, |(lineage, _)| lineage)
+            .to_owned()
+    };
+    let nodes = |picks: &[&BranchPick]| -> BTreeSet<String> {
+        picks
+            .iter()
+            .filter(|pick| pick.key.ends_with(":node"))
+            .map(|pick| lineage(&pick.key))
+            .collect()
+    };
+    let all: Vec<&BranchPick> = stored.picks.iter().collect();
+    let introduced = nodes(&all);
+
+    // 1. Saved. A node the pull request introduced arrives with its variables, or not at all.
+    let to_saved: Vec<&BranchPick> = all
+        .iter()
+        .copied()
+        .filter(|pick| in_saved.contains_key(&pick.key) && unchanged(&pick.key))
+        .collect();
+    let arriving = nodes(&to_saved);
+    let saved_picks: Vec<BranchPick> = to_saved
+        .into_iter()
+        .filter(|pick| {
+            let lineage = lineage(&pick.key);
+            !introduced.contains(&lineage) || arriving.contains(&lineage)
+        })
+        .cloned()
+        .collect();
+    let saved = match saved_picks.is_empty() {
+        true => latest.intent.clone(),
+        false => against(&stored.landing, &latest.intent, Some(saved_picks.clone()))?.next,
+    };
+
+    // 2. Working: arriving nodes as Saved has them, so their ids match; then the rest,
+    // where the Destination has no staged edit of its own, with the variables Saved
+    // gained under Saved's ids.
+    let mut into = destination.working.clone();
+    into.services.extend(
+        saved
+            .services
+            .iter()
+            .filter(|node| arriving.contains(&node.lineage_id))
+            .cloned(),
+    );
+    into.volumes.extend(
+        saved
+            .volumes
+            .iter()
+            .filter(|node| arriving.contains(&node.resource_lineage_id))
+            .cloned(),
+    );
+    let working_picks: Vec<BranchPick> = all
+        .iter()
+        .filter(|pick| {
+            !introduced.contains(&lineage(&pick.key))
+                && in_working.contains_key(&pick.key)
+                && same(in_saved.get(&pick.key), in_working.get(&pick.key))
+        })
+        .map(|pick| (*pick).clone())
+        .collect();
+    let next = match working_picks.is_empty() {
+        true => into,
+        false => {
+            let next = against(&stored.landing, &into, Some(working_picks.clone()))?.next;
+            with_variable_ids_of(&saved, &into, next)
+        }
+    };
+
+    // 3. Publish, stage, then what's left of the save.
+    let (revision, _) = review::publish(tx, who, &destination.summary.id, saved, Some(&latest))?;
+    if next != destination.working {
+        let picks: Vec<BranchPick> = saved_picks.iter().chain(&working_picks).cloned().collect();
+        branch::land(
+            tx,
+            who,
+            destination,
+            &stored.landing.source,
+            &stored.landing.from,
+            next,
+            &picks,
+        )?;
+    }
+    let staged: BTreeSet<&str> = working_picks.iter().map(|pick| pick.key.as_str()).collect();
+    let left: Vec<Row> = stored
+        .rows
+        .iter()
+        .filter(|row| {
+            (in_saved.contains_key(&row.key) || in_working.contains_key(&row.key))
+                && !unchanged(&row.key)
+        })
+        .map(|row| Row {
+            landed: Some(match staged.contains(row.key.as_str()) {
+                true => Landed::Staged,
+                false => Landed::Hint,
+            }),
+            ..row.clone()
+        })
+        .collect();
+    tx.execute(
+        "DELETE FROM config_conditional_save \
+         WHERE environment_id = ?1 AND state = 'landed' AND id <> ?2",
+        &[destination.summary.id.as_str().into(), id.into()],
+    )?;
+    if left.is_empty() {
+        return delete(tx, id);
+    }
+    stored.rows = left;
+    stored.landed = Some(revision);
+    tx.execute(
+        "UPDATE config_conditional_save SET state = 'landed', saved = ?2 WHERE id = ?1",
+        &[id.into(), document(&stored).as_str().into()],
+    )?;
+    Ok(())
+}
+
+/// The pull requests' values landed saves left in `environment`, until its next
+/// Saved revision.
+pub(crate) fn hints(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Vec<PullRequestHint>, RpcError> {
+    let latest = review::latest_saved(tx, environment)?.map(|saved| saved.revision);
+    let rows = tx.query(
+        "SELECT id, number, saved FROM config_conditional_save \
+         WHERE environment_id = ?1 AND state = 'landed' ORDER BY saved_at, id",
+        &[environment.as_str().into()],
+    )?;
+    let mut hints = Vec::new();
+    for row in rows {
+        let stored = parse(row.text(2)?)?;
+        if stored.landed != latest {
+            continue;
+        }
+        let number = u64::try_from(row.int(1)?).map_err(|_| error::corrupt("number"))?;
+        for saved in stored.rows {
+            hints.push(PullRequestHint {
+                save: row.text(0)?.to_owned(),
+                pull_request: number,
+                row: saved.shown.row,
+                value: saved.shown.from,
+                landed: saved.landed.unwrap_or(Landed::Hint),
+            });
+        }
+    }
+    Ok(hints)
+}
+
+/// PR Environment `pr`'s save for Destination `into`: its ID, whether it still
+/// stands, and how many rows it holds.
+pub(crate) fn standing_in(
+    tx: &mut dyn Tx,
+    pr: &Environment,
+    into: &EnvironmentId,
+    target: &str,
+) -> Result<Option<(String, bool, usize)>, RpcError> {
+    let rows = tx.query(
+        "SELECT id, working_revision, target_branch, saved FROM config_conditional_save \
+         WHERE pr_environment_id = ?1 AND environment_id = ?2 AND state = 'standing'",
+        &[pr.summary.id.as_str().into(), into.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let stands =
+        u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0) && row.text(2)? == target;
+    Ok(Some((
+        row.text(0)?.to_owned(),
+        stands,
+        parse(row.text(3)?)?.rows.len(),
+    )))
+}
+
+/// Core's comparison of the saved side into `into`, with what `into` uses live.
+fn against(
+    landing: &Moving,
+    into: &SavedEnvironmentIntent,
+    picks: Option<Vec<BranchPick>>,
+) -> Result<BranchChanges, RpcError> {
+    let mut landing = landing.clone();
+    landing.provided = branch::used_live(into).into_keys().collect();
+    landing.compare(into, picks)
+}
+
+/// `next` with each variable `before` lacked under the ID `saved` gave it (by
+/// Service lineage and key), so Saved and Working State agree.
+fn with_variable_ids_of(
+    saved: &SavedEnvironmentIntent,
+    before: &SavedEnvironmentIntent,
+    mut next: SavedEnvironmentIntent,
+) -> SavedEnvironmentIntent {
+    for node in &mut next.services {
+        let had: BTreeSet<&str> = before
+            .services
+            .iter()
+            .find(|own| own.id == node.id)
+            .map(|own| own.variables.iter().map(|v| v.id.as_str()).collect())
+            .unwrap_or_default();
+        let Some(in_saved) = saved
+            .services
+            .iter()
+            .find(|own| own.lineage_id == node.lineage_id)
+        else {
+            continue;
+        };
+        for variable in &mut node.variables {
+            if had.contains(variable.id.as_str()) {
+                continue;
+            }
+            if let Some(own) = in_saved.variables.iter().find(|v| v.key == variable.key) {
+                variable.id.clone_from(&own.id);
+            }
+        }
+    }
+    next
+}
+
+fn load(tx: &mut dyn Tx, who: &Actor, id: &str) -> Result<Option<Found>, RpcError> {
+    let rows = tx.query(
+        "SELECT environment_id, state, number, saved FROM config_conditional_save \
+         WHERE id = ?1 AND organization_id = ?2",
+        &[id.into(), who.organization.as_str().into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    Ok(Some(Found {
+        environment: environment_id(row.text(0)?)?,
+        state: serde_json::from_value(json!(row.text(1)?))
+            .map_err(|_| error::corrupt("Conditional Save"))?,
+        number: u64::try_from(row.int(2)?).map_err(|_| error::corrupt("number"))?,
+        stored: parse(row.text(3)?)?,
+    }))
+}
+
+fn write(tx: &mut dyn Tx, id: &str, stored: &Stored) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_conditional_save SET saved = ?2 WHERE id = ?1",
+        &[id.into(), document(stored).as_str().into()],
+    )?;
+    Ok(())
+}
+
+fn delete(tx: &mut dyn Tx, id: &str) -> Result<(), RpcError> {
+    tx.execute(
+        "DELETE FROM config_conditional_save WHERE id = ?1",
+        &[id.into()],
+    )?;
+    Ok(())
+}
+
+fn project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<ProjectId, RpcError> {
+    let rows = tx.query(
+        "SELECT project_id FROM config_environment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    ProjectId::parse(
+        rows.first()
+            .ok_or_else(|| error::corrupt("Environment"))?
+            .text(0)?,
+    )
+    .map_err(|_| error::corrupt("Project ID"))
+}
+
+fn environment_id(text: &str) -> Result<EnvironmentId, RpcError> {
+    EnvironmentId::parse(text).map_err(|_| error::corrupt("Environment ID"))
+}
+
+fn document(stored: &Stored) -> String {
+    serde_json::to_string(stored).expect("a Conditional Save is JSON")
+}
+
+fn parse(text: &str) -> Result<Stored, RpcError> {
+    serde_json::from_str(text).map_err(|_| error::corrupt("Conditional Save"))
+}

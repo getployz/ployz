@@ -9,6 +9,7 @@ mod build;
 mod builders;
 pub mod catalog;
 mod command;
+mod conditional_save;
 mod deployment;
 mod domain;
 mod error;
@@ -33,7 +34,7 @@ use ployz_core::RpcError;
 pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
 pub use branch::{
     BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, Move,
-    MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved, SetupCommand,
+    MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved, SetupCommand, When,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -41,6 +42,7 @@ pub use build::{
 };
 pub use builders::{BuildOrder, BuildOrderQuery, BuildOrderView, Builder, SetBuildOrder};
 pub use command::*;
+pub use conditional_save::{ConditionalSave, Landed, PendingSaves, PullRequestHint, SaveState};
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
     RunEvidence, UploadBase, UploadedSource,
@@ -53,8 +55,8 @@ pub use domain::{
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
 pub use pull_request::{
-    Destination, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
-    PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+    Destination, DestinationSave, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
+    PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss};
@@ -555,6 +557,25 @@ impl ConfigStore {
     ) -> Result<Option<String>, RpcError> {
         self.storage
             .read(|tx| automation::head(tx, organization, repository_id, branch))
+    }
+
+    /// The Conditional Saves a push to `branch` may freeze or carry: Cloud reports
+    /// the pull requests that merged, then which merge commits the head contains.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_argument` for an ID out of range; `internal` on storage failure.
+    pub fn pending_saves(
+        &self,
+        organization: &OrganizationId,
+        repository_id: u64,
+        branch: &str,
+    ) -> Result<PendingSaves, RpcError> {
+        let who = Actor {
+            organization: organization.clone(),
+        };
+        self.storage
+            .read(|tx| conditional_save::pending(tx, &who, repository_id, branch))
     }
 
     /// [`Command::CreateBranch`].

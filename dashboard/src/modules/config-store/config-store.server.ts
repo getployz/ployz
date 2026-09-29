@@ -12,7 +12,11 @@ import { user } from "#/modules/identity/tables";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createConfigDeploymentAdmittedEvent, createConfigDeploymentStartedEvent } from "#/modules/inngest/events";
+import {
+  createConfigDeploymentAdmittedEvent,
+  createConfigDeploymentStartedEvent,
+  createConfigPrCheckRequestedEvent,
+} from "#/modules/inngest/events";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
@@ -126,6 +130,19 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   );
 });
 
+/**
+ * Ask for each pull request a Move named (a Conditional Save, for one) to have its check published again. A failed
+ * request is logged: the write stands, and the pull request's next event publishes it anyway.
+ */
+const requestChecks = Effect.fn("ConfigStore.requestChecks")(function* (organizationId: string, written: ConfigWritten) {
+  if (written.written !== "moved") return;
+  for (const check of written.checks) {
+    yield* sendInngestEvent(createConfigPrCheckRequestedEvent({ organizationId, repositoryId: check.repository_id, number: check.number })).pipe(
+      Effect.catch((error) => Effect.logWarning("The PR check was not requested.", { organizationId, check, error })),
+    );
+  }
+});
+
 /** The Store's refusal in `cause`, if it is one. */
 export const storeRefusal = (cause: unknown): StoreRefusal | null =>
   cause instanceof RpcError ? { code: cause.code, message: cause.message, details: cause.details } : null;
@@ -215,9 +232,13 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
         );
         return result;
       }
-      if (command.command !== "admit" && command.command !== "start") return result;
       // SAFETY: a write answers what it wrote.
       const written = result.value as ConfigWritten;
+      if (command.command === "move") {
+        yield* requestChecks(organizationId, written);
+        return result;
+      }
+      if (command.command !== "admit" && command.command !== "start") return result;
       const refused = yield* dispatchAdmitted(organizationId, written, read, command.command === "start");
       return refused === undefined ? result : { ok: false, refusal: refused } satisfies StoreResult<never>;
     })),

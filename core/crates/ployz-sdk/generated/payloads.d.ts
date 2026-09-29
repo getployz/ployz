@@ -145,7 +145,12 @@ head: string | null,
  * listed every one. None (a force-push, diverged or long history) deploys every
  * Service that follows the branch.
  */
-changed: Array<string> | null, };
+changed: Array<string> | null,
+/**
+ * The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
+ * Cloud found `head` is or descends from: this push carries those saves.
+ */
+merged: Array<string>, };
 
 export type BranchHostnames = { from: string, into: string, };
 
@@ -390,6 +395,16 @@ export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironme
 export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, nodeLineageId: string, encryptedRegistryUsername?: EncryptedSecretValue, encryptedRegistrySecret?: EncryptedSecretValue, nodeType: EnvironmentNodeType, configVersion: number, config: CompiledNodeConfig, };
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
+
+export type ConditionalSave = {
+/**
+ * Pass to [`Move::take`] to use a hint it left.
+ */
+id: string, pull_request: number,
+/**
+ * The rows it holds.
+ */
+rows: Array<string>, state: SaveState, };
 
 export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "remove_organization" } & RemoveOrganization | { "command": "set_pr_plan" } & SetPrPlan;
 
@@ -822,6 +837,20 @@ export type Destination = { name: EnvironmentName,
 /**
  * The PR Environment's changes a Save would move there.
  */
+changes: number,
+/**
+ * Its Conditional Save there, if any.
+ */
+save: DestinationSave | null, };
+
+export type DestinationSave = { id: string,
+/**
+ * False once the PR Environment or the target branch changed since: save again.
+ */
+standing: boolean,
+/**
+ * How many changes it holds.
+ */
 changes: number, };
 
 export type DeviceMapping = { machine_path: MachinePath, container_path: ContainerPath, cgroup_permissions: string, };
@@ -858,7 +887,12 @@ changes: Array<NodeChange>,
 /**
  * How many changes there are, counting each node and each Setting.
  */
-total_count: number, };
+total_count: number,
+/**
+ * Merged pull requests' values landed beside this Environment's own changes,
+ * until its next Saved revision.
+ */
+hints: Array<PullRequestHint>, };
 
 export type Discard = {
 /**
@@ -1286,6 +1320,8 @@ environment: EnvironmentRef,
  */
 kept: boolean, };
 
+export type Landed = "staged" | "hint";
+
 export type LiveLineageUse = { lineageId: string, keys: Array<string>, };
 
 export type LiveNode = {
@@ -1537,7 +1573,20 @@ picks?: Array<MovePick> | null,
 /**
  * Refuse with `conflict` unless the Move view is still at this version.
  */
-version?: string | null, };
+version?: string | null,
+/**
+ * `now` stages the changes; `at_merge` saves them as a Conditional Save that
+ * goes live with the pull request's merge, and `picks: []` withdraws it.
+ * Omitted: `at_merge` from a PR Environment, else `now`.
+ */
+when?: When | null,
+/**
+ * Take the picked rows (omitted: every hint) from retained Conditional Save
+ * `ID`, sealed secrets included, even once its PR Environment is gone: the
+ * pull request's value replaces the Destination's own edit, staged. `from`,
+ * `when` and `version` are then omitted.
+ */
+take?: string | null, };
 
 export type MoveChoice = {
 /**
@@ -1575,7 +1624,11 @@ from?: EnvironmentRef | null,
 /**
  * As [`Move::into`].
  */
-into?: EnvironmentRef | null, };
+into?: EnvironmentRef | null,
+/**
+ * As [`Move::when`].
+ */
+when?: When | null, };
 
 export type MoveRow = {
 /**
@@ -1631,9 +1684,18 @@ into: EnvironmentSummary,
  */
 staged: Array<string>,
 /**
- * The Branch now.
+ * The Branch now; none for a take.
  */
-branch: BranchView, };
+branch: BranchView | null,
+/**
+ * The Conditional Save now: standing after a Save at merge, the one taken
+ * from after a take; none once withdrawn and for a Move now.
+ */
+conditional_save: ConditionalSave | null,
+/**
+ * Pull requests whose GitHub check Cloud publishes again.
+ */
+checks: Array<PullRequestRef>, };
 
 export type Namespace = string;
 
@@ -1928,9 +1990,29 @@ target_branch: string, commits: number, open: boolean,
  */
 merge_commit: string | null,
 /**
+ * Once merged: the target branch's head as the Store last saw it
+ * ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
+ * already. Its Conditional Saves then land with what that push deployed.
+ */
+merge_reached: string | null,
+/**
  * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
  */
 updated: string, };
+
+export type PullRequestHint = {
+/**
+ * The Conditional Save: pass to [`Move::take`].
+ */
+save: string, pull_request: number,
+/**
+ * `NODE.path`, as a Move names it.
+ */
+row: string,
+/**
+ * The pull request's value; secrets read `{"secret": true}`.
+ */
+value: JsonValue, landed: Landed, };
 
 export type PullRequestQuery = { repository_id: number, number: number, };
 
@@ -2170,6 +2252,8 @@ export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */
 observed_at: string, };
+
+export type SaveState = "standing" | "frozen" | "landed";
 
 export type SavedEnvironmentIntent = { version: 1, environmentSlug: string, services: Array<SavedServiceIntent>, volumes: Array<SavedVolumeIntent>, };
 
@@ -2781,6 +2865,8 @@ environment: EnvironmentSummary,
  * Its Volumes, by name.
  */
 volumes: Array<VolumeListing>, };
+
+export type When = "now" | "at_merge";
 
 export type WireGuardPublicKey = Array<number>;
 
