@@ -5,6 +5,7 @@ import { VolumeNode } from "./VolumeNode";
 import { StoreServiceNode } from "./StoreServiceNode";
 import { StoreVolumeNode } from "./StoreVolumeNode";
 import { LiveServiceNode } from "./LiveServiceNode";
+import { StoreLiveNode } from "./StoreLiveNode";
 
 export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
   id: "loading-placeholder",
@@ -21,5 +22,6 @@ export const canvasNodeTypes = {
   volume: VolumeNode,
   storeVolume: StoreVolumeNode,
   live: LiveServiceNode,
+  storeLive: StoreLiveNode,
   loading: LoadingNode,
 };

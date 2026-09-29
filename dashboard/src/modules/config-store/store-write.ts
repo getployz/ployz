@@ -54,7 +54,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
 
   /**
    * Runs `work` in the Environment's queue, then waits for `refresh` so the committed state shows before the
-   * pending edit's overlay goes. Failure toasts, refetches the Environment's views (the rollback), and rejects.
+   * pending edit's overlay goes. Failure toasts, refreshes the same views (the rollback), and rejects.
    */
   function queued<T>(key: string, mutationKey: readonly unknown[], variables: Change[], work: () => Promise<T>, refresh: () => Promise<void>,
     expects: boolean, handled: readonly string[] = []) {
@@ -73,7 +73,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         if (!(error instanceof StoreRefused && (error.code === "confirmation_required" || handled.includes(error.code)))) {
           toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
         }
-        await refetchEnvironmentViews(queryClient, organizationSlug, key);
+        // What the write was refused against shows: the rollback, or a Move's fresh review.
+        await refresh();
       },
     });
     return observer.mutate(variables);
