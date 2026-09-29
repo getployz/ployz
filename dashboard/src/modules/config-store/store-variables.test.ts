@@ -27,9 +27,11 @@ it("lists a Service's variables from its rows, secrets sealed", () => {
 
 it("shows pending variable writes at once, and a new secret only as sealed", () => {
   const shown = withPendingChanges(view, [
-    { op: "set", path: "web.env.DATABASE_URL", value: { value: "postgres://db", exported: true } },
+    { op: "set", path: "web.env.DATABASE_URL", value: "postgres://db" },
+    { op: "set", path: "web.env.DATABASE_URL.exported", value: true },
     { op: "set", path: "web.env.LOG_LEVEL", value: { secret: "hunter2" } },
-    { op: "set", path: "web.env.TOKEN", value: { value: { secret: "s3cret" }, exported: false } },
+    { op: "set", path: "web.env.TOKEN", value: { secret: "s3cret" } },
+    { op: "set", path: "web.env.TOKEN.exported", value: false },
     { op: "unset", path: "web.env.API_KEY" },
     { op: "set", path: "web.registryCredential", value: { username: "ada", secret: "ghp_rotated" } },
   ]);

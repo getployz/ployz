@@ -3,7 +3,6 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::config_request;
 use serde_json::{Value, json};
 
 fn producer(owner_id: &str, lineage: &str, key: &str, value: Value) -> Value {
@@ -54,16 +53,21 @@ fn owner_producers() -> Vec<Value> {
     ]
 }
 
-fn live_values(namespace: &str) -> Result<Value, ployz_core::config::ConfigError> {
-    config_request(json!({
-        "operation": "live_values",
-        "value": {
-            "owner": {"namespace": namespace, "producers": owner_producers()},
-            "lineages": [
-                {"lineageId": "api", "keys": ["PLOYZ_PRIVATE_DOMAIN", "DATABASE_URL", "TOKEN", "PLOYZ_PUBLIC_DOMAIN", "UNSET"]},
-                {"lineageId": "gone", "keys": ["URL"]}
-            ]
-        }
+/// Core's live values for a JSON input, as JSON.
+fn live(input: Value) -> Value {
+    serde_json::to_value(ployz_core::config::live_values(
+        serde_json::from_value(input).unwrap(),
+    ))
+    .unwrap()
+}
+
+fn live_values(namespace: &str) -> Value {
+    live(json!({
+        "owner": {"namespace": namespace, "producers": owner_producers()},
+        "lineages": [
+            {"lineageId": "api", "keys": ["PLOYZ_PRIVATE_DOMAIN", "DATABASE_URL", "TOKEN", "PLOYZ_PUBLIC_DOMAIN", "UNSET"]},
+            {"lineageId": "gone", "keys": ["URL"]}
+        ]
     }))
 }
 
@@ -85,16 +89,16 @@ fn resolver_producer(frozen: &Value) -> Value {
 
 fn resolve(producers: &[Value], part: Value) -> Value {
     let producers: Vec<Value> = producers.iter().map(resolver_producer).collect();
-    config_request(json!({
-        "operation": "resolve_variables",
-        "value": {"parts": [part], "selfOwnerId": "branch-web", "producers": producers}
-    }))
-    .unwrap()
+    let input = serde_json::from_value(
+        json!({"parts": [part], "selfOwnerId": "branch-web", "producers": producers}),
+    )
+    .unwrap();
+    serde_json::to_value(ployz_core::config::resolve_variables(&input)).unwrap()
 }
 
 #[test]
 fn branch_resolves_live_values_in_the_owner_scope() {
-    let live = live_values("shop").unwrap();
+    let live = live_values("shop");
     // The Branch has its own copy of the db lineage the Live api references.
     let mut producers = vec![producer(
         "branch-db",
@@ -131,26 +135,14 @@ fn branch_resolves_live_values_in_the_owner_scope() {
 }
 
 #[test]
-fn owner_namespace_must_be_a_namespace() {
-    for namespace in ["Not_A_Namespace", "", "ployz-system"] {
-        let error = live_values(namespace).unwrap_err();
-        assert_eq!(error.path, "owner.namespace");
-    }
-}
-
-#[test]
 fn an_address_the_owner_uses_live_keeps_its_namespace() {
-    let live = config_request(json!({
-        "operation": "live_values",
-        "value": {
-            "owner": {"namespace": "shop-staging", "producers": [
-                producer("staging-api", "api", "PLOYZ_PRIVATE_DOMAIN", literal("api.internal")),
-                producer("prod-db", "db", "PLOYZ_PRIVATE_DOMAIN", literal("db.shop-production.internal")),
-            ]},
-            "lineages": [{"lineageId": "api", "keys": ["PLOYZ_PRIVATE_DOMAIN"]}]
-        }
-    }))
-    .unwrap();
+    let live = live(json!({
+        "owner": {"namespace": "shop-staging", "producers": [
+            producer("staging-api", "api", "PLOYZ_PRIVATE_DOMAIN", literal("api.internal")),
+            producer("prod-db", "db", "PLOYZ_PRIVATE_DOMAIN", literal("db.shop-production.internal")),
+        ]},
+        "lineages": [{"lineageId": "api", "keys": ["PLOYZ_PRIVATE_DOMAIN"]}]
+    }));
     let domains: Vec<&Value> = live["producers"]
         .as_array()
         .unwrap()

@@ -33,7 +33,7 @@ it("groups the Store's review by node, labelling rows from the catalog and disca
   expect(volume).toMatchObject({ nodeType: "volume", lifecycle: "create", canDiscard: false, changeCount: 1, rows: [] });
 });
 
-it("reads a pending node as its Deployment does, and a vanished runner's node as needing a look", () => {
+it("reads a pending node as its Deployment does, and a vanished runner's node as Unknown, never Failed", () => {
   expect(nodeLight("pending", "queued")).toBe("queued");
   expect(nodeLight("pending", "running")).toBe("deploying");
   expect(nodeLight("pending", "cancelled")).toBe("not_applied");
@@ -41,7 +41,7 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("unchanged", "failed")).toBe("deployed");
   expect(nodeLight("failed", "failed")).toBe("failed");
   expect(nodeLight("not_attempted", "failed")).toBe("not_applied");
-  expect(nodeLight("unknown", "unknown")).toBe("failed");
+  expect(nodeLight("unknown", "unknown")).toBe("unknown");
 });
 
 it("offers retry only after a Deployment ended without applying, start while queued, cancel before it ends", () => {

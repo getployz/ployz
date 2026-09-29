@@ -415,11 +415,12 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
     let production = EnvironmentName::parse("production").unwrap();
     assert_eq!(
         made.branch.live,
-        // db mounts the data Volume: the Branch writes production's real data.
+        // db mounts the data Volume: the Branch writes production's real data; web reads it.
         [LiveNode {
             name: "db".into(),
             owner: Some(production.clone()),
             data: true,
+            used_by: vec!["web".into()],
         }]
     );
     // A live reference reads, and is written, by the name where it runs.

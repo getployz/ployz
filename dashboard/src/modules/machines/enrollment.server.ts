@@ -38,6 +38,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -488,18 +489,45 @@ export const completeMachineEnrollment = Effect.fn(
       yield* recordJoined(input.token, machineId);
       return { machineId };
     }
-    yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
+    const founded = yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );
     yield* recordJoined(input.token, machineId);
+    // ponytail: best effort and once; a completion retried after this commit, or a crash here, deploys nothing (Deploy does).
+    if (founded) {
+      yield* deployPublished(token.organizationId).pipe(
+        Effect.catch((error) => Effect.logWarning("Deploying published Environments to the first Server failed; enrollment continues.", error)),
+      );
+    }
     return { machineId };
   },
 );
 
-/** Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current. */
+/**
+ * The Organization's first Server joined: deploy every Environment with published (Saved) state to it, as its Deploy
+ * button would. A refusal (a Deploy that would delete data asks first) leaves that Environment for the user.
+ */
+const deployPublished = Effect.fn("MachineEnrollment.deployPublished")(function* (organizationId: string) {
+  const { projects } = yield* readStore(organizationId, { query: "projects" });
+  const environments = projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment })));
+  yield* Effect.forEach(environments, (environment) => Effect.gen(function* () {
+    const diff = yield* readStore(organizationId, { query: "diff", environment });
+    if (diff.saved === null) return;
+    // No member admits it, and nothing uploads.
+    const result = yield* callStore(organizationId, null, { operation: "write", command: {
+      command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: false, accept_volume_loss: [],
+    } });
+    if (!result.ok) yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
+  }), { discard: true });
+});
+
+/**
+ * Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current; true
+ * when this call made it the founder.
+ */
 const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
   organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue,
 ) {
@@ -515,10 +543,10 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
   if (pairing.founderMachineId !== null && pairing.founderMachineId !== machineId) {
     return yield* new Conflict({ message: "The Organization is already ready on another Machine." });
   }
-  if (pairing.founderMachineId === null) {
-    yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: new Date() })
-      .where(eq(schemaOrganizationPairing.organizationId, organizationId));
-  }
+  if (pairing.founderMachineId !== null) return false;
+  yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: new Date() })
+    .where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  return true;
 });
 
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(

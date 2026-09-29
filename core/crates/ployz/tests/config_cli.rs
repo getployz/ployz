@@ -754,7 +754,10 @@ fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
         let diff = ok(store, &["diff"]);
         let nginx = &diff["changes"][0];
         assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
-        assert_eq!(nginx["settings"][0]["path"], json!("nginx.preDeployCommand"));
+        assert_eq!(
+            nginx["settings"][0]["path"],
+            json!("nginx.preDeployCommand")
+        );
         ok(store, &["discard", "nginx.preDeployCommand"]);
         let diff = ok(store, &["diff"]);
         assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");

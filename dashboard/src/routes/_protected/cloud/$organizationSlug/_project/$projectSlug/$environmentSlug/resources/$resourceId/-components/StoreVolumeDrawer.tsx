@@ -9,10 +9,12 @@ import { Input } from "#/components/ui/input";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Separator } from "#/components/ui/separator";
-import { diffQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { diffQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError } from "#/modules/config-store/store-volumes";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
+import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
@@ -26,9 +28,10 @@ type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string
 export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;
-  const volumes = requireView(useStoreView(organizationSlug, volumesQuery(store))).volumes;
-  const services = requireView(useStoreView(organizationSlug, servicesQuery(store))).services;
-  const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const views = useStoreViews(organizationSlug, [volumesQuery(store), servicesQuery(store), diffQuery(store)] as const);
+  const volumes = requireView(views[0]).volumes;
+  const services = requireView(views[1]).services;
+  const diff = requireView(views[2]);
   const volume = volumes.find((candidate) => candidate.id === params.resourceId);
   // Removed while open (a new Volume's removal, or from the CLI): back to the canvas.
   if (!volume) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
@@ -53,17 +56,19 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
                   <EmptyDescription>Discard the delete from the staged changes to manage mounts again.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
-            ) : <StoreVolumeMounts state={state} services={services} diff={diff} />}
+            ) : <StoreVolumeMounts state={state} services={services} volumes={volumes} diff={diff} />}
           </div>
         </section>
         <div className="py-8"><Separator /></div>
-        <StoreVolumeDanger state={state} params={params} />
+        <StoreVolumeDanger state={state} params={params} version={diff.version} />
       </div>
     </div>
   );
 }
 
-function StoreVolumeMounts({ state, services, diff }: { state: StoreVolume; services: readonly ServiceListing[]; diff: DiffView }) {
+function StoreVolumeMounts({ state, services, volumes, diff }: {
+  state: StoreVolume; services: readonly ServiceListing[]; volumes: readonly VolumeListing[]; diff: DiffView;
+}) {
   const writer = useStoreWriter(state.organizationSlug);
   const [adding, setAdding] = useState<{ service: string; path: string; error: string | null }>({ service: "", path: "/data", error: null });
   const mounted = new Set(state.volume.mounts.map((mount) => mount.service));
@@ -74,7 +79,11 @@ function StoreVolumeMounts({ state, services, diff }: { state: StoreVolume; serv
     writer.edit({ environment: state.environment, changes: [mountChange(service, state.volume.name, path)] });
 
   function attach() {
-    const error = adding.service === "" ? "Select a service." : mountPathError(adding.path);
+    // Another Volume at the same path in that Service would hide one of them.
+    const taken = volumes.some((other) => other.id !== state.volume.id
+      && other.mounts.some((mount) => mount.service === adding.service && mount.path === adding.path));
+    const error = adding.service === "" ? "Select a service."
+      : mountPathError(adding.path) ?? (taken ? `Another volume is already mounted at ${adding.path}.` : null);
     if (error) return setAdding({ ...adding, error });
     edit(adding.service, adding.path);
     setAdding({ service: "", path: "/data", error: null });
@@ -178,9 +187,12 @@ function StoreMountItem({ mount, onPath, onDetach }: { mount: Mount; onPath: (pa
   );
 }
 
-function StoreVolumeDanger({ state, params }: { state: StoreVolume; params: VolumeResourceRouteParams }) {
+function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; params: VolumeResourceRouteParams; version: string }) {
   const writer = useStoreWriter(state.organizationSlug);
   const navigate = useNavigate();
+  // Its data goes with the Deploy that removes it, which asks first; that Deploy opens its page.
+  const actions = useStoreChangeActions(state.organizationSlug, state.environment, version,
+    (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const { volume } = state;
   const removing = volume.change === "delete";
   const mounts = volume.mounts.length;
@@ -196,20 +208,30 @@ function StoreVolumeDanger({ state, params }: { state: StoreVolume; params: Volu
       <h2 id="volume-danger-heading" className="text-lg font-semibold text-destructive">Danger</h2>
       <div className="mt-4 flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
         <div className="min-w-0">
-          <div className="text-sm font-semibold text-destructive">{removing ? "Deleted on your next deploy" : "Delete this volume"}</div>
+          <div className="text-sm font-semibold text-destructive">
+            {removing && volume.deployed ? "Delete its data" : removing ? "Deleted on your next deploy" : "Delete this volume"}
+          </div>
           <p className="mt-1 text-sm text-destructive/85">
-            {volume.deployed
+            {removing && volume.deployed
+              ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+              : volume.deployed
               ? "Its data on your servers goes with it. Deploy asks you to confirm first."
               : mounts > 0 ? `Deleted on your next deploy, with its ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Deleted on your next deploy."}
           </p>
         </div>
-        {removing ? null : (
+        {removing && volume.deployed ? (
+          <Button variant="destructive" className="shrink-0" onClick={actions.deploy}>
+            <Trash2Icon data-icon="inline-start" />
+            Delete data
+          </Button>
+        ) : removing ? null : (
           <Button variant="destructive" className="shrink-0" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />
             Delete volume
           </Button>
         )}
       </div>
+      {actions.dialog}
     </section>
   );
 }
