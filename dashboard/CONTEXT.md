@@ -92,6 +92,14 @@ _Avoid_: Free plan, Teams plan, plan slug, subscription tier
 Whether an Organization may link a custom hostname to a Service. Granted when the Cloud is self-hosted or the Organization holds an active Billing Plan, judged from Cloud's cached subscription state, never from a live billing call. It is the only plan-gated capability at the first stable release.
 _Avoid_: Entitlement, feature flag, paid feature check
 
+**Organization Token**:
+A Cloud-owned bearer (`PLOYZ_TOKEN`) made by a member with `ployz token new`. It acts as that member in the one Organization it was made in, until it expires, is revoked, or the member leaves. Only its hash is stored; the secret is shown once.
+_Avoid_: API key, personal access token, CLI token
+
+**Signed-in Device**:
+A `ployz` CLI session a member approved in the browser. It acts in its own active Organization, which `ployz org use` moves among the member's Organizations. Logout or `ployz token rm` ends it at once.
+_Avoid_: CLI login, device token
+
 **Cloud Lens**:
 Cloud's role after bootstrap is to host the Organization's Config Store and to observe, display, and request operations against the Organization Cluster. Cloud is not the source of runtime truth and must not be the only authority needed to recover the cluster.
 _Avoid_: Cloud control plane, cloud authority, hosted source of truth

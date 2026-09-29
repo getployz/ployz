@@ -6,6 +6,7 @@ use clap_complete::{Shell, generate};
 
 use crate::failure::{Failure, USAGE_EXIT};
 
+pub(crate) mod account;
 pub(crate) mod build;
 pub(crate) mod cloud;
 pub(crate) mod context;
@@ -229,6 +230,7 @@ pub(crate) enum Json {
 fn handler_for(path: &str) -> Option<(Handler, Json)> {
     let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
     match (group, rest) {
+        ("billing", rest) => account::billing_handler(rest),
         ("build", "") => Some((build::build, Json::Refused)),
         ("completion", "") => Some((completion, Json::Refused)),
         ("cloud", rest) => cloud::handler(rest),
@@ -237,8 +239,10 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
         ("machine", rest) => machine::handler(rest),
+        ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
         ("service", rest) => service::handler(rest),
+        ("token", rest) => account::token_handler(rest),
         ("volume", rest) => volume::handler(rest),
         _ => None,
     }

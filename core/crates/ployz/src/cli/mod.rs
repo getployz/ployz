@@ -10,6 +10,7 @@ pub mod env {
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
     pub const DAEMON_VERSION: &str = "PLOYZ_DAEMON_VERSION";
+    pub const TOKEN: &str = "PLOYZ_TOKEN";
 }
 
 #[must_use]
@@ -21,6 +22,7 @@ pub fn command() -> Command {
                 .global(true)
                 .help("Print the result as one JSON object on stdout"),
         )
+        .subcommand(handlers::account::billing_command())
         .subcommand(handlers::build::command())
         .subcommand(handlers::cloud::command())
         .subcommand(handlers::context::command())
@@ -28,8 +30,10 @@ pub fn command() -> Command {
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::machine::command())
+        .subcommand(handlers::account::org_command())
         .subcommand(handlers::project::command())
         .subcommand(handlers::service::command())
+        .subcommand(handlers::account::token_command())
         .subcommand(handlers::volume::command())
         .subcommand(completion())
 }

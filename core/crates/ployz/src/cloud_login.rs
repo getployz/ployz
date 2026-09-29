@@ -14,6 +14,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// The Cloud a sign-in goes to when none is named or stored.
+pub(crate) const DEFAULT_CLOUD: &str = "ployz.dev";
 /// Cloud's device-authorization client id for this CLI.
 const CLIENT_ID: &str = "ployz-cli";
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -27,7 +29,7 @@ const SLOW_DOWN: Duration = Duration::from_secs(5);
 pub(crate) enum LoginError {
     #[error("could not reach Cloud at {cloud}: {detail}")]
     Unreachable { cloud: String, detail: String },
-    #[error("Cloud at {0} does not offer CLI sign-in")]
+    #[error("Cloud at {0} does not offer CLI access")]
     Unsupported(String),
     #[error("Cloud answered HTTP {status}: {body}")]
     Status { status: u16, body: String },
@@ -55,12 +57,38 @@ pub(crate) enum LoginError {
     Ended,
     #[error("sign-in is waiting for approval at {url}")]
     AwaitingApproval { url: String },
+    #[error(
+        "Cloud refused PLOYZ_TOKEN: it is unknown, revoked or expired, or its maker left its Organization"
+    )]
+    TokenRefused,
+    #[error("this sign-in's Organization {0} is no longer one of yours")]
+    NotMember(String),
+    #[error("PLOYZ_TOKEN acts only in the Organization it was made in")]
+    TokenBound,
+    #[error("no Organization {0} of yours")]
+    UnknownOrganization(String),
+    #[error("no token or signed-in device {0} in this Organization")]
+    UnknownCredential(String),
+    #[error("Cloud at {0} has no billing: it is self-hosted")]
+    NoBilling(String),
+    #[error("this Organization already holds Pro")]
+    AlreadyPro,
 }
 
 /// A bearer that never prints.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(transparent)]
-struct Secret(String);
+pub(crate) struct Secret(String);
+
+impl Secret {
+    pub(crate) fn new(secret: String) -> Self {
+        Self(secret)
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
 
 impl std::fmt::Debug for Secret {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -110,6 +138,12 @@ pub(crate) struct SignedIn {
     token: Secret,
     pub(crate) account: Account,
     pub(crate) organization: Organization,
+}
+
+impl SignedIn {
+    pub(crate) fn token(&self) -> &Secret {
+        &self.token
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -174,6 +208,20 @@ impl CredentialStore {
         }
     }
 
+    /// Record the Organization a signed-in device now acts in.
+    pub(crate) fn set_organization(
+        &self,
+        signed_in: &SignedIn,
+        organization: Organization,
+    ) -> Result<SignedIn, LoginError> {
+        let signed_in = SignedIn {
+            organization,
+            ..signed_in.clone()
+        };
+        self.save(&Stored::SignedIn(signed_in.clone()))?;
+        Ok(signed_in)
+    }
+
     /// The Cloud the stored sign-in or pending code belongs to.
     pub(crate) fn cloud(&self) -> Result<Option<String>, LoginError> {
         Ok(self.load()?.map(|stored| match stored {
@@ -190,11 +238,6 @@ impl CredentialStore {
 ///
 /// Returns [`LoginError::SignedOut`], [`LoginError::Expired`] or [`LoginError::Denied`]
 /// when there is nothing to act with, or a Cloud or store failure.
-// TODO(#1236): Cloud-backed commands call this for their bearer.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Cloud-backed commands land after sign-in")
-)]
 pub(crate) async fn signed_in(store: &CredentialStore) -> Result<SignedIn, LoginError> {
     match store.load()? {
         None => Err(LoginError::SignedOut),
@@ -506,19 +549,21 @@ async fn ensure_success(response: reqwest::Response) -> Result<Vec<u8>, LoginErr
     }
 }
 
-fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T, LoginError> {
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(body: Vec<u8>) -> Result<T, LoginError> {
     serde_json::from_slice(&body).map_err(|error| LoginError::Reply(error.to_string()))
 }
 
-fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
+pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     LoginError::Unreachable {
         cloud: cloud.to_owned(),
         detail: crate::setup_retry::detail(&error.without_url()),
     }
 }
 
-fn http() -> Result<reqwest::Client, LoginError> {
+/// Cloud's client; its User-Agent marks the sessions it starts as signed-in devices.
+pub(crate) fn http() -> Result<reqwest::Client, LoginError> {
     reqwest::Client::builder()
+        .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
@@ -532,7 +577,7 @@ fn now() -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::{
         io::{BufRead, BufReader, Read, Write},
         net::TcpListener,
@@ -542,7 +587,7 @@ mod tests {
     use super::*;
 
     /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
-    fn fake_cloud(
+    pub(crate) fn fake_cloud(
         reply: impl Fn(&str, &str) -> (u16, serde_json::Value) + Send + 'static,
     ) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
