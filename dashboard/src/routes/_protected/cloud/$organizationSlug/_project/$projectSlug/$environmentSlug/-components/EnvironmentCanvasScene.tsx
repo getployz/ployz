@@ -20,7 +20,7 @@ import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
 import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
@@ -63,8 +63,8 @@ function CanvasWithData() {
   const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store: ref, environmentId, organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   // The branch view is refused unless this is a Branch.
-  const [servicesResult, settingsResult, diffResult, volumesResult, branch] = useStoreViews(organizationSlug,
-    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref)] as const);
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
   const services = requireView(servicesResult);
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
@@ -82,6 +82,7 @@ function CanvasWithData() {
       service,
       subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
       changeCount: serviceChanges(diff, service.id).size,
+      runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
     })),
     volumes: volumes.volumes,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],

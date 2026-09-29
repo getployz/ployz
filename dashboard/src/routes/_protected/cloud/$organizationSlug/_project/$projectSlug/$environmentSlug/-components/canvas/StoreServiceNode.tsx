@@ -15,24 +15,36 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon, getServiceStatusClasses } from "./service-node-helpers";
 import type { StoreCanvasService } from "./types";
+import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { useRuntimeService } from "#/providers/runtime-provider";
+import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 
-/** What a Service's card says, from what the next Deploy does to it. */
-export function storeServiceStatus(service: ServiceListing, changeCount: number) {
+/**
+ * What a Service's card says, from what the next Deploy does to it; else how it runs (`runtime`, null before any
+ * runtime evidence of it).
+ */
+export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null) {
   if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
   if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
   if (service.change === "update") return { state: "changed", text: `${changeCount} ${changeCount === 1 ? "change" : "changes"}`, badge: null } as const;
-  return { state: undefined, text: service.source === "empty" ? "Empty" : "Deployed", badge: null } as const;
+  if (service.source === "empty") return { state: undefined, text: "Empty", badge: null } as const;
+  if (!runtime) return { state: undefined, text: "Deployed", badge: null } as const;
+  const containers = `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"}`;
+  return serviceOnline(runtime)
+    ? { state: "success", text: `Online · ${containers}`, badge: null } as const
+    : { state: "warning", text: `Not running · ${containers}`, badge: null } as const;
 }
 
 /** A Config Store Service on the canvas and in its phone list: opens its drawer, right-click removes it. */
-export function StoreServiceCard({ service, subtitle, changeCount, selected, className }: StoreCanvasService & {
+export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdentity, selected, className }: StoreCanvasService & {
   selected: boolean;
   className: string;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service.name);
-  const status = storeServiceStatus(service, changeCount);
+  const { runtime } = useRuntimeService(runtimeIdentity ?? "");
+  const status = storeServiceStatus(service, changeCount, runtime);
   const dot = getServiceStatusClasses(status.state);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);

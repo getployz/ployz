@@ -10,6 +10,8 @@ export type StoreCanvasService = {
   subtitle: string | null;
   /** How many of its Settings the next Deploy changes. */
   changeCount: number;
+  /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */
+  runtimeIdentity: string | null;
 };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {

@@ -1,4 +1,16 @@
-import { type RuntimeLensStatus, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { useLiveQuery } from "@tanstack/react-db";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { getRuntimeCollections, isIncompleteObservation, type RuntimeLensStatus, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { useRuntimeStatus } from "#/providers/runtime-provider";
+
+/** Runtime evidence for services-online summaries; incomplete evidence counts as unavailable. */
+export function useRuntimeServices(organizationSlug: string) {
+  const scope = useCollectionScope();
+  const { data: runtimeServices } = useLiveQuery(getRuntimeCollections(organizationSlug, scope).services);
+  const { lensStatus, incompleteIds } = useRuntimeStatus();
+  const runtimeStatus: RuntimeLensStatus = isIncompleteObservation(incompleteIds) ? "unavailable" : lensStatus;
+  return { runtimeServices, runtimeStatus };
+}
 
 /** A Service is online when a running container is healthy or has no health check. */
 export const serviceOnline = (runtime: Pick<RuntimeServiceRecord, "containers"> | null | undefined) =>
