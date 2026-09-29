@@ -183,6 +183,46 @@ impl ConfigStore {
         self.run(move || store.record(&deployment, &runner, RunEvidence::Abandoned))
             .await
     }
+
+    /// Apply a `SystemEvent` Cloud observed of GitHub for the given Organization;
+    /// resolves to what it did (`ConfigWritten`, `automated`). Only Cloud's GitHub
+    /// workers call this.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a branch head's base is stale, or a storage error.
+    #[napi]
+    pub async fn system(
+        &self,
+        organization: String,
+        event: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let event: ployz_store::SystemEvent = serde_json::from_value(event)
+            .map_err(|_| invalid_argument("Expected a system event"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.system(&who.organization, &event))
+            .await
+    }
+
+    /// The head of a GitHub branch the Store last saw for the Organization, or null:
+    /// what Cloud compares a new head from. Only Cloud's GitHub workers call this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn branch_head(
+        &self,
+        organization: String,
+        repository_id: i64,
+        branch: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let repository_id = u64::try_from(repository_id)
+            .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.branch_head(&who.organization, repository_id, &branch))
+            .await
+    }
 }
 
 impl ConfigStore {

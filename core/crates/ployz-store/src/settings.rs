@@ -16,6 +16,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::git::GitSetting;
+use crate::policy::{Policy, PolicySetting};
 use crate::trusted::Trusted;
 use crate::variables::VariableKey;
 
@@ -45,11 +46,13 @@ pub(crate) enum ServiceSetting {
     StartCommand,
     /// A Git-backed Service's source and build.
     Git(GitSetting),
+    /// A Git-backed Service's Deployment Policy; see [`crate::policy`].
+    Policy(PolicySetting),
 }
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 18] = [
         Self::CpuLimit,
         Self::Image,
         Self::MaxRetries,
@@ -65,6 +68,9 @@ impl ServiceSetting {
         Self::Git(GitSetting::BuildMethod),
         Self::Git(GitSetting::DockerfilePath),
         Self::Git(GitSetting::BuildCommand),
+        Self::Policy(PolicySetting::AutoDeploy),
+        Self::Policy(PolicySetting::WaitForCi),
+        Self::Policy(PolicySetting::WatchPaths),
     ];
 
     pub(crate) const fn name(self) -> &'static str {
@@ -79,6 +85,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
             Self::Git(git) => git.name(),
+            Self::Policy(policy) => policy.name(),
         }
     }
 
@@ -95,6 +102,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
             Self::Git(git) => git.label(),
+            Self::Policy(policy) => policy.label(),
         }
     }
 
@@ -114,6 +122,7 @@ impl ServiceSetting {
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
             Self::Git(git) => git.description(),
+            Self::Policy(policy) => policy.description(),
         }
     }
 
@@ -123,6 +132,7 @@ impl ServiceSetting {
             Self::Image => "source.image",
             Self::RegistryCredential => "source.credentials",
             Self::Git(git) => git.field(),
+            Self::Policy(policy) => policy.name(),
             Self::CpuLimit
             | Self::MaxRetries
             | Self::MemLimit
@@ -144,7 +154,7 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Git(_) => Apply::Staged,
-            Self::RegistryCredential => Apply::Immediate,
+            Self::RegistryCredential | Self::Policy(_) => Apply::Immediate,
         }
     }
 
@@ -161,6 +171,7 @@ impl ServiceSetting {
             Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
             Self::Git(git) => git.default(),
+            Self::Policy(policy) => policy.default(),
         }
     }
 
@@ -189,6 +200,7 @@ impl ServiceSetting {
                 "additionalProperties": false,
             }),
             Self::Git(git) => git.expected(),
+            Self::Policy(policy) => policy.expected(),
         }
     }
 
@@ -205,6 +217,7 @@ impl ServiceSetting {
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
             Self::Git(git) => git.examples(),
+            Self::Policy(policy) => policy.examples(),
         }
     }
 
@@ -220,6 +233,7 @@ impl ServiceSetting {
                 GitSetting::BuildMethod | GitSetting::DockerfilePath | GitSetting::BuildCommand,
             ) => !matches!(config.source, ServiceSource::Image { .. }),
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
+            Self::Policy(_) => PolicySetting::applies(config),
             Self::CpuLimit
             | Self::MaxRetries
             | Self::MemLimit
@@ -230,9 +244,13 @@ impl ServiceSetting {
         }
     }
 
-    pub(crate) fn value(self, config: &AuthoredServiceConfig) -> Value {
+    /// Its value for a Service with `config` and Deployment Policy `policy`.
+    pub(crate) fn value(self, config: &AuthoredServiceConfig, policy: &Policy) -> Value {
         if let Self::Git(git) = self {
             return git.value(config);
+        }
+        if let Self::Policy(setting) = self {
+            return setting.value(policy);
         }
         match (self, &config.source) {
             (Self::Image, ServiceSource::Image { image, .. }) => return json!(image),
@@ -260,6 +278,7 @@ impl ServiceSetting {
                 _ => Value::Null,
             },
             Self::Image
+            | Self::Policy(_)
             | Self::CpuLimit
             | Self::MaxRetries
             | Self::MemLimit
@@ -285,6 +304,9 @@ impl ServiceSetting {
         if let Self::Git(git) = self {
             return git.set(config, value, trusted);
         }
+        if let Self::Policy(_) = self {
+            return Err(self.invalid("the Deployment Policy is not in the config"));
+        }
         if self == Self::Image {
             // An empty Service takes an image as its source.
             let credentials = match &config.source {
@@ -305,6 +327,9 @@ impl ServiceSetting {
     pub(crate) fn unset(self, config: &mut AuthoredServiceConfig) -> Result<(), RpcError> {
         if let Self::Git(git) = self {
             return git.unset(config);
+        }
+        if let Self::Policy(_) = self {
+            return Err(self.invalid("the Deployment Policy is not in the config"));
         }
         match (self, &mut config.source) {
             (Self::Image, _) => {

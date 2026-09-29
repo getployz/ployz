@@ -4,6 +4,18 @@
       "additionalProperties": false,
       "description": "A Service's Settings. `get SERVICE --json` prints them as `values`; `set SERVICE --patch` takes the same shape.",
       "properties": {
+        "autoDeploy": {
+          "default": true,
+          "description": "Deploy the Environment's Saved State when its branch gets a new commit. Takes effect at once.",
+          "examples": [
+            false
+          ],
+          "title": "Auto-deploy",
+          "type": "boolean",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "branch": {
           "description": "The branch the Service builds. Ployz checks it exists.",
           "examples": [
@@ -313,6 +325,39 @@
           "title": "Start command",
           "type": "string",
           "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "waitForCi": {
+          "default": false,
+          "description": "Hold an auto-deploy until every GitHub check suite of the commit passes. Takes effect at once.",
+          "examples": [
+            true
+          ],
+          "title": "Wait for CI",
+          "type": "boolean",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
+        "watchPaths": {
+          "default": [],
+          "description": "Gitignore-style patterns of repository paths a push must change to auto-deploy; the last matching pattern wins and ! excludes. Empty means any change. Takes effect at once.",
+          "examples": [
+            [
+              "apps/web/**",
+              "!**/*.md"
+            ]
+          ],
+          "items": {
+            "maxLength": 255,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 50,
+          "title": "Watch paths",
+          "type": "array",
+          "x-ployz-apply": "immediate",
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         }
