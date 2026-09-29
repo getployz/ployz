@@ -25,7 +25,7 @@ use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
 use crate::review;
-use crate::scope::{self, EnvironmentRef};
+use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, build, domain, registry};
 
@@ -38,6 +38,10 @@ pub enum SystemEvent {
     BranchHead(BranchHead),
     /// A check suite's current result.
     CheckSuite(CheckSuite),
+    /// A pull request's current facts.
+    PullRequest(crate::PullRequest),
+    /// Time passed: close what is due.
+    Sweep(crate::Sweep),
 }
 
 /// A branch's head as Cloud read it just now, and what changed since `base`.
@@ -89,6 +93,13 @@ pub struct Automated {
     pub waiting: Vec<EnvironmentId>,
     /// Environments that would have deployed but can't, and why.
     pub skipped: Vec<Skipped>,
+    /// Branches the Store is closing that still run on the Servers: Cloud admits
+    /// their removal (`Admit { remove }`) with the runtime evidence it gathers.
+    pub closing: Vec<EnvironmentSummary>,
+    /// Environments deleted: nothing of them runs on the Servers any more.
+    pub removed: Vec<EnvironmentSummary>,
+    /// Pull requests whose GitHub check Cloud publishes again.
+    pub checks: Vec<crate::PullRequestRef>,
 }
 
 /// One auto-deploy.
@@ -120,6 +131,8 @@ pub(crate) fn system(
     match event {
         SystemEvent::BranchHead(head) => branch_head(tx, &who, head),
         SystemEvent::CheckSuite(suite) => check_suite(tx, &who, suite),
+        SystemEvent::PullRequest(pull) => crate::pull_request::pull_request(tx, &who, pull),
+        SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep),
     }
 }
 
@@ -251,25 +264,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
     let repository_id = repository(event.repository_id)?;
     let suite = i64::try_from(event.suite)
         .map_err(|_| error::invalid("Expected a check suite ID", json!({})))?;
-    // GitHub's fixed-width UTC timestamps order as text.
-    let timestamp = event.updated.len() == 20
-        && event
-            .updated
-            .bytes()
-            .enumerate()
-            .all(|(index, byte)| match index {
-                4 | 7 => byte == b'-',
-                10 => byte == b'T',
-                13 | 16 => byte == b':',
-                19 => byte == b'Z',
-                _ => byte.is_ascii_digit(),
-            });
-    if !timestamp {
-        return Err(error::invalid(
-            "Expected GitHub's updated_at, like 2026-09-29T10:00:00Z",
-            json!({}),
-        ));
-    }
+    timestamp(&event.updated)?;
     let text_ok = |text: &str| text.len() <= 64 && !text.chars().any(char::is_control);
     if !text_ok(&event.status) || !event.conclusion.as_deref().is_none_or(text_ok) {
         return Err(error::invalid(
@@ -388,6 +383,10 @@ fn admit(
     select: Select<'_>,
 ) -> Result<Option<Deploy>, RpcError> {
     let environment = scope::lock_id(tx, who, id)?;
+    // Off (shut down or being removed) or closing: a push leaves it be.
+    if crate::pull_request::closing(tx, id)? || crate::teardown::removing(tx, id)?.is_some() {
+        return Ok(None);
+    }
     let Some(saved) = review::latest_saved(tx, id)? else {
         return Ok(None);
     };
@@ -536,6 +535,28 @@ fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcErro
         passed &= suite.text(0)? == "completed" && PASSED.contains(&suite.text(1)?);
     }
     Ok(passed)
+}
+
+/// GitHub's fixed-width UTC timestamps, which order as text.
+pub(crate) fn timestamp(updated: &str) -> Result<(), RpcError> {
+    let valid = updated.len() == 20
+        && updated
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => byte == b'-',
+                10 => byte == b'T',
+                13 | 16 => byte == b':',
+                19 => byte == b'Z',
+                _ => byte.is_ascii_digit(),
+            });
+    if valid {
+        return Ok(());
+    }
+    Err(error::invalid(
+        "Expected GitHub's updated_at, like 2026-09-29T10:00:00Z",
+        json!({}),
+    ))
 }
 
 fn repository(id: u64) -> Result<i64, RpcError> {

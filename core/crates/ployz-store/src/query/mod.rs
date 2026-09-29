@@ -75,6 +75,10 @@ pub enum Query {
     Environments(crate::EnvironmentsQuery),
     /// The Organization's Projects.
     Projects(crate::ProjectsQuery),
+    /// A Project's PR plans.
+    PrPlans(crate::PrPlansQuery),
+    /// A pull request's PR Environments and GitHub check.
+    PullRequest(crate::PullRequestQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -120,6 +124,10 @@ pub enum View {
     Environments(crate::EnvironmentsView),
     /// The Organization's Projects.
     Projects(crate::ProjectsView),
+    /// A Project's PR plans.
+    PrPlans(crate::PrPlansView),
+    /// A pull request's PR Environments and GitHub check.
+    PullRequest(crate::PullRequestView),
 }
 
 pub(crate) fn run(
@@ -152,5 +160,9 @@ pub(crate) fn run(
             crate::teardown::environments(tx, who, query).map(View::Environments)
         }
         Query::Projects(_) => crate::teardown::projects(tx, who).map(View::Projects),
+        Query::PrPlans(query) => crate::pull_request::plans(tx, who, query).map(View::PrPlans),
+        Query::PullRequest(query) => {
+            crate::pull_request::view(tx, who, query).map(View::PullRequest)
+        }
     }
 }

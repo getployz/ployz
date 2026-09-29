@@ -596,8 +596,8 @@ pub(crate) fn admit(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+          namespace, run, credentials, upload, cluster_domain, admitted) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -617,6 +617,7 @@ pub(crate) fn admit(
                 .as_ref()
                 .map_or("", Hostname::as_str)
                 .into(),
+            now().into(),
         ],
     )?;
     Ok(summary)
@@ -676,9 +677,9 @@ pub(crate) fn retry(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain) \
+          namespace, run, credentials, upload, cluster_domain, admitted) \
          SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain \
+          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5 \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -687,6 +688,7 @@ pub(crate) fn retry(
                 .into(),
             json_text(&Run::default()).as_str().into(),
             source.as_str().into(),
+            now().into(),
         ],
     )?;
     // A retry builds the commits its source pinned.
@@ -1577,4 +1579,14 @@ fn invalid_evidence(what: &str) -> RpcError {
         format!("The runner's {what} does not match this Deployment"),
         json!({}),
     )
+}
+
+/// Seconds since the Unix epoch: when a Deployment was admitted, which the idle
+/// rule for Branches reads.
+pub(crate) fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+        })
 }

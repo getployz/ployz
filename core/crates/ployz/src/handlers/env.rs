@@ -125,6 +125,69 @@ pub(crate) fn command() -> Command {
             store::scoped(Command::new("keep").about("Keep the Branch after a Save and when idle"))
                 .arg(switch("off", None).help("Stop keeping it")),
         )
+        .subcommand(deploy::following(
+            base(
+                "shutdown",
+                "Take an Environment off the Servers, keeping its configuration",
+            )
+            .long_about(
+                "Take an Environment, such as a PR Environment, off the Servers: a removal \
+                 Deployment stops its Services and deletes its deployed Volumes once each is \
+                 accepted by name. Its configuration, history and Branch stay, and pushes \
+                 leave it off; `ployz deploy --env NAME` turns it back on.",
+            )
+            .arg(positional("name", true))
+            .arg(project_arg())
+            .arg(crate::cli::volume_acceptance()),
+        ))
+        .subcommand(
+            Command::new("pr")
+                .about("Show or change PR Environments for a repository")
+                .long_about(
+                    "Show the Project's PR plans, or change one. With PR Environments on, \
+                     each pull request of the repository gets a Branch of the start-from \
+                     Environment named pr-NUMBER, with its own copies of the repository's \
+                     Services tracking the pull request's branch, deployed on open and on \
+                     each push. Only the flags given change.",
+                )
+                .arg(
+                    positional("repository", false)
+                        .help("The repository, like acme/app [default: the Project's only one]"),
+                )
+                .arg(project_arg())
+                .arg(switch("on", None).help("Give its pull requests PR Environments"))
+                .arg(
+                    switch("off", None)
+                        .conflicts_with("on")
+                        .help("Stop making PR Environments"),
+                )
+                .arg(
+                    value("from", None)
+                        .value_name("ENV")
+                        .help("The Environment each PR Environment is a Branch of"),
+                )
+                .arg(
+                    repeated("copy")
+                        .value_name("NODE")
+                        .help("Also copy this Service or Volume; repeatable, replaces the list"),
+                )
+                .arg(repeated("setup").value_name("SERVICE=COMMAND").help(
+                    "Run COMMAND in a copied Service before it first deploys; repeatable, \
+                     replaces the list",
+                ))
+                .arg(
+                    value("remove-on-close", None)
+                        .value_name("BOOL")
+                        .value_parser(clap::value_parser!(bool))
+                        .help("Remove a PR Environment when its pull request closes"),
+                )
+                .arg(
+                    value("bots", None)
+                        .value_name("BOOL")
+                        .value_parser(clap::value_parser!(bool))
+                        .help("Make PR Environments for bots' pull requests too"),
+                ),
+        )
 }
 
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
@@ -139,6 +202,8 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
         "update" => (update, Supported),
         "copy" => (copy, Supported),
         "keep" => (keep, Supported),
+        "shutdown" => (shutdown, Supported),
+        "pr" => (pr, Supported),
         _ => return None,
     })
 }
@@ -448,23 +513,7 @@ fn branch(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .collect()
     };
-    let setup = nodes("setup")
-        .iter()
-        .map(|setup| {
-            setup
-                .split_once('=')
-                .and_then(|(service, command)| {
-                    Some(SetupCommand {
-                        service: ServiceName::parse(service).ok()?,
-                        command: command.to_owned(),
-                    })
-                })
-                .ok_or_else(|| {
-                    Error::usage("Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'")
-                        .with_exit(USAGE_EXIT)
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let setup = setups(&nodes("setup"))?;
     let fix = matches
         .get_one::<String>("fix")
         .map(|id| {
@@ -726,6 +775,146 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
         }
         if !branch.update.is_empty() {
             say!("Its Parent deployed changes: ployz env update.");
+        }
+    })
+}
+
+/// `--setup SERVICE=COMMAND` values.
+fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
+    values
+        .iter()
+        .map(|setup| {
+            setup
+                .split_once('=')
+                .and_then(|(service, command)| {
+                    Some(SetupCommand {
+                        service: ServiceName::parse(service).ok()?,
+                        command: command.to_owned(),
+                    })
+                })
+                .ok_or_else(|| {
+                    Error::usage("Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'")
+                        .with_exit(USAGE_EXIT)
+                })
+        })
+        .collect()
+}
+
+/// Take an Environment off the Servers and keep everything else of it.
+fn shutdown(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let at = EnvironmentRef {
+        project: project(matches)?,
+        environment: Some(name.clone()),
+    };
+    let store = store(root)?;
+    let words = ["env", "shutdown", name.as_str()];
+    let accept = accepted(matches)?;
+    let events = deploy::open_events(matches)?;
+    let (view, ran) = take_off(matches, &store, &at, &accept, events, &words, &words)?;
+    if view.deployment.status != DeploymentStatus::Applied {
+        let mut again: Vec<&str> = words.to_vec();
+        again.extend(
+            accept
+                .iter()
+                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+        );
+        return unfinished(matches, &view, ran, &again);
+    }
+    let on = store::next(matches, &["deploy", "--env", name.as_str()]);
+    deploy::finish_view(&view, Some(on))
+}
+
+/// Show the Project's PR plans, or change one.
+fn pr(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let list = |flag: &str| -> Option<Vec<String>> {
+        matches
+            .get_many::<String>(flag)
+            .map(|values| values.cloned().collect())
+    };
+    let enabled = match (matches.get_flag("on"), matches.get_flag("off")) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    };
+    let start_from = matches
+        .get_one::<String>("from")
+        .map(|from| EnvironmentName::parse(from.as_str()))
+        .transpose()?;
+    let setup = list("setup").map(|values| setups(&values)).transpose()?;
+    let mut set = ployz_store::SetPrPlan {
+        project: project(matches)?,
+        repository: matches
+            .get_one::<String>("repository")
+            .cloned()
+            .unwrap_or_default(),
+        enabled,
+        start_from,
+        copy: list("copy"),
+        setup,
+        remove_on_close: matches.get_one::<bool>("remove-on-close").copied(),
+        include_bots: matches.get_one::<bool>("bots").copied(),
+    };
+    let store = store(root)?;
+    let words = ["env", "pr"];
+    let query = ployz_store::PrPlansQuery {
+        project: set.project.clone(),
+    };
+    let changing = set.enabled.is_some()
+        || set.start_from.is_some()
+        || set.copy.is_some()
+        || set.setup.is_some()
+        || set.remove_on_close.is_some()
+        || set.include_bots.is_some();
+    let view = match changing {
+        false => store.pr_plans(&query).map_err(failed(matches, &words))?,
+        true => {
+            if set.repository.is_empty() {
+                let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
+                match plans.plans.as_slice() {
+                    [only] => set.repository.clone_from(&only.repository),
+                    _ => {
+                        return Err(Error::usage(
+                            "Name the repository: `ployz env pr` lists the Project's",
+                        )
+                        .with_exit(USAGE_EXIT));
+                    }
+                }
+            }
+            store.set_pr_plan(&set).map_err(failed(matches, &words))?
+        }
+    };
+    let mut json = serde_json::to_value(&view).expect("PR plans are JSON");
+    if let (true, Some(fields)) = (changing, json.as_object_mut()) {
+        fields.insert("immediate".to_owned(), json!(true));
+    }
+    crate::output::finish(&json, || {
+        say!("PR Environments of Project {}:", view.project.name);
+        if view.plans.is_empty() {
+            say!("  No Service deploys from a GitHub repository through the GitHub App.");
+        }
+        for plan in &view.plans {
+            let mut words = vec![if plan.enabled { "on" } else { "off" }.to_owned()];
+            match &plan.start_from {
+                Some(from) => words.push(format!("from {from}")),
+                None if plan.enabled => words.push("pick --from to start".to_owned()),
+                None => {}
+            }
+            if !plan.copy.is_empty() {
+                words.push(format!("also copies {}", plan.copy.join(", ")));
+            }
+            for setup in &plan.setup {
+                words.push(format!("then {}: {}", setup.service, setup.command));
+            }
+            if !plan.remove_on_close {
+                words.push("kept after close".to_owned());
+            }
+            if plan.include_bots {
+                words.push("bots too".to_owned());
+            }
+            say!("  {}: {}", plan.repository, words.join(" · "));
         }
     })
 }

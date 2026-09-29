@@ -476,7 +476,7 @@ fn removal(
 }
 
 /// Delete every row of `environment`, children before what they reference.
-fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
+pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
     tx.execute(
         "DELETE FROM config_build WHERE deployment_id IN \
          (SELECT id FROM config_deployment WHERE environment_id = ?1)",
@@ -492,6 +492,7 @@ fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
         "config_build_receipt",
         "config_service_policy",
         "config_waiting_deploy",
+        "config_pr_environment",
         "config_environment_branch",
     ] {
         tx.execute(
@@ -553,6 +554,10 @@ pub(crate) fn remove_project(
         purge(tx, &member.id)?;
     }
     tx.execute(
+        "DELETE FROM config_pr_plan WHERE project_id = ?1",
+        &[project.id.as_str().into()],
+    )?;
+    tx.execute(
         "DELETE FROM config_project WHERE id = ?1",
         &[project.id.as_str().into()],
     )?;
@@ -594,6 +599,7 @@ pub(crate) fn remove_organization(
         "config_branch",
         "config_check_suite",
         "config_build_order",
+        "config_pull_request",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
