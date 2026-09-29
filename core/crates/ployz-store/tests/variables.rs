@@ -117,6 +117,7 @@ fn admit(store: &ConfigStore, n: u8) -> Result<DeploymentId, RpcError> {
             version: None,
             upload: None,
             retry: None,
+            remove: false,
             accept_volume_loss: Vec::new(),
         },
         &ployz_store::Trusted::default(),
