@@ -9,9 +9,11 @@ import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
  * it); Escape, or confirming blank, closes back to the button. A staged change shows pink, titled with what's deployed.
  */
 export function ServiceCommandField({
-  label, description, placeholder, value, baselineValue, isChanged, compact = false, validate, onCommit,
+  label, addLabel = label, description, placeholder, value, baselineValue, isChanged, compact = false, validate, onCommit,
 }: {
   label: string;
+  /** The closed button's words; the label by default. */
+  addLabel?: string;
   description: string;
   placeholder: string;
   value: string | null;
@@ -40,7 +42,7 @@ export function ServiceCommandField({
   const button = (
     <Button type="button" variant={compact ? "link" : "outline"} size={compact ? "sm" : "default"} className="self-start"
       data-changed={isChanged || undefined} onClick={() => setDraft({ source: value, text: "", error: null })}>
-      <PlusIcon data-icon="inline-start" />{label}
+      <PlusIcon data-icon="inline-start" />{addLabel}
     </Button>
   );
   if (!open && compact) return <Field>{button}</Field>;

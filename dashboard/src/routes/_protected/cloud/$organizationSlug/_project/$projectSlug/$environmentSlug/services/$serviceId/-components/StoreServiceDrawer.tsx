@@ -22,6 +22,7 @@ import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-co
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
+import { StoreBranchField, StoreDockerfileField, StorePreferredBuilderField, useRepositoryRef } from "./StoreGitFields";
 import { SwitchField } from "../../../-components/branch-review/SaveSheet";
 import { ServiceSettingsSection } from "./ServiceSettingsSection";
 import { SERVICE_SETTINGS_SECTIONS, type ServiceSettingsSectionId } from "./service-settings-sections";
@@ -104,9 +105,15 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       </Suspense>
     ),
     scale: <FieldGroup>{field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
-    build: service.source === "git"
-      ? <FieldGroup>{field("buildMethod")}{buildMethod === "dockerfile" ? field("dockerfilePath") : field("buildCommand")}</FieldGroup>
-      : null,
+    build: service.source === "git" ? (
+      <FieldGroup>
+        {field("buildMethod")}
+        {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
+        <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
+          onSet={(builder) => writer.edit({ environment: store, changes: [builder === null
+            ? { op: "unset", path: `${service.name}.preferredBuilder` } : { op: "set", path: `${service.name}.preferredBuilder`, value: builder }] })} />
+      </FieldGroup>
+    ) : null,
     deploy: (
       <FieldGroup>
         {field("startCommand")}
@@ -175,12 +182,30 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   );
 }
 
-/** Optional commands: a button until set. Pre-deploy is one most Services never need. */
-const COMMANDS = new Map<ServiceSettingName, { placeholder: string; compact: boolean }>([
+/**
+ * Optional Settings shown as a button until set: commands, and the root directory (whose `/` is the default). Pre-deploy
+ * and the root directory are ones most Services never need.
+ */
+const COMMANDS = new Map<ServiceSettingName, { placeholder: string; compact: boolean; addLabel?: string; unset?: string }>([
   ["startCommand", { placeholder: "npm start", compact: false }],
   ["preDeployCommand", { placeholder: "npm run migrate", compact: true }],
   ["buildCommand", { placeholder: "pnpm run build", compact: false }],
+  ["rootDir", { placeholder: "/apps/api", compact: true, addLabel: "Add root directory", unset: "/" }],
 ]);
+
+/** Suffixes after a number, as before the Store: "3 replicas". */
+const SUFFIXES = new Map<ServiceSettingName, string>([["replicas", "replicas"], ["memLimit", "GB"], ["cpuLimit", "vCPUs"]]);
+
+/** What each restart policy does, shown under its choice. */
+const OPTION_HELP = new Map([
+  ["unless-stopped", "Restart unless you stop it."],
+  ["always", "Restart whenever it stops."],
+  ["on-failure", "Restart when it exits with an error, up to Max retries."],
+  ["no", "Never restart."],
+]);
+
+/** A Deployment Policy value as text; null when unset. */
+const policyText = (value: JsonValue | undefined) => value === null || value === undefined ? null : String(value);
 
 /** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
 function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
@@ -205,10 +230,10 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
   const command = COMMANDS.get(name);
   if (command) {
     return (
-      <ServiceCommandField label={setting.title} description={setting.description} placeholder={command.placeholder}
-        compact={command.compact} value={row.value === null ? null : settingText(row.value)} isChanged={change !== undefined}
-        baselineValue={change ? settingText(change.before) : undefined} validate={(raw) => settingError(setting, raw)}
-        onCommit={(value) => edit(value ?? "")} />
+      <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={setting.description} placeholder={command.placeholder}
+        compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
+        isChanged={change !== undefined} baselineValue={change ? settingText(change.before) : undefined}
+        validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
 
@@ -225,7 +250,12 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
           <SelectContent>
             <SelectGroup>
               {setting.enum.map((option) => (
-                <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>{OPTION_LABELS.get(option) ?? option}</SelectItem>
+                <SelectItem key={option} value={option} label={OPTION_LABELS.get(option) ?? option}>
+                  <span className="flex flex-col">
+                    <span>{OPTION_LABELS.get(option) ?? option}</span>
+                    {OPTION_HELP.has(option) ? <span className="text-xs text-muted-foreground">{OPTION_HELP.get(option)}</span> : null}
+                  </span>
+                </SelectItem>
               ))}
             </SelectGroup>
           </SelectContent>
@@ -238,6 +268,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
           min={setting.minimum}
           max={setting.maximum}
           step={setting.type === "integer" ? 1 : "any"}
+          suffix={SUFFIXES.get(name)}
           placeholder={settingText(setting.default) || undefined}
           value={settingText(row.value)}
           isChanged={change !== undefined}
@@ -247,6 +278,19 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
         />
       )}
     </Field>
+  );
+}
+
+/** A Git Service's Dockerfile, with the repository's Dockerfiles as suggestions. */
+function StoreDockerfile({ state }: { state: StoreService }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const repository = settingText(state.rows.get("repository")?.value);
+  const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
+  const path = `${state.service.name}.dockerfilePath`;
+  return (
+    <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
+      value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
+      onCommit={(raw) => writer.edit({ environment: state.environment, changes: [settingChange(path, serviceSetting("dockerfilePath"), raw)] })} />
   );
 }
 
@@ -295,13 +339,14 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 function StoreSourceSection({ state }: { state: StoreService }) {
   const writer = useStoreWriter(state.organizationSlug);
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
-  const set = (name: "image" | "repository", value: string) =>
+  const set = (name: "image" | "repository" | "branch", value: string) =>
     writer.edit({ environment: state.environment, changes: [{ op: "set", path: `${state.service.name}.${name}`, value }] });
   const close = (open: boolean) => { if (!open) setPicking(null); };
   const kind = state.service.source === "git" ? "repository" : "image";
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
+  const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
   if (state.service.source === "empty") {
     return (
@@ -336,7 +381,8 @@ function StoreSourceSection({ state }: { state: StoreService }) {
       </Field>
       {kind === "repository" ? (
         <>
-          <StoreSettingField state={state} name="branch" />
+          <StoreBranchField repository={value} gitRef={gitRef} value={settingText(state.rows.get("branch")?.value)}
+            change={state.changes.get("branch")} onSet={(branch) => set("branch", branch)} />
           <StoreSettingField state={state} name="rootDir" />
           {/* Its Deployment Policy: when a push to the branch deploys. */}
           <StoreSettingField state={state} name="autoDeploy" />

@@ -76,6 +76,15 @@ type GitBranchSelectorProps = {
   onSelectBranch: (branchName: string) => void | Promise<void>;
 };
 
+type GitBranchSelectorDialogProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  repositoryFullName: string;
+  repositoryId: number;
+  installationId: number | null;
+  onSelectBranch: (branchName: string) => void | Promise<void>;
+};
+
 function SelectorEmpty({ children }: { children: ReactNode }) {
   return (
     <div className="py-6 text-center text-sm text-muted-foreground">
@@ -448,6 +457,75 @@ export function GitBranchSelector(props: GitBranchSelectorProps) {
     <Suspense fallback={<SelectorLoading />}>
       <GitBranchSelectorResults {...props} />
     </Suspense>
+  );
+}
+
+export function GitBranchSelectorDialog({
+  open,
+  onOpenChange,
+  repositoryFullName,
+  repositoryId,
+  installationId,
+  onSelectBranch,
+}: GitBranchSelectorDialogProps) {
+  if (!open) {
+    return null;
+  }
+
+  return (
+    <OpenGitBranchSelectorDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      repositoryFullName={repositoryFullName}
+      repositoryId={repositoryId}
+      installationId={installationId}
+      onSelectBranch={onSelectBranch}
+    />
+  );
+}
+
+function OpenGitBranchSelectorDialog({
+  open,
+  onOpenChange,
+  repositoryFullName,
+  repositoryId,
+  installationId,
+  onSelectBranch,
+}: GitBranchSelectorDialogProps) {
+  const dialog = useSelectorDialogState<string>({
+    onOpenChange,
+    onSelect: onSelectBranch,
+    errorFallback: "Refresh the repository data and try again.",
+  });
+
+  return (
+    <SelectorCommandDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Select branch"
+      description={`Choose a branch in ${repositoryFullName}`}
+      errorTitle="Couldn’t select branch"
+      error={dialog.error}
+    >
+      <SourcePickerLayout title="GitHub Branch">
+      <Command shouldFilter={false} className="gap-3 p-0">
+        <SourcePickerInput onBack={() => onOpenChange(false)} disabled={dialog.isPending}>
+          <CommandPrimitive.Input asChild value={dialog.query} onValueChange={dialog.setQuery}>
+            <InputGroupInput autoFocus aria-label="Search branches" placeholder="Search branches…" disabled={dialog.isPending} />
+          </CommandPrimitive.Input>
+        </SourcePickerInput>
+        <CommandList>
+          <GitBranchSelector
+            repositoryId={repositoryId}
+            installationId={installationId}
+            query={dialog.query}
+            disabled={dialog.isPending}
+            onSelectBranch={dialog.runSelect}
+          />
+        </CommandList>
+      </Command>
+      </SourcePickerLayout>
+    </SelectorCommandDialog>
   );
 }
 
