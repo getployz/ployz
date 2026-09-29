@@ -280,6 +280,21 @@ impl GitSetting {
                 validate_build(config, self)
             }
             Self::Repository => {
+                // An empty Service starts building the repository's default branch.
+                if let ServiceSource::Empty { root_dir, .. } = &config.source {
+                    let found = authorized(trusted, &text)?;
+                    config.source = ServiceSource::Git {
+                        version: 2,
+                        repository: found.repository.to_string(),
+                        repository_id: found.repository_id.get(),
+                        access: found.access.clone(),
+                        root_dir: root_dir.clone(),
+                        branch: ServiceGitBranch::Connected {
+                            name: found.default_branch.to_string(),
+                        },
+                    };
+                    return Ok(());
+                }
                 let ServiceSource::Git {
                     repository,
                     repository_id,
@@ -288,7 +303,7 @@ impl GitSetting {
                     ..
                 } = &mut config.source
                 else {
-                    return Err(not_git(setting));
+                    return Err(setting.invalid("this Service runs an image; unset it first"));
                 };
                 if repository.eq_ignore_ascii_case(text.trim()) {
                     return Ok(());
@@ -331,9 +346,20 @@ impl GitSetting {
     pub(crate) fn unset(self, config: &mut AuthoredServiceConfig) -> Result<(), RpcError> {
         let setting = ServiceSetting::Git(self);
         match self {
-            Self::Repository | Self::Branch => Err(setting.invalid(
-                "a repository Service always builds a repository and branch; set another one",
-            )),
+            // Disconnected, the Service is empty until it gets a source again.
+            Self::Repository => match &config.source {
+                ServiceSource::Git { root_dir, .. } => {
+                    config.source = ServiceSource::Empty {
+                        version: 1,
+                        root_dir: root_dir.clone(),
+                    };
+                    Ok(())
+                }
+                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Err(not_git(setting)),
+            },
+            Self::Branch => {
+                Err(setting.invalid("a repository Service always builds a branch; set another one"))
+            }
             Self::RootDir => match &mut config.source {
                 ServiceSource::Git { root_dir, .. } => {
                     "/".clone_into(root_dir);

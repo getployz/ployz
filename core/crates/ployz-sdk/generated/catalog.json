@@ -303,6 +303,20 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "privateDns": {
+          "description": "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name.",
+          "examples": [
+            "api",
+            "api-v2"
+          ],
+          "maxLength": 63,
+          "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$",
+          "title": "Private DNS",
+          "type": "string",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "registryCredential": {
           "additionalProperties": false,
           "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -.",

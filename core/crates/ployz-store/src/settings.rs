@@ -44,6 +44,8 @@ pub(crate) enum ServiceSetting {
     MaxRetries,
     MemLimit,
     PreDeployCommand,
+    /// The name other Services reach it at; a rename keeps it.
+    PrivateDns,
     /// What an image Service's private image is pulled with; see [`crate::registry`].
     RegistryCredential,
     Replicas,
@@ -57,13 +59,14 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 20] = [
+    pub(crate) const ALL: [Self; 21] = [
         Self::CpuLimit,
         Self::Healthcheck,
         Self::Image,
         Self::MaxRetries,
         Self::MemLimit,
         Self::PreDeployCommand,
+        Self::PrivateDns,
         Self::RegistryCredential,
         Self::Replicas,
         Self::RestartPolicy,
@@ -95,6 +98,7 @@ impl ServiceSetting {
             Self::MaxRetries => "maxRetries",
             Self::MemLimit => "memLimit",
             Self::PreDeployCommand => "preDeployCommand",
+            Self::PrivateDns => "privateDns",
             Self::RegistryCredential => "registryCredential",
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
@@ -113,6 +117,7 @@ impl ServiceSetting {
             Self::MaxRetries => "Max retries",
             Self::MemLimit => "Memory limit",
             Self::PreDeployCommand => "Pre-deploy command",
+            Self::PrivateDns => "Private DNS",
             Self::RegistryCredential => "Registry credentials",
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
@@ -133,6 +138,9 @@ impl ServiceSetting {
             Self::MemLimit => "Most memory each replica may use, in GB. Unset means no limit.",
             Self::PreDeployCommand => {
                 "Runs once in a new replica before a Deploy starts the Service."
+            }
+            Self::PrivateDns => {
+                "The name other Services in the Environment reach it at, as NAME.internal. Renaming the Service keeps it. Unset returns it to the Service's name."
             }
             Self::RegistryCredential => {
                 "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -."
@@ -157,6 +165,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand => self.name(),
@@ -171,6 +180,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand
@@ -187,6 +197,7 @@ impl ServiceSetting {
             | Self::Image
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PrivateDns
             | Self::RegistryCredential
             | Self::StartCommand => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
@@ -234,6 +245,9 @@ impl ServiceSetting {
                 json!({ "type": "string", "minLength": 1, "maxLength": COMMAND_MAX })
             }
             Self::RestartPolicy => json!({ "type": "string", "enum": RESTART_POLICIES }),
+            Self::PrivateDns => {
+                json!({ "type": "string", "pattern": crate::catalog::NODE_NAME, "maxLength": 63 })
+            }
             Self::RegistryCredential => json!({
                 "type": "object",
                 "properties": {
@@ -257,6 +271,7 @@ impl ServiceSetting {
             Self::MaxRetries => json!([3]),
             Self::MemLimit => json!([0.5, 4]),
             Self::PreDeployCommand => json!(["npm run migrate"]),
+            Self::PrivateDns => json!(["api", "api-v2"]),
             Self::RegistryCredential => json!([{ "secret": true }]),
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
@@ -284,6 +299,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand => true,
@@ -339,6 +355,7 @@ impl ServiceSetting {
             | Self::MaxRetries
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::PrivateDns
             | Self::Replicas
             | Self::RestartPolicy
             | Self::StartCommand => value,
@@ -426,9 +443,15 @@ impl ServiceSetting {
             return Err(self.invalid("the Deployment Policy is not in the config"));
         }
         match (self, &mut config.source) {
-            (Self::Image, _) => {
-                Err(self.invalid("an image Service needs an image; set another one"))
+            // Disconnected, the Service is empty until it gets a source again.
+            (Self::Image, ServiceSource::Image { .. }) => {
+                config.source = ServiceSource::Empty {
+                    version: 1,
+                    root_dir: "/".to_owned(),
+                };
+                Ok(())
             }
+            (Self::Image, _) => Err(self.invalid("this Service runs no image")),
             (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
                 *credentials = ServiceImageCredentials::None;
                 Ok(())

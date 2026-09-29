@@ -127,6 +127,23 @@ pub(crate) fn edit(
             continue;
         }
         let (changed, apply) = match (path.target(), value) {
+            // A Private DNS name addresses one Service: none other has it as a name.
+            (Some(Target::Setting(setting @ ServiceSetting::PrivateDns)), value) => {
+                let node = environment.service(service)?;
+                let name = match value {
+                    Some(Value::String(text)) => ployz_core::ServiceName::parse(text.trim())
+                        .map_err(|_| setting.invalid("expected a lowercase DNS label"))?,
+                    Some(_) => return Err(setting.invalid("expected a lowercase DNS label")),
+                    None => ployz_core::ServiceName::parse(node.slug.as_str())
+                        .map_err(|_| error::corrupt("Service name"))?,
+                };
+                let id = node.id.clone();
+                super::service::refuse_taken(&environment, &name, Some(&id))?;
+                let config = &mut environment.service_mut(service)?.config;
+                let changed = config.private_dns != name;
+                config.private_dns = name;
+                (changed, Apply::Staged)
+            }
             (Some(Target::Setting(setting)), value) => {
                 let config = &mut environment.service_mut(service)?.config;
                 let was = setting.value(config, &Policy::default());

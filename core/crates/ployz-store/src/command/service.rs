@@ -211,7 +211,7 @@ pub(crate) fn remove_service(
 
 /// A name is taken by another Service's name or Private DNS name: either would make
 /// `name` address two Services. `volumes` is never free.
-fn refuse_taken(
+pub(crate) fn refuse_taken(
     environment: &scope::Environment,
     name: &ServiceName,
     except: Option<&str>,
