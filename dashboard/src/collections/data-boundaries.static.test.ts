@@ -119,6 +119,12 @@ describe("data boundaries", () => {
     expect(filesMatching(/\buseOrgStoreGate\(/).filter((path) => path !== "collections/org-store.ts")).toEqual(["components/dashboard-shell.tsx"]);
   });
 
+  it("writes to the Config Store only through its writer", () => {
+    expect(filesMatching(/\bwriteStoreServerFn\b/), "Write through useStoreWriter").toEqual([
+      "modules/config-store/store-write.ts", "modules/config-store/store.functions.ts",
+    ]);
+  });
+
   it("reads page state only through data files", () => {
     const outside = filesMatching(READ_SERVER_FN).filter((path) => !DATA_FILE.test(path) && !SERVER_FN_FILE.test(path));
     expect(outside, "Move the read into a data file, or list a command-step read with its reason").toEqual(Object.keys(COMMAND_READ_FILES).sort());

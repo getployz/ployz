@@ -84,8 +84,12 @@ function shownValue(value: JsonValue): string {
   });
 }
 
+/** The statuses of a Deployment that holds, or waits for, its Environment's one run. */
+export const IN_FLIGHT = ["queued", "running", "cancelling"] as const satisfies readonly DeploymentStatus[];
+
 /** Whether a Deployment holds, or waits for, its Environment's one run. */
-export const isInFlight = (status: DeploymentStatus) => status === "queued" || status === "running" || status === "cancelling";
+export const isInFlight = (status: DeploymentStatus): status is (typeof IN_FLIGHT)[number] =>
+  IN_FLIGHT.some((inFlight) => inFlight === status);
 
 export const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
