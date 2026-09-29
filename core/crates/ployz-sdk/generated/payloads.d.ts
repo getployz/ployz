@@ -175,6 +175,16 @@ message: string | null, };
 
 export type BuildMethod = "dockerfile" | "railpack";
 
+export type BuildOrder = "servers-only" | "github-then-servers" | "servers-then-github" | "github-only";
+
+export type BuildOrderQuery = Record<symbol, never>;
+
+export type BuildOrderView = {
+/**
+ * None while it is Auto.
+ */
+build_order: BuildOrder | null, builders: Array<Builder>, };
+
 export type BuildStatus = "pending" | "building" | "built" | "reused" | "failed";
 
 export type BuildView = {
@@ -186,6 +196,8 @@ service: string, commit: string, status: BuildStatus,
  * Why it failed.
  */
 message: string | null, };
+
+export type Builder = "github" | "servers";
 
 export type ByteQuantity = number;
 
@@ -249,7 +261,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "set_build_order" } & SetBuildOrder;
 
 export type ConfigDomainEvidence = {
 /**
@@ -280,7 +292,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "build_order" } & BuildOrderQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -294,9 +306,9 @@ repositories: Array<AuthorizedRepository>,
  */
 domains: ConfigDomainEvidence, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "build_order" } & BuildOrderView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "build_order" } & BuildOrderView;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -899,7 +911,66 @@ dockerfile_path: string | null,
 /**
  * The commit it builds; none until pinned.
  */
-commit: string | null, };
+commit: string | null,
+/**
+ * The Builders its build tries, in turn: its Preferred Builder, then the
+ * Organization's Build Order.
+ */
+builders: Array<Builder>,
+/**
+ * The Server the servers try first, when it prefers one.
+ */
+preferred_machine: MachineId | null,
+/**
+ * Where its build is; none until pinned.
+ */
+status: BuildStatus | null,
+/**
+ * Why its build failed, or why the last Builder skipped it.
+ */
+message: string | null, };
+
+export type GithubBuild = { id: GithubBuildId, status: BuildStatus, run: GithubRun,
+/**
+ * Set once the run checked in.
+ */
+grant: GithubGrant | null,
+/**
+ * When it checked in, in Unix seconds.
+ */
+checked_in_at: number | null,
+/**
+ * The platforms it built, once its final report came; empty: it failed.
+ */
+platforms: Array<string> | null, };
+
+export type GithubBuildId = string;
+
+export type GithubClaims = { repository_id: string, job_workflow_ref: string, run_id: string, event_name: string, };
+
+export type GithubGrant = {
+/**
+ * Its handle; not secret.
+ */
+id: string,
+/**
+ * The Machine that minted it and receives the image.
+ */
+machine: MachineId,
+/**
+ * The build-input fingerprint the run builds against.
+ */
+fingerprint: string, };
+
+export type GithubRun = { run_id: number, run_url: string,
+/**
+ * The workflow and branch its OIDC token must name.
+ */
+workflow_ref: string,
+/**
+ * The repository, as `owner/name` when dispatched.
+ */
+repository: string, installation_id: number, };
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
@@ -1791,6 +1862,8 @@ environment: EnvironmentSummary,
  * Its Services, by name.
  */
 services: Array<ServiceListing>, };
+
+export type SetBuildOrder = { build_order: BuildOrder | null, };
 
 export type SetManagementClientResponse = { capability: string | null, };
 

@@ -13,6 +13,10 @@ use ployz_store::{
     EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
     Publish, Query, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
 };
+use ployz_store::{
+    BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
+    GithubReport, GithubRun, SetBuildOrder,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -470,4 +474,352 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // A Deployment of other Services builds nothing.
     let targeted = admit(&store, &who, 3, &["api"]);
     assert!(store.sources(&targeted).unwrap().is_empty());
+}
+
+fn build_order(store: &ConfigStore, who: &Actor, order: Option<BuildOrder>) -> Vec<Builder> {
+    let written = store
+        .write(
+            who,
+            &Command::SetBuildOrder(SetBuildOrder { build_order: order }),
+        )
+        .unwrap();
+    let Written::BuildOrder(view) = written else {
+        panic!("{written:?}")
+    };
+    assert_eq!(view.build_order, order);
+    view.builders
+}
+
+#[test]
+fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
+    let (store, who) = shop();
+    store
+        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+
+    // Auto: GitHub first, skipped at once where the repository has no build workflow.
+    let View::BuildOrder(auto) = store
+        .read(&who, &Query::BuildOrder(BuildOrderQuery::default()))
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(auto.build_order, None);
+    assert_eq!(auto.builders, [Builder::Github, Builder::Servers]);
+    assert_eq!(
+        build_order(&store, &who, Some(BuildOrder::ServersThenGithub)),
+        [Builder::Servers, Builder::Github]
+    );
+
+    // The Preferred Builder is immediate: no Working State change, nothing to publish.
+    let Written::Edited(edited) = store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!("github"))]),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(edited.immediate.len(), 1);
+    assert!(edited.staged.is_empty());
+    assert_eq!(values(&store, &who)["preferredBuilder"], "github");
+    for bad in [json!("gitlab"), json!(3)] {
+        let error = store
+            .write(&who, &edit(vec![set("web.preferredBuilder", bad)]))
+            .unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+        assert!(!error.message.contains("gitlab"), "{error:?}");
+    }
+
+    let deployment = admit(&store, &who, 1, &[]);
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.builders, [Builder::Github, Builder::Servers]);
+    assert_eq!(source.preferred_machine, None);
+
+    // A Preferred Server goes first; the walk is read as the build starts.
+    let machine = "0123456789abcdef0123456789abcdef";
+    store
+        .write(
+            &who,
+            &edit(vec![set("web.preferredBuilder", json!(machine))]),
+        )
+        .unwrap();
+    build_order(&store, &who, Some(BuildOrder::GithubOnly));
+    let source = &store.sources(&deployment).unwrap()[0];
+    assert_eq!(source.builders, [Builder::Servers, Builder::Github]);
+    assert_eq!(
+        source.preferred_machine.as_ref().unwrap().to_string(),
+        machine
+    );
+
+    store
+        .write(
+            &who,
+            &edit(vec![Change::Unset {
+                path: SettingPath::parse("web.preferredBuilder").unwrap(),
+            }]),
+        )
+        .unwrap();
+    assert!(values(&store, &who).get("preferredBuilder").is_none());
+    assert_eq!(
+        store.sources(&deployment).unwrap()[0].builders,
+        [Builder::Github]
+    );
+    assert_eq!(
+        build_order(&store, &who, None),
+        [Builder::Github, Builder::Servers]
+    );
+}
+
+const RUN: u64 = 555;
+const WORKFLOW: &str = "acme/web/.github/workflows/ployz-build.yml@refs/heads/main";
+
+fn github_run(run_id: u64) -> GithubRun {
+    GithubRun {
+        run_id,
+        run_url: format!("https://github.com/acme/web/actions/runs/{run_id}"),
+        workflow_ref: WORKFLOW.into(),
+        repository: "acme/web".into(),
+        installation_id: 7,
+    }
+}
+
+fn claims() -> GithubClaims {
+    GithubClaims {
+        repository_id: "11".into(),
+        job_workflow_ref: WORKFLOW.into(),
+        run_id: RUN.to_string(),
+        event_name: "workflow_dispatch".into(),
+    }
+}
+
+fn grant() -> GithubGrant {
+    GithubGrant {
+        id: "grant-1".into(),
+        machine: ployz_core::MachineId::parse("0123456789abcdef0123456789abcdef".to_owned())
+            .unwrap(),
+        fingerprint: "f".repeat(64),
+    }
+}
+
+fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport {
+    GithubReport {
+        from,
+        lines: lines.iter().map(|line| (*line).to_owned()).collect(),
+        platforms: platforms.map(|platforms| platforms.iter().map(|p| (*p).to_owned()).collect()),
+    }
+}
+
+/// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
+fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
+    store
+        .create_git_service(who, &create("acme/web", None), &evidence())
+        .unwrap();
+    let deployment = admit(store, who, 1, &[]);
+    store.pin(&deployment, &pins(&"a".repeat(40))).unwrap();
+    let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
+    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    // A retried dispatch step replays; another run can't take it.
+    store.github_dispatched(&id, &github_run(RUN)).unwrap();
+    let error = store
+        .github_dispatched(&id, &github_run(RUN + 1))
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    id
+}
+
+#[test]
+fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    let build = store.github_authorize(&id, &claims()).unwrap();
+    assert_eq!(build.status, BuildStatus::Building);
+    assert_eq!(build.grant, None);
+
+    for (claims, words) in [
+        (
+            GithubClaims {
+                repository_id: "12".into(),
+                ..claims()
+            },
+            "another repository",
+        ),
+        (
+            GithubClaims {
+                job_workflow_ref: WORKFLOW.replace("main", "evil").clone(),
+                ..claims()
+            },
+            "another workflow",
+        ),
+        (
+            GithubClaims {
+                run_id: "1".into(),
+                ..claims()
+            },
+            "another run",
+        ),
+        (
+            GithubClaims {
+                event_name: "push".into(),
+                ..claims()
+            },
+            "not dispatched",
+        ),
+    ] {
+        let error = store.github_authorize(&id, &claims).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::Unauthenticated);
+        assert!(error.message.contains(words), "{error:?}");
+    }
+    let unknown = GithubBuildId::parse(&format!("{}.api", id.deployment)).unwrap();
+    assert_eq!(
+        store
+            .github_authorize(&unknown, &claims())
+            .unwrap_err()
+            .code,
+        RpcErrorCode::NotFound
+    );
+    assert_eq!(
+        GithubBuildId::parse("not-a-build").unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+
+    // Only the runner gets the inputs: the lowering input and the pinned commit.
+    let (input, commit, receipt) = store.github_input(&id).unwrap();
+    assert_eq!(commit, "a".repeat(40));
+    assert!(input.get("snapshots").is_some());
+    assert_eq!(receipt, None);
+}
+
+#[test]
+fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_reports() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+
+    // No report before check-in.
+    let error = store
+        .github_report(&id, RUN, &lines(0, &["early\n"], None))
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+
+    store.github_check_in(&id, RUN, &grant()).unwrap();
+    let error = store.github_check_in(&id, RUN, &grant()).unwrap_err();
+    assert_eq!(
+        error.code,
+        RpcErrorCode::Conflict,
+        "a second check-in is refused"
+    );
+    let build = store.github_build(&id).unwrap();
+    assert_eq!(build.grant, Some(grant()));
+    assert!(build.checked_in_at.is_some());
+
+    assert_eq!(
+        store
+            .github_report(&id, RUN, &lines(0, &["one\n", "two\n"], None))
+            .unwrap(),
+        2
+    );
+    // A retried batch repeating lines files only the new ones; a gap is refused.
+    assert_eq!(
+        store
+            .github_report(&id, RUN, &lines(1, &["two\n", "three\n"], None))
+            .unwrap(),
+        3
+    );
+    let error = store
+        .github_report(&id, RUN, &lines(5, &["six\n"], None))
+        .unwrap_err();
+    assert_eq!(error.details["received"], 3);
+    assert_eq!(
+        store
+            .github_report(&id, RUN, &lines(3, &[], Some(&["linux/amd64"])))
+            .unwrap(),
+        3
+    );
+    // The final report came: a duplicate or late one is refused.
+    let error = store
+        .github_report(&id, RUN, &lines(3, &["late\n"], None))
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        store.github_build(&id).unwrap().platforms,
+        Some(vec!["linux/amd64".to_owned()])
+    );
+
+    let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
+    let ended = store
+        .github_end(
+            &id,
+            Some(RUN),
+            &GithubEnd::Built {
+                receipt: receipt.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(ended, BuildStatus::Built);
+    // Ending again, or the run failing afterwards, changes nothing.
+    let failed = GithubEnd::Failed {
+        message: "late".into(),
+    };
+    assert_eq!(
+        store.github_end(&id, Some(RUN), &failed).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+    let log = store
+        .build_log(
+            &who,
+            &BuildLogQuery {
+                deployment: id.deployment.clone(),
+                service: ServiceName::parse("web").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(log.build.status, BuildStatus::Built);
+    assert!(log.log.ends_with("one\ntwo\nthree\n"), "{}", log.log);
+    // The receipt is the Service's latest: the runner delivers it without building.
+    let source = &store.sources(&id.deployment).unwrap()[0];
+    assert_eq!(source.status, Some(BuildStatus::Built));
+}
+
+#[test]
+fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_open_grants() {
+    let (store, who) = shop();
+    let id = dispatched(&store, &who);
+    store.github_check_in(&id, RUN, &grant()).unwrap();
+    assert_eq!(store.github_outstanding(&id.deployment).unwrap().len(), 1);
+
+    // GitHub failed it for its own reasons: pending again, with why, for the servers.
+    let skip = GithubEnd::Skipped {
+        message: "the run ran out of time".into(),
+    };
+    assert_eq!(
+        store.github_end(&id, Some(RUN), &skip).unwrap(),
+        BuildStatus::Pending
+    );
+    let source = &store.sources(&id.deployment).unwrap()[0];
+    assert_eq!(source.status, Some(BuildStatus::Pending));
+    assert_eq!(source.message.as_deref(), Some("the run ran out of time"));
+    assert!(store.github_outstanding(&id.deployment).unwrap().is_empty());
+    assert_eq!(
+        store.github_check_in(&id, RUN, &grant()).unwrap_err().code,
+        RpcErrorCode::Conflict,
+        "a late check-in from the skipped run is refused"
+    );
+
+    // A cancelled Deployment wants no build: a new dispatch is refused.
+    store
+        .cancel(
+            &who,
+            &ployz_store::Cancel {
+                deployment: id.deployment.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .github_dispatched(&id, &github_run(RUN + 1))
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
 }

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, BuildReport, BuildStatus, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
+    Actor, BuildReport, BuildStatus, Builder, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
     DeploymentSummary, GitSource, RunEvidence, RunnerId,
 };
 use serde_json::Value;
@@ -150,7 +150,40 @@ impl Run {
         checkouts: &BTreeMap<ServiceName, PathBuf>,
     ) -> Result<Result<BTreeMap<ServiceName, BuildReceipt>, String>, RpcError> {
         let mut builds = Vec::new();
+        let mut receipts = BTreeMap::new();
+        let mut failed = Vec::new();
         for (index, source) in claimed.sources.iter().enumerate() {
+            // GitHub built it before this runner claimed the Deployment, or failed it.
+            let receipt = claimed
+                .receipts
+                .get(&source.service)
+                .and_then(|receipt| serde_json::from_value::<BuildReceipt>(receipt.clone()).ok());
+            match (source.status, receipt) {
+                (Some(BuildStatus::Built | BuildStatus::Reused), Some(receipt)) => {
+                    receipts.insert(source.service.clone(), receipt);
+                    continue;
+                }
+                (Some(BuildStatus::Failed), _) => {
+                    failed.push(format!(
+                        "{}: {}",
+                        source.service,
+                        source.message.as_deref().unwrap_or("its build failed")
+                    ));
+                    continue;
+                }
+                _ => {}
+            }
+            if !source.builders.contains(&Builder::Servers) {
+                let why = source
+                    .message
+                    .as_deref()
+                    .map_or_else(String::new, |message| format!("{message}. "));
+                failed.push(format!(
+                    "{}: {why}No other Builder in your Build Order can take it",
+                    source.service
+                ));
+                continue;
+            }
             let (Some(commit), Some(checkout)) = (&source.commit, checkouts.get(&source.service))
             else {
                 return Ok(Err(format!(
@@ -172,7 +205,7 @@ impl Run {
                     .map(|hint| BTreeMap::from([(source.service.clone(), hint)]))
                     .unwrap_or_default(),
                 build_index: index,
-                preferred_machine: None,
+                preferred_machine: source.preferred_machine.clone(),
             };
             builds.push((source, hint, session.build(input, None)?));
         }
@@ -195,8 +228,6 @@ impl Run {
                 }
             }
         };
-        let mut receipts = BTreeMap::new();
-        let mut failed = Vec::new();
         for (ended, (source, _, _)) in ended.into_iter().zip(&builds) {
             match ended? {
                 Ok(receipt) => {
@@ -344,7 +375,7 @@ impl Run {
 }
 
 /// Lowering input `input` narrowed to Service `service`: what its own build takes.
-fn only(input: &Value, service: &ServiceName) -> Value {
+pub(super) fn only(input: &Value, service: &ServiceName) -> Value {
     let mut input = input.clone();
     if let Some(snapshots) = input.get_mut("snapshots").and_then(Value::as_array_mut) {
         snapshots.retain(|snapshot| {
@@ -361,7 +392,7 @@ fn only(input: &Value, service: &ServiceName) -> Value {
 }
 
 /// What one build progress event adds to its log.
-fn log_line(event: &Value) -> String {
+pub(super) fn log_line(event: &Value) -> String {
     let text = |pointer: &str| event.pointer(pointer).and_then(Value::as_str);
     if let Some(machine) = text("/Selected/machine/name") {
         return format!("Building on {machine}\n");
@@ -387,7 +418,7 @@ fn log_line(event: &Value) -> String {
     String::new()
 }
 
-fn internal(message: &str) -> RpcError {
+pub(super) fn internal(message: &str) -> RpcError {
     RpcError {
         code: RpcErrorCode::Internal,
         message: message.to_owned(),

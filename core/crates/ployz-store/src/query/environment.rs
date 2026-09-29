@@ -11,6 +11,8 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::builders;
+use crate::id::EnvironmentId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
@@ -76,7 +78,8 @@ pub(crate) fn environment(
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())
-        .map(|service| values(service, &environment.working));
+        .map(|service| values(tx, &environment.summary.id, service, &environment.working))
+        .transpose()?;
     let whole = path.is_none() && !query.all;
     let mut settings = Vec::new();
     for service in services {
@@ -96,9 +99,14 @@ pub(crate) fn environment(
             if !setting.applies(&service.config) {
                 continue;
             }
+            let value = if setting == ServiceSetting::PreferredBuilder {
+                builders::preferred_value(tx, &environment.summary.id, &service.id)?
+            } else {
+                setting.value(&service.config)
+            };
             row(
                 Target::Setting(setting),
-                setting.value(&service.config),
+                value,
                 setting.default(),
                 setting.apply(),
             );
@@ -133,18 +141,29 @@ pub(crate) fn environment(
 /// A Service's Settings as one object, the shape `set --patch` takes. Settings
 /// without a value are left out.
 pub(crate) fn values(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
     service: &SavedServiceIntent,
     intent: &SavedEnvironmentIntent,
-) -> Map<String, Value> {
+) -> Result<Map<String, Value>, RpcError> {
     let mut values: Map<String, Value> = ServiceSetting::ALL
         .into_iter()
         .filter(|setting| setting.applies(&service.config))
         .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
         .filter(|(_, value)| !value.is_null())
         .collect();
+    if ServiceSetting::PreferredBuilder.applies(&service.config) {
+        let preferred = builders::preferred_value(tx, environment, &service.id)?;
+        if !preferred.is_null() {
+            values.insert(
+                ServiceSetting::PreferredBuilder.name().to_owned(),
+                preferred,
+            );
+        }
+    }
     let env = variables::patch_values(service, intent);
     if !env.is_empty() {
         values.insert("env".to_owned(), Value::Object(env));
     }
-    values
+    Ok(values)
 }

@@ -464,6 +464,7 @@ fn wrong_paths_and_values_name_the_fix() {
             "maxRetries",
             "memLimit",
             "preDeployCommand",
+            "preferredBuilder",
             "registryCredential",
             "replicas",
             "restartPolicy",
