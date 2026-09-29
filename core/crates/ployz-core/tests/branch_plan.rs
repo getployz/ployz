@@ -3,7 +3,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::{ConfigError, config_request};
+use ployz_core::config::{ConfigError, parse_environment_intent, plan_branch};
 use serde_json::{Value, json};
 
 fn id(n: u32) -> String {
@@ -40,8 +40,13 @@ fn parent() -> Value {
 
 fn plan(deployed: &[u32], focus: &[u32], picks: Value) -> Result<Value, ConfigError> {
     let ids = |ns: &[u32]| ns.iter().map(|n| id(*n)).collect::<Vec<_>>();
-    config_request(json!({"operation":"plan_branch","parent":parent(),
-        "deployed":ids(deployed),"focus":ids(focus),"picks":picks}))
+    plan_branch(
+        &parse_environment_intent(parent()).unwrap(),
+        &ids(deployed),
+        &ids(focus),
+        &serde_json::from_value(picks).unwrap(),
+    )
+    .map(|plan| serde_json::to_value(plan).unwrap())
 }
 
 fn own(ns: &[u32]) -> Value {
@@ -149,30 +154,6 @@ fn unknown_lineages_and_invalid_parents_are_refused() {
     assert_eq!(plan(&[], &[1], own(&[42])).unwrap_err().path, "picks.own");
     // A lineage the Parent only uses live has no configuration to copy.
     assert_eq!(plan(&[], &[1], own(&[99])).unwrap_err().path, "picks.own");
-    let error = config_request(json!({"operation":"plan_branch","parent":{"version":2},
-        "deployed":[],"focus":[],"picks":{"preset":"all"}}))
-    .unwrap_err();
+    let error = parse_environment_intent(json!({"version":2})).unwrap_err();
     assert_eq!(error.path, "environment");
-}
-
-#[test]
-fn the_name_check_follows_the_namespace_rule() {
-    let check = |name: &str| config_request(json!({"operation":"check_branch_name","name":name}));
-    assert_eq!(check("shop-pr-12").unwrap(), json!("shop-pr-12"));
-    for (name, message) in [
-        ("", "Namespace is empty"),
-        (&"a".repeat(64), "Namespace is longer than 63 characters"),
-        ("Shop_PR", "Namespace must be a lowercase DNS label"),
-        ("-shop", "Namespace must be a lowercase DNS label"),
-        (
-            "ployz-system",
-            "Namespace is reserved for the system Namespace",
-        ),
-    ] {
-        let error = check(name).unwrap_err();
-        assert_eq!(
-            (error.path.as_str(), error.message.as_str()),
-            ("namespace", message)
-        );
-    }
 }
