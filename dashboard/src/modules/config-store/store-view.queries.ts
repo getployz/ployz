@@ -1,7 +1,7 @@
 import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigCommand, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery,
+  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServiceListing, ServicesQuery, VolumeListing, VolumesQuery,
 } from "@ployz/sdk";
 import { Schema } from "effect";
@@ -182,6 +182,11 @@ export function environmentSettingsQuery(environment: EnvironmentRef): { query: 
 /** An Environment's Services, staged removals included: what its canvas draws. */
 export function servicesQuery(environment: EnvironmentRef): { query: "services" } & ServicesQuery {
   return { query: "services", environment };
+}
+
+/** The Namespace an Environment runs in: how runtime evidence names its Services (`NAMESPACE/PRIVATE_DNS`). */
+export function namespaceQuery(environment: EnvironmentRef): { query: "namespace" } & NamespaceQuery {
+  return { query: "namespace", environment };
 }
 
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
