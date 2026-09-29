@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
-import type { EnvironmentsQuery, PrPlan, SetPrPlan } from "@ployz/sdk";
+import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLegend, FieldSet } from "#/components/ui/field";
@@ -8,7 +8,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
-import { environmentSettingsQuery, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { environmentSettingsQuery, environmentsQuery, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useMissingStorePrGrant } from "#/modules/pr-environments/plan.queries";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
@@ -16,10 +16,7 @@ import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_R
 import { SetupCommandsField, useSavedSetupCommands } from "../new-branch/SetupCommandsField";
 
 type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
-type PlanChange = Partial<Pick<SetPrPlan, "enabled" | "start_from" | "copy" | "setup" | "remove_on_close" | "include_bots">>;
-
-/** A Project's Environments, for Start from. */
-export const projectEnvironmentsQuery = (project: string): { query: "environments" } & EnvironmentsQuery => ({ query: "environments", project });
+type PlanChange = Partial<Pick<PrPlan, "enabled" | "start_from" | "copy" | "setup" | "remove_on_close" | "include_bots">>;
 
 /**
  * A repository's PR Environments plan over the Config Store, over its start-from Environment's canvas. Every change
@@ -70,7 +67,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
   const navigate = useNavigate();
   const { plan, set } = usePlanWrite(organizationSlug, projectSlug, saved);
   const approve = useMissingStorePrGrant(organizationSlug, projectSlug, plan.installation_id);
-  const listing = useStoreView(organizationSlug, projectEnvironmentsQuery(projectSlug));
+  const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
   const environments = listing.ok ? listing.value.environments.filter((environment) => !prEnvironments.has(environment.name)) : [];
   const over = (environmentSlug: string) => void navigate({ to: ENVIRONMENT_PR_PLAN_ROUTE_TO, replace: true,
     params: { ...params, environmentSlug, repositoryId: String(plan.repository_id) } });

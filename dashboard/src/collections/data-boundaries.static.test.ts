@@ -112,6 +112,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "the server assigns a new service's id, slug, and lineage",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useStoreChangeActions.tsx": "deploying starts runtime work and opens the admitted Deployment, a Deploy that deletes Volume data asks the user first, and Discard all closes the review once it discarded",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StorePullRequestNews.tsx": "Save for the merge seals values on the server and changes the pull request's check on GitHub, an external service",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage; over the Store the dialog stays open until the name is accepted",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch.ts": "closing a Branch is destructive, and the page leaves it once the close starts",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "deleting a volume's data is destructive",

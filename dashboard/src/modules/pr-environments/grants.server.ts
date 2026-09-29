@@ -42,8 +42,8 @@ export const listMissingPrEnvironmentGrants = Effect.fn("PrEnvironments.listMiss
 export const listMissingStorePrGrants = Effect.fn("PrEnvironments.listMissingStoreGrants")(
   function* (actor: Actor, input: { organizationSlug: string; projectSlug: string }) {
     const result = yield* callStoreAsMember(actor, input.organizationSlug, { operation: "read", query: { query: "pr_plans", project: input.projectSlug } });
-    if (!result.ok || result.value.view !== "pr_plans") return [];
-    const installationIds = [...new Set(result.value.plans.map((plan) => plan.installation_id))];
+    const view = result.ok && "view" in result.value && result.value.view === "pr_plans" ? result.value : null;
+    const installationIds = [...new Set(view?.plans.map((plan) => plan.installation_id))];
     const checked = yield* Effect.forEach(installationIds, missingGrant, { concurrency: 4 });
     return checked.filter((missing) => missing !== null);
   },
