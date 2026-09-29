@@ -4,10 +4,10 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService, DiffQuery,
-    DiffView, Discard, Discarded, Edit, Edited, EnvironmentCreated, EnvironmentName,
+    Actor, Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject, CreateService,
+    DiffQuery, DiffView, Discard, Discarded, Edit, Edited, EnvironmentCreated, EnvironmentName,
     EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId, ProjectCreated, ProjectName,
-    Publish, Published, Query, ServiceCreated,
+    Publish, Published, Query, ServiceCreated, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -107,6 +107,18 @@ impl Store {
         let request = Command::CreateService(create.clone());
         self.call("write", &request, |store, who| {
             store.create_service(who, create)
+        })
+    }
+
+    /// Cloud checks the repository and branch for the Organization; the hidden
+    /// local Store has no way to, so it refuses every repository.
+    pub(crate) fn create_git_service(
+        &self,
+        create: &CreateGitService,
+    ) -> Result<ServiceCreated, StoreCallError> {
+        let request = Command::CreateGitService(create.clone());
+        self.call("write", &request, |store, who| {
+            store.create_git_service(who, create, &Trusted::default())
         })
     }
 

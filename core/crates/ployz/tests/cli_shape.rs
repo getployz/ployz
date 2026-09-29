@@ -39,6 +39,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env new",
             "explain",
             "get",
+            "github",
+            "github connect",
+            "github disconnect",
+            "github ls",
             "ingress",
             "ingress deploy",
             "login",
@@ -318,6 +322,7 @@ fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
         &["token", "ls", "--json"][..],
         &["org", "ls", "--json"],
         &["billing", "--json"],
+        &["github", "ls", "--json"],
     ] {
         let (code, json, _) = run_json(args);
         assert_eq!(code, Some(1), "{args:?}");

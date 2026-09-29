@@ -82,7 +82,7 @@ pub(super) fn billing_handler(path: &str) -> Option<(Handler, Json)> {
 }
 
 /// Run `work` with `PLOYZ_TOKEN` or this device's sign-in.
-fn in_cloud<T>(
+pub(super) fn in_cloud<T>(
     root: &ArgMatches,
     work: impl AsyncFnOnce(&CredentialStore, &Credential) -> Result<T, LoginError>,
 ) -> Result<T, Error> {
