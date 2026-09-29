@@ -1,6 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
-import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigQuery, ConfigView, DnsLookup } from "@ployz/sdk";
+import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, DnsLookup } from "@ployz/sdk";
 import { Clock, Effect, Option, Schema } from "effect";
 import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
@@ -9,7 +9,7 @@ import type { OrganizationClusterDomain } from "#/modules/cluster-domain/tables"
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
-import type { StoreCall } from "./store.contract";
+import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 const DNS_TIMEOUT_MS = 3_000;
@@ -19,13 +19,10 @@ const OBSERVE_TIMEOUT = "5 seconds";
 const OBSERVATION_TTL_MS = 15_000;
 
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
-const EnvironmentRef = Schema.Struct({
-  project: Schema.optional(Schema.NullOr(Schema.String)),
-  environment: Schema.optional(Schema.NullOr(Schema.String)),
-});
 const DomainCall = Schema.Union([
   Schema.Struct({ command: Schema.Literals(["add_domain", "remove_domain"]) }),
-  Schema.Struct({ command: Schema.Literal("admit"), environment: Schema.optional(EnvironmentRef) }),
+  // A removal expands no domain.
+  Schema.Struct({ command: Schema.Literal("admit"), environment: Schema.optional(EnvironmentRef), remove: Schema.optional(Schema.Literal(false)) }),
   Schema.Struct({ query: Schema.Literal("domains") }),
   Schema.Struct({ query: Schema.Literal("domain"), environment: Schema.optional(EnvironmentRef), domain: Schema.String }),
 ]);
@@ -72,17 +69,23 @@ const observeClusterRecently = (organizationId: string, fresh: boolean) => Effec
   return seen;
 });
 
-/** What DNS answers for `hostname` now. A name that doesn't resolve answers nothing. */
-export const lookUpHostname = (hostname: string) => Effect.promise(async (): Promise<DnsLookup> => {
+/** A name that doesn't resolve answers nothing; any other failure (a timeout, SERVFAIL) is no answer at all. */
+const absent = (error: NodeJS.ErrnoException) =>
+  error.code === "ENOTFOUND" || error.code === "ENODATA" ? [] : Promise.reject(error);
+
+/** What DNS answers for `hostname` now, or nothing when DNS couldn't answer: the Store reads it as unobserved. */
+export const lookUpHostname = (hostname: string) => Effect.promise(async (): Promise<DnsLookup | null> => {
   const resolver = new Resolver({ timeout: DNS_TIMEOUT_MS, tries: 1 });
-  const none = () => [];
   const [cnames, v4, v6] = await Promise.all([
-    resolver.resolveCname(hostname).catch(none),
-    resolver.resolve4(hostname).catch(none),
-    resolver.resolve6(hostname).catch(none),
-  ]);
+    resolver.resolveCname(hostname).catch(absent),
+    resolver.resolve4(hostname).catch(absent),
+    resolver.resolve6(hostname).catch(absent),
+  ]).catch(() => [null, null, null] as const);
+  if (cnames === null || v4 === null || v6 === null) return null;
   return { hostname, cname: cnames[0] ?? null, addresses: [...v4, ...v6] };
-});
+}).pipe(Effect.tap((found) => found === null
+  ? Effect.logWarning("DNS didn't answer; the domain's DNS reads as unobserved.", { hostname })
+  : Effect.void));
 
 /**
  * What Cloud observes of the Organization's public domains, for the Store calls that need it. Adding a domain gets
@@ -93,8 +96,8 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
 export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence")(function* (
   organizationId: string,
   call: StoreCall,
-  read: (query: ConfigQuery) => Promise<ConfigView>,
-  lookUp: (hostname: string) => Effect.Effect<DnsLookup> = lookUpHostname,
+  read: StoreRead,
+  lookUp: (hostname: string) => Effect.Effect<DnsLookup | null> = lookUpHostname,
 ) {
   const wanted = Option.getOrUndefined(Schema.decodeUnknownOption(DomainCall)(call.operation === "read" ? call.query : call.command));
   if (wanted === undefined) return nothing;
@@ -106,13 +109,10 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
       };
     }
-    const domains = yield* storeTry(() => read({
-      query: "domains",
-      environment: { project: wanted.environment?.project ?? null, environment: wanted.environment?.environment ?? null },
-      service: null,
-    })).pipe(Effect.option);
-    const view = Option.getOrUndefined(domains);
-    const generated = view?.view === "domains" && view.domains.some((domain) => domain.kind === "generated");
+    const domains = yield* storeTry(() => read({ query: "domains", environment: environmentOf(wanted.environment), service: null })).pipe(
+      Effect.option,
+    );
+    const generated = Option.getOrUndefined(domains)?.domains.some((domain) => domain.kind === "generated") ?? false;
     const row = generated ? yield* reserveClusterDomain(organizationId) : yield* loadClusterDomain(organizationId);
     return { ...nothing, cluster_domain: clusterDomain(row) };
   }
@@ -127,10 +127,9 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
     Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
   );
   const found = Option.getOrUndefined(yield* storeTry(() => read({
-    query: "domain",
-    environment: { project: wanted.environment?.project ?? null, environment: wanted.environment?.environment ?? null },
-    domain: wanted.domain,
+    query: "domain", environment: environmentOf(wanted.environment), domain: wanted.domain,
   })).pipe(Effect.option));
-  if (found?.view !== "domain" || found.domain.kind !== "custom") return evidence;
-  return { ...evidence, lookups: [yield* lookUp(found.domain.hostname)] };
+  if (found?.domain.kind !== "custom") return evidence;
+  const lookup = yield* lookUp(found.domain.hostname);
+  return lookup === null ? evidence : { ...evidence, lookups: [lookup] };
 });

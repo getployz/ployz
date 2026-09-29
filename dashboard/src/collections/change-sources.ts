@@ -13,6 +13,7 @@ export const storeViewSources = {
   store_environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied", "config_registry_credential", "config_service_policy", "config_environment_branch", "config_pr_environment", "config_conditional_save"],
   store_deployment: ["config_deployment", "config_build"],
   store_organization: ["config_build_order"],
+  store_pull_request: ["config_pull_request"],
 } satisfies Record<StoreViewName, readonly [ChangeSource, ...ChangeSource[]]>;
 
 /**

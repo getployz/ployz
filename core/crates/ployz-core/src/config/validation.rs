@@ -7,6 +7,31 @@ use ts_rs::TS;
 use super::*;
 use crate::{IngressHost, ServiceName, value::is_dns_label};
 
+/// The most vCPUs `cpuLimit` allows.
+pub const CPU_LIMIT_MAX: f64 = 64.0;
+/// The most GB `memLimit` allows.
+pub const MEM_LIMIT_MAX: f64 = 1024.0;
+/// The most replicas a Service runs.
+pub const REPLICAS_MAX: u8 = 50;
+/// The most restarts `maxRetries` allows.
+pub const MAX_RETRIES_MAX: u8 = 100;
+/// The longest command: start, pre-deploy, build and Setup Commands.
+pub const COMMAND_MAX: usize = 2000;
+/// The longest container image reference.
+pub const IMAGE_MAX: usize = 500;
+/// The longest Dockerfile path.
+pub const DOCKERFILE_PATH_MAX: usize = 500;
+/// The longest GitHub repository name, as `owner/name`.
+pub const REPOSITORY_MAX: usize = 300;
+/// The longest Git branch name.
+pub const BRANCH_MAX: usize = 255;
+/// The longest healthcheck path.
+pub const HEALTHCHECK_PATH_MAX: usize = 500;
+/// The longest a healthcheck may take, in seconds.
+pub const HEALTHCHECK_TIMEOUT_MAX: u16 = 300;
+/// Every restart policy.
+pub const RESTART_POLICIES: [&str; 4] = ["always", "no", "on-failure", "unless-stopped"];
+
 /// Validation errors identify the setting, never echo credentials or authored values.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, thiserror::Error, TS)]
 #[error("{path}: {message}")]
@@ -97,9 +122,9 @@ impl ServiceSettingInput {
             Self::Name(value) => trimmed(value, "name", 64),
             Self::Source(value) => normalize_source(value),
             Self::RootDir(value) => root_dir(value),
-            Self::Command(value) => trimmed(value, "command", 2000),
+            Self::Command(value) => trimmed(value, "command", COMMAND_MAX),
             Self::PreDeployCommand(value) | Self::StartCommand(value) => {
-                optional_trimmed(value, "command", 2000)
+                optional_trimmed(value, "command", COMMAND_MAX)
             }
             Self::Healthcheck(ServiceHealthcheck::Http {
                 path,
@@ -113,10 +138,16 @@ impl ServiceSettingInput {
             | Self::PrivateDns(_) => Ok(()),
             Self::HealthcheckPath(value) => healthcheck_path(value),
             Self::HealthcheckTimeoutSeconds(value) => timeout(*value),
-            Self::MaxRetries(value) => range(*value <= 100, "maxRetries", "Expected 0–100 retries"),
-            Self::Replicas(value) => range(*value <= 50, "replicas", "Expected 0–50 replicas"),
-            Self::CpuLimit(value) => limit(*value, 64.0, "cpuLimit"),
-            Self::MemLimit(value) => limit(*value, 1024.0, "memLimit"),
+            Self::MaxRetries(value) => range(
+                *value <= MAX_RETRIES_MAX,
+                "maxRetries",
+                "Expected 0–100 retries",
+            ),
+            Self::Replicas(value) => {
+                range(*value <= REPLICAS_MAX, "replicas", "Expected 0–50 replicas")
+            }
+            Self::CpuLimit(value) => limit(*value, CPU_LIMIT_MAX, "cpuLimit"),
+            Self::MemLimit(value) => limit(*value, MEM_LIMIT_MAX, "memLimit"),
             Self::Routes(routes) => {
                 let mut ids = std::collections::BTreeSet::new();
                 for route in routes {
@@ -152,11 +183,11 @@ impl ServiceSettingInput {
             Self::ManagedHostnameValue(value) => managed_hostname(value),
             Self::ManagedHostnamePrefix(value) => hostname_prefix(value),
             Self::Build(value) => {
-                optional_trimmed(&mut value.command, "build.command", 2000)?;
+                optional_trimmed(&mut value.command, "build.command", COMMAND_MAX)?;
                 optional_trimmed(
                     &mut value.dockerfile_path,
                     "build.dockerfilePath",
-                    usize::MAX,
+                    DOCKERFILE_PATH_MAX,
                 )?;
                 Ok(())
             }
@@ -183,7 +214,7 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
             ..
         } => {
             range(*version == 2, "source.version", "Expected version 2")?;
-            trimmed(repository, "source.repository", 300)?;
+            trimmed(repository, "source.repository", REPOSITORY_MAX)?;
             range(
                 (1..=9_007_199_254_740_991).contains(repository_id),
                 "source.repository",
@@ -199,9 +230,9 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
             }
             root_dir(path)?;
             match branch {
-                ServiceGitBranch::Connected { name } => trimmed(name, "source.branch", 255),
+                ServiceGitBranch::Connected { name } => trimmed(name, "source.branch", BRANCH_MAX),
                 ServiceGitBranch::Disconnected { previous_name } => {
-                    optional_trimmed(previous_name, "source.branch", 255)
+                    optional_trimmed(previous_name, "source.branch", BRANCH_MAX)
                 }
             }
         }
@@ -211,7 +242,7 @@ fn normalize_source(source: &mut ServiceSource) -> Result<(), ConfigError> {
             credentials,
         } => {
             range(*version == 1, "source.version", "Expected version 1")?;
-            trimmed(image, "source.image", 500)?;
+            trimmed(image, "source.image", IMAGE_MAX)?;
             if let ServiceImageCredentials::Configured { credential_id } = credentials {
                 range(
                     uuid::Uuid::parse_str(credential_id).is_ok(),
@@ -258,7 +289,7 @@ fn root_dir(value: &mut String) -> Result<(), ConfigError> {
 }
 
 fn healthcheck_path(value: &mut String) -> Result<(), ConfigError> {
-    trimmed(value, "healthcheck.path", 500)?;
+    trimmed(value, "healthcheck.path", HEALTHCHECK_PATH_MAX)?;
     range(
         value.starts_with('/'),
         "healthcheck.path",
@@ -268,7 +299,7 @@ fn healthcheck_path(value: &mut String) -> Result<(), ConfigError> {
 
 fn timeout(value: u16) -> Result<(), ConfigError> {
     range(
-        (1..=300).contains(&value),
+        (1..=HEALTHCHECK_TIMEOUT_MAX).contains(&value),
         "healthcheck.timeoutSeconds",
         "Expected 1–300 seconds",
     )

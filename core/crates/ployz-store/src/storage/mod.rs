@@ -66,6 +66,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0013_conditional_saves",
         include_str!("migrations/0013_conditional_saves.sql"),
     ),
+    (
+        "0014_deployment_runs",
+        include_str!("migrations/0014_deployment_runs.sql"),
+    ),
 ];
 
 pub(crate) enum Storage {
@@ -122,6 +126,22 @@ impl Storage {
     }
 }
 
+/// Run `work` inside a savepoint: when it fails, everything it wrote is undone and
+/// the rest of the transaction goes on. An attempt that may be skipped runs here, so
+/// skipping it leaves no rows behind.
+pub(crate) fn attempt<T>(
+    tx: &mut dyn Tx,
+    work: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
+) -> Result<T, RpcError> {
+    tx.execute("SAVEPOINT attempt", &[])?;
+    let result = work(tx);
+    if result.is_err() {
+        tx.execute("ROLLBACK TO SAVEPOINT attempt", &[])?;
+    }
+    tx.execute("RELEASE SAVEPOINT attempt", &[])?;
+    result
+}
+
 /// A statement runner inside one open transaction.
 pub(crate) trait Tx {
     /// Run a statement and return how many rows it changed.
@@ -137,6 +157,10 @@ pub(crate) trait Tx {
 pub(crate) enum Param<'text> {
     Text(&'text str),
     Int(i64),
+    /// NULL in a text column.
+    NullText,
+    /// NULL in an integer column.
+    NullInt,
 }
 
 impl<'text> From<&'text str> for Param<'text> {
@@ -148,6 +172,18 @@ impl<'text> From<&'text str> for Param<'text> {
 impl From<i64> for Param<'_> {
     fn from(value: i64) -> Self {
         Self::Int(value)
+    }
+}
+
+impl<'text> From<Option<&'text str>> for Param<'text> {
+    fn from(value: Option<&'text str>) -> Self {
+        value.map_or(Self::NullText, Self::Text)
+    }
+}
+
+impl From<Option<i64>> for Param<'_> {
+    fn from(value: Option<i64>) -> Self {
+        value.map_or(Self::NullInt, Self::Int)
     }
 }
 
@@ -175,6 +211,24 @@ impl Row {
         match self.0.get(index) {
             Some(Cell::Int(value)) => Ok(*value),
             Some(Cell::Null | Cell::Text(_)) | None => Err(error::corrupt("integer column")),
+        }
+    }
+
+    /// A text column that may be NULL.
+    pub(crate) fn optional_text(&self, index: usize) -> Result<Option<&str>, RpcError> {
+        match self.0.get(index) {
+            Some(Cell::Null) => Ok(None),
+            Some(Cell::Text(value)) => Ok(Some(value)),
+            Some(Cell::Int(_)) | None => Err(error::corrupt("text column")),
+        }
+    }
+
+    /// An integer column that may be NULL.
+    pub(crate) fn optional_int(&self, index: usize) -> Result<Option<i64>, RpcError> {
+        match self.0.get(index) {
+            Some(Cell::Null) => Ok(None),
+            Some(Cell::Int(value)) => Ok(Some(*value)),
+            Some(Cell::Text(_)) | None => Err(error::corrupt("integer column")),
         }
     }
 }

@@ -62,7 +62,7 @@ function DestinationRow({ store, news, number, lead, onShutDown }: {
     return (
       <NewsRow lead={lead} icon={<GitPullRequestIcon />} title={`Saved for ${news.into}`} detail={goLiveWhen(news.changes, number)}
         // Withdraws it: the refetched view shows the changes to save again, and the check moves.
-        action={<Button size="sm" variant="outline" onClick={() => void writer.commit({ command: "move", from: store, into, when: "at_merge", picks: [] })}>Undo</Button>} />
+        action={<Button size="sm" variant="outline" onClick={() => void writer.commit({ command: "move", move: "save", from: store, into, when: "at_merge", picks: [] })}>Undo</Button>} />
     );
   }
   return (
@@ -103,7 +103,7 @@ function AtMergeSheet({ from, into, number, onClose, onShutDown }: {
     try {
       // Awaited: the sheet closes once the Store holds it, and GitHub's check follows.
       await writer.commit({
-        command: "move", from, into, when: "at_merge", version: view.value.version,
+        command: "move", move: "save", from, into, when: "at_merge", version: view.value.version,
         picks: movePicks(rows.picks.map(({ row, pick }) => ({ key: row.key, ticked: pick.ticked, choice: row.choice, option: pick.option, value: pick.value }))),
       }).isPersisted.promise;
       toast.success(`Saved for #${number}'s merge into ${destination}`);

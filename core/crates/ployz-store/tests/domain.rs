@@ -26,9 +26,7 @@ fn uuid(n: u8) -> String {
 /// Project `shop` with Service `web` in `production`, and Service `web` in `staging`.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,

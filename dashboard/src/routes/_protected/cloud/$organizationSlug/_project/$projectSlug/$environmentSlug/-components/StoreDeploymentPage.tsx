@@ -18,7 +18,8 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
+  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
+  targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -49,7 +50,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const buildOf = (node: NodeOutcome | undefined) => deployment.builds.find((build) => build.service === node?.name);
   const focused = services.find((node) => node.id === search.service)
-    ?? services.find((node) => node.outcome !== "applied") ?? services[0];
+    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
   const build = buildOf(focused);
   // A build still going or failed is where to look; else how it deployed.
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
@@ -70,7 +71,9 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
         <header className="flex flex-col gap-1">
           <p className="text-xs text-muted-foreground">
             Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : admitted.by ? ` · by ${admitted.by}` : null}
-            {admitted.at ? <> · <RelativeTime date={admitted.at} /></> : null}
+            {admitted.at ? <> · admitted <RelativeTime date={admitted.at} /></> : null}
+            {admitted.started ? <> · started <RelativeTime date={admitted.started} /></> : null}
+            {admitted.ended ? <> · ended <RelativeTime date={admitted.ended} /></> : null}
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <h2 className="min-w-0 text-base font-medium break-words">Deploys {targetsLabel(deployment)}</h2>
@@ -202,7 +205,7 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
   }
 
   // A failed Deployment's focused Service it didn't apply can be fixed on a Branch, with the change that failed.
-  const fixing = deployment.status === "failed" && focused && focused.outcome !== "applied" ? focused.name : null;
+  const fixing = deployment.status === "failed" && focused && !nodeApplied(focused.outcome) ? focused.name : null;
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">

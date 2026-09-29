@@ -17,7 +17,8 @@ use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
 use ployz_store::{
     Actor, AuthorizedRepository, ClusterDomain, ClusterDomainStatus, Command as StoreCommand,
-    ConfigStore, DomainEvidence, Hostname, OrganizationId, RunnerId, SealingKey, Trusted, Written,
+    ConfigStore, DomainEvidence, Hostname, OrganizationId, Principal, RunnerId, SealingKey,
+    Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -121,7 +122,7 @@ fn fake_cloud() -> String {
 }
 
 /// Cloud's worker: run an admitted Deployment in the background.
-fn dispatch(store: &std::sync::Arc<ConfigStore>, who: Actor, written: &Written) {
+fn dispatch(store: &std::sync::Arc<ConfigStore>, written: &Written) {
     let Written::Deployment(admitted) = written else {
         return;
     };
@@ -132,7 +133,6 @@ fn dispatch(store: &std::sync::Arc<ConfigStore>, who: Actor, written: &Written) 
         // Its Deployment ends not executed, or was replaced before it started.
         let _ = runtime.block_on(ployz::sdk::run_deployment(
             store,
-            who,
             id,
             RunnerId::parse("cloud-worker").unwrap(),
             vec![unreachable],
@@ -158,8 +158,10 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
             length = value.trim().parse().unwrap();
         }
         if let Some(value) = header.strip_prefix("authorization: bearer ployz_") {
+            // Cloud names who acts: here, the token's Organization.
             organization = Some(Actor {
                 organization: OrganizationId::parse(value.trim()).unwrap(),
+                principal: Some(Principal::parse(value.trim()).unwrap()),
             });
         }
     }
@@ -178,7 +180,7 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
             if let (StoreCommand::Admit(_) | StoreCommand::Start(_), Ok(written)) =
                 (&command, &written)
             {
-                dispatch(store, who, written);
+                dispatch(store, written);
             }
             answer(written)
         }
@@ -222,8 +224,8 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
     )
 }
 
-/// What this Cloud knows for `who`: its GitHub, and its Cluster Domain
-/// `acme.ployz.app`, ready. Only Organization `pro` may add custom domains.
+/// What this Cloud knows for `who`: its GitHub, its one Server, and its Cluster
+/// Domain `acme.ployz.app`, ready. Only Organization `pro` may add custom domains.
 fn evidence(who: &Actor) -> Trusted {
     Trusted {
         domains: DomainEvidence {
@@ -234,7 +236,8 @@ fn evidence(who: &Actor) -> Trusted {
             }),
             ..DomainEvidence::default()
         },
-        uploader: Some(who.organization.as_str().to_owned()),
+        // Its Cluster has one Server, which never answers.
+        servers: Some(1),
         ..github()
     }
 }
@@ -279,6 +282,7 @@ fn an_agent_creates_and_edits_an_image_service() {
             added.get("staged"),
             Some(&json!([
                 "web.cpuLimit",
+                "web.healthcheck",
                 "web.image",
                 "web.maxRetries",
                 "web.memLimit",
@@ -307,10 +311,10 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            9
+            10
         );
         assert_eq!(
-            got.pointer("/settings/6"),
+            got.pointer("/settings/7"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
         );
         assert_eq!(
@@ -741,6 +745,26 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
 }
 
 #[test]
+fn edits_to_a_service_never_deployed_show_in_the_diff_and_discard() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "nginx", "--image", "nginx"]);
+        ok(store, &["publish"]);
+        ok(store, &["set", "nginx.preDeployCommand=Jenje"]);
+        let diff = ok(store, &["diff"]);
+        let nginx = &diff["changes"][0];
+        assert_eq!(nginx["lifecycle"], json!("create"), "{diff}");
+        assert_eq!(
+            nginx["settings"][0]["path"],
+            json!("nginx.preDeployCommand")
+        );
+        ok(store, &["discard", "nginx.preDeployCommand"]);
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff["changes"][0]["settings"], json!([]), "{diff}");
+    }
+}
+
+#[test]
 fn a_stale_revision_conflicts_and_names_the_read_that_refreshes_it() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
@@ -926,7 +950,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            9
+            10
         );
 
         for patch in [r#"{"memLimit": null}"#, "not json"] {
@@ -1153,7 +1177,7 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(code, Some(3), "{deployed}");
         assert_eq!(deployed["status"], json!("failed"));
         assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
-        assert_eq!(deployed["nodes"][0]["outcome"], json!("not_applied"));
+        assert_eq!(deployed["nodes"][0]["outcome"], json!("not_attempted"));
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
             deployed["next"],

@@ -38,6 +38,7 @@ import { InngestClient } from "#/modules/inngest/client";
 import { GithubApi } from "#/modules/github/github-observation.api";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { fakeGithubApi } from "#/test/fake-github";
+import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import {
@@ -139,7 +140,7 @@ function enrollmentTestClient(
     Layer.succeed(GithubApi, fakeGithubApi().service),
     Layer.succeed(Polar, { mode: "self_hosted" }),
   );
-  const layer = OrganizationRuntimeLive.pipe(Layer.provideMerge(dependencies));
+  const layer = Layer.mergeAll(OrganizationRuntimeLive, CloudStoreLive).pipe(Layer.provideMerge(dependencies));
   const runtime = ManagedRuntime.make(layer);
   disposeClients.push(() => runtime.dispose());
   return {

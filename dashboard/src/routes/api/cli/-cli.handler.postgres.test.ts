@@ -17,10 +17,14 @@ import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { callStore } from "#/modules/config-store/config-store.server";
+import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
+import { handleCliRequest as handleOrganizationCliRequest } from "#/routes/api/cli/-handlers";
+import { MintMachineEnrollmentInput } from "#/modules/machines/enrollment";
+import { mintCliMachineEnrollment } from "#/modules/machines/enrollment.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
@@ -108,7 +112,8 @@ const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Pl
     Layer.succeed(GithubApi, github.service),
     ployz,
   );
-  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services);
+  const store = CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)));
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services, store);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -527,6 +532,35 @@ it.live(
         assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
         assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "enrollment takes a signed-in device or an Organization Token, the token only in its own Organization",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cliLayer({ mode: "self_hosted" });
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const bob = yield* signUp("bob");
+        const token = (yield* cli("POST", "tokens", alice, { name: "ci", expires_in_days: 1 })).json.token ?? assert.fail("no token");
+        const enroll = (as: As, body: Readonly<Record<string, string | boolean>>) => {
+          const headers = new Headers();
+          if (as.cookie !== undefined) headers.set("cookie", as.cookie);
+          if (as.bearer !== undefined) headers.set("authorization", `Bearer ${as.bearer}`);
+          const request = new Request(`${origin}/api/cli/servers/enroll`, { method: "POST", headers, body: JSON.stringify(body) });
+          return handleOrganizationCliRequest(request, MintMachineEnrollmentInput, mintCliMachineEnrollment).pipe(
+            Effect.map((response) => response.status),
+            Effect.catch((error) => Effect.succeed(statusForPublicError(encodePublicError(error)))),
+          );
+        };
+        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: alice.organization.slug }), 200);
+        assert.strictEqual(yield* enroll({ bearer: token.secret }, { organizationSlug: bob.organization.slug }), 403);
+        assert.strictEqual(yield* enroll({}, { organizationSlug: alice.organization.slug }), 401);
+        assert.strictEqual(yield* enroll(alice, { organizationSlug: alice.organization.slug, extra: true }), 422);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

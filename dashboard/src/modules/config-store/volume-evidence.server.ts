@@ -1,23 +1,20 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigQuery, ConfigView, VolumeObservation } from "@ployz/sdk";
+import type { VolumeObservation } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
+import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { observeVolumes } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeVolumes">;
 
 /** The part of a command that decides whether a Deploy can delete Volume data; the Store validates the whole command. */
-const Text = Schema.String;
-export const AdmitCommand = Schema.Struct({
+const AdmitCommand = Schema.Struct({
   command: Schema.Literal("admit"),
-  environment: Schema.optional(Schema.Struct({
-    project: Schema.optional(Schema.NullOr(Text)),
-    environment: Schema.optional(Schema.NullOr(Text)),
-  })),
-  services: Schema.optional(Schema.Array(Text)),
+  environment: Schema.optional(EnvironmentRef),
+  services: Schema.optional(Schema.Array(Schema.String)),
   remove: Schema.optional(Schema.Boolean),
 });
 
@@ -28,14 +25,16 @@ export const AdmitCommand = Schema.Struct({
  */
 export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence")(function* (
   organizationId: string,
-  command: typeof AdmitCommand.Type | undefined,
-  read: (query: ConfigQuery) => Promise<ConfigView>,
+  call: StoreCall,
+  read: StoreRead,
 ) {
+  if (call.operation !== "write") return undefined;
+  const command = Option.getOrUndefined(Schema.decodeUnknownOption(AdmitCommand)(call.command));
   if (command === undefined || (command.services ?? []).length > 0) return undefined;
-  const environment = { project: command.environment?.project ?? null, environment: command.environment?.environment ?? null };
+  const environment = environmentOf(command.environment);
   const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.remove ?? false })).pipe(Effect.option);
   const removals = Option.getOrUndefined(view);
-  if (removals?.view !== "removals" || removals.volumes.length === 0) return undefined;
+  if (removals === undefined || removals.volumes.length === 0) return undefined;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready") return undefined;

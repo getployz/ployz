@@ -6,7 +6,7 @@ import { uploadChunk } from "#/modules/config-store/tables";
 import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import type { StoreRefusal } from "./store.contract";
-import { storeTry } from "#/modules/config-store/store-sdk.server";
+import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { IN_FLIGHT, isInFlight } from "./store-deployments";
 
 /** The most compressed source one Deployment may upload: the same cap as a repository archive's download. */
@@ -16,22 +16,14 @@ const CHUNK_SIZE = 1024 * 1024;
 
 class UploadRefused extends Data.TaggedError("UploadRefused")<{ readonly refusal: StoreRefusal }> {}
 
-/** A Store refusal, as the SDK rejects with one. */
-function isRefusal(cause: unknown): cause is { readonly code: string; readonly message: string } {
-  return typeof cause === "object" && cause !== null && "code" in cause && typeof cause.code === "string"
-    && "message" in cause && typeof cause.message === "string";
-}
-
 const refused = (code: string, message: string) => new UploadRefused({ refusal: { code, message, details: null } });
 
 /** The Store's answer to "does Deployment `deploymentId` exist in this Organization?", as a refusal when it does. */
 const notAdmittedYet = (store: ConfigStore, organizationId: string, deploymentId: string) =>
   storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-    Effect.flatMap(() => Effect.fail(refused("conflict", "This Deployment was admitted already; upload its source before admitting it."))),
-    Effect.catch((cause) => {
-      if (cause instanceof UploadRefused) return Effect.fail(cause);
-      if (!isRefusal(cause)) return Effect.die(cause);
-      return cause.code === "not_found" ? Effect.void : Effect.fail(refused(cause.code, cause.message));
+    Effect.matchEffect({
+      onSuccess: () => Effect.fail(refused("conflict", "This Deployment was admitted already; upload its source before admitting it.")),
+      onFailure: (error) => error.code === "not_found" ? Effect.void : Effect.fail(refused(error.code, error.message)),
     }),
   );
 
@@ -106,8 +98,8 @@ export const releaseUpload = Effect.fn("ConfigStore.releaseUpload")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
   const status = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-    Effect.map((view) => view.view === "deployment" ? view.status : undefined),
-    Effect.catch((cause) => isRefusal(cause) && cause.code === "not_found" ? Effect.succeed(undefined) : Effect.fail(cause)),
+    Effect.map((view) => view.status),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
   );
   if (status !== undefined && isInFlight(status)) return;
   const { drizzle } = yield* Database;

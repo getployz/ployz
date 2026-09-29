@@ -41,15 +41,15 @@ const refreshedBy = {
   // A plan reads the Environment's Working State and what it and its ancestors run.
   branch_plan: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
-  // A Move compares a Branch with its Parent's Working and Applied State.
-  move: ["store_environment", "store_deployment"],
+  // A Move compares a Branch with its Parent's Working and Applied State; a PR's Conditional Save reads its facts.
+  move: ["store_environment", "store_deployment", "store_pull_request"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   projects: ["store_project", "store_environment"],
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
   pr_plans: ["store_project", "store_environment"],
-  // PR Environments, their Deployments and each Destination's Working State; the facts are Cloud's own writes.
-  pull_request: ["store_environment", "store_deployment"],
+  // PR Environments, their Deployments, each Destination's Working State, and the facts GitHub last told Cloud.
+  pull_request: ["store_environment", "store_deployment", "store_pull_request"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 /** How often a domains view rereads while a domain is still setting up or waits on the user's DNS. */
@@ -236,12 +236,12 @@ export function branchQuery(environment: EnvironmentRef): { query: "branch" } & 
 
 /** What Save would put in a Branch's Parent. */
 export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: branch, into: null };
+  return { query: "move", move: "save", from: branch };
 }
 
 /** What Update would bring into a Branch from what its Parent runs. */
 export function updateQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: null, into: branch };
+  return { query: "move", move: "update", into: branch };
 }
 
 /** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */

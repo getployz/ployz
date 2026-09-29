@@ -9,11 +9,12 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_core::ServiceName;
 use ployz_store::{
-    Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
-    DeploymentSummary, DeploymentView, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
-    MovePick, MoveQuery, MoveView, Moved, RemoveEnvironment, SaveState, ServicesQuery,
-    SetDefaultEnvironment, SetupCommand, VolumeName, VolumesQuery, When,
+    Admit, Branched, ConditionalSaveId, CopyNode, CreateBranch, CreateEnvironment, DeploymentId,
+    DeploymentStatus, DeploymentSummary, DeploymentView, EnvironmentId, EnvironmentName,
+    EnvironmentRef, EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView,
+    KeepBranch, Move, MovePick, MoveQuery, MoveView, Moved, PickChoice, RemoveEnvironment, Save,
+    SaveState, ServicesQuery, SetDefaultEnvironment, SetupCommand, Take, Update, VolumeName,
+    VolumesQuery, When,
 };
 use serde_json::json;
 
@@ -25,7 +26,6 @@ use crate::cli::{base, positional, repeated, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
-use ployz_core::config::BranchOption;
 
 pub(crate) fn command() -> Command {
     Command::new("env")
@@ -582,17 +582,9 @@ fn moving(command: Command) -> Command {
 
 fn save(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let here = Some(store::environment(matches)?);
+    let here = store::environment(matches)?;
     if matches.get_one::<String>("take").is_some() {
-        return shift(
-            root,
-            "take",
-            MoveQuery {
-                from: None,
-                into: here,
-                when: None,
-            },
-        );
+        return shift(root, "take", (EnvironmentRef::default(), Some(here)));
     }
     let into = matches
         .get_one::<String>("into")
@@ -607,33 +599,21 @@ fn save(root: &ArgMatches) -> Result<(), Error> {
         true => "withdraw",
         false => "save",
     };
-    shift(
-        root,
-        verb,
-        MoveQuery {
-            from: here,
-            into,
-            when: None,
-        },
-    )
+    shift(root, verb, (here, into))
 }
 
 fn update(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let into = Some(store::environment(matches)?);
-    shift(
-        root,
-        "update",
-        MoveQuery {
-            from: None,
-            into,
-            when: None,
-        },
-    )
+    shift(root, "update", (EnvironmentRef::default(), into))
 }
 
 /// A Save, Update, withdrawal or take: with `--plan` its changes, else the Move itself.
-fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
+fn shift(
+    root: &ArgMatches,
+    verb: &str,
+    (from, into): (EnvironmentRef, Option<EnvironmentRef>),
+) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
     let command = match verb {
@@ -642,6 +622,16 @@ fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
     };
     let words = ["env", command];
     if matches.get_flag("plan") {
+        let sides = match verb {
+            "update" | "take" => MoveQuery::Update {
+                into: into.unwrap_or_default(),
+            },
+            _ => MoveQuery::Save {
+                from,
+                into,
+                when: None,
+            },
+        };
         let view = store.move_view(&sides).map_err(failed(matches, &words))?;
         return plan(matches, command, &view);
     }
@@ -652,17 +642,35 @@ fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
             .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
             .transpose()?,
     };
-    let request = Move {
-        from: sides.from,
-        into: sides.into,
-        picks,
-        version: matches.get_one::<String>("version").cloned(),
-        when: (verb == "withdraw").then_some(When::AtMerge),
-        take: matches
-            .try_get_one::<String>("take")
-            .ok()
-            .flatten()
-            .cloned(),
+    let version = matches.get_one::<String>("version").cloned();
+    let request = match verb {
+        "take" => {
+            let save = matches
+                .try_get_one::<String>("take")
+                .ok()
+                .flatten()
+                .map(|id| ConditionalSaveId::parse(id.as_str()))
+                .transpose()?
+                .ok_or_else(|| Error::usage("Name the Conditional Save to take from"))?;
+            Move::Take(Take {
+                from: save,
+                into,
+                rows: picks.map(|picks| picks.into_iter().map(|pick| pick.row).collect()),
+                version,
+            })
+        }
+        "update" => Move::Update(Update {
+            into: into.unwrap_or_default(),
+            picks,
+            version,
+        }),
+        _ => Move::Save(Save {
+            from,
+            into,
+            picks,
+            version,
+            when: (verb == "withdraw").then_some(When::AtMerge),
+        }),
     };
     let moved = store
         .move_changes(&request)
@@ -674,7 +682,7 @@ fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
 fn pick(only: &str) -> Result<MovePick, Error> {
     let (row, choice) = match only.split_once('=') {
         Some((row, choice)) => {
-            let choice: BranchOption = serde_json::from_value(json!(choice)).map_err(|_| {
+            let choice: PickChoice = serde_json::from_value(json!(choice)).map_err(|_| {
                 Error::usage(format!(
                     "Expected --only {row}=CHOICE with from, parent or leave_out"
                 ))
@@ -687,7 +695,6 @@ fn pick(only: &str) -> Result<MovePick, Error> {
     Ok(MovePick {
         row: row.to_owned(),
         choice,
-        value: None,
     })
 }
 
