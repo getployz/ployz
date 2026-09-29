@@ -74,6 +74,8 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "service start",
             "service stop",
             "set",
+            "setup",
+            "setup agent",
             "token",
             "token ls",
             "token new",

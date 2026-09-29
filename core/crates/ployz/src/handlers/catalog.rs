@@ -1,5 +1,5 @@
-//! `ployz schema` and `ployz explain`: the settings catalog, which needs no Store,
-//! and completion of Setting paths.
+//! `ployz schema` and `ployz explain`: the command tree and the settings catalog,
+//! which need no Store, and completion of Setting paths.
 
 use clap::{ArgMatches, Command};
 use clap_complete::engine::{ArgValueCompleter, CompletionCandidate};
@@ -14,7 +14,7 @@ use crate::output::say;
 
 pub(crate) fn schema_command() -> Command {
     Command::new("schema")
-        .about("Print the settings catalog as JSON Schema: all of it, one Service, or one Setting")
+        .about("Print the settings catalog as JSON Schema, with every command at the root: all of it, one Service, or one Setting")
         .arg(
             positional("path", false)
                 .help("SERVICE or SERVICE.SETTING")
@@ -34,8 +34,85 @@ pub(crate) fn explain_command() -> Command {
 
 pub(super) fn schema(root: &ArgMatches) -> Result<(), Error> {
     let path = leaf_matches(root).get_one::<String>("path");
-    crate::output::show(&catalog::schema(path.map(String::as_str))?)?;
+    let mut schema = catalog::schema(path.map(String::as_str))?;
+    if let (None, Some(object)) = (path, schema.as_object_mut()) {
+        object.insert("x-ployz-commands".into(), serde_json::to_value(commands())?);
+    }
+    crate::output::show(&schema)?;
     Ok(())
+}
+
+/// One runnable command, read from the command tree itself.
+#[derive(Serialize)]
+pub(crate) struct CommandEntry {
+    pub command: String,
+    pub about: String,
+    /// Whether it prints a `--json` result.
+    pub json: bool,
+    pub args: Vec<ArgEntry>,
+}
+
+/// One argument: `--flag` or a positional `NAME`.
+#[derive(Serialize)]
+pub(crate) struct ArgEntry {
+    name: String,
+    required: bool,
+    /// Whether it takes a value; a flag without one is a switch.
+    value: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    help: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    values: Vec<String>,
+}
+
+/// Every visible leaf command in path order, with its own arguments; the global
+/// connection flags every command shares are left out.
+pub(crate) fn commands() -> Vec<CommandEntry> {
+    fn walk(command: &Command, parent: &str, out: &mut Vec<CommandEntry>) {
+        for child in command
+            .get_subcommands()
+            .filter(|child| !child.is_hide_set())
+        {
+            let path = format!("{parent}{}", child.get_name());
+            if child.has_subcommands() {
+                walk(child, &format!("{path} "), out);
+                continue;
+            }
+            let args = child
+                .get_arguments()
+                .filter(|arg| !arg.is_global_set() && !arg.is_hide_set())
+                .map(|arg| ArgEntry {
+                    name: arg.get_long().map_or_else(
+                        || arg.get_id().as_str().to_uppercase(),
+                        |long| format!("--{long}"),
+                    ),
+                    required: arg.is_required_set(),
+                    value: arg.get_action().takes_values(),
+                    help: arg.get_help().map(ToString::to_string),
+                    values: arg
+                        .get_possible_values()
+                        .iter()
+                        .filter(|value| !value.is_hide_set())
+                        .map(|value| value.get_name().to_owned())
+                        .collect(),
+                })
+                .collect();
+            out.push(CommandEntry {
+                json: super::handler_for(&path)
+                    .is_some_and(|(_, json)| json == super::Json::Supported),
+                about: child
+                    .get_about()
+                    .map(ToString::to_string)
+                    .unwrap_or_default(),
+                command: path,
+                args,
+            });
+        }
+    }
+    let mut out = Vec::new();
+    walk(&crate::cli::command(), "", &mut out);
+    out.sort_by(|a, b| a.command.cmp(&b.command));
+    out
 }
 
 /// One Setting with a command that sets it.
