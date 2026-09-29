@@ -9,10 +9,10 @@
 
 use ployz_core::{RegistryAuth, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
+    Actor, Admit, Change, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
     DeploymentsQuery, DiffQuery, Discard, Edit, Edited, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, OrganizationId, PlanQuery, ProjectId, ProjectName, RunEvidence, RunnerId,
-    ServiceId, SettingPath,
+    EnvironmentRef, OrganizationId, PlanQuery, ProjectId, ProjectName, Retry, RunEvidence,
+    RunnerId, ServiceId, SettingPath,
 };
 use serde_json::{Value, json};
 
@@ -112,16 +112,14 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
     store
         .admit(
             &who(),
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
@@ -202,16 +200,10 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
     store
         .admit(
             &who(),
-            &Admit {
+            &Admit::Retry(Retry {
                 id: retried.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(one.clone()),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: one.clone(),
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();

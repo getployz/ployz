@@ -25,14 +25,13 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::command::{Admit, ProjectSummary};
+use crate::command::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
-use crate::domain::{ClusterDomain, ClusterDomainStatus};
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, EnvironmentName, Hostname, ProjectName};
+use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
-use crate::{Actor, Trusted, build, review, teardown};
+use crate::{Actor, Trusted, review, teardown};
 
 /// A Branch closes after this long without a Deployment.
 const IDLE: i64 = 7 * 24 * 60 * 60;
@@ -847,7 +846,7 @@ fn create(
     // Generated domains expand under the Cluster Domain of the start-from's last
     // Deploy. Refused before anything is written: a PR Environment that can't deploy
     // isn't made.
-    let cluster_domain = cluster_domain(tx, &start.summary.id)?;
+    let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
     if cluster_domain.is_none() && crate::domain::has_generated(working) {
         return Err(RpcError {
             code: RpcErrorCode::Unsupported,
@@ -905,31 +904,11 @@ fn create(
             number(event.number)?.into(),
         ],
     )?;
-    let trusted = Trusted {
-        domains: crate::DomainEvidence {
-            cluster_domain: cluster_domain.map(|name| ClusterDomain {
-                name,
-                status: ClusterDomainStatus::Ready,
-            }),
-            ..crate::DomainEvidence::default()
-        },
-        ..Trusted::default()
-    };
-    let admit = Admit {
-        id: DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
-        environment: EnvironmentRef {
-            project: Some(environment.summary.project.clone()),
-            environment: Some(name),
-        },
-        services: Vec::new(),
-        version: None,
-        upload: None,
-        retry: None,
-        remove: false,
-        accept_volume_loss: Vec::new(),
-    };
-    let deployment = crate::command::admit(tx, who, &admit, &trusted)?;
-    // The repository's Services build the head Cloud read.
+    // It deploys what it saves first: all of it, the repository's Services at the head
+    // Cloud read.
+    let latest = review::latest_saved(tx, &id)?;
+    review::publish(tx, who, &id, environment.working.clone(), latest.as_ref())?;
+    let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
     let pins = environment
         .working
         .services
@@ -937,7 +916,13 @@ fn create(
         .filter(|service| ours(&service.config.source))
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
-    build::pin(tx, &admit.id, &pins)?;
+    let deployment = crate::automation::auto_admit(
+        tx,
+        who,
+        (&environment, &saved),
+        &[],
+        (cluster_domain.as_ref(), &pins),
+    )?;
     Ok(Some(AutoDeployed {
         environment: id,
         deployment,
@@ -1014,17 +999,6 @@ fn retrack(
         scope::save_working(tx, &mut environment)?;
     }
     Ok(())
-}
-
-fn cluster_domain(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Hostname>, RpcError> {
-    tx.query(
-        "SELECT cluster_domain FROM config_deployment \
-         WHERE environment_id = ?1 AND cluster_domain <> '' ORDER BY number DESC LIMIT 1",
-        &[id.as_str().into()],
-    )?
-    .first()
-    .map(|row| Hostname::parse(row.text(0)?).map_err(|_| error::corrupt("Cluster Domain")))
-    .transpose()
 }
 
 /// Start closing a Branch: stop what it is deploying, then remove it as far as

@@ -11,39 +11,7 @@ hostname: Hostname | null,
  */
 port: number | null, };
 
-export type Admit = { id: DeploymentId, environment: EnvironmentRef,
-/**
- * Deploy only these Services; none deploys every Service.
- */
-services: Array<ServiceName>,
-/**
- * Refuse with `conflict` unless this is still the latest `diff` version.
- */
-version: string | null,
-/**
- * A new upload for Services without a source of their own; none keeps the
- * Environment's latest.
- */
-upload?: UploadedSource | null,
-/**
- * Retry this failed, unknown or cancelled Deployment: its Saved revision,
- * targets and Namespace, whatever was saved since. It names the Environment,
- * so `environment`, `services`, `version` and `upload` stay empty.
- */
-retry?: DeploymentId | null,
-/**
- * Remove the Environment from the Servers: ship it empty, deleting its deployed
- * Volumes, without touching Working or Saved State. `services`, `upload` and
- * `retry` stay empty. `RemoveEnvironment` then deletes it.
- */
-remove: boolean,
-/**
- * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
- * deletes data, or publishes a removal that will, refuses with
- * `confirmation_required` unless it names each one and passes the `version`
- * that refusal handed back.
- */
-accept_volume_loss: Array<VolumeName>, };
+export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retry | { "admit": "remove" } & Removal;
 
 export type AdvertisedEndpoint = string;
 
@@ -702,6 +670,29 @@ export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 export type DependencyCondition = "service_started" | "service_healthy";
 
 export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
+
+export type Deploy = { id: DeploymentId, environment: EnvironmentRef,
+/**
+ * Deploy only these Services; none deploys every Service.
+ */
+services?: Array<ServiceName>,
+/**
+ * Refuse with `conflict` unless this is still the latest `diff` version, or the
+ * version a refusal to delete data handed back.
+ */
+version?: string | null,
+/**
+ * A new upload for Services without a source of their own; none keeps the
+ * Environment's latest.
+ */
+upload?: UploadedSource | null,
+/**
+ * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
+ * deletes data, or publishes a removal that will, refuses with
+ * `confirmation_required` unless it names each one and passes the `version`
+ * that refusal handed back.
+ */
+accept_volume_loss?: Array<VolumeName>, };
 
 export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, } | { "type": "images_pruned", report: ImageCleanupReport, };
 
@@ -2155,6 +2146,16 @@ export type RegistryAuth = { username?: string,
  */
 password: string, };
 
+export type Removal = { id: DeploymentId, environment: EnvironmentRef,
+/**
+ * As [`Deploy::version`].
+ */
+version?: string | null,
+/**
+ * As [`Deploy::accept_volume_loss`].
+ */
+accept_volume_loss?: Array<VolumeName>, };
+
 export type RemovalsQuery = {
 /**
  * The Environment.
@@ -2271,6 +2272,12 @@ export type ResolverValue = { "kind": "literal", value: string, } | { "kind": "s
 export type RestartAttempt<E> = { "type": "restarted" } | { "type": "failed", error: E, };
 
 export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count: number | null, };
+
+export type Retry = { id: DeploymentId,
+/**
+ * The Deployment it ships again.
+ */
+deployment: DeploymentId, };
 
 export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number,
 /**

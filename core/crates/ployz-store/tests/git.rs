@@ -9,9 +9,9 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
-    ConfigStore, CreateGitService, CreateProject, CreateService, DeploymentId, DiffQuery, Edit,
-    EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
+    ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
+    Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
+    Publish, Query, Retry, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -279,7 +279,7 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
     store
         .admit(
             who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -288,10 +288,8 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                     .collect(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
@@ -451,16 +449,10 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     store
         .admit(
             &who,
-            &Admit {
+            &Admit::Retry(Retry {
                 id: again.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(first.clone()),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: first.clone(),
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();

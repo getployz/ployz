@@ -19,13 +19,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::command::Admit;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, Hostname, OrganizationId};
 use crate::policy::{self, is_repository_path};
 use crate::review;
-use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
+use crate::scope::{self, EnvironmentSummary};
 use crate::storage::Tx;
 use crate::{Actor, Trusted, build, domain, registry};
 
@@ -524,30 +523,6 @@ fn admit(
             (saved, selected)
         }
     };
-    // Generated domains expand under the Cluster Domain Cloud reserved for the
-    // Environment's last Deploy.
-    let cluster_domain: Option<Hostname> = match tx
-        .query(
-            "SELECT cluster_domain FROM config_deployment \
-             WHERE environment_id = ?1 AND cluster_domain <> '' ORDER BY number DESC LIMIT 1",
-            &[id.as_str().into()],
-        )?
-        .first()
-    {
-        Some(row) => {
-            Some(Hostname::parse(row.text(0)?).map_err(|_| error::corrupt("Cluster Domain"))?)
-        }
-        None => None,
-    };
-    if cluster_domain.is_none() && domain::has_generated(&saved.intent) {
-        return Err(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "Deploy once first: generated domains need the Cluster Domain Cloud \
-                      reserves at a Deploy"
-                .into(),
-            details: json!({}),
-        });
-    }
     let names = match shut_down {
         true => Vec::new(),
         false => selected
@@ -560,32 +535,65 @@ fn admit(
         .iter()
         .map(|service| (service.config.private_dns.clone(), push.head.to_owned()))
         .collect();
+    // Generated domains expand under the Cluster Domain Cloud reserved for the
+    // Environment's last Deploy.
+    let cluster_domain = deployment::cluster_domain(tx, id)?;
+    let summary = auto_admit(
+        tx,
+        who,
+        (&environment, &saved),
+        &names,
+        (cluster_domain.as_ref(), &pins),
+    )?;
+    Ok(Some(Deploy::Admitted(Box::new(summary))))
+}
+
+/// Admit the Store's own Deployment of Saved revision `saved` of `environment`:
+/// `services` (none: every one), with generated domains under `cluster_domain` and
+/// each Git Service of `pins` pinned to its commit. A targeted Deploy removes
+/// nothing, and neither does one of an Environment with nothing applied.
+pub(crate) fn auto_admit(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, saved): (&scope::Environment, &review::Saved),
+    services: &[ServiceName],
+    (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, String>),
+) -> Result<DeploymentSummary, RpcError> {
+    let id = &environment.summary.id;
+    if cluster_domain.is_none() && domain::has_generated(&saved.intent) {
+        return Err(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: format!(
+                "Deploy {} once first: generated domains need the Cluster Domain Cloud \
+                 reserves at a Deploy",
+                environment.summary.name
+            ),
+            details: json!({}),
+        });
+    }
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let head = deployment::head(tx, &environment)?;
+    let head = deployment::head(tx, environment)?;
     let mut frozen = deployment::freeze(
         id,
         &saved.intent,
         &head.applied,
-        &names,
+        services,
         namespace,
-        cluster_domain.as_ref(),
-        // A targeted Deploy removes nothing; a shut-down one has nothing left to remove.
+        cluster_domain,
         &[],
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved.intent, &frozen)?;
-    let request = Admit {
-        id: DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
-        environment: EnvironmentRef::default(),
-        services: names,
-        version: None,
-        upload: None,
-        retry: None,
-        remove: false,
-        accept_volume_loss: Vec::new(),
-    };
-    let summary = deployment::admit(tx, who, &request, id, saved.revision, &frozen)?;
-    build::pin(tx, &request.id, &pins)?;
-    Ok(Some(Deploy::Admitted(Box::new(summary))))
+    let deployment = DeploymentId::parse(uuid::Uuid::new_v4().to_string())?;
+    let summary = deployment::admit(
+        tx,
+        who,
+        (&deployment, services, None),
+        id,
+        saved.revision,
+        &frozen,
+    )?;
+    build::pin(tx, &deployment, pins)?;
+    Ok(summary)
 }
 
 /// Whether every check suite of the pushed commit completed and passed; false

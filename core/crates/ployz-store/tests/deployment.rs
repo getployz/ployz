@@ -10,12 +10,12 @@ use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
-    EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
-    Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence,
-    RunnerId, ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
-    UploadedSource, View, Written,
+    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
+    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
+    Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
+    PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
+    Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start,
+    Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -72,7 +72,7 @@ fn admit(
 ) -> Result<DeploymentSummary, RpcError> {
     store.admit(
         who,
-        &Admit {
+        &Admit::Deploy(Deploy {
             id: id(n),
             environment: EnvironmentRef::default(),
             services: services
@@ -81,10 +81,8 @@ fn admit(
                 .collect(),
             version,
             upload: None,
-            retry: None,
-            remove: false,
             accept_volume_loss: Vec::new(),
-        },
+        }),
         &Trusted::default(),
     )
 }
@@ -491,16 +489,10 @@ fn retry(
 ) -> Result<DeploymentSummary, RpcError> {
     store.admit(
         who,
-        &Admit {
+        &Admit::Retry(Retry {
             id: id(n),
-            environment: EnvironmentRef::default(),
-            services: Vec::new(),
-            version: None,
-            upload: None,
-            retry: Some(id(source)),
-            remove: false,
-            accept_volume_loss: Vec::new(),
-        },
+            deployment: id(source),
+        }),
         &ployz_store::Trusted::default(),
     )
 }
@@ -581,22 +573,6 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
-    // It names the Environment: nothing else may.
-    let narrowed = store.admit(
-        &who,
-        &Admit {
-            id: id(9),
-            environment: EnvironmentRef::default(),
-            services: vec![ServiceName::parse("web").unwrap()],
-            version: None,
-            upload: None,
-            retry: Some(id(1)),
-            remove: false,
-            accept_volume_loss: Vec::new(),
-        },
-        &ployz_store::Trusted::default(),
-    );
-    assert_eq!(code(narrowed), RpcErrorCode::InvalidArgument);
     assert_eq!(code(retry(&store, &other, 9, 1)), RpcErrorCode::NotFound);
     assert_eq!(code(retry(&store, &who, 9, 8)), RpcErrorCode::NotFound);
     // Queued, running or cancelling: not ended yet.
@@ -903,16 +879,14 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let with = |n: u8, upload: Option<UploadedSource>| {
         store.admit(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
                 upload,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &ployz_store::Trusted::default(),
         )
     };
@@ -991,17 +965,15 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         uploader: uploader.map(|name| Principal::parse(name).unwrap()),
     };
     let admit = |n: u8, who: &Actor| {
-        let command = Command::Admit(Admit {
+        let command = Command::Admit(Admit::Deploy(Deploy {
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
             // A caller can't name the uploader: only Cloud's authentication does.
             upload: Some(upload(Some("mallory"))),
-            retry: None,
-            remove: false,
             accept_volume_loss: Vec::new(),
-        });
+        }));
         let Written::Deployment(summary) = store.write(who, &command).unwrap() else {
             panic!("an admit writes a Deployment");
         };

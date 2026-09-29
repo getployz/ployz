@@ -23,7 +23,6 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
-use crate::command::Admit;
 use crate::error;
 use crate::id::{
     DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision, RunnerId,
@@ -608,18 +607,17 @@ fn built_later(mut input: Value) -> Value {
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    admit: &Admit,
+    (id, services, upload): (&DeploymentId, &[ServiceName], Option<UploadedSource>),
     environment: &EnvironmentId,
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
-    let (id, services) = (&admit.id, &admit.services);
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
-    let upload = match &admit.upload {
+    let upload = match upload {
         Some(upload) => {
             upload.check()?;
-            Some(upload.clone())
+            Some(upload)
         }
         None => match tx
             .query(
@@ -678,6 +676,22 @@ pub(crate) fn admit(
         ],
     )?;
     Ok(summary)
+}
+
+/// The Cluster Domain `environment`'s latest Deployment that had one expanded its
+/// generated domains under, if any.
+pub(crate) fn cluster_domain(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Hostname>, RpcError> {
+    tx.query(
+        "SELECT cluster_domain FROM config_deployment \
+         WHERE environment_id = ?1 AND cluster_domain <> '' ORDER BY number DESC LIMIT 1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .map(|row| parse_stored(row.text(0)?))
+    .transpose()
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.

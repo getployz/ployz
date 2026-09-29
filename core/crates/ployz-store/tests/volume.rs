@@ -12,10 +12,10 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery,
-    RemoveVolume, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, VolumeId, VolumeListing,
-    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
+    EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
+    RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted,
+    VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -131,19 +131,17 @@ fn admit_at(
     store
         .admit(
             who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
-            },
+            }),
             &Trusted {
                 volumes: observed,
                 ..Trusted::default()
@@ -528,16 +526,10 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
     store
         .admit(
             &who,
-            &Admit {
+            &Admit::Retry(Retry {
                 id: id(3),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(id(2)),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: id(2),
+            }),
             &Trusted::default(),
         )
         .unwrap();

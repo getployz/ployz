@@ -13,8 +13,8 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RemoveVolumesRequest, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunEvidence,
+    Admit, Cancel, Claimed, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, Retry, RunEvidence,
     RunnerId, Start, UploadBase, UploadedSource, VolumeName, VolumeObservation,
 };
 use serde_json::{Value, json};
@@ -214,16 +214,14 @@ pub(super) fn upload_and_ship(
     }
     let admitted = store
         .admit(
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id,
                 environment,
                 services: services.clone(),
                 version,
                 upload,
-                retry: None,
-                remove: false,
                 accept_volume_loss: accept,
-            },
+            }),
             volumes,
         )
         .map_err(|error| {
@@ -846,16 +844,10 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
     let words = ["deployment", "retry"];
     let admitted = store
         .admit(
-            &Admit {
+            &Admit::Retry(Retry {
                 id: DeploymentId::parse(mint())?,
-                environment: ployz_store::EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(source.clone()),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: source.clone(),
+            }),
             None,
         )
         .map_err(refused(matches, &source, &words))?;
