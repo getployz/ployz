@@ -11,3 +11,4 @@ export * from "#/modules/github/tables";
 export * from "#/modules/billing/tables";
 export * from "#/modules/cluster-domain/tables";
 export * from "#/modules/pr-environments/tables";
+export * from "#/modules/config-store/tables";

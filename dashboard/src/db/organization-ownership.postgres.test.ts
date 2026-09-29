@@ -32,7 +32,11 @@ const notOrganizationOwned = {
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
   config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   config_migration: "The Config Store's applied migrations.",
+  upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
+  config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
+  config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
+  config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;

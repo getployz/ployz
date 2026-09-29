@@ -473,7 +473,10 @@ fn wrong_paths_and_values_name_the_fix() {
             "rootDir",
             "buildMethod",
             "dockerfilePath",
-            "buildCommand"
+            "buildCommand",
+            "autoDeploy",
+            "waitForCi",
+            "watchPaths"
         ])
     );
     let error = SettingPath::parse("Web!.replicas").unwrap_err();

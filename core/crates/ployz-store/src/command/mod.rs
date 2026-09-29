@@ -148,6 +148,8 @@ pub enum Written {
     Deployment(crate::DeploymentSummary),
     /// A public domain was added or removed.
     Domain(crate::DomainStaged),
+    /// What a system event made the Store do.
+    Automated(crate::Automated),
     /// A Branch was made, updated, given an Own Copy, or kept.
     Branch(crate::Branched),
     /// The Default Environment changed: the Project's Environments after it.

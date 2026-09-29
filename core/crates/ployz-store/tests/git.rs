@@ -150,6 +150,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         json!({
             "repository": "acme/web", "branch": "main", "buildMethod": "railpack",
             "maxRetries": 10, "replicas": 1, "restartPolicy": "unless-stopped",
+            "autoDeploy": true, "waitForCi": false, "watchPaths": [],
         })
     );
     // A replay needs no fresh evidence: it returns what the first create wrote.

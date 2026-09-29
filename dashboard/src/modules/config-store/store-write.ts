@@ -67,7 +67,10 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       },
       onError: async (error) => {
         // Only a write that sent `expect` meets a stale revision; a command's `conflict` (a taken name) says its own.
-        toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
+        // `confirmation_required` is a question for the caller to put to the user, not a failure.
+        if (!(error instanceof StoreRefused && error.code === "confirmation_required")) {
+          toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
+        }
         await refetchEnvironmentViews(queryClient, organizationSlug, key);
       },
     });

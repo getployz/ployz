@@ -65,6 +65,22 @@ default_branch: string,
  */
 branches: Array<string>, };
 
+export type AutoDeployed = { environment: EnvironmentId, deployment: DeploymentSummary, };
+
+export type Automated = {
+/**
+ * Deployments admitted: Cloud dispatches each to a runner.
+ */
+admitted: Array<AutoDeployed>,
+/**
+ * Environments whose deploy waits for the commit's CI.
+ */
+waiting: Array<EnvironmentId>,
+/**
+ * Environments that would have deployed but can't, and why.
+ */
+skipped: Array<Skipped>, };
+
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
@@ -94,6 +110,23 @@ provided: Array<string>, hostnames: BranchHostnames, fromKept: boolean,
 picks?: Array<BranchPick>, };
 
 export type BranchChoice = { default: BranchOption, options: Array<BranchOption>, secret: boolean, };
+
+export type BranchHead = { repository_id: number, branch: string,
+/**
+ * The head Cloud compared from: the Store's, as [`crate::ConfigStore::branch_head`]
+ * read it. Anything else is `conflict`: read it again and compare again.
+ */
+base: string | null,
+/**
+ * The head now; none once the branch was deleted.
+ */
+head: string | null,
+/**
+ * The paths `base..head` changed, when `head` is ahead of `base` and GitHub
+ * listed every one. None (a force-push, diverged or long history) deploys every
+ * Service that follows the branch.
+ */
+changed: Array<string> | null, };
 
 export type BranchHostnames = { from: string, into: string, };
 
@@ -218,7 +251,11 @@ export type BuildLogView = { deployment: DeploymentId, log: string,
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -232,7 +269,11 @@ export type BuildView = {
 /**
  * The Service's name when admitted.
  */
-service: string, commit: string, status: BuildStatus,
+service: string,
+/**
+ * The commit it builds; none when it builds from the Deployment's upload.
+ */
+commit: string | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -287,6 +328,25 @@ value: JsonValue, };
 export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
+
+export type CheckSuite = { repository_id: number, suite: number,
+/**
+ * The commit it checks.
+ */
+head: string,
+/**
+ * GitHub's status: `queued`, `in_progress`, `completed`, ….
+ */
+status: string,
+/**
+ * GitHub's conclusion once completed.
+ */
+conclusion: string | null,
+/**
+ * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: an older result never
+ * replaces a newer one.
+ */
+updated: string, };
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -347,11 +407,15 @@ domains: ConfigDomainEvidence,
 /**
  * Which Servers hold the Docker Volumes a Deploy would delete, when it deletes any.
  */
-volumes?: VolumeObservation, };
+volumes?: VolumeObservation,
+/**
+ * Who Cloud authenticated for this write: an admitted upload records them.
+ */
+uploader?: string | null, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "branch" } & Branched;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -1411,7 +1475,7 @@ export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array
  * The Volumes it applied: every Service mounting a kept one confirmed, and
  * every Docker Volume of a removed one deleted.
  */
-volumes: Array<string>, } | { "type": "not_executed", reason: string, };
+volumes: Array<string>, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
@@ -2028,6 +2092,12 @@ service: ServiceName,
  */
 command: string, };
 
+export type Skipped = { environment: EnvironmentId,
+/**
+ * Users read it: it holds no secret.
+ */
+reason: string, };
+
 export type SourceKind = "empty" | "git" | "image";
 
 export type Start = { deployment: DeploymentId, };
@@ -2091,6 +2161,8 @@ name: DockerVolumeName, };
 
 export type StorageChoice = "none" | "zfs";
 
+export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite;
+
 export type TelemetryObservation = { "scope": "bridge_capacity",
 /**
  * Fresh Ployz bridge endpoint capacity.
@@ -2144,7 +2216,12 @@ digest: string,
  * The commit the directory was checked out at, if it was a Git checkout.
  * Provenance only: it never identifies the build.
  */
-base: UploadBase | null, };
+base: UploadBase | null,
+/**
+ * Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
+ * caller sends. Provenance only.
+ */
+uploader?: string | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 

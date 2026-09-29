@@ -182,6 +182,11 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
             }
             answer(written)
         }
+        (Some(_), upload) if upload.starts_with("/api/config/upload/") => {
+            let id = upload.trim_start_matches("/api/config/upload/").to_owned();
+            UPLOADS.lock().unwrap().insert(id.clone(), body);
+            (200, json!({ "uploaded": id }))
+        }
         (Some(who), "/api/cli/organizations") => {
             let id = who.organization.as_str();
             let organization = json!({ "id": id, "slug": id, "name": id, "current": true });
@@ -229,9 +234,14 @@ fn evidence(who: &Actor) -> Trusted {
             }),
             ..DomainEvidence::default()
         },
+        uploader: Some(who.organization.as_str().to_owned()),
         ..github()
     }
 }
+
+/// Every upload the fake Cloud took, by Deployment ID.
+static UPLOADS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
 
 fn github() -> Trusted {
     Trusted {
@@ -1056,7 +1066,14 @@ fn an_upload_is_recorded_with_its_base_commit_and_kept_for_later_deploys() {
                 assert_eq!(&redeployed["upload"], upload);
             }
             Target::Cloud { .. } => {
-                assert_eq!(error(store, &args)["code"], json!("unsupported"));
+                // Cloud takes the upload first and names who sent it; its runner reaches no Server.
+                let (code, deployed) = ployz(Some(store), &args);
+                assert_eq!(code, Some(3), "{deployed}");
+                assert_eq!(
+                    deployed["upload"]["base"],
+                    json!({"commit": head, "changed": true})
+                );
+                assert_eq!(deployed["upload"]["uploader"], json!("alice"));
             }
         }
     }
@@ -1549,4 +1566,32 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
             assert!(!read.to_string().contains("-token"), "{read}");
         }
     }
+}
+
+/// Over Cloud, `deploy --upload` hands Cloud the directory before admitting the
+/// Deployment it's for; Cloud names the uploader. With no upload to build from, Cloud's
+/// runner says a new upload is the fix.
+#[test]
+fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
+    let cloud = Target::Cloud {
+        url: fake_cloud(),
+        token: "ployz_alice",
+    };
+    ok(&cloud, &["project", "new", "shop"]);
+    ok(&cloud, &["service", "add", "app"]);
+    let (code, never) = ployz(Some(&cloud), &["deploy"]);
+    assert_eq!(code, Some(3), "{never}");
+    assert_eq!(never["outcome"]["needs_upload"], json!(["app"]), "{never}");
+    assert_eq!(never["next"], json!("ployz deploy --upload ."));
+
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+    let dir = source.path().to_str().unwrap();
+    // Its only Server never answers, so nothing runs; the upload is Cloud's already.
+    let (code, uploaded) = ployz(Some(&cloud), &["deploy", "--upload", dir]);
+    assert_eq!(code, Some(3), "{uploaded}");
+    assert_eq!(uploaded["upload"]["uploader"], json!("alice"));
+    let id = uploaded["id"].as_str().unwrap();
+    let archive = UPLOADS.lock().unwrap().get(id).cloned().unwrap();
+    assert_eq!(archive.get(..2), Some(&[0x1f, 0x8b][..]), "a gzip");
 }

@@ -11,6 +11,7 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::{Revision, VolumeName};
+use crate::policy::{self, Policy};
 use crate::registry;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
@@ -98,10 +99,10 @@ pub(crate) fn edit(
                 Some(value) => registry::set(tx, who, &mut environment, service, value, sealing)?,
                 None => {
                     let config = &mut environment.service_mut(service)?.config;
-                    let was = setting.value(config);
+                    let was = setting.value(config, &Policy::default());
                     setting.unset(config)?;
                     registry::Changed {
-                        staged: setting.value(config) != was,
+                        staged: setting.value(config, &Policy::default()) != was,
                         rotated: false,
                     }
                 }
@@ -116,15 +117,27 @@ pub(crate) fn edit(
             }
             continue;
         }
+        if let Some(Target::Setting(ServiceSetting::Policy(setting))) = path.target() {
+            let node = environment.service(service)?;
+            if policy::set(tx, who, &environment.summary.id, node, *setting, value)?
+                && !immediate.contains(&path)
+            {
+                immediate.push(path.clone());
+            }
+            continue;
+        }
         let (changed, apply) = match (path.target(), value) {
             (Some(Target::Setting(setting)), value) => {
                 let config = &mut environment.service_mut(service)?.config;
-                let was = setting.value(config);
+                let was = setting.value(config, &Policy::default());
                 match value {
                     Some(value) => setting.set(config, value, trusted)?,
                     None => setting.unset(config)?,
                 }
-                (setting.value(config) != was, setting.apply())
+                (
+                    setting.value(config, &Policy::default()) != was,
+                    setting.apply(),
+                )
             }
             (Some(Target::Variable(key)), Some(value)) => (
                 variables::set(&mut environment, service, key, value, sealing)?,

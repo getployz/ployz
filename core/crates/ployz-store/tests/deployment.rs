@@ -15,7 +15,7 @@ use ployz_store::{
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
     ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
     ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
-    UploadedSource, View,
+    UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -910,6 +910,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
             commit: "c".repeat(40),
             changed: true,
         }),
+        uploader: None,
     };
     let with = |n: u8, upload: Option<UploadedSource>| {
         store.admit(
@@ -979,4 +980,84 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     newer.digest = "e".repeat(64);
     with(3, Some(newer)).unwrap();
     assert_eq!(retry(&store, &who, 4, 1).unwrap().upload, Some(upload));
+}
+
+#[test]
+fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
+    let (store, who) = shop();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("app").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    let app = ServiceName::parse("app").unwrap();
+    let upload = |uploader: Option<&str>| UploadedSource {
+        digest: "d".repeat(64),
+        base: None,
+        uploader: uploader.map(str::to_owned),
+    };
+    let admit = |n: u8, trusted: &Trusted| {
+        let command = Command::Admit(Admit {
+            id: id(n),
+            environment: EnvironmentRef::default(),
+            services: Vec::new(),
+            version: None,
+            // A caller can't name the uploader: only Cloud's authentication does.
+            upload: Some(upload(Some("mallory"))),
+            retry: None,
+            accept_volume_loss: Vec::new(),
+        });
+        let Written::Deployment(summary) = store.write_trusted(&who, &command, trusted).unwrap()
+        else {
+            panic!("an admit writes a Deployment");
+        };
+        summary
+    };
+    let cloud = Trusted {
+        uploader: Some("nick".into()),
+        ..Trusted::default()
+    };
+    assert_eq!(admit(1, &cloud).upload, Some(upload(Some("nick"))));
+    assert_eq!(admit(2, &Trusted::default()).upload, Some(upload(None)));
+    let a = runner("cloud-a");
+    let claimed = store.claim(&id(2), &a).unwrap();
+    assert_eq!(claimed.uploads, vec![app.clone()]);
+    assert!(claimed.sources.is_empty());
+    let report = |status| {
+        RunEvidence::Build(ployz_store::BuildReport {
+            service: app.clone(),
+            status,
+            message: None,
+            log: "GitHub can't build uploaded source\n".into(),
+        })
+    };
+    store
+        .record(&id(2), &a, report(ployz_store::BuildStatus::Building))
+        .unwrap();
+    store
+        .record(&id(2), &a, report(ployz_store::BuildStatus::Failed))
+        .unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::UploadNeeded(vec![app.clone()]))
+        .unwrap();
+    let view = store.deployment(&who, &id(2)).unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    assert_eq!(view.builds.len(), 1);
+    assert_eq!(view.builds[0].commit, None);
+    assert_eq!(view.builds[0].status, ployz_store::BuildStatus::Failed);
+    let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = view.outcome else {
+        panic!("nothing executed");
+    };
+    assert_eq!(needs_upload, vec![app]);
+    // A retry keeps the upload's provenance.
+    assert_eq!(
+        retry(&store, &who, 3, 2).unwrap().upload,
+        Some(upload(None))
+    );
 }

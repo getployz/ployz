@@ -3,6 +3,7 @@
 //! [`Command`], each in one transaction; in-process callers use the typed method
 //! for each, which runs the same code. Storage is its only I/O.
 
+mod automation;
 mod branch;
 mod build;
 pub mod catalog;
@@ -12,6 +13,7 @@ mod domain;
 mod error;
 mod git;
 mod id;
+mod policy;
 mod query;
 mod registry;
 mod removal;
@@ -26,6 +28,7 @@ mod variables;
 
 use ployz_core::RpcError;
 
+pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, SystemEvent};
 pub use branch::{
     BranchQuery, BranchView, Branched, CopyNode, CreateBranch, KeepBranch, LiveNode, SetupCommand,
     UpdateBranch,
@@ -509,6 +512,38 @@ impl ConfigStore {
         commits: &std::collections::BTreeMap<ployz_core::ServiceName, String>,
     ) -> Result<Vec<GitSource>, RpcError> {
         self.storage.write(|tx| build::pin(tx, deployment, commits))
+    }
+
+    /// Apply what Cloud observed of GitHub: a branch's head or a check suite's result,
+    /// admitting the auto-deploys they call for. In-process only: never exposed over HTTPS.
+    ///
+    /// # Errors
+    /// Returns `conflict` when a [`BranchHead`]'s base is no longer the Store's head
+    /// (read [`Self::branch_head`] and compare again), `invalid_argument` for a
+    /// malformed observation, or a storage error.
+    pub fn system(
+        &self,
+        organization: &OrganizationId,
+        event: &SystemEvent,
+    ) -> Result<Written, RpcError> {
+        self.storage
+            .write(|tx| automation::system(tx, organization, event))
+            .map(Written::Automated)
+    }
+
+    /// The head of a branch the Store last saw, which Cloud compares a new head from.
+    /// In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn branch_head(
+        &self,
+        organization: &OrganizationId,
+        repository_id: u64,
+        branch: &str,
+    ) -> Result<Option<String>, RpcError> {
+        self.storage
+            .read(|tx| automation::head(tx, organization, repository_id, branch))
     }
 
     /// [`Command::CreateBranch`].

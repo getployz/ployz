@@ -47,8 +47,12 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("migrations/0008_applied_volumes.sql"),
     ),
     (
-        "0009_branches",
-        include_str!("migrations/0009_branches.sql"),
+        "0009_git_automation",
+        include_str!("migrations/0009_git_automation.sql"),
+    ),
+    (
+        "0010_branches",
+        include_str!("migrations/0010_branches.sql"),
     ),
 ];
 

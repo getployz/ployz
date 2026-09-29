@@ -354,7 +354,7 @@ fn insert_branch(
         &[],
     )?;
     tx.execute(
-        "INSERT INTO config_branch (environment_id, organization_id, parent_id, kept, base, setup) \
+        "INSERT INTO config_environment_branch (environment_id, organization_id, parent_id, kept, base, setup) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         &[
             create.id.as_str().into(),
@@ -506,7 +506,7 @@ pub(crate) fn keep_branch(
     let mut immediate = Vec::new();
     if row.kept != keep.kept {
         tx.execute(
-            "UPDATE config_branch SET kept = ?1 WHERE environment_id = ?2",
+            "UPDATE config_environment_branch SET kept = ?1 WHERE environment_id = ?2",
             &[
                 i64::from(keep.kept).into(),
                 branch.summary.id.as_str().into(),
@@ -760,7 +760,7 @@ fn stage_from(
         &picks,
     )?;
     tx.execute(
-        "UPDATE config_branch SET base = ?1 WHERE environment_id = ?2",
+        "UPDATE config_environment_branch SET base = ?1 WHERE environment_id = ?2",
         &[
             document(&base).as_str().into(),
             branch.summary.id.as_str().into(),
@@ -1052,7 +1052,7 @@ fn ancestors(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Vec<EnvironmentId>, 
 
 fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
     let rows = tx.query(
-        "SELECT parent_id, kept, base, setup FROM config_branch WHERE environment_id = ?1",
+        "SELECT parent_id, kept, base, setup FROM config_environment_branch WHERE environment_id = ?1",
         &[id.as_str().into()],
     )?;
     let Some(row) = rows.first() else {

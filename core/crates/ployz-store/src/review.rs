@@ -340,7 +340,10 @@ pub(crate) fn introductions(
     Ok(intent)
 }
 
-fn latest_saved(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<Option<Saved>, RpcError> {
+pub(crate) fn latest_saved(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Saved>, RpcError> {
     let rows = tx.query(
         "SELECT revision, intent FROM config_saved WHERE environment_id = ?1 \
          ORDER BY revision DESC LIMIT 1",

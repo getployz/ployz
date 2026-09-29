@@ -46,14 +46,6 @@ export const getVolumeResource = Effect.fn("EnvironmentDesign.getVolumeResource"
   },
 );
 
-export const getResourceIdentity = Effect.fn("EnvironmentDesign.getResourceIdentity")(
-  function* (environmentId: string, resourceId: string) {
-    const { intent } = yield* loadEnvironmentDocument(environmentId);
-    if (intent.volumes.some((node) => node.resourceId === resourceId)) return { id: resourceId, implementationType: "volume" as const };
-    return null;
-  },
-);
-
 export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourceIdentity")(
   function* (input: { projectId: string; environmentId: string; name: string; slug: string; x: number; y: number }) {
     const { drizzle } = yield* Database;

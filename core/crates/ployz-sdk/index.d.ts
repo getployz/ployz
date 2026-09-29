@@ -9,6 +9,7 @@ import type {
   ConfigWritten,
   DeploymentSummary,
   GitSource,
+  SystemEvent,
   CertificateMaterialPublished,
   ContractDescription,
   DeployEvent,
@@ -272,17 +273,26 @@ export interface ConfigStore {
    */
   pinSources(deployment: string, commits: Record<string, string>): Promise<GitSource[]>;
   /**
-   * Cloud's worker only: claim the queued Deployment as `runner`, build its Git Services from `checkouts` (directories
-   * by runtime Service name, at their pinned commits), deploy it on one of `connections` and record its outcome.
-   * `sourceFailure` says why Cloud could not read the sources: it is recorded as why nothing ran. Its secrets and
-   * evidence stay in Rust; it resolves to the summary, or rejects `conflict` when this runner has nothing to run.
+   * Cloud's worker only: claim the queued Deployment as `runner`, build its Git Services from `sources.checkouts`
+   * (directories by runtime Service name, at their pinned commits) and its uploaded Services from `sources.upload` (the
+   * directory its upload was extracted to; without it they reuse a usable image or need a new upload), deploy it on one
+   * of `connections` and record its outcome. `sources.failure` says why Cloud could not read the sources: it is
+   * recorded as why nothing ran. Its secrets and evidence stay in Rust; it resolves to the summary, or rejects
+   * `conflict` when this runner has nothing to run.
    */
   runDeployment(
     organization: string, deployment: string, runner: string, connections: Connection[],
-    checkouts?: Record<string, string>, sourceFailure?: string,
+    sources?: { checkouts?: Record<string, string>; upload?: string; failure?: string },
   ): Promise<DeploymentSummary>;
   /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
   abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
+  /**
+   * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
+   * Deployments it admitted, or rejects `conflict` when a branch head's `base` is no longer the Store's head.
+   */
+  system(organization: string, event: SystemEvent): Promise<ConfigWritten>;
+  /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
+  branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;
 }
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.

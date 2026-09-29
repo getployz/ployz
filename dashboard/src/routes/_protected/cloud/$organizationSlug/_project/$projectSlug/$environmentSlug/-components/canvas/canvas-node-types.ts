@@ -3,6 +3,7 @@ import { SERVICE_NODE_HEIGHT, SERVICE_NODE_WIDTH } from "./constants";
 import { LoadingNode, ServiceNode } from "./ServiceNode";
 import { VolumeNode } from "./VolumeNode";
 import { StoreServiceNode } from "./StoreServiceNode";
+import { StoreVolumeNode } from "./StoreVolumeNode";
 import { LiveServiceNode } from "./LiveServiceNode";
 
 export const LOADING_NODE: Node<Record<string, never>, "loading"> = {
@@ -18,6 +19,7 @@ export const canvasNodeTypes = {
   service: ServiceNode,
   storeService: StoreServiceNode,
   volume: VolumeNode,
+  storeVolume: StoreVolumeNode,
   live: LiveServiceNode,
   loading: LoadingNode,
 };

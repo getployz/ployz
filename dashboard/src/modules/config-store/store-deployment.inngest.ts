@@ -28,7 +28,9 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       triggers: [{ event: configDeploymentAdmittedEventType }],
       concurrency: [{ key: "event.data.environmentId", limit: 1 }],
       onFailure: ({ event }) =>
-        runEffect(abandonStoreDeployment(event.data.event.data.deploymentId, storeDeploymentRunner(event.data.run_id))),
+        runEffect(abandonStoreDeployment(
+          event.data.event.data.organizationId, event.data.event.data.deploymentId, storeDeploymentRunner(event.data.run_id),
+        )),
     },
     async ({ event, step, runId }) =>
       step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId)))),
