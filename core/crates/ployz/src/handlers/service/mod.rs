@@ -29,7 +29,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
-    let namespace = super::operator::scope(root, &["ps"])?;
+    let namespace = super::operator::scope(root, &["ps"])?.map(|scoped| scoped.namespace);
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -346,7 +346,7 @@ async fn apply_service_action(
 
 fn change_selectors(
     matches: &ArgMatches,
-    namespace: Option<&ployz_core::Namespace>,
+    namespace: Option<&super::operator::Scoped>,
 ) -> Result<Vec<ServiceSelector>, Error> {
     matches
         .get_many::<String>("service")
