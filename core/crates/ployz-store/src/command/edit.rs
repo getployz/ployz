@@ -11,11 +11,11 @@ use ts_rs::TS;
 
 use crate::error;
 use crate::id::Revision;
+use crate::registry;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
-use crate::registry;
 use crate::variables::{self, VariableKey};
 use crate::{Actor, Trusted};
 
@@ -103,8 +103,7 @@ pub(crate) fn edit(
     for (path, value) in expand(&edit.changes)? {
         let service = path.service();
         // A new credential applies at once; turning one on or off is staged.
-        if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target()
-        {
+        if let Some(Target::Setting(setting @ ServiceSetting::RegistryCredential)) = path.target() {
             let changed = match &value {
                 Some(value) => registry::set(tx, who, &mut environment, service, value, sealing)?,
                 None => {
@@ -117,8 +116,10 @@ pub(crate) fn edit(
                     }
                 }
             };
-            for (changed, list) in [(changed.staged, &mut staged), (changed.rotated, &mut immediate)]
-            {
+            for (changed, list) in [
+                (changed.staged, &mut staged),
+                (changed.rotated, &mut immediate),
+            ] {
                 if changed && !list.contains(&path) {
                     list.push(path.clone());
                 }

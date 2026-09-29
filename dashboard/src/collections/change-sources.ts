@@ -36,7 +36,7 @@ export const changeNameSources = {
  */
 export const storeViewSources = {
   project: ["config_project"],
-  environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied"],
+  environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied", "config_registry_credential"],
   deployment: ["config_deployment"],
 } satisfies Record<string, readonly [ChangeSource, ...ChangeSource[]]>;
 

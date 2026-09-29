@@ -127,7 +127,6 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.maxRetries",
             "web.memLimit",
             "web.preDeployCommand",
-            "web.registryCredential",
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand"

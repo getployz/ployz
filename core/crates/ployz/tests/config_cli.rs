@@ -243,10 +243,10 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            8
+            9
         );
         assert_eq!(
-            got.pointer("/settings/5"),
+            got.pointer("/settings/6"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
         );
         assert_eq!(
@@ -504,7 +504,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            8
+            9
         );
 
         for patch in [r#"{"memLimit": null}"#, "not json"] {
@@ -1149,5 +1149,44 @@ fn secrets_arrive_on_stdin_or_an_env_file_and_never_print() {
             ],
         );
         assert!(!deployed.to_string().contains("s3cr3t"), "{deployed}");
+    }
+}
+
+#[test]
+fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(
+            store,
+            &["service", "add", "web", "--image", "ghcr.io/acme/web:1"],
+        );
+        let path = "web.registryCredential";
+        let (code, first) = piped(store, &["set", path, "--secret"], "first-token\n");
+        assert_eq!(code, Some(0), "{first}");
+        let first: Value = serde_json::from_str(&first).unwrap();
+        assert_eq!(first["staged"], json!([path]));
+        assert_eq!(first["immediate"], json!([path]));
+        assert_eq!(
+            ok(store, &["get", path])["settings"][0]["value"],
+            json!({ "secret": true })
+        );
+        let body = r#"{"registryCredential":{"username":"octocat","secret":"second-token"}}"#;
+        let (code, rotated) = piped(store, &["set", "web", "--patch", "-"], body);
+        assert_eq!(code, Some(0), "{rotated}");
+        let rotated: Value = serde_json::from_str(&rotated).unwrap();
+        assert_eq!(rotated["staged"], json!([]));
+        assert_eq!(rotated["immediate"], json!([path]));
+        failed(store, &["set", "web", "--patch", body], 2);
+        let refused = error(store, &["set", "web.registryCredential=plain-token"]);
+        assert_eq!(refused["code"], json!("invalid_argument"));
+        let shown = [
+            refused,
+            ok(store, &["get", "web"]),
+            ok(store, &["diff"]),
+            ok(store, &["explain", path]),
+        ];
+        for read in shown {
+            assert!(!read.to_string().contains("-token"), "{read}");
+        }
     }
 }

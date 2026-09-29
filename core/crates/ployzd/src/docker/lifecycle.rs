@@ -137,9 +137,13 @@ impl ContainerRuntime {
             registry_auth,
         )
         .await
-            .map_err(E::from)
+        .map_err(E::from)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The request's parts, split after admission consumed its futures."
+    )]
     async fn prepare_and_create(
         &self,
         machine: &Machine,

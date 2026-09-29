@@ -352,7 +352,12 @@ target: Array<RequestedServiceSpec>,
 /**
  * Planner knobs for this Deploy, including the selected Service list.
  */
-options: PlanOptions, dependencies: { [key in ServiceName]: Array<ServiceDependency> }, };
+options: PlanOptions, dependencies: { [key in ServiceName]: Array<ServiceDependency> },
+/**
+ * Credentials each Service's private image is pulled with. They reach only the
+ * Machine creating that Service's containers, never a Deploy Preview.
+ */
+registry_auth?: { [key in ServiceName]: RegistryAuth }, };
 
 export type DeployOperation = { "type": "prepare_volumes",
 /**
@@ -1199,6 +1204,12 @@ assigned_subnet: MachineSubnet | null,
 initial_policy: InitialMachinePolicy, name: MachineName, storage: StorageChoice, public_key: WireGuardPublicKey, public_ip: string | null, advertised_endpoints: Array<AdvertisedEndpoint>, runtime: MachineRuntime, };
 
 export type Registered = { assigned_machine: Machine, visible_peers: Array<Machine>, target_versions: { [key in string]: number }, };
+
+export type RegistryAuth = { username?: string,
+/**
+ * The password or access token.
+ */
+password: string, };
 
 export type RemoveService = {
 /**

@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, SavedEnvironmentIntent, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
-    project_runtime_outcome,
+    CompiledNodeConfig, EncryptedSecretValue, SavedEnvironmentIntent,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, ExecutionError, Namespace, RpcError, ServiceName,
@@ -21,11 +21,11 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
+use crate::registry;
 use crate::review::{self, Head};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx};
-use crate::registry;
 use crate::variables;
 
 /// Where a Deployment is in its life.

@@ -188,7 +188,12 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         "claiming again keeps the admitted credential"
     );
     // Each Service's credential is its own.
-    set(&store, "api.registryCredential", json!({ "secret": "api-token" })).unwrap();
+    set(
+        &store,
+        "api.registryCredential",
+        json!({ "secret": "api-token" }),
+    )
+    .unwrap();
     let two = admit(&store, 2);
     assert_eq!(
         pulls_with(&store, &two),
@@ -201,7 +206,11 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
     let reads = [
         json!(edited),
         json!(rotated),
-        json!(store.environment(&who(), &EnvironmentQuery::default()).unwrap()),
+        json!(
+            store
+                .environment(&who(), &EnvironmentQuery::default())
+                .unwrap()
+        ),
         json!(diff),
         json!(plan),
         json!(store.deployment(&who(), &two).unwrap()),
@@ -274,7 +283,10 @@ fn a_credential_arrives_only_as_a_secret_and_is_never_echoed() {
         // Nothing stored to keep.
         (PATH, json!({ "secret": true })),
         // Only an image Service pulls one.
-        ("blank.registryCredential", json!({ "secret": "plain-token" })),
+        (
+            "blank.registryCredential",
+            json!({ "secret": "plain-token" }),
+        ),
     ] {
         let error = set(&store, path, bad.clone()).unwrap_err();
         assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{bad}");
