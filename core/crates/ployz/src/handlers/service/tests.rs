@@ -234,18 +234,23 @@ fn stop_options_are_only_read_for_stop_actions() {
             .try_get_matches_from(["ployz", "service", command, "api"])
             .unwrap();
         assert_eq!(
-            stop_options(leaf_matches(&matches), action).unwrap(),
+            stop_options(leaf_matches(&matches), &[action]).unwrap(),
             (None, None)
         );
     }
 
-    let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "service", "stop", "api"])
-        .unwrap();
-    assert_eq!(
-        stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
-        (Some("SIGTERM".into()), Some(10))
-    );
+    for (command, actions) in [
+        ("stop", &[ContainerAction::Stop][..]),
+        ("restart", &[ContainerAction::Stop, ContainerAction::Start]),
+    ] {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "service", command, "api"])
+            .unwrap();
+        assert_eq!(
+            stop_options(leaf_matches(&matches), actions).unwrap(),
+            (Some("SIGTERM".into()), Some(10))
+        );
+    }
 }
 
 #[test]
@@ -302,7 +307,9 @@ fn rm_namespace_removes_an_ambiguous_service_name() {
         service_named('a', "st1", "alpha"),
         service_named('b', "st2", "alpha"),
     ];
-    let selectors = change_selectors(leaf_matches(&matches)).unwrap();
+    let leaf = leaf_matches(&matches);
+    let namespace = crate::namespace::explicit(leaf).unwrap();
+    let selectors = change_selectors(leaf, namespace.as_ref()).unwrap();
     assert_eq!(
         select_services(&services, &selectors)
             .unwrap()

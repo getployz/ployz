@@ -110,10 +110,7 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             .unwrap();
     }
 
-    let logs = run_cli(
-        &direct,
-        &["service", "logs", "ployz-system/ingress", "--tail", "1"],
-    );
+    let logs = run_cli(&direct, &["logs", "ployz-system/ingress", "--tail", "1"]);
     let logs = [logs.stdout, logs.stderr].concat();
     assert!(String::from_utf8(logs).unwrap().contains(" ingress/"));
 

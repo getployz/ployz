@@ -41,16 +41,19 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "discard",
             "env",
             "env new",
+            "exec",
             "explain",
             "get",
             "link",
             "login",
             "logout",
+            "logs",
             "org",
             "org ls",
             "org use",
             "project",
             "project new",
+            "ps",
             "publish",
             "schema",
             "server",
@@ -64,12 +67,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "server upgrade",
             "service",
             "service add",
-            "service exec",
             "service inspect",
-            "service logs",
             "service ls",
             "service proxy",
-            "service ps",
+            "service restart",
             "service rm",
             "service scale",
             "service start",
@@ -121,7 +122,7 @@ fn json_is_one_global_switch_and_no_command_keeps_an_output_format() {
 #[test]
 fn sessions_tunnels_shell_code_and_build_refuse_json() {
     for args in [
-        &["service", "exec", "--json", "api"][..],
+        &["exec", "--json", "api"][..],
         &["service", "proxy", "--json", "api", "8080"],
         &["completion", "--json", "bash"],
         &[
@@ -394,7 +395,7 @@ fn compose_workflows_and_inputs_are_not_accepted() {
         &["ployz", "build"],
         &["ployz", "run", "nginx"],
         &["ployz", "service", "run", "nginx"],
-        &["ployz", "service", "logs", "--file", "compose.yaml", "api"],
+        &["ployz", "logs", "--file", "compose.yaml", "api"],
         &["ployz", "service", "scale", "-p", "shop", "api", "2"],
     ] {
         assert!(

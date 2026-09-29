@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
-use crate::cli::{base, env, log_flags, positional, switch, trailing, value, volume_acceptance};
+use crate::cli::{base, env, positional, switch, value, volume_acceptance};
 use ployz_core::{
     ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
     DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
@@ -135,6 +135,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
+    let namespace = super::operator::scope(root, &["ps"])?;
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -142,6 +143,11 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let services = live.services();
             let mut containers = services
                 .iter()
+                .filter(|service| {
+                    namespace
+                        .as_ref()
+                        .is_none_or(|namespace| service.identity.namespace == *namespace)
+                })
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
@@ -265,27 +271,82 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Start, stop, or remove observed Services.
+/// Start or stop the addressed Environment's Services.
 ///
 /// # Errors
 ///
-/// Returns a connection, RPC, usage, or wait error.
+/// Returns a connection, RPC, usage, or wait error, or [`Error::partial`].
 pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
+    lifecycle(
+        root,
+        match action {
+            ContainerAction::Start => &[ContainerAction::Start],
+            ContainerAction::Stop => &[ContainerAction::Stop],
+            ContainerAction::Remove => &[ContainerAction::Remove],
+        },
+    )
+}
+
+/// Stop, then start, the addressed Environment's Services. Every Container is started
+/// again even when stopping one failed, so a failed restart never leaves a Service down.
+/// Both steps wait for their Container Observations, each bounded by the barrier timeout.
+fn restart(root: &ArgMatches) -> Result<(), Error> {
+    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
+}
+
+fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let selectors = change_selectors(leaf)?;
-    let (signal, timeout) = stop_options(leaf, action)?;
+    let command = leaf_name(root);
+    let namespace = super::operator::scope(root, &["service", command])?;
+    let selectors = change_selectors(leaf, namespace.as_ref())?;
+    let (signal, timeout) = stop_options(leaf, actions)?;
+    let hint = super::store::next(leaf, &["ps"]);
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            let outcome =
-                apply_service_action(client, &live, &services, action, signal, timeout).await?;
-            output::emit(&outcome.result(&live))?;
-            service_action_result(outcome.partial)
+            let mut outcome: Option<ServiceActionOutcome> = None;
+            for &action in actions {
+                let (signal, timeout) = match action {
+                    ContainerAction::Stop => (signal.clone(), timeout),
+                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+                };
+                let step =
+                    apply_service_action(client, &live, &services, action, signal, timeout).await?;
+                outcome = Some(match outcome {
+                    Some(before) => before.then(step),
+                    None => step,
+                });
+            }
+            let outcome = outcome.expect("a lifecycle command has an action");
+            output::emit(&ServiceActionResult {
+                next: outcome.partial.then_some(hint.as_str()),
+                ..outcome.result(&live)
+            })?;
+            if outcome.partial {
+                Err(Error::partial())
+            } else {
+                Ok(())
+            }
         })
     })
+}
+
+/// The name of the leaf subcommand: `start`, `stop` or `restart`.
+fn leaf_name(mut matches: &ArgMatches) -> &'static str {
+    let mut name = "";
+    while let Some((child, next)) = matches.subcommand() {
+        name = match child {
+            "start" => "start",
+            "stop" => "stop",
+            "restart" => "restart",
+            _ => name,
+        };
+        matches = next;
+    }
+    name
 }
 
 /// Remove observed Services, and their named Docker Volumes when `--volumes` is set.
@@ -295,7 +356,7 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
 /// Returns a connection, RPC, usage, or confirmation error.
 pub fn remove(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let selectors = change_selectors(leaf)?;
+    let selectors = change_selectors(leaf, crate::namespace::explicit(leaf)?.as_ref())?;
     let destroy_volumes = leaf.get_flag("volumes");
     let command = root.clone();
     with_client(root, |client| {
@@ -536,6 +597,8 @@ struct ServiceActionResult<'a> {
     volumes: Option<&'a [VolumeRemoval]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volumes_not_attempted: Option<&'a [DockerVolumeId]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<&'a str>,
 }
 
 impl ServiceActionOutcome {
@@ -548,7 +611,18 @@ impl ServiceActionOutcome {
             wait_error: self.wait_error.as_ref(),
             volumes: None,
             volumes_not_attempted: None,
+            next: None,
         }
+    }
+
+    /// This step's outcome followed by `later`'s.
+    fn then(mut self, later: Self) -> Self {
+        self.affected.extend(later.affected);
+        self.containers.extend(later.containers);
+        self.container_failures.extend(later.container_failures);
+        self.wait_error = self.wait_error.or(later.wait_error);
+        self.partial |= later.partial;
+        self
     }
 }
 
@@ -666,17 +740,15 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
-    let namespace = crate::namespace::explicit(matches)?;
+fn change_selectors(
+    matches: &ArgMatches,
+    namespace: Option<&ployz_core::Namespace>,
+) -> Result<Vec<ServiceSelector>, Error> {
     matches
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .map(|selector| {
-            let selector = ServiceSelector::parse(selector.as_str())?;
-            match namespace.as_ref() {
-                Some(namespace) => selector.with_namespace(namespace).map_err(Into::into),
-                None => Ok(selector),
-            }
+            super::operator::in_scope(ServiceSelector::parse(selector.as_str())?, namespace)
         })
         .collect()
 }
@@ -698,9 +770,9 @@ fn select_services<'a>(
 
 fn stop_options(
     matches: &ArgMatches,
-    action: ContainerAction,
+    actions: &[ContainerAction],
 ) -> Result<(Option<String>, Option<i32>), Error> {
-    if action != ContainerAction::Stop {
+    if !actions.contains(&ContainerAction::Stop) {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
@@ -742,12 +814,10 @@ pub(crate) fn command() -> Command {
     base("service", "Manage services")
         .arg_required_else_help(true)
         .subcommand(service_add())
-        .subcommand(service_exec())
         .subcommand(service_inspect())
         .subcommand(service_ls())
-        .subcommand(service_logs())
         .subcommand(service_proxy())
-        .subcommand(service_ps())
+        .subcommand(service_restart())
         .subcommand(service_rm())
         .subcommand(service_scale())
         .subcommand(service_start())
@@ -795,40 +865,14 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-fn service_exec() -> Command {
-    base("exec", "Execute a command in a service container")
-        .arg(value("container", None))
-        .arg(switch("detach", Some('d')))
-        .arg(switch("no-tty", Some('T')))
-        .arg(positional("service", true))
-        .arg(trailing("command"))
-}
-
 fn service_inspect() -> Command {
     base("inspect", "Inspect a service").arg(positional("service", true))
-}
-
-fn service_logs() -> Command {
-    log_flags(base("logs", "Show logs")).arg(
-        Arg::new("service-or-container")
-            .required(true)
-            .num_args(1..)
-            .action(ArgAction::Append),
-    )
 }
 
 fn service_proxy() -> Command {
     base("proxy", "Proxy a local port to a service")
         .arg(positional("service", true))
         .arg(positional("port", true))
-}
-
-fn service_ps() -> Command {
-    base("ps", "List service containers").arg(
-        value("sort", None)
-            .default_value("service")
-            .value_parser(["service", "machine", "health"]),
-    )
 }
 
 fn service_ls() -> Command {
@@ -861,12 +905,26 @@ fn service_scale() -> Command {
         .arg(positional("replicas", true))
 }
 
+fn service_restart() -> Command {
+    stop_flags(base(
+        "restart",
+        "Stop, then start, a Service's containers; its configuration is unchanged",
+    ))
+}
+
 fn service_start() -> Command {
-    base("start", "Start services").arg(services())
+    super::store::scoped(base("start", "Start a Service's stopped containers")).arg(services())
 }
 
 fn service_stop() -> Command {
-    base("stop", "Stop services")
+    stop_flags(base(
+        "stop",
+        "Stop a Service's containers; they stay until started or deployed",
+    ))
+}
+
+fn stop_flags(command: Command) -> Command {
+    super::store::scoped(command)
         .arg(services())
         .arg(value("signal", None).default_value("SIGTERM"))
         .arg(value("timeout", Some('t')).default_value("10"))
@@ -876,12 +934,10 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::{Refused, Supported};
     Some(match path {
         "add" => (add, Supported),
-        "exec" => (super::operator::exec, Refused),
         "inspect" => (inspect, Supported),
-        "logs" => (super::operator::service_logs, Supported),
         "ls" => (list, Supported),
         "proxy" => (super::operator::proxy, Refused),
-        "ps" => (processes, Supported),
+        "restart" => (restart, Supported),
         "rm" => (remove, Supported),
         "scale" => (scale, Supported),
         "start" => (|root| change(root, ContainerAction::Start), Supported),

@@ -169,6 +169,19 @@ impl ConfigStore {
             .read(|tx| query::deployment::plan(tx, who, query))
     }
 
+    /// The Namespace an Environment's containers carry on the Servers.
+    ///
+    /// # Errors
+    /// As [`Self::read`].
+    pub fn namespace(
+        &self,
+        who: &Actor,
+        query: &NamespaceQuery,
+    ) -> Result<NamespaceView, RpcError> {
+        self.storage
+            .read(|tx| query::deployment::namespace(tx, who, query))
+    }
+
     /// One page of an Environment's Deployments, newest first.
     ///
     /// # Errors
