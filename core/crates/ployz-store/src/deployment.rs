@@ -39,18 +39,30 @@ pub enum DeploymentStatus {
     Applied,
     /// It stopped before every operation completed. Confirmed Node Outcomes still count.
     Failed,
-    /// Another runner took over before its own recorded an outcome, so what ran is unknown.
+    /// Its runner was lost before it recorded an outcome, so what ran is unknown.
     Unknown,
+    /// Cancelled while running: its runner stops it and records what ran.
+    Cancelling,
+    /// Cancelled. Node Outcomes confirmed before it stopped still count.
+    Cancelled,
 }
 
 impl DeploymentStatus {
-    const ALL: [Self; 6] = [
+    /// Whether it may still run: queued, running or cancelling.
+    #[must_use]
+    pub const fn in_flight(self) -> bool {
+        matches!(self, Self::Queued | Self::Running | Self::Cancelling)
+    }
+
+    const ALL: [Self; 8] = [
         Self::Queued,
         Self::Superseded,
         Self::Running,
         Self::Applied,
         Self::Failed,
         Self::Unknown,
+        Self::Cancelling,
+        Self::Cancelled,
     ];
 
     const fn as_str(self) -> &'static str {
@@ -61,6 +73,8 @@ impl DeploymentStatus {
             Self::Applied => "applied",
             Self::Failed => "failed",
             Self::Unknown => "unknown",
+            Self::Cancelling => "cancelling",
+            Self::Cancelled => "cancelled",
         }
     }
 }
@@ -115,7 +129,7 @@ pub enum NodeStatus {
     Applied,
     /// Not every planned operation for it completed, so Applied State kept the old one.
     NotApplied,
-    /// Its runner was replaced before recording what ran.
+    /// Its runner was lost before recording what ran.
     Unknown,
 }
 
@@ -143,6 +157,9 @@ pub enum RunEvidence {
     Executed(Box<DeployOutcome<ExecutionError>>),
     /// Preparation failed, so nothing executed. Users read the reason: it holds no secret.
     NotExecuted(String),
+    /// The runner stopped without knowing whether it executed: the outcome is unknown
+    /// once it recorded a Deploy Preview, and nothing executed before that.
+    Abandoned,
 }
 
 /// A claimed Deployment and the frozen Deploy Intent its runner executes.
@@ -409,31 +426,50 @@ pub(crate) fn namespace(
 }
 
 /// Bind a queued Deployment to `runner` and hand over its frozen Deploy Intent.
-/// Claiming again as the same runner returns the same. A Deployment another runner
-/// still holds without an outcome reads `unknown` from here on.
+/// Claiming again as the same runner returns the same until it records a Deploy
+/// Preview; after that it may have executed, so a second claim leaves the Deployment
+/// `unknown` and refuses: nothing replays silently. A Deployment another runner still
+/// holds without an outcome reads `unknown` from here on.
+///
+/// The outer error rolls back; the inner one is a refusal that keeps what it recorded.
 pub(crate) fn claim(
     tx: &mut dyn Tx,
     id: &DeploymentId,
     runner: &RunnerId,
     sealing: &SealingKey,
-) -> Result<Claimed, RpcError> {
+) -> Result<Result<Claimed, RpcError>, RpcError> {
     let mut stored = locked(tx, id)?;
     match stored.summary.status {
-        DeploymentStatus::Running if stored.run.runner.as_ref() == Some(runner) => {}
-        DeploymentStatus::Running => return Err(owned_elsewhere(id)),
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+            if stored.run.runner.as_ref() == Some(runner) =>
+        {
+            if stored.run.preview.is_some() {
+                stored.summary.status = DeploymentStatus::Unknown;
+                save(tx, &stored)?;
+                return Ok(Err(error::conflict(
+                    "This Deployment's runner lost track of it after preparing it, so what \
+                     ran is unknown. Start a new Deployment",
+                    json!({ "deployment": id }),
+                )));
+            }
+        }
+        DeploymentStatus::Running | DeploymentStatus::Cancelling => {
+            return Ok(Err(owned_elsewhere(id)));
+        }
         DeploymentStatus::Superseded => {
-            return Err(error::conflict(
+            return Ok(Err(error::conflict(
                 "A newer Deployment replaced this one before it started",
                 json!({ "deployment": id }),
-            ));
+            )));
         }
-        DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Unknown => {
-            return Err(ended(id));
-        }
+        DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Unknown
+        | DeploymentStatus::Cancelled => return Ok(Err(ended(id))),
         DeploymentStatus::Queued => {
             tx.execute(
                 "UPDATE config_deployment SET status = 'unknown' \
-                 WHERE environment_id = ?1 AND status = 'running'",
+                 WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
                 &[stored.environment.as_str().into()],
             )?;
             stored.summary.status = DeploymentStatus::Running;
@@ -450,10 +486,39 @@ pub(crate) fn claim(
         stored.namespace,
         Some(sealing),
     )?;
-    Ok(Claimed {
+    Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
-    })
+    }))
+}
+
+/// Cancel a Deployment of `who`'s Organization. A queued one never runs; a running
+/// one reads `cancelling` until its runner stops it and records what ran. Cancelling
+/// again changes nothing.
+pub(crate) fn cancel(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    id: &DeploymentId,
+) -> Result<DeploymentSummary, RpcError> {
+    let owned = tx.query(
+        "SELECT id FROM config_deployment WHERE id = ?1 AND organization_id = ?2",
+        &[id.as_str().into(), who.organization.as_str().into()],
+    )?;
+    if owned.is_empty() {
+        return Err(missing(id));
+    }
+    let mut stored = locked(tx, id)?;
+    stored.summary.status = match stored.summary.status {
+        DeploymentStatus::Queued => DeploymentStatus::Cancelled,
+        DeploymentStatus::Running => DeploymentStatus::Cancelling,
+        DeploymentStatus::Cancelling | DeploymentStatus::Cancelled => return Ok(stored.summary),
+        DeploymentStatus::Superseded
+        | DeploymentStatus::Applied
+        | DeploymentStatus::Failed
+        | DeploymentStatus::Unknown => return Err(ended(id)),
+    };
+    save(tx, &stored)?;
+    Ok(stored.summary)
 }
 
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
@@ -521,6 +586,24 @@ pub(crate) fn record(
                 DeploymentStatus::Failed,
             )
         }
+        RunEvidence::Abandoned => {
+            if stored.run.outcome.is_some() || stored.summary.status == DeploymentStatus::Unknown {
+                return Ok(stored.summary);
+            }
+            running(&stored)?;
+            if stored.run.preview.is_none() {
+                let reason = "Its runner stopped before executing anything".to_owned();
+                return finish(
+                    tx,
+                    stored,
+                    Outcome::NotExecuted { reason },
+                    DeploymentStatus::Failed,
+                );
+            }
+            stored.summary.status = DeploymentStatus::Unknown;
+            save(tx, &stored)?;
+            Ok(stored.summary)
+        }
     }
 }
 
@@ -568,7 +651,11 @@ fn finish(
             };
         }
     }
-    stored.summary.status = status;
+    // A cancelled Deployment that stopped short reads cancelled, not failed.
+    stored.summary.status = match (stored.summary.status, status) {
+        (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
+        _ => status,
+    };
     stored.run.outcome = Some(outcome);
     save(tx, &stored)?;
     Ok(stored.summary)
@@ -591,7 +678,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
     let ended = tx
         .query(
             "SELECT COUNT(*) FROM config_deployment \
-             WHERE environment_id = ?1 AND status IN ('applied', 'failed', 'unknown')",
+             WHERE environment_id = ?1 AND status IN ('applied', 'failed', 'unknown', 'cancelled')",
             &[id.as_str().into()],
         )?
         .first()
@@ -599,7 +686,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         .int(0)?;
     let in_flight = tx.query(
         "SELECT number, saved_revision, nodes FROM config_deployment \
-         WHERE environment_id = ?1 AND status IN ('queued', 'running') \
+         WHERE environment_id = ?1 AND status IN ('queued', 'running', 'cancelling') \
          ORDER BY number DESC LIMIT 1",
         &[id.as_str().into()],
     )?;
@@ -668,7 +755,10 @@ pub(crate) fn view(
                 {
                     NodeStatus::Applied
                 }
-                (Some(_), _) | (None, DeploymentStatus::Superseded) => NodeStatus::NotApplied,
+                (Some(_), _)
+                | (None, DeploymentStatus::Superseded | DeploymentStatus::Cancelled) => {
+                    NodeStatus::NotApplied
+                }
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
                 (None, _) => NodeStatus::Pending,
             },
@@ -777,13 +867,15 @@ fn save(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
 
 fn running(stored: &Stored) -> Result<(), RpcError> {
     match stored.summary.status {
-        DeploymentStatus::Running => Ok(()),
+        DeploymentStatus::Running | DeploymentStatus::Cancelling => Ok(()),
         DeploymentStatus::Unknown => Err(error::conflict(
             "Another runner took over this Deployment, so its outcome stays unknown. \
              Start a new Deployment",
             json!({ "deployment": stored.summary.id }),
         )),
-        DeploymentStatus::Applied | DeploymentStatus::Failed => Err(ended(&stored.summary.id)),
+        DeploymentStatus::Applied | DeploymentStatus::Failed | DeploymentStatus::Cancelled => {
+            Err(ended(&stored.summary.id))
+        }
         DeploymentStatus::Queued | DeploymentStatus::Superseded => Err(error::conflict(
             "Claim this Deployment before recording what it did",
             json!({ "deployment": stored.summary.id }),

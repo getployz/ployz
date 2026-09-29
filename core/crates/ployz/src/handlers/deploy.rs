@@ -1,15 +1,17 @@
 //! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store
-//! and read its Deployments. With the hidden in-process Store this CLI is the
-//! Deployment's runner: it claims it, prepares and confirms it on the Cluster, and
-//! records what happened.
+//! and read its Deployments. Cloud's runner runs a Deployment admitted over HTTPS,
+//! and `deploy` follows it until it ends. With the hidden in-process Store this CLI
+//! is the Deployment's runner: it claims it, prepares and confirms it on the
+//! Cluster, and records what happened.
 
 use std::io::Write as _;
+use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::ServiceName;
 use ployz_store::{
-    Admit, Claimed, ConfigStore, DeploymentId, DeploymentView, DeploymentsQuery, PlanQuery,
-    RunEvidence, RunnerId,
+    Admit, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentsQuery, PlanQuery, RunEvidence, RunnerId,
 };
 
 use super::store::{
@@ -45,7 +47,15 @@ pub(crate) fn deploy_command() -> Command {
             .value_hint(ValueHint::FilePath)
             .help("Also write progress to FILE as NDJSON"),
     )
+    .arg(
+        switch("detach", None)
+            .conflicts_with("events")
+            .help("Return the queued Deployment at once instead of following it"),
+    )
 }
+
+/// How often `deploy` reads a Deployment Cloud runs while following it.
+const FOLLOW_POLL: Duration = Duration::from_secs(1);
 
 pub(crate) fn deployment_command() -> Command {
     Command::new("deployment")
@@ -107,22 +117,99 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
             version: matches.get_one::<String>("expect-version").cloned(),
         })
         .map_err(|error| failed(matches, &["deploy"])(with_refresh_hint(error, matches, "diff")))?;
+    let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
     // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
-    // runner runs it otherwise, and this command returns it queued.
-    let ran = match store.local() {
+    // runner runs it otherwise, and this command follows it unless detached.
+    let (view, ran) = match store.local() {
+        Some(_) if matches.get_flag("detach") => {
+            return Err(Error::usage(
+                "The hidden local Store runs Deployments in this process, so it can't detach",
+            )
+            .with_exit(USAGE_EXIT));
+        }
         Some(local) => {
             let runner = RunnerId::parse(format!("cli-{}", mint()))?;
             let claimed = local.claim(&admitted.id, &runner)?;
-            runtime()?.block_on(run(matches, local, &claimed, &runner, events))
+            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, events));
+            let view = store
+                .deployment(&admitted.id)
+                .map_err(failed(matches, &["deploy"]))?;
+            (view, ran)
         }
-        None => Ok(()),
+        None if matches.get_flag("detach") => {
+            let view = store
+                .deployment(&admitted.id)
+                .map_err(failed(matches, &["deploy"]))?;
+            (view, Ok(()))
+        }
+        None => {
+            let view = follow(matches, &store, &admitted, events)?;
+            let ran = if view.deployment.status == DeploymentStatus::Applied {
+                Ok(())
+            } else {
+                Err(Error::partial())
+            };
+            (view, ran)
+        }
     };
-    let view = store
-        .deployment(&admitted.id)
-        .map_err(failed(matches, &["deploy"]))?;
-    let hint = shell_words::join(["ployz", "deployment", "show", view.deployment.id.as_str()]);
     finish_view(&view, Some(hint))?;
     ran
+}
+
+/// Follow a Deployment Cloud's runner runs until it ends. Each change of its status
+/// or Node Outcomes goes to stderr, and to `events` as NDJSON. Stopping this stops
+/// following, never the Deployment.
+fn follow(
+    matches: &ArgMatches,
+    store: &Store,
+    admitted: &DeploymentSummary,
+    mut events: Option<std::io::BufWriter<std::fs::File>>,
+) -> Result<DeploymentView, Error> {
+    eprintln!(
+        "Following Deployment #{}; stopping this leaves it running.",
+        admitted.number
+    );
+    let mut last = None;
+    loop {
+        let view = store
+            .deployment(&admitted.id)
+            .map_err(failed(matches, &["deploy"]))?;
+        let progress = serde_json::json!({
+            "type": "deployment",
+            "status": view.deployment.status,
+            "nodes": view.nodes,
+        });
+        if last.as_ref() != Some(&progress) {
+            let nodes: Vec<String> = view
+                .nodes
+                .iter()
+                .map(|node| format!("{} {}", node.name, json_word(&node.outcome)))
+                .collect();
+            eprintln!(
+                "{}: {}",
+                json_word(&view.deployment.status),
+                nodes.join(", ")
+            );
+            if let Some(file) = events.as_mut() {
+                // ponytail: a failed event write never stops following; the file is a tap.
+                let _ = writeln!(file, "{progress}");
+                let _ = file.flush();
+            }
+            last = Some(progress);
+        }
+        if !view.deployment.status.in_flight() {
+            return Ok(view);
+        }
+        std::thread::sleep(FOLLOW_POLL);
+    }
+}
+
+/// A status as its JSON word, such as `not_applied`.
+fn json_word(value: &impl serde::Serialize) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_default()
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {

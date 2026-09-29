@@ -1,5 +1,6 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
+import { expect, vi } from "vitest";
 import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
@@ -34,7 +35,10 @@ const github = fakeGithubApi({
 });
 
 /** Cloud with the Config Store in its database. */
-const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string } = {}) {
+const cloudLayer = Effect.fn(function* (
+  overrides: { readonly NODE_ENV?: string } = {},
+  inngest = new Inngest({ id: "config-store-test" }),
+) {
   const cloud = yield* postgresTestDatabase;
   const env = { ...testConfigEnvironment(), NODE_ENV: overrides.NODE_ENV ?? "test", DATABASE_URL: cloud.url.href };
   const provider = ConfigProvider.fromEnv({ env });
@@ -43,7 +47,7 @@ const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string 
     configLayer,
     DatabaseLive.pipe(Layer.provide(configLayer)),
     Layer.succeed(Polar, { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, new Inngest({ id: "config-store-test" })),
+    Layer.succeed(InngestClient, inngest),
     Layer.succeed(GithubApi, github.service),
   );
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
@@ -222,6 +226,45 @@ it.live(
         assert.strictEqual((yield* request("write", alice, { command: "publish", environment: here, version: null })).status, 200);
         // Every write locks its Environment's row, which logs the Environment too.
         assert.sameMembers(yield* logged(), [`config_environment: ${ENVIRONMENT}`, `config_saved: ${ENVIRONMENT}`]);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "an admission over HTTPS hands its Deployment to Cloud's worker, once",
+  () =>
+    Effect.gen(function* () {
+      const inngest = new Inngest({ id: "config-store-test" });
+      const sent: unknown[] = [];
+      let down = false;
+      vi.spyOn(inngest, "send").mockImplementation(async (event) => {
+        if (down) throw new Error("Inngest is down");
+        sent.push(event);
+        return { ids: [] };
+      });
+      const layer = yield* cloudLayer({}, inngest);
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        const admit: ConfigCommand = {
+          command: "admit", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null,
+        };
+        assert.strictEqual((yield* request("write", alice, admit)).status, 200);
+        // A retried request replays the admission and sends the same event, which Inngest drops.
+        assert.strictEqual((yield* request("write", alice, admit)).status, 200);
+        const event = {
+          id: "config-deployment-admitted-00000000-0000-4000-8000-000000000101",
+          name: "config/deployment.admitted",
+          data: { organizationId: expect.any(String), environmentId: ENVIRONMENT, deploymentId: admit.id },
+        };
+        expect(sent).toEqual([event, event]);
+
+        down = true;
+        const stranded = yield* request("write", alice, { ...admit, id: "00000000-0000-4000-8000-000000000102" });
+        assert.strictEqual(stranded.status, 503);
+        assert.strictEqual(stranded.json.error?.code, "unavailable");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -242,6 +242,14 @@ impl ConfigStore {
         self.storage.write(|tx| command::admit(tx, who, admit))
     }
 
+    /// [`Command::Cancel`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `conflict` when the Deployment already ended.
+    pub fn cancel(&self, who: &Actor, cancel: &Cancel) -> Result<DeploymentSummary, RpcError> {
+        self.storage.write(|tx| command::cancel(tx, who, cancel))
+    }
+
     /// What deploying would ship, from authored state alone.
     ///
     /// # Errors
@@ -287,14 +295,17 @@ impl ConfigStore {
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
     /// its secrets unsealed: the only way plaintext leaves the Store. In-process only:
-    /// never exposed over HTTPS.
+    /// never exposed over HTTPS. The same runner may claim again until it records a
+    /// Deploy Preview; after that its claim leaves the outcome unknown.
     ///
     /// # Errors
     /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
-    /// owns it, a newer one replaced it, or it ended, or a storage error.
+    /// owns it, a newer one replaced it, it was cancelled or ended, or this runner
+    /// already prepared it, or a storage error.
     pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
         self.storage
             .write(|tx| deployment::claim(tx, deployment, runner, &self.sealing))
+            .and_then(|claimed| claimed)
     }
 
     /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes
@@ -310,9 +321,8 @@ impl ConfigStore {
         deployment: &DeploymentId,
         runner: &RunnerId,
         evidence: RunEvidence,
-    ) -> Result<Written, RpcError> {
+    ) -> Result<DeploymentSummary, RpcError> {
         self.storage
             .write(|tx| deployment::record(tx, deployment, runner, evidence))
-            .map(Written::Deployment)
     }
 }

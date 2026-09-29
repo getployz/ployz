@@ -140,6 +140,8 @@ export type BuildMethod = "dockerfile" | "railpack";
 
 export type ByteQuantity = number;
 
+export type Cancel = { deployment: DeploymentId, };
+
 export type CapabilityName = string;
 
 export type CertificateAvailability = "available" | "pending" | "failure" | "unknown" | string;
@@ -194,7 +196,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "cancel" } & Cancel;
 
 export type ConfigMount = { config_name: string,
 /**
@@ -421,7 +423,7 @@ export type DeploymentId = string;
 
 export type DeploymentQuery = { id: DeploymentId, };
 
-export type DeploymentStatus = "queued" | "superseded" | "running" | "applied" | "failed" | "unknown";
+export type DeploymentStatus = "queued" | "superseded" | "running" | "applied" | "failed" | "unknown" | "cancelling" | "cancelled";
 
 export type DeploymentSummary = { id: DeploymentId,
 /**
