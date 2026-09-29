@@ -78,3 +78,14 @@ fn distance(a: &[char], b: &[char]) -> usize {
 pub(crate) fn corrupt(what: &str) -> RpcError {
     internal(format!("The Config Store holds an unreadable {what}"))
 }
+
+/// Destroying something needs the caller to name it: `details` says what goes and
+/// what to accept.
+pub(crate) fn confirmation_required(message: impl Into<String>, details: Value) -> RpcError {
+    error(RpcErrorCode::ConfirmationRequired, message, details)
+}
+
+/// Evidence a write needs is missing or incomplete, so it refuses rather than guess.
+pub(crate) fn unobserved(message: impl Into<String>, details: Value) -> RpcError {
+    error(RpcErrorCode::Unavailable, message, details)
+}

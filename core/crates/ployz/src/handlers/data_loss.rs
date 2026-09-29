@@ -62,16 +62,9 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
         args.push(name.into());
         leaf = child;
     }
-    for id in ["volume-name", "server"] {
-        args.extend(string_values(leaf, id));
-    }
-    for machine in string_values(leaf, "machine") {
-        args.extend(["--machine".into(), machine]);
-    }
-    for id in ["no-reset", "force"] {
-        if leaf.try_get_one::<bool>(id).ok().flatten() == Some(&true) {
-            args.push(format!("--{id}"));
-        }
+    args.extend(string_values(leaf, "server"));
+    if leaf.try_get_one::<bool>("no-reset").ok().flatten() == Some(&true) {
+        args.push("--no-reset".into());
     }
     for id in ["connect", "ployz-config", "confirm"] {
         if let Some(value) = leaf.try_get_one::<String>(id).ok().flatten() {
@@ -177,21 +170,6 @@ fn confirm_with(
     } else {
         Ok(None)
     }
-}
-
-pub(super) fn confirm_ordinary(root: &ArgMatches, client: &Client) -> Result<bool, Error> {
-    if leaf_matches(root).get_flag("yes") {
-        return Ok(true);
-    }
-    if !output::interactive() {
-        let mut args = retry_args(root, client.connection_source());
-        args.push("--yes".into());
-        return Err(Error::usage(format!(
-            "Confirmation requires a terminal; pass --yes. No changes made.\nRetry: {}",
-            shell_words::join(args)
-        )));
-    }
-    prompt(&[], VolumeEffect::Preserve, &mut io::stdout(), read_answer)
 }
 
 fn prompt(
@@ -603,13 +581,10 @@ mod tests {
         let root = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
-                "volume",
+                "server",
                 "rm",
-                "db",
-                "api",
-                "--machine",
                 "edge",
-                "--force",
+                "--no-reset",
                 "--connect",
                 "unix:///tmp/socket name",
                 "--ployz-config",
@@ -621,9 +596,8 @@ mod tests {
         assert_eq!(shell_words::split(&command).unwrap(), args);
         let parsed = crate::cli::command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
-        assert_eq!(string_values(leaf, "volume-name"), ["db", "api"]);
-        assert_eq!(string_values(leaf, "machine"), ["edge"]);
-        assert!(leaf.get_flag("force"));
+        assert_eq!(string_values(leaf, "server"), ["edge"]);
+        assert!(leaf.get_flag("no-reset"));
         assert_eq!(
             leaf.get_one::<String>("connect").unwrap(),
             "unix:///tmp/socket name"

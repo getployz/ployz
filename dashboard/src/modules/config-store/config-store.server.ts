@@ -6,6 +6,7 @@ import { sql } from "drizzle-orm";
 import { Data, Effect, Option, Redacted, Schema } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
+import { AdmitCommand, gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
 import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
@@ -131,8 +132,9 @@ function refusal(error: StoreRefusal) {
 
 /**
  * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. It first gathers the
- * trusted evidence the call needs: GitHub's for repository Services, and what Cloud observes of domains. Anything
- * else (the Store failing to open, a broken binding) is a defect.
+ * trusted evidence the call needs: GitHub's for repository Services, what Cloud observes of domains, and for a Deploy
+ * that removes deployed Volumes, what the Servers hold of them. Anything else (the Store failing to open, a broken
+ * binding) is a defect.
  */
 export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
   const store = yield* cloudStore;
@@ -152,7 +154,11 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     const refusal = { code: "unavailable", message: "Cloud couldn't reserve the Cluster Domain; deploy again.", details: null };
     return { ok: false, refusal } satisfies StoreResult<never>;
   }
+  const volumes = call.operation === "write"
+    ? yield* gatherVolumeEvidence(organizationId, Option.getOrUndefined(Schema.decodeUnknownOption(AdmitCommand)(call.command)), read)
+    : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
+  if (volumes !== undefined) trusted.volumes = volumes;
   return yield* Effect.tryPromise({
     try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
       const value = call.operation === "read"

@@ -198,6 +198,35 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "mounts": {
+          "additionalProperties": false,
+          "description": "Where the Service mounts each Volume, by Volume name, each at SERVICE.mounts.VOLUME. Create a Volume with `ployz volume add`. Unset detaches it: the Volume and its data stay.",
+          "examples": [
+            {
+              "data": "/var/lib/data"
+            }
+          ],
+          "patternProperties": {
+            "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$": {
+              "description": "The absolute path the Volume is mounted at in the Service's containers. Unset detaches it: the Volume and its data stay.",
+              "examples": [
+                "/var/lib/data"
+              ],
+              "minLength": 1,
+              "pattern": "^/",
+              "title": "Mount path",
+              "type": "string",
+              "x-ployz-apply": "staged",
+              "x-ployz-data-loss": false,
+              "x-ployz-secret": false
+            }
+          },
+          "title": "Mounts",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "preDeployCommand": {
           "description": "Runs once in a new replica before a Deploy starts the Service.",
           "examples": [

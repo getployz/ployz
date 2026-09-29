@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
-use crate::id::Revision;
+use crate::id::{Revision, VolumeName};
 use crate::registry;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
@@ -152,6 +152,22 @@ pub(crate) fn edit(
                 variables::unset(&mut environment, service, key, true)?,
                 Apply::Staged,
             ),
+            (Some(Target::Mount(volume)), Some(value)) => {
+                let Some(mount) = value.as_str() else {
+                    return Err(error::invalid(
+                        format!("{path}: expected an absolute path"),
+                        json!({ "example": "/var/lib/data" }),
+                    ));
+                };
+                (
+                    super::volume::attach(&mut environment, service, volume, mount)?,
+                    Apply::Staged,
+                )
+            }
+            (Some(Target::Mount(volume)), None) => (
+                super::volume::detach(&mut environment, service, volume)?,
+                Apply::Staged,
+            ),
             (None, _) => return Err(name_a_setting(&path)),
         };
         if !changed {
@@ -207,6 +223,20 @@ fn expand(changes: &[Change]) -> Result<Vec<(SettingPath, Option<Value>)>, RpcEr
                         for (key, value) in variables {
                             let key = VariableKey::parse(key)?;
                             let path = SettingPath::at(path.service(), Target::Variable(key));
+                            expanded.push((path, Some(value.clone())));
+                        }
+                        continue;
+                    }
+                    if name == "mounts" {
+                        let Some(mounts) = value.as_object() else {
+                            return Err(error::invalid(
+                                "mounts is a JSON object of paths by Volume name",
+                                json!({ "example": { "mounts": { "data": "/var/lib/data" } } }),
+                            ));
+                        };
+                        for (volume, value) in mounts {
+                            let volume = VolumeName::parse(volume.as_str())?;
+                            let path = SettingPath::at(path.service(), Target::Mount(volume));
                             expanded.push((path, Some(value.clone())));
                         }
                         continue;

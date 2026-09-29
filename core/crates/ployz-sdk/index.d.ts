@@ -4,6 +4,7 @@ import type {
   ConfigCommand,
   ConfigQuery,
   ConfigTrusted,
+  VolumeObservation,
   ConfigView,
   ConfigWritten,
   DeploymentSummary,
@@ -289,3 +290,8 @@ export interface ConfigStore {
  * Calls run off the JavaScript thread, a few at once; a slow or queued call rejects `unavailable`.
  */
 export declare function openConfigStore(url: string, sealingSecret: string): Promise<ConfigStore>;
+/**
+ * Which of `connections`' Servers hold each Docker Volume in `sought`: the `volumes` evidence of `ConfigTrusted` for
+ * admitting a Deploy that removes deployed Volumes. Servers that don't answer are listed as `unanswered`.
+ */
+export declare function observeVolumes(connections: Connection[], sought: string[]): Promise<VolumeObservation>;

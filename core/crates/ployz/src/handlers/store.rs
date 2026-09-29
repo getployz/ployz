@@ -5,14 +5,15 @@ use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
     Actor, AddDomain, Admit, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
-    CreateEnvironment, CreateGitService, CreateProject, CreateService, DeploymentId,
+    CreateEnvironment, CreateGitService, CreateProject, CreateService, CreateVolume, DeploymentId,
     DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView,
     DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView,
     DomainsQuery, DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
     EnvironmentView, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
-    ProjectCreated, ProjectName, Publish, Published, Query, RemoveDomain, RemoveService,
-    RenameService, SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
-    ServicesView, Start, Trusted,
+    ProjectCreated, ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView,
+    RemoveDomain, RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery,
+    ServiceStaged, ServiceView, ServicesQuery, ServicesView, Start, Trusted, VolumeQuery,
+    VolumeStaged, VolumeView, VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -169,9 +170,58 @@ impl Store {
         self.call("write", &request, |store, who| store.edit(who, edit))
     }
 
-    pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+    /// Admit a Deployment. Only the in-process Store takes `trusted`: over HTTPS,
+    /// Cloud gathers its own evidence.
+    /// Admit a Deployment. Only the in-process Store takes `volumes`, the Servers
+    /// this CLI observed: over HTTPS, Cloud gathers its own evidence.
+    pub(crate) fn admit(
+        &self,
+        admit: &Admit,
+        volumes: Option<ployz_store::VolumeObservation>,
+    ) -> Result<DeploymentSummary, StoreCallError> {
         let request = Command::Admit(admit.clone());
-        self.call("write", &request, |store, who| store.admit(who, admit))
+        self.call("write", &request, |store, who| {
+            let trusted = Trusted {
+                volumes,
+                ..self_hosted()
+            };
+            store.admit(who, admit, &trusted)
+        })
+    }
+
+    pub(crate) fn create_volume(
+        &self,
+        create: &CreateVolume,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::CreateVolume(create.clone());
+        self.call("write", &request, |store, who| {
+            store.create_volume(who, create)
+        })
+    }
+
+    pub(crate) fn remove_volume(
+        &self,
+        remove: &RemoveVolume,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::RemoveVolume(remove.clone());
+        self.call("write", &request, |store, who| {
+            store.remove_volume(who, remove)
+        })
+    }
+
+    pub(crate) fn volumes(&self, query: &VolumesQuery) -> Result<VolumesView, StoreCallError> {
+        let request = Query::Volumes(query.clone());
+        self.call("read", &request, |store, who| store.volumes(who, query))
+    }
+
+    pub(crate) fn volume(&self, query: &VolumeQuery) -> Result<VolumeView, StoreCallError> {
+        let request = Query::Volume(query.clone());
+        self.call("read", &request, |store, who| store.volume(who, query))
+    }
+
+    pub(crate) fn removals(&self, query: &RemovalsQuery) -> Result<RemovalsView, StoreCallError> {
+        let request = Query::Removals(query.clone());
+        self.call("read", &request, |store, who| store.removals(who, query))
     }
 
     pub(crate) fn start(&self, start: &Start) -> Result<DeploymentSummary, StoreCallError> {

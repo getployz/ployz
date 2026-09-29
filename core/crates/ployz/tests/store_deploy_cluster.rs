@@ -112,6 +112,43 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             == Some(&"hi-s3cr3t".to_owned())
     }));
 
+    // A Volume mounted into web is created by its Deploy; removing it deletes its
+    // Docker Volume only once the loss is accepted by name.
+    let added = ployz(&["volume", "add", "data", "--mount", "web:/data"]);
+    let docker = format!(
+        "shop-production_vol-{}",
+        added["volume"]["id"].as_str().unwrap()
+    );
+    assert_eq!(ployz(&["deploy"])["status"], json!("applied"));
+    assert!(
+        held(&mut client, &docker).await,
+        "the Deploy created the Volume"
+    );
+    ployz(&["volume", "rm", "data"]);
+    let (code, refused) = attempt(address, &store, &["deploy"]);
+    assert_eq!(code, Some(1), "{refused}");
+    let refused = &refused["error"];
+    assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
+    assert_eq!(refused["details"]["accept"], json!(["data"]));
+    let version = refused["details"]["version"].as_str().unwrap();
+    assert!(
+        held(&mut client, &docker).await,
+        "a refusal deletes nothing"
+    );
+    let accepted = ployz(&[
+        "deploy",
+        "--expect-version",
+        version,
+        "--accept-volume-loss",
+        "data",
+    ]);
+    assert_eq!(accepted["status"], json!("applied"), "{accepted}");
+    assert!(
+        !held(&mut client, &docker).await,
+        "the accepted Docker Volume is gone"
+    );
+    assert_eq!(ployz(&["volume", "ls"])["volumes"], json!([]));
+
     // A staged removal leaves the running Service alone until a Deploy removes it.
     ployz(&["service", "rm", "web"]);
     let live = client
@@ -125,6 +162,22 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     let gone = run(address, &store, &["logs", "--deployment", scaled_id]);
     let gone: Value = serde_json::from_slice(&gone.stdout).unwrap();
     assert_eq!(gone["error"]["code"], json!("not_found"), "{gone}");
+}
+
+/// Whether a Server holds Docker Volume `name`.
+async fn held(client: &mut ployz::connect::Client, name: &str) -> bool {
+    let machines = client
+        .call::<ployz_core::op::ListMachines>(ployz_core::ListMachinesRequest {}, None)
+        .await
+        .unwrap()
+        .machines;
+    client
+        .list_volumes(&machines)
+        .await
+        .successes
+        .iter()
+        .flat_map(|success| &success.value.volumes)
+        .any(|volume| volume.id.name.as_str() == name)
 }
 
 /// Wait until the Cluster runs `count` containers of `web`.
@@ -315,7 +368,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
                         version: None,
                         upload: None,
                         retry: None,
+                        accept_volume_loss: Vec::new(),
                     },
+                    &ployz_store::Trusted::default(),
                 )
                 .unwrap();
             let pins = names

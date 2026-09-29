@@ -36,7 +36,7 @@ mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use running::Running;
-pub use store_runner::run_deployment;
+pub use store_runner::{observe_volumes, run_deployment};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
@@ -550,6 +550,21 @@ impl Session {
     ) -> Result<Vec<VolumeRemoval>, RpcError> {
         let mut client = self.client()?;
         self.until_closed(client.remove_volumes(request)).await
+    }
+
+    /// Which Machines hold each of the Docker Volumes `sought`, naming every Machine
+    /// that did not answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails.
+    pub async fn observe_volumes(
+        &self,
+        sought: Vec<ployz_core::DockerVolumeName>,
+    ) -> Result<ployz_store::VolumeObservation, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(client.observe_volumes(sought)).await
     }
 
     /// Live Observation of Data Loss that removing `machine` would cause.

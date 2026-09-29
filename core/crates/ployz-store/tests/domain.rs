@@ -239,6 +239,7 @@ fn admit(
             version: None,
             retry: None,
             upload: None,
+            accept_volume_loss: Vec::new(),
         }),
         trusted,
     )
@@ -265,7 +266,10 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
         .record(
             &deployment(n),
             &runner,
-            RunEvidence::Executed(Box::new(outcome)),
+            RunEvidence::Executed {
+                outcome: Box::new(outcome),
+                removed: Vec::new(),
+            },
         )
         .unwrap();
     claimed.intent
@@ -379,6 +383,7 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
                 version: None,
                 retry: Some(deployment(1)),
                 upload: None,
+                accept_volume_loss: Vec::new(),
             }),
             &Trusted::default(),
         )

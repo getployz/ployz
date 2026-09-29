@@ -30,7 +30,12 @@ upload?: UploadedSource | null,
  * targets and Namespace, whatever was saved since. It names the Environment,
  * so `environment`, `services`, `version` and `upload` stay empty.
  */
-retry?: DeploymentId | null, };
+retry?: DeploymentId | null,
+/**
+ * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
+ * deletes data refuses with `confirmation_required` unless it names each one.
+ */
+accept_volume_loss: Array<VolumeName>, };
 
 export type AdvertisedEndpoint = string;
 
@@ -249,7 +254,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain;
 
 export type ConfigDomainEvidence = {
 /**
@@ -280,7 +285,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -292,11 +297,15 @@ repositories: Array<AuthorizedRepository>,
 /**
  * What Cloud observed of the Organization's public domains and traffic.
  */
-domains: ConfigDomainEvidence, };
+domains: ConfigDomainEvidence,
+/**
+ * Which Servers hold the Docker Volumes a Deploy would delete, when it deletes any.
+ */
+volumes?: VolumeObservation, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -411,6 +420,26 @@ name: ServiceName,
  * The container image it runs; none creates an empty Service.
  */
 image?: string | null, };
+
+export type CreateVolume = {
+/**
+ * The new Volume's ID, also its lineage.
+ */
+id: VolumeId,
+/**
+ * The Environment to create it in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name, unique among the Environment's Volumes.
+ */
+name: VolumeName,
+/**
+ * Where Services mount it.
+ */
+mounts: Array<Mount>, };
+
+export type DataEffect = "deleted" | "kept";
 
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
@@ -1165,6 +1194,16 @@ repository: BuildGrantRepository, };
 
 export type MissingLiveValue = { lineageId: string, key: string, };
 
+export type Mount = {
+/**
+ * The Service, by name.
+ */
+service: ServiceName,
+/**
+ * The absolute path in its containers.
+ */
+path: string, };
+
 export type Namespace = string;
 
 export type NamespaceQuery = { environment: EnvironmentRef, };
@@ -1187,9 +1226,18 @@ comparison: ReviewComparisonRole | null,
 /**
  * Its changed Settings, by `SERVICE.SETTING` path.
  */
-settings: Array<ServiceSettingChange>, type: EnvironmentNodeType, id: string, };
+settings: Array<ServiceSettingChange>,
+/**
+ * What the change does to Volume data: `deleted` for a deployed Volume it
+ * removes, `kept` for a Service that stops mounting a Volume that stays.
+ */
+data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
 export type NodeOutcome = {
+/**
+ * Whether it is a Service or a Volume.
+ */
+type: EnvironmentNodeType,
 /**
  * The node's entity ID.
  */
@@ -1239,7 +1287,12 @@ status: OperationStatus, };
 
 export type OperationStatus = { "type": "pending" } | { "type": "running", phase: OperationPhase, } | { "type": "completed" } | { "type": "failed", error: ExecutionError, } | { "type": "unexecuted" };
 
-export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>, } | { "type": "not_executed", reason: string, };
+export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>,
+/**
+ * The Volumes it applied: every Service mounting a kept one confirmed, and
+ * every Docker Volume of a removed one deleted.
+ */
+volumes: Array<string>, } | { "type": "not_executed", reason: string, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
@@ -1403,6 +1456,22 @@ export type RegistryAuth = { username?: string,
  */
 password: string, };
 
+export type RemovalsQuery = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentRef, };
+
+export type RemovalsView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * The Volumes it removes; empty when a Deploy deletes no data.
+ */
+volumes: Array<RemovedVolume>, };
+
 export type RemoveDomain = { environment: EnvironmentRef,
 /**
  * Its hostname, or a generated domain's prefix.
@@ -1419,11 +1488,27 @@ environment: EnvironmentRef,
  */
 service: ServiceName, };
 
+export type RemoveVolume = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name.
+ */
+volume: VolumeName, };
+
 export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>,
 /**
  * Force-remove an in-use Docker Volume. Defaults to false.
  */
 force: boolean, };
+
+export type RemovedVolume = { id: VolumeId, name: VolumeName,
+/**
+ * The Docker Volume each Server holds its data in.
+ */
+docker_volume: DockerVolumeName, };
 
 export type RenameService = {
 /**
@@ -1934,6 +2019,56 @@ export type VolumeConfig = { version: 2, name: string, };
 
 export type VolumeDriver = { name: string, options: { [key in string]: string }, };
 
+export type VolumeId = string;
+
+export type VolumeListing = {
+/**
+ * The Services mounting it in Working State.
+ */
+mounts: Array<Mount>,
+/**
+ * Whether a Deploy applied it, so the Servers may hold its data.
+ */
+deployed: boolean,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: VolumeId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: VolumeName, };
+
+export type VolumeName = string;
+
+export type VolumeObservation = {
+/**
+ * The Docker Volumes asked about.
+ */
+sought: Array<DockerVolumeName>,
+/**
+ * Each one found, on the Server holding it.
+ */
+held: Array<DockerVolumeId>,
+/**
+ * Servers that did not answer, or were not asked: what they hold is unknown.
+ */
+unanswered: Array<MachineId>, };
+
+export type VolumeQuery = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name.
+ */
+volume: VolumeName, };
+
 export type VolumeRemoval = { id: DockerVolumeId, outcome: VolumeRemovalOutcome, };
 
 export type VolumeRemovalOutcome = { "status": "removed" } | { "status": "failed", error: RpcError, } | { "status": "omitted" };
@@ -1952,6 +2087,35 @@ maximum_bytes: ProvisionedVolumeMaximumBytes,
  */
 labels: { [key in string]: string }, } | { "kind": "tmpfs", size_bytes: number | null, mode: number | null, options: Array<Array<string>>, };
 
+export type VolumeStaged = {
+/**
+ * The Volume.
+ */
+volume: VolumeSummary,
+/**
+ * The Environment, at its revision after the change.
+ */
+environment: EnvironmentSummary,
+/**
+ * What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
+ * gained or lost as `SERVICE.mounts.NAME`.
+ */
+staged: Array<string>,
+/**
+ * What took effect at once: never anything here.
+ */
+immediate: Array<string>, };
+
+export type VolumeSummary = {
+/**
+ * Its durable identity.
+ */
+id: VolumeId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: VolumeName, };
+
 export type VolumeToCreate = {
 /**
  * Machine where the container operation will ensure the Volume.
@@ -1969,6 +2133,52 @@ name: DockerVolumeName,
  * Positive Provisioned Volume bound; absent for an ordinary named Volume.
  */
 maximum_bytes: ProvisionedVolumeMaximumBytes | null, };
+
+export type VolumeView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * The lineage its Environment copies share.
+ */
+lineage: VolumeId,
+/**
+ * The Services mounting it in Working State.
+ */
+mounts: Array<Mount>,
+/**
+ * Whether a Deploy applied it, so the Servers may hold its data.
+ */
+deployed: boolean,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: VolumeId,
+/**
+ * Its name, which mount paths address it by.
+ */
+name: VolumeName, };
+
+export type VolumesQuery = {
+/**
+ * The Environment to list.
+ */
+environment: EnvironmentRef, };
+
+export type VolumesView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * Its Volumes, by name.
+ */
+volumes: Array<VolumeListing>, };
 
 export type WireGuardPublicKey = Array<number>;
 
