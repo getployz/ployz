@@ -18,6 +18,7 @@ pub(crate) mod login;
 pub(crate) mod machine;
 mod operator;
 pub(crate) mod project;
+pub(crate) mod review;
 pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod volume;
@@ -238,6 +239,8 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("completion", "") => Some((completion, Json::Refused)),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
+        ("diff", "") => Some((review::diff, Json::Supported)),
+        ("discard", "") => Some((review::discard, Json::Supported)),
         ("env", rest) => env::handler(rest),
         ("get", "") => Some((config::get, Json::Supported)),
         ("ingress", rest) => ingress::handler(rest),
@@ -246,6 +249,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("machine", rest) => machine::handler(rest),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
+        ("publish", "") => Some((review::publish, Json::Supported)),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
         ("set", "") => Some((config::set, Json::Supported)),
