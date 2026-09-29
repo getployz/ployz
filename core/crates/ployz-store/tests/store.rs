@@ -86,13 +86,10 @@ fn a_new_project_opens_an_empty_default_environment() {
     let Written::Project(created) = store.write(&who, create_project("shop")).unwrap() else {
         panic!("expected a Project");
     };
-    assert_eq!(created.default_environment.name.as_str(), "production");
-    assert_eq!(
-        created.default_environment.namespace.as_str(),
-        "shop-production"
-    );
+    assert_eq!(created.environment.name.as_str(), "production");
+    assert_eq!(created.environment.namespace.as_str(), "shop-production");
     let view = get(&store, &who, None);
-    assert_eq!(view.environment, created.default_environment);
+    assert_eq!(view.environment, created.environment);
     assert!(view.settings.is_empty());
 }
 

@@ -22,11 +22,17 @@ pub struct CreateProject {
     pub default_environment: EnvironmentId,
 }
 
+/// The new Project and its Default Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProjectCreated {
+    pub project: ProjectSummary,
+    pub environment: EnvironmentSummary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProjectSummary {
     pub id: ProjectId,
     pub name: ProjectName,
-    pub default_environment: EnvironmentSummary,
 }
 
 /// Create an empty Environment in a Project.
@@ -80,9 +86,11 @@ pub(super) fn create_project(
         name,
     )?;
     Ok(ProjectCreated {
-        id: create.id.clone(),
-        name: create.name.clone(),
-        default_environment,
+        project: ProjectSummary {
+            id: create.id.clone(),
+            name: create.name.clone(),
+        },
+        environment: default_environment,
     })
 }
 

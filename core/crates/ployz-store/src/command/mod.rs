@@ -10,8 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub use edit::{Change, Edit, Edited};
-pub use project::{CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated};
-pub use service::{CreateService, ServiceCreated};
+pub use project::{
+    CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
+};
+pub use service::{CreateService, ServiceCreated, ServiceSummary};
 
 use crate::Actor;
 use crate::error;

@@ -741,6 +741,7 @@ mod tests;
 pub(crate) fn command() -> Command {
     base("service", "Manage services")
         .arg_required_else_help(true)
+        .subcommand(service_add())
         .subcommand(service_exec())
         .subcommand(service_inspect())
         .subcommand(service_ls())
@@ -751,6 +752,45 @@ pub(crate) fn command() -> Command {
         .subcommand(service_scale())
         .subcommand(service_start())
         .subcommand(service_stop())
+}
+
+fn service_add() -> Command {
+    super::config::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
+        .arg(positional("name", true).help("Service name, also its Private DNS name"))
+        .arg(
+            value("image", None)
+                .required(true)
+                .value_name("REF")
+                .help("Container image to run"),
+        )
+}
+
+/// Add an image Service to the Config Store's Working State.
+fn add(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = ployz_core::ServiceName::parse(required(matches, "name")?)?;
+    let (store, actor) = super::config::store()?;
+    let ployz_store::Written::Service(created) = store.write(
+        &actor,
+        ployz_store::Command::CreateService(ployz_store::CreateService {
+            id: ployz_store::ServiceId::parse(super::config::mint())?,
+            environment: super::config::environment(matches)?,
+            name,
+            image: required(matches, "image")?,
+        }),
+    )?
+    else {
+        unreachable!("a Service create writes a Service");
+    };
+    output::finish(&created, || {
+        say!(
+            "Staged Service {} in {}/{} (revision {}).",
+            created.service.name,
+            created.environment.project,
+            created.environment.name,
+            created.environment.revision
+        );
+    })
 }
 
 fn service_exec() -> Command {
@@ -833,6 +873,7 @@ fn service_stop() -> Command {
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::{Refused, Supported};
     Some(match path {
+        "add" => (add, Supported),
         "exec" => (super::operator::exec, Refused),
         "inspect" => (inspect, Supported),
         "logs" => (super::operator::service_logs, Supported),
