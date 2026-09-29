@@ -46,6 +46,18 @@ pub(crate) fn org_command() -> Command {
                 .about("Act in another of your Organizations from this device")
                 .arg(positional("organization", true).help("Organization slug")),
         )
+        .subcommand(
+            Command::new("build-order")
+                .about("Show or set which Builders build Git Services, in turn")
+                .long_about("Show or set the Organization's Build Order: which Builders a Git Service's build tries, in turn, after its Preferred Builder (SERVICE.preferredBuilder). A change applies to the next build. auto tries GitHub first, skipping it at once where the repository has no ployz-build.yml workflow.")
+                .arg(positional("order", false).value_parser([
+                    "auto",
+                    "servers-only",
+                    "github-then-servers",
+                    "servers-then-github",
+                    "github-only",
+                ])),
+        )
 }
 
 pub(crate) fn billing_command() -> Command {
@@ -68,6 +80,7 @@ pub(super) fn org_handler(path: &str) -> Option<(Handler, Json)> {
     Some(match path {
         "ls" => (org_list, Json::Supported),
         "use" => (org_use, Json::Supported),
+        "build-order" => (org_build_order, Json::Supported),
         _ => return None,
     })
 }
@@ -209,6 +222,39 @@ fn org_list(root: &ArgMatches) -> Result<(), Error> {
             }
         },
     )
+}
+
+fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
+    let store = super::store::store(root)?;
+    let order = leaf_matches(root).get_one::<String>("order");
+    let view = match order {
+        None => store.build_order()?,
+        Some(order) => {
+            let build_order = (order != "auto")
+                .then(|| serde_json::from_value(serde_json::json!(order)))
+                .transpose()
+                .expect("clap accepts only Build Orders");
+            store.set_build_order(&ployz_store::SetBuildOrder { build_order })?
+        }
+    };
+    let builders = view
+        .builders
+        .iter()
+        .map(|builder| match builder {
+            ployz_store::Builder::Github => "GitHub",
+            ployz_store::Builder::Servers => "your servers",
+        })
+        .collect::<Vec<_>>()
+        .join(", then ");
+    let mut json = serde_json::to_value(&view).expect("a Build Order is JSON");
+    if let (Some(_), Some(fields)) = (order, json.as_object_mut()) {
+        fields.insert("immediate".to_owned(), serde_json::json!(true));
+    }
+    crate::output::finish(&json, || match (order, view.build_order) {
+        (Some(_), _) => say!("Builds try {builders} from the next build on."),
+        (None, None) => say!("Auto: builds try {builders}."),
+        (None, Some(_)) => say!("Builds try {builders}."),
+    })
 }
 
 fn org_use(root: &ArgMatches) -> Result<(), Error> {
