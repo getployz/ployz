@@ -14,6 +14,7 @@ mod error;
 mod git;
 mod id;
 mod policy;
+mod pull_request;
 mod query;
 mod registry;
 mod removal;
@@ -46,6 +47,10 @@ pub use domain::{
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
+pub use pull_request::{
+    Destination, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest, PullRequestQuery,
+    PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+};
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss};
 pub use review::{DataEffect, DiffView, NodeChange};
@@ -635,5 +640,34 @@ impl ConfigStore {
     pub fn build_log(&self, who: &Actor, query: &BuildLogQuery) -> Result<BuildLogView, RpcError> {
         self.storage
             .read(|tx| deployment::build_log(tx, who, query))
+    }
+
+    /// [`Command::SetPrPlan`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn set_pr_plan(&self, who: &Actor, set: &SetPrPlan) -> Result<PrPlansView, RpcError> {
+        self.storage
+            .write(|tx| pull_request::set_plan(tx, who, set))
+    }
+
+    /// [`Query::PrPlans`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn pr_plans(&self, who: &Actor, query: &PrPlansQuery) -> Result<PrPlansView, RpcError> {
+        self.storage.read(|tx| pull_request::plans(tx, who, query))
+    }
+
+    /// [`Query::PullRequest`].
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn pull_request(
+        &self,
+        who: &Actor,
+        query: &PullRequestQuery,
+    ) -> Result<PullRequestView, RpcError> {
+        self.storage.read(|tx| pull_request::view(tx, who, query))
     }
 }

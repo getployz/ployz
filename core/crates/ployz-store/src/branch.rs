@@ -281,19 +281,9 @@ fn insert_branch(
                         json!({ "service": setup.service }),
                     )
                 })?;
-            let command = setup.command.trim();
-            if command.is_empty() || command.chars().count() > SETUP_LIMIT {
-                return Err(error::invalid(
-                    format!(
-                        "{}: a Setup Command has 1-{SETUP_LIMIT} characters",
-                        setup.service
-                    ),
-                    json!({ "service": setup.service }),
-                ));
-            }
             Ok(Setup {
                 lineage: service.lineage_id.clone(),
-                command: command.to_owned(),
+                command: setup_command(setup)?,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1117,8 +1107,54 @@ fn config(error: ConfigError) -> RpcError {
     )
 }
 
+/// A Setup Command's command, trimmed, or why it is refused.
+pub(crate) fn setup_command(setup: &SetupCommand) -> Result<String, RpcError> {
+    let command = setup.command.trim();
+    if command.is_empty() || command.chars().count() > SETUP_LIMIT {
+        return Err(error::invalid(
+            format!(
+                "{}: a Setup Command has 1-{SETUP_LIMIT} characters",
+                setup.service
+            ),
+            json!({ "service": setup.service }),
+        ));
+    }
+    Ok(command.to_owned())
+}
+
+/// How many of Branch `branch`'s changes a Save would move into `into`.
+pub(crate) fn changes_into(
+    tx: &mut dyn Tx,
+    branch: &Environment,
+    into: &Environment,
+) -> Result<usize, RpcError> {
+    let Some(row) = row(tx, &branch.summary.id)? else {
+        return Ok(0);
+    };
+    let hostnames = BranchHostnames {
+        from: suffix(tx, branch)?,
+        into: suffix(tx, into)?,
+    };
+    let provided: Vec<String> = used_live(&branch.working).into_keys().collect();
+    Ok(compare(
+        Some(&row.base),
+        &branch.working,
+        &into.working,
+        &provided,
+        &hostnames,
+        None,
+    )?
+    .rows
+    .iter()
+    .filter(|row| matches!(row.role, BranchRole::Move { .. }))
+    .count())
+}
+
 /// The lineage of the Service or Volume named `name` in `intent`.
-fn lineage_named(intent: &SavedEnvironmentIntent, name: &str) -> Result<String, RpcError> {
+pub(crate) fn lineage_named(
+    intent: &SavedEnvironmentIntent,
+    name: &str,
+) -> Result<String, RpcError> {
     let service = intent.services.iter().find(|service| service.slug == name);
     let volume = intent.volumes.iter().find(|volume| volume.name == name);
     match (service, volume) {
@@ -1151,7 +1187,7 @@ fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
 }
 
 /// The name of the node of lineage `lineage` in `intent`.
-fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<String> {
+pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<String> {
     intent
         .services
         .iter()

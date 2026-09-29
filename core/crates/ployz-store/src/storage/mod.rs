@@ -54,6 +54,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0010_branches",
         include_str!("migrations/0010_branches.sql"),
     ),
+    (
+        "0012_pr_environments",
+        include_str!("migrations/0012_pr_environments.sql"),
+    ),
 ];
 
 pub(crate) enum Storage {

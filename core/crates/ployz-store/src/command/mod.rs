@@ -84,6 +84,8 @@ pub enum Command {
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
+    /// Change a Project's PR plan for one repository.
+    SetPrPlan(crate::SetPrPlan),
 }
 
 impl Command {
@@ -114,7 +116,8 @@ impl Command {
             | Self::CopyNode(_)
             | Self::KeepBranch(_)
             | Self::SetDefaultEnvironment(_)
-            | Self::RemoveEnvironment(_) => Vec::new(),
+            | Self::RemoveEnvironment(_)
+            | Self::SetPrPlan(_) => Vec::new(),
         }
     }
 }
@@ -156,6 +159,8 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
+    /// A PR plan changed: the Project's PR plans after it.
+    PrPlans(crate::PrPlansView),
 }
 
 pub(crate) fn run(
@@ -207,6 +212,9 @@ pub(crate) fn run(
         }
         Command::RemoveEnvironment(remove) => {
             crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
+        }
+        Command::SetPrPlan(set) => {
+            crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)
         }
     }
 }
