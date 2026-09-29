@@ -11,7 +11,10 @@ use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use deployment::{DeploymentQuery, DeploymentsQuery, DeploymentsView, PlanQuery, PlanView};
+pub use deployment::{
+    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView, PlanQuery,
+    PlanView,
+};
 pub use diff::DiffQuery;
 pub(crate) use diff::diff;
 pub(crate) use environment::environment;
@@ -43,6 +46,8 @@ pub enum Query {
     Services(ServicesQuery),
     /// One Service.
     Service(ServiceQuery),
+    /// Where an Environment runs on the Servers.
+    Namespace(NamespaceQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -64,6 +69,8 @@ pub enum View {
     Services(ServicesView),
     /// One Service.
     Service(ServiceView),
+    /// An Environment's Namespace.
+    Namespace(NamespaceView),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, RpcError> {
@@ -77,5 +84,6 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, query: &Query) -> Result<View, R
         }
         Query::Services(query) => services(tx, who, query).map(View::Services),
         Query::Service(query) => service(tx, who, query).map(View::Service),
+        Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
     }
 }

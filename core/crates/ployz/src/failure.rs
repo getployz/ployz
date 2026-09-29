@@ -302,7 +302,8 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::UnsupportedLogService { .. } => RpcErrorCode::InvalidArgument,
         OperatorError::NoRegularContainer
         | OperatorError::NoContainersOnMachines { .. }
-        | OperatorError::NoMachines => RpcErrorCode::NotFound,
+        | OperatorError::NoMachines
+        | OperatorError::NoServices => RpcErrorCode::NotFound,
         OperatorError::Rpc(_)
         | OperatorError::StreamClosed
         | OperatorError::NoHealthyContainer

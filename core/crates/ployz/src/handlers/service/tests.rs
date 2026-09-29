@@ -60,18 +60,23 @@ fn stop_options_are_only_read_for_stop_actions() {
             .try_get_matches_from(["ployz", "service", command, "api"])
             .unwrap();
         assert_eq!(
-            stop_options(leaf_matches(&matches), action).unwrap(),
+            stop_options(leaf_matches(&matches), &[action]).unwrap(),
             (None, None)
         );
     }
 
-    let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "service", "stop", "api"])
-        .unwrap();
-    assert_eq!(
-        stop_options(leaf_matches(&matches), ContainerAction::Stop).unwrap(),
-        (Some("SIGTERM".into()), Some(10))
-    );
+    for (command, actions) in [
+        ("stop", &[ContainerAction::Stop][..]),
+        ("restart", &[ContainerAction::Stop, ContainerAction::Start]),
+    ] {
+        let matches = crate::cli::command()
+            .try_get_matches_from(["ployz", "service", command, "api"])
+            .unwrap();
+        assert_eq!(
+            stop_options(leaf_matches(&matches), actions).unwrap(),
+            (Some("SIGTERM".into()), Some(10))
+        );
+    }
 }
 
 #[test]

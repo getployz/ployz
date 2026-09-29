@@ -12,9 +12,9 @@ use ployz_core::{
 use ployz_store::{
     Actor, Admit, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
-    EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    RemoveService, RenameService, Revision, RunEvidence, RunnerId, ServiceId, ServiceQuery,
-    ServicesQuery, SettingPath, Written,
+    EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
+    ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
+    ServiceId, ServiceQuery, ServicesQuery, SettingPath, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -534,4 +534,24 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
         )
         .unwrap();
     assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
+fn an_environments_namespace_is_the_one_its_deployments_use() {
+    let (store, who) = shop();
+    let query: Query = serde_json::from_value(json!({"query": "namespace"})).unwrap();
+    let View::Namespace(before) = store.read(&who, &query).unwrap() else {
+        panic!("a namespace query answers a namespace view");
+    };
+    assert_eq!(before.namespace.as_str(), "shop-production");
+    admit(&store, &who, 1, &[], None).unwrap();
+    let after = store.namespace(&who, &NamespaceQuery::default()).unwrap();
+    assert_eq!(after, before);
+    let stranger = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    assert_eq!(
+        code(store.namespace(&stranger, &NamespaceQuery::default())),
+        RpcErrorCode::NotFound
+    );
 }

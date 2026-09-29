@@ -19,7 +19,7 @@ pub(crate) mod env;
 pub(crate) mod github;
 pub(crate) mod link;
 pub(crate) mod login;
-mod operator;
+pub(crate) mod operator;
 pub(crate) mod project;
 pub(crate) mod review;
 pub(crate) mod server;
@@ -269,14 +269,17 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("diff", "") => Some((review::diff, Json::Supported)),
         ("discard", "") => Some((review::discard, Json::Supported)),
         ("env", rest) => env::handler(rest),
+        ("exec", "") => Some((operator::exec, Json::Refused)),
         ("explain", "") => Some((catalog::explain, Json::Supported)),
         ("get", "") => Some((config::get, Json::Supported)),
         ("link", "") => Some((link::link, Json::Supported)),
         ("github", rest) => github::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
+        ("logs", "") => Some((operator::logs, Json::Supported)),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
+        ("ps", "") => Some((service::processes, Json::Supported)),
         ("publish", "") => Some((review::publish, Json::Supported)),
         ("schema", "") => Some((catalog::schema, Json::Supported)),
         ("server", rest) => server::handler(rest),
@@ -384,7 +387,6 @@ mod tests {
                     "ployz",
                     "--connect",
                     "tcp://127.0.0.1:1",
-                    "service",
                     "logs",
                     "api",
                     &format!("--{flag}"),

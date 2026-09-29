@@ -5,24 +5,107 @@ use std::{
 
 use chrono::{DateTime, Local, Utc};
 use clap::ArgMatches;
+use clap::{Arg, ArgAction, Command};
 use crossterm::terminal;
 use futures_util::StreamExt;
 use ployz_core::{
     ContainerSelector, EnvironmentValues, ExecRequestFrame, ExecResponseFrame, FanoutSelector,
-    LogBody, LogEntry, LogOrigin, LogsOptions, ServiceSelector, select_service,
+    LogBody, LogEntry, LogOrigin, LogsOptions, Namespace, RpcErrorCode, ServiceSelector,
+    select_service,
 };
+use ployz_store::NamespaceQuery;
 use tokio::io::copy_bidirectional;
 
 use crate::{
+    cli::{base, env, log_flags, positional, switch, trailing, value},
+    cloud_account::StoreCallError,
+    cloud_login::LoginError,
     context::Transport,
     operator::{
-        ExecMode, ProxyPorts, exec_options, merge_logs, open_exec, open_machine_logs,
+        ExecMode, ProxyPorts, ServiceArg, exec_options, merge_logs, open_exec, open_machine_logs,
         open_service_logs, parse_log_time, parse_proxy_ports, parse_service_args, parse_tail,
         select_proxy_container,
     },
 };
 
-use super::{Error, cancellation_on_ctrl_c, leaf_matches, string_values, with_client};
+use super::{
+    Error, cancellation_on_ctrl_c, leaf_matches, store::scoped, string_values, with_client,
+};
+
+pub(crate) fn exec_command() -> Command {
+    scoped(base("exec", "Run a command in a Service's container"))
+        .arg(value("container", None))
+        .arg(switch("detach", Some('d')))
+        .arg(switch("no-tty", Some('T')))
+        .arg(positional("service", true))
+        .arg(trailing("command"))
+}
+
+pub(crate) fn logs_command() -> Command {
+    scoped(log_flags(base(
+        "logs",
+        "Show Service logs; every Service of the Environment when none is named",
+    )))
+    .arg(
+        Arg::new("service-or-container")
+            .value_name("SERVICE[:CONTAINER]")
+            .num_args(0..)
+            .action(ArgAction::Append),
+    )
+}
+
+pub(crate) fn ps_command() -> Command {
+    scoped(base(
+        "ps",
+        "List the Environment's containers across Servers",
+    ))
+    .arg(
+        value("sort", None)
+            .default_value("service")
+            .value_parser(["service", "machine", "health"]),
+    )
+}
+
+/// The Namespace the addressed Project and Environment run in, so a bare Service name
+/// means that Environment's Service. `None` keeps the whole Cluster in view: nothing
+/// was asked for, and no Config Store is reachable, it has no Project yet, or
+/// `--connect`/`--context` name a Cluster directly.
+pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Namespace>, Error> {
+    let leaf = leaf_matches(root);
+    let environment = super::store::environment(leaf)?;
+    let asked = environment.project.is_some() || environment.environment.is_some();
+    let direct = ["connect", "context"]
+        .into_iter()
+        .any(|id| matches!(leaf.try_get_one::<String>(id), Ok(Some(_))));
+    if !asked && direct && std::env::var(env::STORE).is_err() {
+        return Ok(None);
+    }
+    let Some(store) = super::store::reachable(root)? else {
+        return if asked {
+            Err(LoginError::SignedOut.into())
+        } else {
+            Ok(None)
+        };
+    };
+    match store.namespace(&NamespaceQuery { environment }) {
+        Ok(view) => Ok(Some(view.namespace)),
+        Err(StoreCallError::Refused(error)) if !asked && error.code == RpcErrorCode::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(super::store::failed(leaf, words)(error)),
+    }
+}
+
+/// `selector` in `namespace`: a bare Service Name becomes that Namespace's Service.
+pub(super) fn in_scope(
+    selector: ServiceSelector,
+    namespace: Option<&Namespace>,
+) -> Result<ServiceSelector, Error> {
+    Ok(match namespace {
+        Some(namespace) => selector.with_namespace(namespace)?,
+        None => selector,
+    })
+}
 
 pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
@@ -31,6 +114,7 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
             .cloned()
             .ok_or_else(|| Error::usage("Service selector is required"))?,
     )?;
+    let service = in_scope(service, scope(root, &["exec"])?.as_ref())?;
     let container = leaf
         .get_one::<String>("container")
         .filter(|selector| !selector.is_empty())
@@ -88,27 +172,36 @@ pub fn exec(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-pub fn service_logs(root: &ArgMatches) -> Result<(), Error> {
+/// Stream Service logs; every Service of the Environment when none is named.
+pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let explicit = leaf
-        .get_many::<String>("service-or-container")
-        .map(|values| values.cloned().collect::<Vec<_>>())
-        .unwrap_or_default();
-    service_logs_with(root, explicit)
-}
-
-fn service_logs_with(root: &ArgMatches, explicit: Vec<String>) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
+    let named = string_values(leaf, "service-or-container");
     let options = log_options(leaf)?;
-    let args = parse_service_args(&explicit)?;
+    let namespace = scope(root, &["logs"])?;
+    let args = parse_service_args(&named)?
+        .into_iter()
+        .map(|arg| {
+            Ok(ServiceArg {
+                service: in_scope(arg.service, namespace.as_ref())?,
+                ..arg
+            })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
     let machines = parse_fanout_selectors(string_values(leaf, "machine"))?;
     let utc = leaf.get_flag("utc");
     with_client(root, |client| {
         Box::pin(async move {
             let cancellation = cancellation_on_ctrl_c();
             let _parent = cancellation.clone().drop_guard();
-            let inputs =
-                open_service_logs(client, &args, &machines, options, cancellation.clone()).await?;
+            let inputs = open_service_logs(
+                client,
+                &args,
+                namespace.as_ref(),
+                &machines,
+                options,
+                cancellation.clone(),
+            )
+            .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await
         })
     })

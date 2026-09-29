@@ -7,10 +7,10 @@ use ployz_store::{
     Actor, Admit, Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject,
     CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId,
-    PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query, RemoveService,
-    RenameService, SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
-    ServicesView, Trusted,
+    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, NamespaceQuery,
+    NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated, ProjectName, Publish,
+    Published, Query, RemoveService, RenameService, SealingKey, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, ServicesView, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -18,7 +18,7 @@ use serde_json::json;
 use super::{Error, config_path, leaf_matches, runtime};
 use crate::cli::{env, value};
 use crate::cloud_account::{self, Credential, StoreCallError};
-use crate::cloud_login::CredentialStore;
+use crate::cloud_login::{CredentialStore, LoginError};
 
 impl From<StoreCallError> for Error {
     fn from(error: StoreCallError) -> Self {
@@ -177,6 +177,14 @@ impl Store {
         self.call("read", &request, |store, who| store.plan(who, query))
     }
 
+    pub(crate) fn namespace(
+        &self,
+        query: &NamespaceQuery,
+    ) -> Result<NamespaceView, StoreCallError> {
+        let request = Query::Namespace(query.clone());
+        self.call("read", &request, |store, who| store.namespace(who, query))
+    }
+
     pub(crate) fn deployments(
         &self,
         query: &DeploymentsQuery,
@@ -222,6 +230,16 @@ pub(crate) fn store(root: &ArgMatches) -> Result<Store, Error> {
 
 /// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
 pub(crate) fn store_at(config: &std::path::Path) -> Result<Store, Error> {
+    reachable_at(config)?.ok_or_else(|| LoginError::SignedOut.into())
+}
+
+/// The Store, or `None` when there's none to reach: signed out, no `PLOYZ_TOKEN`
+/// and no `PLOYZ_STORE`.
+pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store>, Error> {
+    reachable_at(&config_path(leaf_matches(root))?)
+}
+
+fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
     if let Ok(url) = std::env::var(env::STORE) {
         let actor = Actor {
             organization: OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"),
@@ -235,14 +253,17 @@ pub(crate) fn store_at(config: &std::path::Path) -> Result<Store, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Store::Local(ConfigStore::open(&url, key)?, actor));
+        return Ok(Some(Store::Local(ConfigStore::open(&url, key)?, actor)));
     }
     let credentials = CredentialStore::beside(config);
     let token = std::env::var(env::TOKEN).ok();
     let cloud = std::env::var(env::CLOUD_URL).ok();
     let runtime = runtime()?;
-    let credential = runtime.block_on(cloud_account::credential(&credentials, token, cloud))?;
-    Ok(Store::Cloud(runtime, credential))
+    match runtime.block_on(cloud_account::credential(&credentials, token, cloud)) {
+        Ok(credential) => Ok(Some(Store::Cloud(runtime, credential))),
+        Err(LoginError::SignedOut) => Ok(None),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Mint the ID a create is keyed by, so a retried request replays instead of repeating.
