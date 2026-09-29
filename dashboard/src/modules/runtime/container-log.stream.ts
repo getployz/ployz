@@ -108,7 +108,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
 const streams = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createLogStream>>());
 export function getContainerLogStream(selection: ContainerLogSelection, scope: CollectionScope) {
   const cache = streams(selection.organizationSlug, scope);
-  const key = JSON.stringify([selection.environmentSlug, selection.deploymentId, selection.serviceId]);
+  const key = JSON.stringify([selection.projectSlug, selection.environmentSlug, selection.deploymentId, selection.serviceId]);
   let stream = cache.get(key);
   if (!stream) {
     stream = createLogStream(`container-logs:${scope.sessionId}:${scope.userId}:${selection.organizationSlug}:${key}`, selection, scope);

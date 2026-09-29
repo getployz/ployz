@@ -5,7 +5,7 @@ import { FieldDescription, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
-import { presetTitles, type BranchPlan } from "#/modules/branches/branch-plan";
+import { presetTitles, type BranchPlan } from "#/modules/config-store/branch-picks";
 import { nodePick, type PickingView } from "./branch-picking";
 
 type PlanNode = BranchPlan["nodes"][number];

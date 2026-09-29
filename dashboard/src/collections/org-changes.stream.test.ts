@@ -4,8 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { orgStoreTables } from "#/collections/collections";
 import { applyOrganizationChanges, watchOrganizationChanges } from "#/collections/org-changes.stream";
 import { getDbClient } from "#/collections/scope";
-import { organizationKeys } from "#/modules/environment-design/workspace.queries";
-import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
 
 class FakeEventSource extends EventTarget {
@@ -48,22 +47,9 @@ it("refetches only the named collections and re-reads a renamed organization's s
     if (event.type === "updated" && event.action.type === "fetch") fetched.push(event.query.queryKey.at(-1));
   });
 
-  applyOrganizationChanges(["environment_deployment", "organization"], "acme", scope);
+  applyOrganizationChanges(["environment_canvas_node_position", "organization"], "acme", scope);
 
-  expect(fetched).toEqual(["environment_deployment"]);
+  expect(fetched).toEqual(["environment_canvas_node_position"]);
   expect(queryClient.getQueryState(organizationKeys.state("acme"))?.isInvalidated).toBe(true);
   for (const subscription of active) subscription.unsubscribe();
-});
-
-it("re-reads the change-state projection, and no collection, when the change log names it", () => {
-  const queryClient = new QueryClient();
-  const scope = { queryClient, sessionId: "session", userId: "user" };
-  const { queryKey } = environmentChangeStateOptions("acme", scope);
-  queryClient.setQueryData(queryKey, []);
-  const refetches = Object.values(orgStoreTables).map((get) => vi.spyOn(get("acme", scope).utils, "refetch").mockResolvedValue([]));
-
-  applyOrganizationChanges(["environment_change_state"], "acme", scope);
-
-  expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
-  for (const refetch of refetches) expect(refetch).not.toHaveBeenCalled();
 });

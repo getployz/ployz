@@ -9,11 +9,11 @@ import { VariableRowHeading } from "#/components/variables/variable-row-heading"
 import { VariableRowValue } from "#/components/variables/variable-row-value";
 export type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import { referencesDeletedOwner } from "#/modules/environment-design/variable-template";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { referencesDeletedOwner } from "#/modules/variables/variable-template";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { PlainVariableRecord } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 
 export function VariableRow({
   variable,

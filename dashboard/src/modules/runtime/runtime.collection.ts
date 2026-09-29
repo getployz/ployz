@@ -1,12 +1,7 @@
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
-import {
-  collectionOptions,
-  localOnlyCollectionOptions,
-  type Collection,
-  type VirtualRowProps,
-} from "@tanstack/react-db";
+import { collectionOptions, localOnlyCollectionOptions, type Collection, type VirtualRowProps } from "@tanstack/react-db";
 import { Schema } from "effect";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { strictParseOptions } from "#/lib/schema";
 import { parseLiveQueryRow, withoutVirtualProps } from "#/lib/tanstack-db";
 
 /** The connection state of Cloud's one entry-local Runtime Watch. */
@@ -85,10 +80,6 @@ export const runtimeServiceRecordSchema = Schema.Struct({
 });
 
 export type RuntimeServiceRecord = typeof runtimeServiceRecordSchema.Type;
-
-/** How the Engine names a Cloud Service: its environment's namespace, then its private DNS name. */
-export const runtimeServiceIdentity = (service: { environmentSlug: string; privateDns: string }) =>
-  `${service.environmentSlug}/${service.privateDns}`;
 
 export function projectRuntimeServiceRecord(
   row: VirtualRowProps | RuntimeServiceRecord,

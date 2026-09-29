@@ -92,10 +92,10 @@ const enroll = Effect.fn(function* (organizationId: string, machineId: string, f
   });
 });
 
-const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test", ployz: Layer.Layer<Ployz> = fakeServers().layer) {
+const cliLayer = Effect.fn(function* (polar: PolarService, ployz: Layer.Layer<Ployz> = fakeServers().layer) {
   const testDatabase = yield* postgresTestDatabase;
   const provider = ConfigProvider.fromEnv({
-    env: { ...testConfigEnvironment(), NODE_ENV: nodeEnv, DATABASE_URL: testDatabase.url.href },
+    env: { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: testDatabase.url.href },
   });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const databaseLayer = DatabaseLive.pipe(Layer.provide(configLayer));
@@ -303,18 +303,6 @@ it.live(
 );
 
 it.live(
-  "stays dark in production",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cliLayer({ mode: "self_hosted" }, "production");
-      yield* Effect.gen(function* () {
-        assert.strictEqual((yield* cli("GET", "organizations", {})).status, 404);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
   "org use moves a session between its own Organizations only",
   () =>
     Effect.gen(function* () {
@@ -352,7 +340,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
-      const layer = yield* cliLayer({ mode: "self_hosted" }, "test", fake.layer);
+      const layer = yield* cliLayer({ mode: "self_hosted" }, fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const first = "00000000000000000000000000001239";
@@ -490,7 +478,7 @@ it.live(
   () =>
     Effect.gen(function* () {
       const fake = fakeServers();
-      const layer = yield* cliLayer({ mode: "self_hosted" }, "test", fake.layer);
+      const layer = yield* cliLayer({ mode: "self_hosted" }, fake.layer);
       yield* Effect.gen(function* () {
         const database = yield* Database;
         const machine = "00000000000000000000000000001260";

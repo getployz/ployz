@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { startPostgresTestHarness, type PostgresTestHarness } from "#/test/postgres";
 import { hashEnrollmentToken } from "#/modules/machines/enrollment.server";
-import { disableOrganizationPairing, loadTeardownConnections, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
+import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { Database } from "#/server/database.server";
@@ -87,8 +87,6 @@ describe("protected pairing removal", () => {
     try {
       await expect(runtime.runPromise(revokeOrganizationPairing(organizationId)))
         .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
-      await expect(runtime.runPromise(loadTeardownConnections(organizationId)))
-        .rejects.toMatchObject({ _tag: "PairingRemovalStateInvalid" });
       expect(fake.dialed).toEqual([]);
       expect(fake.mutations()).toBe(0);
       const saved = await harness.pool.query("select removal_endpoints from organization_pairing where organization_id=$1", [organizationId]);
@@ -115,7 +113,6 @@ describe("protected pairing removal", () => {
       expect(encryption.decrypt(retained.encryptedExpected)).toBe(capability);
       expect(JSON.stringify(saved.rows)).not.toContain(capability);
       expect((await harness.pool.query("select * from organization_machine")).rows).toEqual([]);
-      expect(await runtime.runPromise(loadTeardownConnections(organizationId))).toEqual([{ machine_id: machineId, management: capability }]);
     } finally { await runtime.dispose(); }
   });
 

@@ -14,15 +14,12 @@ import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
 import { ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 import { serviceSearchSchema } from "../services/$serviceId/-components/service-pages";
 import { CanvasNodeList } from "./canvas/CanvasServiceList";
-import type { CanvasVolumeResourceState } from "./canvas/CanvasServicesContext";
+import type { VolumeListing } from "@ployz/sdk";
 import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
-const volume = asTestDouble<CanvasVolumeResourceState>()({
-  diffRowCount: 1,
-  resource: { resource: { id: "data", name: "Database data" }, isAuthored: true, attachments: [{ mountPath: "/data" }] },
-});
+const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [{ service: "api", path: "/data" }], deployed: false, change: "update" });
 
 function InspectorEditor() {
   const routeParams = useParams({ strict: false });
@@ -51,15 +48,7 @@ function Architecture() {
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
-      <CanvasNodeList
-        services={[]}
-        storeServices={null}
-        storeVolumes={null}
-        liveNodes={[]}
-        servicesById={new Map()}
-        selectedNodeId={nodeId}
-        volumeResourcesById={new Map([["data", volume]])}
-      />
+      <CanvasNodeList services={[]} volumes={[volume]} selectedNodeId={nodeId} />
     </div>}
   >
     <Outlet />

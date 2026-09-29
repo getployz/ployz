@@ -19,10 +19,10 @@ import {
   VariableRow,
   type VariableMetadataPatch,
 } from "#/components/variables/variable-row";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { PlainVariableRecord } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 
 export type VariableAddInput = {
   key: string;

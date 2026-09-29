@@ -36,7 +36,7 @@ it("groups the Store's review by node, labelling rows from the catalog and disca
 it("reads a pending node as its Deployment does, and a vanished runner's node as needing a look", () => {
   expect(nodeLight("pending", "queued")).toBe("queued");
   expect(nodeLight("pending", "running")).toBe("deploying");
-  expect(nodeLight("pending", "cancelled")).toBe("not_attempted");
+  expect(nodeLight("pending", "cancelled")).toBe("not_applied");
   expect(nodeLight("applied", "failed")).toBe("deployed");
   expect(nodeLight("unknown", "unknown")).toBe("failed");
 });

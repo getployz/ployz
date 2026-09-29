@@ -1,13 +1,8 @@
-import { useClusterDomainName } from "#/modules/cluster-domain/use-cluster-domain";
-import { useEnvironmentDocumentEditor } from "#/modules/environment-design/environment-document-edit";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { variableDocumentRecord } from "#/modules/environment-design/variable-document";
 import { useState } from "react";
 import type { Change, EnvironmentRef, EnvironmentView, JsonValue, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { useServerFn } from "@tanstack/react-start";
 import { BracesIcon } from "lucide-react";
 import { SecretValueDisplay } from "#/components/secret-value-display";
 import { Button } from "#/components/ui/button";
@@ -24,91 +19,10 @@ import {
   type VariableAddInput,
 } from "#/components/variables/variables-panel";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row";
-import { useReferenceTargets } from "#/components/variables/use-reference-targets";
-import type { VariableRecord } from "#/modules/environment-design/variables";
-import { getManagedServiceExports } from "#/modules/environment-design/managed-service-exports";
-import { useApplyRawVariablesAction, useSealServiceVariableAction, type PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import type { RawEditorDiff } from "#/modules/environment-design/variable-raw-editor";
-import { updateServiceVariableExportServerFn } from "#/modules/environment-design/variable-functions";
-import { insertPlainServiceVariable } from "#/modules/environment-design/variable-collections";
-import { useVariableWriter } from "#/modules/services/services.collection";
+import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modules/variables/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
-import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
-
-export function ServiceVariablesTab({
-  state,
-}: {
-  state: ServiceDrawerState;
-}) {
-  const editDocument = useEnvironmentDocumentEditor(state.organizationSlug);
-  const clusterDomain = useClusterDomainName(state.organizationSlug);
-  const ployzManagedVariables = getManagedServiceExports(state.service, clusterDomain);
-  const variableWriter = useVariableWriter(state.organizationSlug);
-  const updateExport = useServerFn(updateServiceVariableExportServerFn);
-
-  const document = useEnvironmentDocument(state.organizationSlug, state.service.environmentId);
-  const node = document?.intent.services.find((node) => node.id === state.service.id);
-  const variables = document && node ? node.variables.map((variable) => variableDocumentRecord(variable,
-    node.id, document.intent, document.updatedAt)).sort((a, b) => a.key.localeCompare(b.key)) : [];
-
-  const valueTargets = useReferenceTargets({
-    organizationSlug: state.organizationSlug,
-    environmentId: state.service.environmentId,
-    serviceId: state.service.id,
-  });
-
-  const sealVariable = useSealServiceVariableAction({
-    organizationSlug: state.organizationSlug,
-    environmentId: state.service.environmentId,
-    serviceId: state.service.id,
-  });
-
-  const applyRawVariables = useApplyRawVariablesAction({
-    organizationSlug: state.organizationSlug,
-    environmentId: state.service.environmentId,
-    serviceId: state.service.id,
-  });
-
-  function handleCreateVariable(input: VariableAddInput) {
-    // Optimistic: the writer rolls back and toasts if saving fails.
-    insertPlainServiceVariable(variableWriter, {
-      serviceId: state.service.id,
-      key: input.key,
-      value: input.value,
-      exported: input.exported,
-    });
-  }
-
-  function handleUpdateMetadata(variable: VariableRecord, patch: VariableMetadataPatch) {
-    const { organizationSlug } = state;
-    const { environmentId, id: serviceId } = state.service;
-    const exported = patch.exported ?? variable.exported;
-    editDocument({
-      environmentId,
-      apply: (intent) => {
-        const entry = intent.services.find((node) => node.id === serviceId)?.variables.find((entry) => entry.id === variable.id);
-        if (entry) entry.exported = exported;
-      },
-      save: (revision) => updateExport({ data: { organizationSlug, revision, environmentId, serviceId, variableId: variable.id, exported } }),
-      failureMessage: "Could not update this variable.",
-    });
-  }
-
-  return (
-    <ServiceVariablesView
-      variables={variables}
-      writer={variableWriter}
-      managed={ployzManagedVariables}
-      valueTargets={valueTargets}
-      onCreateVariable={handleCreateVariable}
-      onSealVariable={sealVariable}
-      onUpdateMetadata={handleUpdateMetadata}
-      onApplyRaw={applyRawVariables}
-    />
-  );
-}
 
 /** A Config Store Service's variables: each edit is one optimistic write of `SERVICE.env.KEY`; a secret never reads back. */
 export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings }: {

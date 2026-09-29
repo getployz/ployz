@@ -9,7 +9,7 @@ import { Result, Schema } from "effect";
 import {
   strictParseOptions,
   type StringSchema,
-} from "#/modules/environment-design/schema";
+} from "#/lib/schema";
 
 /**
  * Click-to-edit heading used in the canvas inspector overlay. Shared by the

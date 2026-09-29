@@ -1,7 +1,7 @@
 import type {
   EnvironmentRef, MoveQuery, PrPlan, PrPlansQuery, PullRequestHint, PullRequestQuery, PullRequestRef, PullRequestView,
 } from "@ployz/sdk";
-import { listNames, plural } from "#/modules/branches/branch-plan";
+import { listNames, plural } from "#/lib/plural";
 
 /** A Project's PR plans: one per repository its Services deploy from through the GitHub App. */
 export function prPlansQuery(project: string): { query: "pr_plans" } & PrPlansQuery {

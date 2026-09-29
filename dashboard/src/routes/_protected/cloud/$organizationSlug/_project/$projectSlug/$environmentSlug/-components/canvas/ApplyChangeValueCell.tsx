@@ -1,5 +1,5 @@
 import { cn } from "#/lib/utils";
-import type { ServiceDeploymentDiffKind } from "#/modules/services/service-deployment-diff/fields";
+import type { ChangeKind } from "@ployz/sdk";
 
 /** Staged changes are the user's pending intent; applied ones are what a deployment attempt set, shown neutral. */
 export type ApplyChangeTone = "staged" | "applied";
@@ -10,7 +10,7 @@ export function ApplyChangeValueCell({
   tone,
   side,
 }: {
-  kind: ServiceDeploymentDiffKind;
+  kind: ChangeKind;
   value: string | null;
   tone: ApplyChangeTone;
   side: "current" | "new";

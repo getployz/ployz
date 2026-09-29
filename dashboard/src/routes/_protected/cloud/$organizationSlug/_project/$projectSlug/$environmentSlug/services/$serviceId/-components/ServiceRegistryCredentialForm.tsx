@@ -10,8 +10,8 @@ import {
 import {
   registryCredentialSecretSchema,
   registryCredentialUsernameSchema,
-} from "#/modules/environment-design/services";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+} from "#/modules/config-store/registry-credentials";
+import { strictParseOptions } from "#/lib/schema";
 
 const registryCredentialFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({

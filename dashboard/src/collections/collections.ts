@@ -1,37 +1,13 @@
 import type { CollectionName, CollectionRead } from "./read.contract";
 import type { OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
-import type { BuildOrderRow } from "#/modules/deployments/build-order";
 import { createChangeCollection } from "#/collections/query-collection";
 import { readCollectionServerFn } from "#/collections/read.functions";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
-import { environmentDeployment as schemaEnvironmentDeployment } from "#/modules/deployments/tables";
-import {
-  service as schemaService,
-  environmentCanvasNodePosition as schemaEnvironmentCanvasNodePosition,
-  resourceLineage as schemaResourceLineage,
-  environmentResource as schemaEnvironmentResource,
-} from "#/modules/environment-design/tables";
-import {
-  project as schemaProject,
-  environment as schemaEnvironment,
-} from "#/modules/project/tables";
-import { prEnvironmentPlan as schemaPrEnvironmentPlan, type BranchRow, type ConditionalSaveRow } from "#/modules/pr-environments/tables";
-export type { BranchRow };
-import {
-  environmentNodeIntroduction as schemaEnvironmentNodeIntroduction,
-} from "#/modules/runtime/tables";
+import type { environmentCanvasNodePosition } from "#/modules/canvas/tables";
+import { canvasPositionKey } from "#/modules/canvas/canvas-positions";
 
-type ProjectRow = typeof schemaProject.$inferSelect;
-type EnvironmentRow = typeof schemaEnvironment.$inferSelect;
-export type PrEnvironmentPlanRow = typeof schemaPrEnvironmentPlan.$inferSelect;
-type ServiceRow = typeof schemaService.$inferSelect;
-type CanvasPositionRow = typeof schemaEnvironmentCanvasNodePosition.$inferSelect;
-type ResourceLineageRow = typeof schemaResourceLineage.$inferSelect;
-type EnvironmentResourceRow = typeof schemaEnvironmentResource.$inferSelect;
-type EnvironmentDeploymentRow = Omit<typeof schemaEnvironmentDeployment.$inferSelect, "deployManifest" | "variableProducers" | "serviceActionPolicy"> & { canRetry: boolean };
-type EnvironmentNodeIntroductionRow =
-  typeof schemaEnvironmentNodeIntroduction.$inferSelect;
+type CanvasPositionRow = typeof environmentCanvasNodePosition.$inferSelect;
 
 /** Every Org Store collection is fed by the Organization change log: a refetch reads only rows changed `since` its cursor. */
 function changeCollection<Row extends object>(table: CollectionName, getKey: (row: Row) => string) {
@@ -46,50 +22,16 @@ function changeCollection<Row extends object>(table: CollectionName, getKey: (ro
   }));
 }
 
-export const getProjectsCollection = changeCollection<ProjectRow>("project", (row) => row.id);
-export const getEnvironmentsCollection = changeCollection<EnvironmentRow>("environment", (row) => row.id);
-export const getBranchesCollection = changeCollection<BranchRow>("environment_branch", (row) => row.environmentId);
-export const prEnvironmentPlanKey = (row: { projectId: string; repositoryId: number }) => `${row.projectId}:${row.repositoryId}`;
-export const getPrEnvironmentPlansCollection = changeCollection<PrEnvironmentPlanRow>("pr_environment_plan", prEnvironmentPlanKey);
-export const getConditionalSavesCollection = changeCollection<ConditionalSaveRow>("conditional_save", (row) => row.id);
-export const getRawServicesCollection = changeCollection<ServiceRow>("service", (row) => row.id);
-export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>(
-  "environment_canvas_node_position", (row) => `${row.resourceType}:${row.resourceId}`);
-export const getResourceLineagesCollection = changeCollection<ResourceLineageRow>("resource_lineage", (row) => row.id);
-export const getRawEnvironmentResourcesCollection = changeCollection<EnvironmentResourceRow>("environment_resource", (row) => row.id);
-export const getEnvironmentDeploymentsCollection = changeCollection<EnvironmentDeploymentRow>("environment_deployment", (row) => row.id);
-export const getEnvironmentNodeIntroductionsCollection = changeCollection<EnvironmentNodeIntroductionRow>(
-  "environment_node_introduction", (row) => `${row.nodeType}:${row.nodeId}`);
+export const getCanvasPositionsCollection = changeCollection<CanvasPositionRow>("environment_canvas_node_position", canvasPositionKey);
 export const getOrganizationEnrollmentCollection = changeCollection<OrganizationEnrollmentRow>("organization_enrollment", (row) => row.id);
 export const getClusterDomainCollection = changeCollection<ClusterDomainRow>("organization_cluster_domain", (row) => row.id);
-export const getBuildOrderCollection = changeCollection<BuildOrderRow>("organization_build_order", (row) => row.id);
-
-export type EnvironmentSummary = Pick<EnvironmentRow, "id" | "projectId" | "organizationId" | "name" | "namespace" | "createdAt">;
-export function environmentSummary(row: EnvironmentSummary): EnvironmentSummary {
-  const { id, projectId, organizationId, name, namespace, createdAt } = row;
-  return { id, projectId, organizationId, name, namespace, createdAt };
-}
-
-export const getEnvironmentSummariesCollection = changeCollection<EnvironmentSummary>("environment_summary", (row) => row.id);
 
 /**
  * Every Org Store table by the name the Organization change stream sends.
  * Not a `get*Collection` export, so the Org Store gate doesn't count it twice.
  */
 export const orgStoreTables = {
-  project: getProjectsCollection,
-  environment: getEnvironmentsCollection,
-  environment_summary: getEnvironmentSummariesCollection,
-  environment_branch: getBranchesCollection,
-  pr_environment_plan: getPrEnvironmentPlansCollection,
-  conditional_save: getConditionalSavesCollection,
-  service: getRawServicesCollection,
-  resource_lineage: getResourceLineagesCollection,
-  environment_resource: getRawEnvironmentResourcesCollection,
   environment_canvas_node_position: getCanvasPositionsCollection,
-  environment_deployment: getEnvironmentDeploymentsCollection,
-  environment_node_introduction: getEnvironmentNodeIntroductionsCollection,
   organization_enrollment: getOrganizationEnrollmentCollection,
   organization_cluster_domain: getClusterDomainCollection,
-  organization_build_order: getBuildOrderCollection,
 } satisfies Record<CollectionName, (organizationSlug: string, scope: CollectionScope) => object>;

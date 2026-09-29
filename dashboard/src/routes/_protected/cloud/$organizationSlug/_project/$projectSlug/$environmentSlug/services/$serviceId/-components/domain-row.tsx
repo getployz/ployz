@@ -8,8 +8,6 @@ import { Spinner } from "#/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
 import type { DnsRecord, DomainRow } from "@ployz/sdk";
-import type { PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { RelativeTime } from "#/components/relative-time";
 
 export function DomainTitle({
   hostname,
@@ -74,43 +72,6 @@ export function storeStatusView(row: Pick<DomainRow, "status" | "reason" | "acti
       return { icon: row.action?.type === "deploy" ? <GlobeIcon className="opacity-50" /> : <Spinner />, phrase: row.reason, action };
     case "needs_attention":
       return { icon: <AlertTriangleIcon className="text-warning" />, phrase: row.reason, action };
-  }
-}
-
-// TODO(#1275): goes with the legacy drawer.
-export function statusView(status: PublicDomainStatus): DomainStatusView {
-  const warning = <AlertTriangleIcon className="text-warning" />;
-  switch (status.kind) {
-    case "live":
-      return { icon: <GlobeIcon />, phrase: status.viaProxy ? "via proxy" : null, action: null };
-    case "unknown":
-      return { icon: <GlobeIcon className="opacity-50" />, phrase: null, action: null };
-    case "not_deployed":
-      return { icon: <GlobeIcon className="opacity-50" />, phrase: "Live after your next deploy", action: null };
-    case "setting_up":
-      return { icon: <Spinner />, phrase: "Setting up", action: null };
-    case "issuing":
-      return { icon: <Spinner />, phrase: "Issuing certificate", action: null };
-    case "needs_dns":
-      return { icon: warning, phrase: "Waiting for DNS update", action: "dns" };
-    case "dns_elsewhere":
-      return { icon: warning, phrase: "Points to another server", action: "dns" };
-    case "port_closed":
-      return { icon: warning, phrase: "Port 80 is closed", action: null };
-    case "redirects_to_https":
-      // TODO: DOCS PAGE NEEDED on custom domains behind a proxy (see refusal_reason in
-      // core/crates/ployz-core/src/domain/hostname_verdict.rs); link it from this line.
-      return { icon: warning, phrase: "Your proxy redirects to HTTPS. Exempt /.well-known/acme-challenge/* from HTTPS redirects.", action: null };
-    case "cert_failed":
-      return {
-        icon: warning,
-        phrase: status.retryAt ? <>Certificate failed · retrying <RelativeTime date={status.retryAt} /></> : "Certificate failed",
-        action: null,
-      };
-    case "unreachable":
-      return { icon: warning, phrase: "Servers can’t receive traffic", action: "organization_settings" };
-    case "https_down":
-      return { icon: warning, phrase: "HTTPS is down · we’re fixing it", action: null };
   }
 }
 
