@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
@@ -8,12 +8,17 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
-import { environmentSettingsQuery, environmentsQuery, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { ownLineages } from "#/modules/branches/branch-plan";
+import { planOf } from "#/modules/config-store/store-branches";
+import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { useMissingStorePrGrant } from "#/modules/pr-environments/plan.queries";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { SetupCommandsField, useSavedSetupCommands } from "../new-branch/SetupCommandsField";
+import { PickingViewProvider, usePickingView, type PickingView } from "../new-branch/branch-picking";
+import { ServicesSection } from "../new-branch/ServicesSection";
+import { useSavedSetupCommands } from "../new-branch/SetupCommandsField";
+import { SetupSection } from "../new-branch/SetupSection";
 
 type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 type PlanChange = Partial<Pick<PrPlan, "enabled" | "start_from" | "copy" | "setup" | "remove_on_close" | "include_bots">>;
@@ -54,6 +59,7 @@ function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) 
     // Once the Store answered (and its views refetched), the saved plan shows, unless a newer change is pending.
     void written.catch(() => undefined).finally(() => setPending((current) => {
       const next = { ...current };
+      // SAFETY: `change` is a PlanChange, so its own keys are PlanChange's.
       for (const key of Object.keys(change) as Array<keyof PlanChange>) if (next[key] === change[key]) delete next[key];
       return next;
     }));
@@ -113,7 +119,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
             </Field>
           </FieldSet>
           {/* What it copies names the start-from's nodes, which this canvas shows once the panel is over it. */}
-          {plan.start_from === params.environmentSlug && <Copies params={params} plan={plan} set={set} />}
+          {plan.start_from === params.environmentSlug && <Copies plan={plan} set={set} />}
           {plan.open.length > 0 && (
             <FieldSet>
               <FieldLegend>Open now</FieldLegend>
@@ -155,54 +161,81 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
 }
 
 /**
- * What each PR Environment copies from the start-from Environment: the repository's Services always, the rest as
- * picked, each other node used live. Then the commands its copied Services run before they first deploy.
+ * What each PR Environment copies from the start-from Environment (the canvas's picks, shared with its cards), and the
+ * commands its copied Services run to seed new, empty data.
  */
-function Copies({ params, plan, set }: { params: Params; plan: PrPlan; set: (change: PlanChange) => Promise<unknown> }) {
-  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const services = useStoreView(params.organizationSlug, servicesQuery(store));
-  const volumes = useStoreView(params.organizationSlug, volumesQuery(store));
-  const settings = useStoreView(params.organizationSlug, environmentSettingsQuery(store));
-  const fromRepository = new Set(settings.ok ? settings.value.settings.flatMap((row) => {
-    const [service, setting] = row.path.split(".");
-    return setting === "repository" && row.value === plan.repository && service ? [service] : [];
-  }) : []);
-  const nodes = [
-    ...(services.ok ? services.value.services.map((service) => service.name) : []),
-    ...(volumes.ok ? volumes.value.volumes.map((volume) => volume.name) : []),
-  ];
-  const copied = (name: string) => fromRepository.has(name) || plan.copy.includes(name);
-  const copiedServices = (services.ok ? services.value.services : []).filter((service) => copied(service.name));
+function Copies({ plan, set }: { plan: PrPlan; set: ReturnType<typeof usePlanWrite>["set"] }) {
+  const picking = usePickingView();
   const setup = useSavedSetupCommands(plan.setup.map((command) => ({ lineageId: command.service, command: command.command })),
     (whole) => void set({ setup: whole.map((command) => ({ service: command.lineageId, command: command.command })) }));
+  if (!picking) return null;
+  const nameOf = (name: string) => name;
   return (
     <>
-      <FieldSet>
-        <FieldLegend>Copies</FieldLegend>
-        <FieldDescription>The rest each pull request uses live from {plan.start_from}.</FieldDescription>
-        <ItemGroup className="gap-2">
-          {nodes.map((name) => (
-            <Item key={name} variant="muted" size="sm" render={<label htmlFor={`pr-plan-copy-${name}`} />}>
-              <ItemMedia>
-                <Switch id={`pr-plan-copy-${name}`} checked={copied(name)} disabled={fromRepository.has(name)}
-                  onCheckedChange={(on) => void set({ copy: on ? [...plan.copy, name] : plan.copy.filter((other) => other !== name) })} />
-              </ItemMedia>
-              <ItemContent>
-                <ItemTitle>{name}</ItemTitle>
-                {fromRepository.has(name) ? <ItemDescription>Deploys the pull request</ItemDescription> : null}
-              </ItemContent>
-            </Item>
-          ))}
-        </ItemGroup>
-      </FieldSet>
-      <FieldSet>
-        <FieldLegend>Setup commands</FieldLegend>
-        <FieldDescription>Run in a copied service before it first deploys.</FieldDescription>
-        <SetupCommandsField id="pr-plan-setup" commands={setup.commands} onChange={setup.onChange} onBlur={setup.onBlur}
-          services={copiedServices.map((service) => ({ lineageId: service.name, name: service.name }))} />
-      </FieldSet>
+      <ServicesSection picking={picking} nameOf={nameOf} who="The PR"
+        target={<><GitPullRequestIcon aria-hidden="true" className="size-3.5 shrink-0" />each pull request</>} />
+      <SetupSection plan={picking.plan} nameOf={nameOf} setupCommands={setup.commands} onSetupCommands={setup.onChange} onSetupBlur={setup.onBlur} />
     </>
   );
+}
+
+/**
+ * A PR plan's picks over the Config Store while its page is open over the start-from's canvas, shared with the canvas
+ * cards: the repository's Services always run the PR's code, and each other toggle saves the plan's copies at once.
+ */
+function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView | null {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const writer = useStoreWriter(params.organizationSlug);
+  const plans = useCachedStoreView(params.organizationSlug, prPlan ? prPlansQuery(params.projectSlug) : null);
+  const settings = useCachedStoreView(params.organizationSlug, prPlan ? environmentSettingsQuery(store) : null);
+  const saved = plans?.ok ? plans.value.plans.find((row) => row.repository_id === prPlan?.repositoryId) : undefined;
+  const [copy, setCopy] = useState<string[] | null>(null);
+  const active = saved?.enabled && saved.start_from === params.environmentSlug ? saved : null;
+  const focus = active && settings?.ok ? settings.value.settings.flatMap((row) => {
+    const [service, setting] = row.path.split(".");
+    return setting === "repository" && row.value === active.repository && service ? [service] : [];
+  }) : [];
+  const picks = copy ?? active?.copy ?? [];
+  const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: picks }) : null);
+  const view = result?.ok ? result.value : null;
+  if (!active || !view) return null;
+  const plan = planOf(view);
+  const byName = new Map(view.nodes.map((node) => [node.name, node]));
+  const fromPr = new Set(focus);
+  const own = ownLineages(plan).filter((name) => !fromPr.has(name));
+  return {
+    parent: { name: view.from.name },
+    plan,
+    presets: [],
+    fromPr,
+    fixed: (node) => fromPr.has(node.lineageId) || (node.role === "own" && node.because !== "picked")
+      || (node.role === "live" && (byName.get(node.lineageId)?.owner ?? view.from.name) !== view.from.name),
+    liveOwner: (name) => ({ ownsData: byName.get(name)?.data ?? false }),
+    ownerName: (name) => byName.get(name)?.owner ?? view.from.name,
+    setPreset: () => undefined,
+    toggled: (name) => {
+      const node = byName.get(name);
+      if (!node) return undefined;
+      return node.toggled === "own"
+        ? { lineageId: node.name, nodeType: node.kind, role: "own", because: "picked" }
+        : { lineageId: node.name, nodeType: node.kind, role: node.toggled };
+    },
+    toggle: (name) => {
+      const next = own.includes(name) ? own.filter((other) => other !== name) : [...own, name];
+      setCopy(next);
+      // Saved at once; a refusal toasts and the saved copies show again.
+      void writer.commit({
+        command: "set_pr_plan", project: params.projectSlug, repository: active.repository, enabled: null, start_from: null,
+        copy: next, setup: null, remove_on_close: null, include_bots: null,
+      }).isPersisted.promise.catch(() => undefined).finally(() => setCopy((current) => current === next ? null : current));
+    },
+  };
+}
+
+/** Holds a PR plan's picks over the Config Store while its page is open. */
+export function StorePrPickingProvider({ prPlan, children }: { prPlan: { repositoryId: number } | null; children: ReactNode }) {
+  return <PickingViewProvider picking={useStorePrPicking(prPlan)}>{children}</PickingViewProvider>;
 }
 
 /** The installation hasn't accepted Pull requests: read and Checks: write, so nothing starts. */
