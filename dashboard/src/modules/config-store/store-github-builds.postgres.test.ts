@@ -130,7 +130,7 @@ it.live(
 
       // An admission carries how many Servers could run it: none here.
       const admission = { operation: "write", command: { command: "start", deployment: serversFirst } } as const;
-      const trusted = yield* provided(gatherTrusted(ORGANIZATION, null, admission, (query) => store.read(ORGANIZATION, query)));
+      const trusted = yield* provided(gatherTrusted(ORGANIZATION, admission, (query) => store.read(ORGANIZATION, query)));
       expect(trusted.servers).toBe(0);
     }),
   60_000,

@@ -258,7 +258,5 @@ const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfie
 client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
 client.register(assignment) satisfies Promise<Registered>;
 
-import { lowerDeployment } from '../config';
-import type { ServiceConfig } from '../config';
-declare const serviceConfig: ServiceConfig;
-lowerDeployment({ namespace: 'test', snapshots: [{ serviceId: 'service-id', config: serviceConfig }] });
+import { parseServiceSetting } from '../config';
+parseServiceSetting('replicas', 3) satisfies number;

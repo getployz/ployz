@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Trash2Icon } from "lucide-react";
-import { DeletionDialog } from "#/components/deletion-dialog";
+import { DeletionDialog, type DeletionItem } from "#/components/deletion-dialog";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { toErrorMessage } from "#/lib/error-message";
@@ -21,6 +22,9 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
   const navigate = useNavigate();
   const remove = useServerFn(removeOrganizationServerFn);
   const { projects } = requireView(useStoreView(organizationSlug, projectsQuery()));
+  // With no Project left, what goes is its hold on each Server.
+  const { machines } = useRuntimeLens(organizationSlug);
+  const servers = machines.map((machine): DeletionItem => ({ kind: "server", name: machine.name, detail: "unpaired" }));
   const [open, setOpen] = useState(false);
   const [unconfirmed, setUnconfirmed] = useState<readonly string[] | null>(null);
   const [retrying, setRetrying] = useState(false);
@@ -80,7 +84,7 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
       </section>
       <DeletionDialog open={open} onOpenChange={setOpen} title={`Delete ${organizationSlug}?`} place={organizationSlug}
         confirmLabel="Delete" sentence={<>You're <span className="text-destructive">deleting</span> <span className="text-foreground">{organizationSlug}</span>, and unpairing its servers from it.</>}
-        callbacks={{ load: () => Promise.resolve({ items: [], evidence: null }), confirm: removeOrganization }} />
+        callbacks={{ load: () => Promise.resolve({ items: servers, evidence: null }), confirm: removeOrganization }} />
     </>
   );
 }

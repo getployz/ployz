@@ -1,15 +1,16 @@
-import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
+import { infiniteQueryOptions, keepPreviousData, queryOptions, skipToken, useMutationState, useQueries, useQuery, useSuspenseInfiniteQuery, useSuspenseQueries, type Query, type QueryClient } from "@tanstack/react-query";
 import type {
   BranchPlanQuery, BranchPreset, BranchQuery, BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery,
-  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, JsonValue, MoveQuery,
+  DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentsQuery, EnvironmentView, MoveQuery, NamespaceQuery,
   ProjectsQuery, RemovalsQuery, ServicesQuery, VolumesQuery,
 } from "@ployz/sdk";
-import { Option, Schema } from "effect";
+import { Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
 import type { StoreResult, StoreViewOf } from "./store.contract";
+import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
  * The Store tables' change names that refresh each query kind. A new Query kind must say which tables back it,
@@ -79,7 +80,7 @@ export function storeViewOptions<Q extends ConfigQuery>(organizationSlug: string
   });
 }
 
-function queryOf(query: Query): ConfigQuery | null {
+export function queryOf(query: Query): ConfigQuery | null {
   const [prefix, , , , config] = query.queryKey;
   // SAFETY: every `store-view` key is built by storeViewOptions, with its ConfigQuery last.
   return prefix === "store-view" ? config as ConfigQuery : null;
@@ -129,54 +130,26 @@ export function cachedRevision(queryClient: QueryClient, organizationSlug: strin
 /** The mutation key of an Environment's pending edits; `store-write.ts` files them under it. */
 export const storeEditKey = (organizationSlug: string, key: string) => ["store-edit", organizationSlug, key] as const;
 
-/** A patch's value: Settings by name. The Store refuses any other shape. */
-const decodePatch = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.MutableJson));
+const isSecret = Schema.is(Schema.Struct({ secret: Schema.Unknown }));
 
-const isObject = (value: JsonValue): value is { [key: string]: JsonValue } =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-/** A value as reads show it: a secret (a variable's, a registry credential) is `{"secret": true}`, never its plaintext. */
-function shown(value: JsonValue): JsonValue {
-  return isObject(value) && "secret" in value ? { secret: true } : value;
-}
-
-/** A variable's path, `SERVICE.env.KEY`: a set may add it, and `{"value", "exported"}` writes both of its rows. */
-const VARIABLE_PATH = /^[^.]+\.env\.[^.]+$/u;
-
-/** Applies edits not yet committed over an Environment view, in order: what the user sees while saves run. */
+/**
+ * Shows edits not yet committed over an Environment view, in order: what the user sees while saves run. It knows no
+ * edit rules: the dashboard only sends `set PATH VALUE` and `unset PATH` for rows the view lists (a new variable adds
+ * its row), so a pending edit shows as its value, or the row's default once unset. A secret shows as reads show it,
+ * `{"secret": true}`. What the Store makes of an edit arrives with the committed view.
+ */
 export function withPendingChanges(view: EnvironmentView, changes: readonly Change[]): EnvironmentView {
   if (changes.length === 0) return view;
   const settings = view.settings.map((row) => ({ ...row }));
-  const values = view.values ? { ...view.values } : view.values;
-  const assign = (path: string, value: (row: EnvironmentView["settings"][number]) => JsonValue) => {
-    const row = settings.find((candidate) => candidate.path === path);
-    if (!row) return;
-    row.value = shown(value(row));
-    // `values` exists only on a one-Service view, so the row found is that Service's.
-    const setting = path.split(".")[1];
-    if (values && setting && setting !== "env") {
-      if (row.value === null) delete values[setting];
-      else values[setting] = row.value;
-    }
-  };
-  const setVariable = (path: string, value: JsonValue) => {
-    const write = isObject(value) && !("secret" in value) ? value : { value };
-    for (const [at, next, fallback] of [[path, write["value"], null], [`${path}.exported`, write["exported"], false]] as const) {
-      if (next === undefined) continue;
-      if (!settings.some((row) => row.path === at)) settings.push({ path: at, value: fallback, default: fallback, apply: "staged" });
-      assign(at, () => next);
-    }
-  };
   for (const change of changes) {
-    if (change.op === "set" && VARIABLE_PATH.test(change.path)) setVariable(change.path, change.value);
-    else if (change.op === "set") assign(change.path, () => change.value);
-    else if (change.op === "unset") assign(change.path, (row) => row.default);
-    else {
-      const patch = decodePatch(change.value);
-      for (const [setting, value] of Option.isSome(patch) ? Object.entries(patch.value) : []) assign(`${change.path}.${setting}`, () => value);
-    }
+    if (change.op === "patch") continue;
+    let row = settings.find((candidate) => candidate.path === change.path);
+    if (!row && change.op === "set") settings.push(row = { path: change.path, value: null, default: null, apply: "staged" });
+    if (!row) continue;
+    const value = change.op === "set" ? change.value : row.default;
+    row.value = isSecret(value) ? { secret: true } : value;
   }
-  return { ...view, settings, values };
+  return { ...view, settings };
 }
 
 /** An Environment's Settings (every one, defaults included): the view Service editors read and edit. */
@@ -187,6 +160,11 @@ export function environmentSettingsQuery(environment: EnvironmentRef): { query: 
 /** An Environment's Services, staged removals included: what its canvas draws. */
 export function servicesQuery(environment: EnvironmentRef): { query: "services" } & ServicesQuery {
   return { query: "services", environment };
+}
+
+/** The Namespace an Environment runs in: how runtime evidence names its Services (`NAMESPACE/PRIVATE_DNS`). */
+export function namespaceQuery(environment: EnvironmentRef): { query: "namespace" } & NamespaceQuery {
+  return { query: "namespace", environment };
 }
 
 /** What the next Deploy changes in an Environment: the pink trail on its canvas and drawers. */
@@ -236,12 +214,12 @@ export function branchQuery(environment: EnvironmentRef): { query: "branch" } & 
 
 /** What Save would put in a Branch's Parent. */
 export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: branch, into: null };
+  return { query: "move", move: "save", from: branch };
 }
 
 /** What Update would bring into a Branch from what its Parent runs. */
 export function updateQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: null, into: branch };
+  return { query: "move", move: "update", into: branch };
 }
 
 /** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */
@@ -294,21 +272,56 @@ export function requireView<T>(result: StoreResult<T>): T {
   return result.value;
 }
 
+/** A fresh read of one Store view as a step of a user command (what a removal deletes, before confirming). */
+export async function fetchStoreView<Q extends ConfigQuery>(organizationSlug: string, scope: CollectionScope, query: Q) {
+  return requireView(await scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }));
+}
+
 /**
- * Reads one Store view, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this tab's
- * pending edits over the committed one; a failed save drops its edit, which is the rollback.
+ * Reads Store views together, prefetched by the page's loader (`prefetchStoreViews`). An Environment view shows this
+ * tab's pending edits over the committed one; a failed save drops its edit, which is the rollback.
  */
-export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
-  const result = useSuspenseQuery(storeViewOptions(organizationSlug, useCollectionScope(), query)).data;
-  const key = "environment" in query ? environmentKey(query.environment) : "";
+export function useStoreViews<const Qs extends readonly ConfigQuery[]>(organizationSlug: string, queries: Qs):
+  { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> } {
+  const scope = useCollectionScope();
+  const results = useSuspenseQueries({ queries: queries.map((query) => storeViewOptions(organizationSlug, scope, query)) });
   const pending = useMutationState({
-    filters: { mutationKey: storeEditKey(organizationSlug, key), status: "pending" },
-    // SAFETY: store-write.ts files only `Change[]` variables under this key.
-    select: (mutation) => mutation.state.variables as Change[],
+    filters: { mutationKey: ["store-edit", organizationSlug], status: "pending" },
+    // SAFETY: store-write.ts files only `Change[]` variables under `storeEditKey`, whose last part is the Environment.
+    select: (mutation) => ({ key: mutation.options.mutationKey?.[2], changes: mutation.state.variables as Change[] }),
   });
-  if (!result.ok || result.value.view !== "environment" || pending.length === 0) return result;
-  // SAFETY: an `environment` view answers an `environment` query.
-  return { ok: true, value: withPendingChanges(result.value as EnvironmentView, pending.flat()) as StoreViewOf<Q> };
+  // SAFETY: each result answers the query at its index with the view of the same name.
+  return results.map(({ data: result }, index) => {
+    const query = queries[index];
+    if (!result.ok || result.value.view !== "environment" || !query || !("environment" in query)) return result;
+    const key = environmentKey(query.environment);
+    const changes = pending.flatMap((edit) => edit.key === key ? edit.changes : []);
+    return changes.length === 0 ? result : { ok: true, value: withPendingChanges(result.value, changes) };
+  }) as { [K in keyof Qs]: StoreResult<StoreViewOf<Qs[K]>> };
+}
+
+/** Reads one Store view; see `useStoreViews`. */
+export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q): StoreResult<StoreViewOf<Q>> {
+  return useStoreViews(organizationSlug, [query] as const)[0];
+}
+
+/**
+ * Changes open pull requests saved into `environment` for their merge (standing Conditional Saves), by pull request:
+ * the bottom bar's "goes live when #N merges". Chrome, so nothing waits on it; the Project's plans name the open ones.
+ */
+// ponytail: one pull request view per open PR of the Project; a Store view of saves into an Environment when PRs pile up.
+export function useSavesInto(organizationSlug: string, project: string, environment: string) {
+  const scope = useCollectionScope();
+  const plans = useCachedStoreView(organizationSlug, prPlansQuery(project));
+  const open = plans?.ok ? plans.value.plans.flatMap((plan) => plan.open.map((pr) => ({ repository_id: plan.repository_id, number: pr.number }))) : [];
+  const views = useQueries({ queries: open.map((pr) => storeViewOptions(organizationSlug, scope, pullRequestQuery(pr))) });
+  return views.flatMap(({ data }) => {
+    if (!data?.ok || !data.value.pull_request) return [];
+    const { number } = data.value.pull_request;
+    return data.value.environments.flatMap((pr) => pr.destinations.flatMap((destination) =>
+      destination.name === environment && destination.save?.standing
+        ? [{ number, changes: destination.save.changes, environment: pr.environment.name }] : []));
+  });
 }
 
 /**

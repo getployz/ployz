@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import type { BranchChoice, BranchOption } from "@ployz/sdk/config";
+import type { BranchChoice, BranchOption } from "@ployz/sdk";
 import { GitBranchIcon, InfoIcon, TriangleAlertIcon, Undo2Icon, XIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
