@@ -184,12 +184,7 @@ fn secrets_never_leave_reads_and_only_claim_unseals_them() {
         json!(plan),
         json!(
             store
-                .read(
-                    &who(),
-                    &ployz_store::DeploymentQuery {
-                        id: ToOwned::to_owned(&id)
-                    }
-                )
+                .read(&who(), &ployz_store::DeploymentQuery { id: id.clone() })
                 .unwrap()
         ),
         json!(store.read(&who(), &DeploymentsQuery::default()).unwrap()),

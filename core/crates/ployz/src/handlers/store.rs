@@ -286,12 +286,7 @@ impl Store {
     pub(crate) fn deployment(&self, id: &DeploymentId) -> Result<DeploymentView, StoreCallError> {
         let request = Query::Deployment(DeploymentQuery { id: id.clone() });
         self.call("read", &request, |store, who| {
-            store.read(
-                who,
-                &ployz_store::DeploymentQuery {
-                    id: ToOwned::to_owned(id),
-                },
-            )
+            store.read(who, &ployz_store::DeploymentQuery { id: id.clone() })
         })
     }
 

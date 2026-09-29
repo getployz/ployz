@@ -14,8 +14,9 @@ use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
-    RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId, SettingPath,
-    Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
+    SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery,
+    VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -330,12 +331,7 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
         "the Deploy Intent mounts the Volume"
     );
     let view = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(1)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
     assert!(
         view.nodes
@@ -470,12 +466,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     // Deployment failed, and its Node Outcome says the Volume did.
     assert!(listed(&store, &who)[0].deployed);
     let failed = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(2)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
         .unwrap();
     assert_eq!(failed.deployment.status, DeploymentStatus::Failed);
     let data = failed
@@ -490,12 +481,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     assert!(listed(&store, &who).is_empty());
     assert!(diff(&store, &who).changes.is_empty());
     let removed = store
-        .read(
-            &who,
-            &ployz_store::DeploymentQuery {
-                id: ToOwned::to_owned(&id(3)),
-            },
-        )
+        .read(&who, &ployz_store::DeploymentQuery { id: id(3) })
         .unwrap();
     assert_eq!(removed.deployment.status, DeploymentStatus::Applied);
     let data = removed
@@ -558,4 +544,45 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
         .unwrap();
     let claimed = store.claim(&id(3), &runner).unwrap();
     assert_eq!(claimed.deletes, [held('a')]);
+}
+
+#[test]
+fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let publish =
+        |accept: &[&str], observed: Option<VolumeObservation>, version: Option<String>| {
+            store.write_trusted(
+                &who,
+                &Publish {
+                    environment: EnvironmentRef::default(),
+                    version,
+                    accept_volume_loss: accept
+                        .iter()
+                        .map(|name| VolumeName::parse(*name).unwrap())
+                        .collect(),
+                },
+                &Trusted {
+                    volumes: observed,
+                    ..Trusted::default()
+                },
+            )
+        };
+    assert_eq!(code(publish(&[], None, None)), RpcErrorCode::Unavailable);
+    let refused = publish(&[], Some(observed(&['a'])), None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(refused.details["accept"], json!(["data"]));
+    let bound = refused.details["version"].as_str().unwrap().to_owned();
+    let published = publish(&["data"], Some(observed(&['a'])), Some(bound)).unwrap();
+    assert!(published.created);
 }
