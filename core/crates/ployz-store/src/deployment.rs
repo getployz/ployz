@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, SavedEnvironmentIntent,
-    SavedServiceIntent, SavedVolumeIntent, ServiceSource, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
-    project_runtime_outcome, RuntimeOutcomeProjection,
+    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, RuntimeOutcomeProjection,
+    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceSource,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
@@ -1279,7 +1279,13 @@ fn finish(
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
-        .filter(|node| stored.run.nodes.get(&node.id).is_some_and(|status| status.advances()))
+        .filter(|node| {
+            stored
+                .run
+                .nodes
+                .get(&node.id)
+                .is_some_and(|status| status.advances())
+        })
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
@@ -1531,9 +1537,12 @@ pub(crate) fn view(
             outcome: match (stored.run.nodes.get(&node.id), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
-                (None, DeploymentStatus::Queued | DeploymentStatus::Running | DeploymentStatus::Cancelling) => {
-                    NodeStatus::Pending
-                }
+                (
+                    None,
+                    DeploymentStatus::Queued
+                    | DeploymentStatus::Running
+                    | DeploymentStatus::Cancelling,
+                ) => NodeStatus::Pending,
                 (
                     None,
                     DeploymentStatus::Superseded
@@ -1640,11 +1649,14 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         .ok_or_else(|| error::corrupt("Deployment status"))?;
     let lease = row.int(12)?;
     // A runner whose lease lapsed is gone: what ran is unknown.
-    let status = match status {
-        DeploymentStatus::Running | DeploymentStatus::Cancelling if lease <= now() => {
-            DeploymentStatus::Unknown
-        }
-        status => status,
+    let lapsed = matches!(
+        status,
+        DeploymentStatus::Running | DeploymentStatus::Cancelling
+    ) && lease <= now();
+    let status = if lapsed {
+        DeploymentStatus::Unknown
+    } else {
+        status
     };
     Ok(Stored {
         summary: DeploymentSummary {

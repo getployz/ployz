@@ -10,11 +10,11 @@ use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Principal,    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
+    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
     DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
     EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
-    ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence, RunnerId,
-    ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
+    Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence,
+    RunnerId, ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
     UploadedSource, View, Written,
 };
 use serde_json::{Value, json};

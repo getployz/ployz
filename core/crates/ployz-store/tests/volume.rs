@@ -12,10 +12,10 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    DeploymentId, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef,
-    Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery, RemoveVolume,
-    RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName,
-    VolumeObservation, VolumeQuery, VolumesQuery,
+    DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery,
+    EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery,
+    RemoveVolume, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, VolumeId, VolumeListing,
+    VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
@@ -413,10 +413,11 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
             .len(),
         2
     );
-    // The confirmation binds the exact holders: by name alone, or once a Server
-    // holds it that the confirmation didn't name, it asks again.
-    for (version, holders) in [(None, &['a', 'b'][..]), (Some(&bound), &['a', 'b', 'c'][..])] {
-        let again = admit_at(
+    // The confirmation binds the exact holders: by name alone it asks again with
+    // the same version; once a Server holds it that the confirmation didn't name,
+    // with a new one.
+    let again = |version: Option<&String>, holders: &[char]| {
+        admit_at(
             &store,
             &who,
             2,
@@ -424,10 +425,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
             Some(observed(holders)),
             version.cloned(),
         )
-        .unwrap_err();
-        assert_eq!(again.code, RpcErrorCode::ConfirmationRequired);
-        assert_ne!(again.details["version"], json!(bound));
-    }
+        .unwrap_err()
+    };
+    let by_name = again(None, &['a', 'b']);
+    assert_eq!(by_name.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(by_name.details["version"], json!(bound));
+    let new_holder = again(Some(&bound), &['a', 'b', 'c']);
+    assert_eq!(new_holder.code, RpcErrorCode::ConfirmationRequired);
+    assert_ne!(new_holder.details["version"], json!(bound));
     assert_eq!(
         code(admit(
             &store,
@@ -459,7 +464,11 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     assert!(listed(&store, &who)[0].deployed);
     let failed = store.deployment(&who, &id(2)).unwrap();
     assert_eq!(failed.deployment.status, DeploymentStatus::Failed);
-    let data = failed.nodes.iter().find(|node| node.name == "data").unwrap();
+    let data = failed
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
@@ -468,7 +477,11 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     assert!(diff(&store, &who).changes.is_empty());
     let removed = store.deployment(&who, &id(3)).unwrap();
     assert_eq!(removed.deployment.status, DeploymentStatus::Applied);
-    let data = removed.nodes.iter().find(|node| node.name == "data").unwrap();
+    let data = removed
+        .nodes
+        .iter()
+        .find(|node| node.name == "data")
+        .unwrap();
     assert_eq!(data.outcome, NodeStatus::Removed);
 }
 

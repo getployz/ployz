@@ -15,10 +15,10 @@ use ts_rs::TS;
 use crate::error;
 use crate::id::{Revision, VolumeName};
 use crate::review::{self, Review};
-use crate::{Actor, Trusted, deployment, removal};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{NodeName, SettingPath, Target};
 use crate::storage::Tx;
+use crate::{Actor, Trusted, deployment, removal};
 
 /// Put Working State in Saved State without deploying it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -224,11 +224,13 @@ fn restore(
                     .find(|service| service.id == id)
                     .map(|service| ServiceConfig::from(service.config.clone()))
             };
-            config(saved).zip(config(&baseline)).is_some_and(|(saved, head)| {
-                compare_service_settings(&saved, Some(&head))
-                    .iter()
-                    .any(|row| row.path == setting.field() && row.can_restore)
-            })
+            config(saved)
+                .zip(config(&baseline))
+                .is_some_and(|(saved, head)| {
+                    compare_service_settings(&saved, Some(&head))
+                        .iter()
+                        .any(|row| row.path == setting.field() && row.can_restore)
+                })
         }
         (Some(part), Some(saved)) => part_of(saved, &id, part) != part_of(&baseline, &id, part),
         (Some(_), None) => false,
@@ -253,7 +255,10 @@ fn restore_node(
         Some(part) => {
             let mut restored = current.clone();
             let volume = mounted(current, baseline, part);
-            let Some(service) = restored.services.iter_mut().find(|service| service.id == id)
+            let Some(service) = restored
+                .services
+                .iter_mut()
+                .find(|service| service.id == id)
             else {
                 return Err("its Service is gone".to_owned());
             };

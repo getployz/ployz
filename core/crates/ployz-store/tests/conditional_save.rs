@@ -153,7 +153,10 @@ fn facts(open: bool, merge: Option<&str>, reached: Option<String>, second: u8) -
 }
 
 fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
-    let Written::Automated(automated) = store.system(&who.organization, &event, &Trusted::default()).unwrap() else {
+    let Written::Automated(automated) = store
+        .system(&who.organization, &event, &Trusted::default())
+        .unwrap()
+    else {
         panic!("a system event writes Automated")
     };
     automated

@@ -3,10 +3,9 @@
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Trusted,
     Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
     Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, Publish, Published, Revision, ServiceId, SettingPath,
+    ProjectName, Publish, Published, Revision, ServiceId, SettingPath, Trusted,
 };
 use serde_json::{Value, json};
 
@@ -93,7 +92,8 @@ fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Pu
             environment: EnvironmentRef::default(),
             version: version.map(Into::into),
             accept_volume_loss: Vec::new(),
-        }, &Trusted::default(),
+        },
+        &Trusted::default(),
     )
 }
 
