@@ -273,6 +273,8 @@ pub struct BranchView {
     pub live: Vec<LiveNode>,
     /// The Parent's deployed changes Update would stage, as `NODE[.path]`.
     pub update: Vec<String>,
+    /// The pull request it is the PR Environment of; its Save waits for the merge.
+    pub pull_request: Option<crate::PullRequestRef>,
 }
 
 /// A node a Branch uses live.
@@ -1149,6 +1151,12 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         update,
+        pull_request: crate::pull_request::of(tx, &branch.summary.id)?.map(
+            |(repository_id, number)| crate::PullRequestRef {
+                repository_id,
+                number,
+            },
+        ),
     })
 }
 

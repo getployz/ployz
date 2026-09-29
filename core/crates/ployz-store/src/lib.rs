@@ -55,8 +55,8 @@ pub use domain::{
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
 pub use pull_request::{
-    Destination, DestinationSave, PrEnvironment, PrPlan, PrPlansQuery, PrPlansView, PullRequest,
-    PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
+    Destination, DestinationSave, OpenPullRequest, PrEnvironment, PrPlan, PrPlansQuery,
+    PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
 pub use removal::{RemovedVolume, VolumeLoss};
