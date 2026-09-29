@@ -20,7 +20,7 @@ use crate::{
     cloud_account::{self, Credential},
     cloud_login::{CredentialStore, LoginError},
     connect::{Client, SystemConnector, TARGET_RPC_TIMEOUT},
-    context::{Config, ConnectionSource, SelectedConnections},
+    context::{Config, ConnectionSource, ContextError, SelectedConnections},
     ingress::IngressImage,
     output::{self, say},
 };
@@ -69,7 +69,20 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
         let cloud = std::env::var(env::CLOUD_URL).ok();
         match cloud_account::credential(&store, token, cloud).await {
             Ok(credential) => return through_cloud(matches, &credential).await,
-            Err(LoginError::SignedOut) => {}
+            Err(LoginError::SignedOut) => {
+                // Signed out with no context or local daemon: the fix is signing in, not a
+                // config file. The hidden test Store is never signed in, so it keeps the cause.
+                return super::connect_context(matches, context).await.map_err(|error| {
+                    let no_config = std::error::Error::source(&error)
+                        .and_then(|source| source.downcast_ref::<ContextError>())
+                        .is_some_and(|source| *source == ContextError::NoConfig);
+                    if no_config && std::env::var_os(env::STORE).is_none() {
+                        LoginError::SignedOut.into()
+                    } else {
+                        error
+                    }
+                });
+            }
             Err(error) => return Err(error.into()),
         }
     }
