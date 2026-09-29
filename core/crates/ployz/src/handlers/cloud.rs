@@ -601,57 +601,6 @@ async fn wait_phase(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{io, path::PathBuf};
-
-    use crate::context::ConnectionSource;
-
-    #[test]
-    fn wait_retries_no_config_and_unreachable_connect_errors() {
-        assert!(retry_local_connect(&ConnectError::Context(
-            ContextError::NoConfig
-        )));
-        assert!(retry_local_connect(&ConnectError::Io(io::Error::from(
-            io::ErrorKind::ConnectionRefused
-        ))));
-        assert!(!retry_local_connect(&ConnectError::AllFailed {
-            source: ConnectionSource::LocalSocket,
-            attempts: 1,
-            setup_retryable: false,
-            last: None,
-        }));
-        assert!(!retry_local_connect(&ConnectError::Context(
-            ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
-        )));
-    }
-
-    #[test]
-    fn post_join_ingress_error_names_membership_and_recovery() {
-        let message = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("not running".to_owned()),
-                vec![ployz_core::QualifiedService::system_ingress()],
-            ),
-        );
-        assert!(message.contains("Machine joined"));
-        assert!(message.contains("ployz ingress deploy"));
-    }
-
-    #[test]
-    fn post_join_other_error_names_membership() {
-        let message = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("listing failed".to_owned()),
-                Vec::new(),
-            ),
-        );
-        assert!(message.contains("Machine joined"));
-        assert!(message.contains("listing failed"));
-    }
-}
-
 pub(crate) fn command() -> Command {
     Command::new("cloud")
         .about("Manage Cloud")
@@ -701,4 +650,55 @@ fn reset(root: &ArgMatches) -> Result<(), Error> {
             &serde_json::json!({ "reset": true, "organization": signed_in.organization }),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io, path::PathBuf};
+
+    use crate::context::ConnectionSource;
+
+    #[test]
+    fn wait_retries_no_config_and_unreachable_connect_errors() {
+        assert!(retry_local_connect(&ConnectError::Context(
+            ContextError::NoConfig
+        )));
+        assert!(retry_local_connect(&ConnectError::Io(io::Error::from(
+            io::ErrorKind::ConnectionRefused
+        ))));
+        assert!(!retry_local_connect(&ConnectError::AllFailed {
+            source: ConnectionSource::LocalSocket,
+            attempts: 1,
+            setup_retryable: false,
+            last: None,
+        }));
+        assert!(!retry_local_connect(&ConnectError::Context(
+            ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
+        )));
+    }
+
+    #[test]
+    fn post_join_ingress_error_names_membership_and_recovery() {
+        let message = crate::global_catch_up::joined_catch_up_error(
+            crate::global_catch_up::CatchUpError::new(
+                crate::failure::Failure::usage("not running".to_owned()),
+                vec![ployz_core::QualifiedService::system_ingress()],
+            ),
+        );
+        assert!(message.contains("Machine joined"));
+        assert!(message.contains("ployz ingress deploy"));
+    }
+
+    #[test]
+    fn post_join_other_error_names_membership() {
+        let message = crate::global_catch_up::joined_catch_up_error(
+            crate::global_catch_up::CatchUpError::new(
+                crate::failure::Failure::usage("listing failed".to_owned()),
+                Vec::new(),
+            ),
+        );
+        assert!(message.contains("Machine joined"));
+        assert!(message.contains("listing failed"));
+    }
 }

@@ -530,6 +530,52 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
+pub(crate) fn command() -> Command {
+    base("volume", "Manage volumes")
+        .arg_required_else_help(true)
+        .subcommand(
+            base("create", "Create a volume")
+                .arg(value("machine", Some('m')))
+                .arg(
+                    value("size", None)
+                        .value_parser(crate::volume::ProvisionedVolumeSize::parse)
+                        .help("Provisioned Volume quota; without it the volume is a plain local Docker Volume"),
+                )
+                .arg(positional("volume-name", true)),
+        )
+        .subcommand(
+            base("inspect", "Inspect a volume")
+                .arg(value("machine", Some('m')))
+                .arg(positional("volume-name", true)),
+        )
+        .subcommand(
+            base("ls", "List volumes").arg(many("machine", Some('m'))),
+        )
+        .subcommand(
+            base("rm", "Remove volumes")
+                .arg(switch("force", None))
+                .arg(many("machine", Some('m')))
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+                .arg(
+                    Arg::new("volume-name")
+                        .required(true)
+                        .num_args(1..)
+                        .action(ArgAction::Append),
+                ),
+        )
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::Supported;
+    Some(match path {
+        "create" => (create, Supported),
+        "inspect" => (inspect, Supported),
+        "ls" => (list, Supported),
+        "rm" => (remove, Supported),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -677,50 +723,4 @@ mod tests {
             MembershipObservation::Up,
         )
     }
-}
-
-pub(crate) fn command() -> Command {
-    base("volume", "Manage volumes")
-        .arg_required_else_help(true)
-        .subcommand(
-            base("create", "Create a volume")
-                .arg(value("machine", Some('m')))
-                .arg(
-                    value("size", None)
-                        .value_parser(crate::volume::ProvisionedVolumeSize::parse)
-                        .help("Provisioned Volume quota; without it the volume is a plain local Docker Volume"),
-                )
-                .arg(positional("volume-name", true)),
-        )
-        .subcommand(
-            base("inspect", "Inspect a volume")
-                .arg(value("machine", Some('m')))
-                .arg(positional("volume-name", true)),
-        )
-        .subcommand(
-            base("ls", "List volumes").arg(many("machine", Some('m'))),
-        )
-        .subcommand(
-            base("rm", "Remove volumes")
-                .arg(switch("force", None))
-                .arg(many("machine", Some('m')))
-                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-                .arg(
-                    Arg::new("volume-name")
-                        .required(true)
-                        .num_args(1..)
-                        .action(ArgAction::Append),
-                ),
-        )
-}
-
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
-    Some(match path {
-        "create" => (create, Supported),
-        "inspect" => (inspect, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
-        _ => return None,
-    })
 }

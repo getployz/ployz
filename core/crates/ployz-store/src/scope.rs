@@ -58,7 +58,7 @@ impl Environment {
         services
             .iter()
             .find(|service| service.slug == name.as_str())
-            .ok_or_else(|| crate::settings::no_service(name, &self.summary.name, &self.working))
+            .ok_or_else(|| no_service(name, &self.summary.name, &self.working))
     }
 
     /// The Service named `name` in Working State, to change.
@@ -66,16 +66,38 @@ impl Environment {
         &mut self,
         name: &ServiceName,
     ) -> Result<&mut SavedServiceIntent, RpcError> {
-        // Search, then borrow mutably: returning a borrow from a search that can fail
-        // would keep `self` borrowed for the error path too.
-        self.service(name)?;
+        let index = self
+            .working
+            .services
+            .iter()
+            .position(|service| service.slug == name.as_str())
+            .ok_or_else(|| no_service(name, &self.summary.name, &self.working))?;
         Ok(self
             .working
             .services
-            .iter_mut()
-            .find(|service| service.slug == name.as_str())
-            .expect("found above"))
+            .get_mut(index)
+            .expect("position is in bounds"))
     }
+}
+
+/// `service` names no Service in Working State: list the ones it could mean.
+pub(crate) fn no_service(
+    service: &ServiceName,
+    environment: &EnvironmentName,
+    working: &SavedEnvironmentIntent,
+) -> RpcError {
+    let names = working
+        .services
+        .iter()
+        .map(|service| service.slug.as_str())
+        .collect::<Vec<_>>();
+    error::not_found(
+        format!("No Service named {service} in Environment {environment}"),
+        json!({
+            "did_you_mean": error::did_you_mean(service.as_str(), names.iter().copied()),
+            "valid_children": names,
+        }),
+    )
 }
 
 pub(crate) fn project(
