@@ -6,6 +6,7 @@ import { buildStoreEdges, buildStoreNodes } from "./nodes";
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
     id: "pos-1",
+    organizationId: "org-1",
     environmentId: "env-1",
     resourceType: "service",
     resourceId: "service-1",
