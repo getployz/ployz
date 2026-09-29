@@ -127,6 +127,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.maxRetries",
             "web.memLimit",
             "web.preDeployCommand",
+            "web.registryCredential",
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand"
@@ -142,6 +143,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.maxRetries", "value": 10, "default": 10, "apply": "staged" },
             { "path": "web.memLimit", "value": null, "default": null, "apply": "staged" },
             { "path": "web.preDeployCommand", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.registryCredential", "value": null, "default": null, "apply": "immediate" },
             { "path": "web.replicas", "value": 1, "default": 1, "apply": "staged" },
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
             { "path": "web.startCommand", "value": null, "default": null, "apply": "staged" },
@@ -172,7 +174,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.environment(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 8);
+    assert_eq!(all.settings.len(), 9);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -197,6 +199,9 @@ fn every_setting_round_trips_get_patch_get() {
     for (name, setting) in catalog["properties"].as_object().unwrap() {
         if !applies(name) {
             continue; // Source and build Settings of a Git-backed Service: see tests/git.rs.
+        }
+        if name == "registryCredential" {
+            continue; // Needs a stored credential first: see tests/registry.rs.
         }
         values.insert(name.clone(), setting["examples"][0].clone());
     }
@@ -460,6 +465,7 @@ fn wrong_paths_and_values_name_the_fix() {
             "maxRetries",
             "memLimit",
             "preDeployCommand",
+            "registryCredential",
             "replicas",
             "restartPolicy",
             "startCommand",
