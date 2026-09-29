@@ -14,6 +14,7 @@ import type { VolumeResourceRecord } from "#/modules/environment-design/resource
 import type { EnvironmentChangeStateProjection } from "#/modules/deployments/deployment-contract";
 import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 import { BottomBar } from "./BottomBar";
+import { storeHintNotes } from "../branch-review/store-hints";
 import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
@@ -326,11 +327,12 @@ function StoreBottomBar({ environmentId, store }: { environmentId: string; store
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
   const { diff } = store;
+  const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
       <BottomBar
         environmentId={environmentId}
-        groups={changeGroups(diff, store.services.map(({ service }) => service))}
+        groups={groups}
         totalChanges={diff.total_count}
         canDeploy
         commitMessage=""
@@ -341,6 +343,7 @@ function StoreBottomBar({ environmentId, store }: { environmentId: string; store
         onDiscardNode={(group) => void actions.discard(group.nodeName)}
         onDiscardRow={(_, path) => void actions.discard(path)}
         storeActive={deployments.filter((deployment) => isInFlight(deployment.status))}
+        storeNotes={storeHintNotes(diff, groups)}
       />
       {actions.dialog}
     </>
