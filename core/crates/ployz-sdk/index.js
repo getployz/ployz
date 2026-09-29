@@ -332,6 +332,8 @@ async function openConfigStore(url, sealingSecret) {
     system: (organization, event) => withRpcError(store.system(organization, event)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),
+    pendingSaves: (organization, repositoryId, branch) =>
+      withRpcError(store.pendingSaves(organization, repositoryId, branch)),
     githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
     githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
     githubBuild: (build) => withRpcError(store.githubBuild(build)),

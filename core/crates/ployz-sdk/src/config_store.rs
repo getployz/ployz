@@ -262,6 +262,26 @@ impl ConfigStore {
         self.run(move || store.branch_head(&who.organization, repository_id, &branch))
             .await
     }
+
+    /// The Conditional Saves a push to a GitHub branch may freeze or carry:
+    /// `{standing: [number], merged: [commit]}`. Only Cloud's GitHub workers call this.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn pending_saves(
+        &self,
+        organization: String,
+        repository_id: i64,
+        branch: String,
+    ) -> Result<serde_json::Value> {
+        let who = actor(organization)?;
+        let repository_id = u64::try_from(repository_id)
+            .map_err(|_| invalid_argument("Expected a GitHub repository ID"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.pending_saves(&who.organization, repository_id, &branch))
+            .await
+    }
 }
 
 /// GitHub as a Builder: Cloud dispatches and follows the run; these do the parts
