@@ -216,7 +216,12 @@ impl MachineProxy {
         }
         let endpoint =
             Endpoint::from_shared(format!("http://[{}]:{}", address.0, self.remote_port))?
-                .connect_timeout(Duration::from_secs(10));
+                .connect_timeout(Duration::from_secs(10))
+                // A peer that vanishes without closing the connection fails its calls
+                // within 15s instead of waiting out TCP retransmission.
+                .http2_keep_alive_interval(Duration::from_secs(5))
+                .keep_alive_timeout(Duration::from_secs(10))
+                .keep_alive_while_idle(true);
         let channel = endpoint.connect_lazy();
         backends.insert(address, channel.clone());
         Ok(channel)
