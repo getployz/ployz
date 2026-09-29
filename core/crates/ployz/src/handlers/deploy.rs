@@ -4,20 +4,18 @@
 //! hidden in-process Store this CLI is the Deployment's runner: it claims it,
 //! prepares and confirms it on the Cluster, and records what happened.
 
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::{RemoveVolumesRequest, RpcErrorCode, ServiceName};
+use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunEvidence,
-    RunnerId, Start, UploadBase, UploadedSource, VolumeName, VolumeObservation,
+    Admit, Cancel, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
+    DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunnerId, Start, UploadBase,
+    UploadedSource, VolumeName, VolumeObservation,
 };
-use serde_json::{Value, json};
 
 use super::store::{
     Next, Store, environment, failed, mint, next, scoped, store, with_refresh_hint,
@@ -25,9 +23,8 @@ use super::store::{
 use super::{Error, connect_client, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
-use crate::deploy::ApplyError;
 use crate::failure::USAGE_EXIT;
-use crate::output::{say, say_inline};
+use crate::output::say;
 
 pub(crate) fn deploy_command() -> Command {
     following(
@@ -289,59 +286,81 @@ pub(super) fn execute(
     words: &[&str],
 ) -> Result<Shipped, Error> {
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
-    // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
-    // runner runs it otherwise, and this command follows it unless detached.
-    let (view, ran) = match store.local() {
+    // Only the hidden in-process Store lets this CLI run the Deployment, as Cloud's
+    // runner does; this command follows it either way, unless detached.
+    let runner = match store.local() {
         Some(_) if matches.get_flag("detach") => {
             return Err(Error::usage(
                 "The hidden local Store runs Deployments in this process, so it can't detach",
             )
             .with_exit(USAGE_EXIT));
         }
-        Some(local) => {
-            let runner = RunnerId::parse(format!("cli-{}", mint()))?;
-            let claimed = local.claim(&admitted.id, &runner)?;
-            let ran = runtime()?.block_on(run(matches, local, &claimed, &runner, source, events));
-            let view = store
-                .deployment(&admitted.id)
-                .map_err(failed(matches, words))?;
-            (view, ran)
-        }
-        None if matches.get_flag("detach") => {
-            let view = store
-                .deployment(&admitted.id)
-                .map_err(failed(matches, words))?;
-            (view, Ok(()))
-        }
-        None => {
-            let view = follow(matches, store, admitted, events, words)?;
-            let ran = if view.deployment.status == DeploymentStatus::Applied {
-                Ok(())
-            } else {
-                Err(Error::partial())
-            };
-            (view, ran)
-        }
+        Some(local) => Some(run_here(matches, local, admitted, source)?),
+        None => None,
     };
-    // A run that found no upload or usable image for its Services says to upload;
-    // one that names another fix says that; otherwise read the Deployment.
-    let cloud_needs_upload = matches!(
+    let view = if runner.is_none() && matches.get_flag("detach") {
+        store
+            .deployment(&admitted.id)
+            .map_err(failed(matches, words))?
+    } else {
+        follow(matches, store, admitted, events, runner.as_ref(), words)?
+    };
+    if let Some(runner) = runner {
+        runner
+            .join()
+            .map_err(|_| Error::coded(RpcErrorCode::Internal, "The Deployment runner stopped"))??;
+    }
+    let ran = if view.deployment.status == DeploymentStatus::Applied || matches.get_flag("detach") {
+        Ok(())
+    } else {
+        Err(Error::partial())
+    };
+    // A run that found no upload or usable image for its Services says to upload.
+    let needs_upload = matches!(
         &view.outcome,
         Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) if !needs_upload.is_empty()
     );
-    let details = ran.as_ref().err().map(|error| error.report().details);
-    let local_needs_upload = details.as_ref().is_some_and(|details| {
-        details.pointer("/preparation/kind") == Some(&json!("upload_needed"))
-    });
-    let hint = if cloud_needs_upload || local_needs_upload {
+    let hint = if needs_upload {
         upload_again(&view.environment)
     } else {
-        details
-            .as_ref()
-            .and_then(|details| details.get("next")?.as_str().map(str::to_owned))
-            .unwrap_or(hint)
+        hint
     };
     Ok(Shipped { view, hint, ran })
+}
+
+/// Run the Deployment in this process, as Cloud's runner does, on the Cluster the
+/// command line or context names; `source` is its upload.
+fn run_here(
+    matches: &ArgMatches,
+    local: &std::sync::Arc<ConfigStore>,
+    admitted: &DeploymentSummary,
+    source: Option<&Path>,
+) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
+    let connections = crate::connect::resolve_connections(
+        &super::config_path(matches)?,
+        matches.get_one::<String>("connect").map(String::as_str),
+        matches.get_one::<String>("context").map(String::as_str),
+        Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
+    )
+    .map(|selected| selected.connections)
+    // No Cluster to reach: the runner records that nothing ran.
+    .unwrap_or_default();
+    let runner = RunnerId::parse(format!("cli-{}", mint()))?;
+    let sources = crate::sdk::Sources {
+        checkouts: BTreeMap::new(),
+        upload: source.map(Path::to_path_buf),
+    };
+    let (local, id) = (std::sync::Arc::clone(local), admitted.id.clone());
+    let runtime = runtime()?;
+    Ok(std::thread::spawn(move || {
+        Ok(runtime.block_on(crate::sdk::run_deployment(
+            local,
+            id,
+            runner,
+            connections,
+            Ok(sources),
+        ))?)
+    }))
 }
 
 /// `ployz up` in this Environment, which uploads the directory it runs in. It names
@@ -365,12 +384,15 @@ fn follow(
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
+    runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
     words: &[&str],
 ) -> Result<DeploymentView, Error> {
-    say!(
-        "Following Deployment #{}; stopping this leaves it running.",
-        admitted.number
-    );
+    if runner.is_none() {
+        say!(
+            "Following Deployment #{}; stopping this leaves it running.",
+            admitted.number
+        );
+    }
     let mut last = None;
     loop {
         let view = store
@@ -399,7 +421,9 @@ fn follow(
             }
             last = Some(progress);
         }
-        if !view.deployment.status.in_flight() {
+        // A runner here that ended leaves nothing more to follow.
+        if !view.deployment.status.in_flight() || runner.is_some_and(|runner| runner.is_finished())
+        {
             return Ok(view);
         }
         std::thread::sleep(FOLLOW_POLL);
@@ -507,89 +531,6 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
     })
 }
 
-/// Build the Deployment's uploaded Services from `source`, or, without it, reuse their
-/// latest images; record the receipts, and return the plan with the images it keeps
-/// alive until execution.
-async fn build(
-    store: &ConfigStore,
-    claimed: &Claimed,
-    runner: &RunnerId,
-    client: &mut crate::connect::Client,
-    services: Vec<ServiceName>,
-    source: Option<&Path>,
-    tap: &impl Fn(Value),
-) -> Result<(crate::deploy::DeployPlan, Vec<crate::build::BuiltService>), Error> {
-    use crate::sdk::preparation::{self, BuildReceipt, PreparationInput};
-    let digest = claimed
-        .deployment
-        .upload
-        .as_ref()
-        .map(|upload| upload.digest.clone())
-        .unwrap_or_default();
-    let input = PreparationInput {
-        deployment: claimed.input.clone(),
-        sources: source.map_or_else(BTreeMap::new, |dir| {
-            services
-                .iter()
-                .map(|name| (name.clone(), PathBuf::from(dir)))
-                .collect()
-        }),
-        source_commits: BTreeMap::new(),
-        uploads: services
-            .iter()
-            .map(|name| (name.clone(), digest.clone()))
-            .collect(),
-        // A receipt this ployz can't read is only a hint lost.
-        build_receipts: claimed
-            .receipts
-            .iter()
-            .filter_map(|(name, receipt)| {
-                let receipt = serde_json::from_value::<BuildReceipt>(receipt.clone()).ok()?;
-                Some((name.clone(), receipt))
-            })
-            .collect(),
-        build_index: 0,
-        preferred_machine: None,
-    };
-    let captured = tokio::task::spawn_blocking(move || preparation::capture(input))
-        .await
-        .map_err(std::io::Error::other)??;
-    let cancel = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancel.clone().drop_guard();
-    let prepared = crate::sdk::prepare::prepare(
-        client,
-        captured.intent,
-        captured.build,
-        &captured.reusable,
-        captured.preference,
-        &cancel,
-        |progress| {
-            if let crate::sdk::prepare::Progress::Build(ployz_build::Progress::StepOutput {
-                text,
-                ..
-            }) = &progress
-            {
-                say_inline!("{text}");
-            }
-            tap(json!({ "Preparation": progress }));
-        },
-    )
-    .await
-    .map_err(|error| crate::sdk::preparation_error(error, cancel.is_cancelled()))?;
-    let (plan, retained) = prepared.into_parts();
-    let receipts = preparation::receipts(&captured.fingerprints, &captured.contents, &retained)
-        .into_iter()
-        .map(|(name, receipt)| {
-            (
-                name,
-                serde_json::to_value(receipt).expect("a build receipt is JSON"),
-            )
-        })
-        .collect();
-    store.record(&claimed.deployment.id, runner, RunEvidence::Built(receipts))?;
-    Ok((plan, retained))
-}
-
 /// When a Deploy removes deployed Volumes, observe which Servers hold their data:
 /// the evidence the in-process Store reviews it against. A Cluster it can't reach
 /// leaves the evidence out, so the Store refuses.
@@ -685,108 +626,6 @@ pub(super) fn accepting(
         details.insert("next".into(), serde_json::json!(retry));
     }
     StoreCallError::Refused(error)
-}
-
-/// Run a claimed Deployment on the Cluster and record each step's evidence. A
-/// successful Deploy then deletes exactly the Docker Volumes admission accepted.
-async fn run(
-    matches: &ArgMatches,
-    store: &ConfigStore,
-    claimed: &Claimed,
-    runner: &RunnerId,
-    source: Option<&Path>,
-    events: Option<std::io::BufWriter<std::fs::File>>,
-) -> Result<(), Error> {
-    let events = RefCell::new(events);
-    let tap = |event: Value| {
-        if let Some(file) = events.borrow_mut().as_mut() {
-            // ponytail: a failed event write never stops a deploy; the file is a tap.
-            let _ = serde_json::to_writer(&mut *file, &event);
-            let _ = writeln!(file);
-            let _ = file.flush();
-        }
-    };
-    let id = &claimed.deployment.id;
-    let not_executed = |error: Error| -> Error {
-        match store.record(id, runner, RunEvidence::NotExecuted(error.report().message)) {
-            Ok(_) => error,
-            Err(recording) => recording.into(),
-        }
-    };
-    let context = matches.get_one::<String>("context").map(String::as_str);
-    let mut client = match connect_client(matches, context).await {
-        Ok(client) => client,
-        Err(error) => return Err(not_executed(error)),
-    };
-    // Its containers carry its ID, which `logs --deployment` reads.
-    client.deployment_id = id.as_str().parse().ok();
-    let services = claimed
-        .deployment
-        .upload
-        .as_ref()
-        .map(|_| claimed.uploads.clone())
-        .unwrap_or_default();
-    // Built images stay retained on their Machines until execution ends.
-    let (plan, _retained) = if services.is_empty() {
-        match client.preview(claimed.intent.clone()).await {
-            Ok(plan) => (plan, Vec::new()),
-            Err(error) => return Err(not_executed(error.into())),
-        }
-    } else {
-        match build(store, claimed, runner, &mut client, services, source, &tap).await {
-            Ok(built) => built,
-            Err(error) => return Err(not_executed(error)),
-        }
-    };
-    store.record(id, runner, RunEvidence::Prepared(plan.preview().clone()))?;
-    let cancel = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancel.clone().drop_guard();
-    let executed = crate::deploy::execute(
-        &client,
-        &plan,
-        claimed.intent.namespace.as_str(),
-        &cancel,
-        |event| tap(serde_json::to_value(event).expect("a deploy event is JSON")),
-    )
-    .await;
-    let (outcome, failure) = match executed {
-        Ok(outcome) => (outcome, None),
-        Err(ApplyError::Execute {
-            outcome,
-            rows,
-            live_shown,
-        }) => {
-            let failure = Error::from(ApplyError::Execute {
-                outcome: outcome.clone(),
-                rows,
-                live_shown,
-            });
-            (*outcome, Some(failure))
-        }
-        Err(error @ ApplyError::Prepare(_)) => return Err(not_executed(error.into())),
-    };
-    let removed = if failure.is_none() && !claimed.deletes.is_empty() {
-        // ponytail: failing to reach the Cluster deletes nothing; the Volume stays
-        // deployed, and the next Deploy deletes it.
-        client
-            .remove_volumes(RemoveVolumesRequest {
-                volumes: claimed.deletes.clone(),
-                force: false,
-            })
-            .await
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
-    store.record(
-        id,
-        runner,
-        RunEvidence::Executed {
-            outcome: Box::new(outcome),
-            removed,
-        },
-    )?;
-    failure.map_or(Ok(()), Err)
 }
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {

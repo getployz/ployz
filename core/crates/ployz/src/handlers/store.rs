@@ -68,7 +68,7 @@ pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error>
 /// `PLOYZ_TOKEN` or this device's sign-in, or the hidden in-process SQLite Store
 /// when `PLOYZ_STORE` is set.
 pub(crate) enum Store {
-    Local(ConfigStore, Actor),
+    Local(std::sync::Arc<ConfigStore>, Actor),
     Cloud(tokio::runtime::Runtime, Credential),
 }
 
@@ -430,7 +430,7 @@ impl Store {
 
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
-    pub(crate) fn local(&self) -> Option<&ConfigStore> {
+    pub(crate) fn local(&self) -> Option<&std::sync::Arc<ConfigStore>> {
         match self {
             Self::Local(store, _) => Some(store),
             Self::Cloud(..) => None,
@@ -493,7 +493,10 @@ fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Some(Store::Local(ConfigStore::open(&url, key)?, actor)));
+        return Ok(Some(Store::Local(
+            std::sync::Arc::new(ConfigStore::open(&url, key)?),
+            actor,
+        )));
     }
     let credentials = CredentialStore::beside(config);
     let runtime = runtime()?;
