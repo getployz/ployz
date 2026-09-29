@@ -481,6 +481,51 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
 }
 
 #[test]
+fn an_agent_lists_and_removes_a_project_without_servers() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "web:1"]);
+        ok(store, &["env", "new", "staging"]);
+        ok(store, &["project", "new", "blog"]);
+        let listed = ok(store, &["project", "ls"]);
+        assert_eq!(listed["projects"][1]["name"], json!("shop"));
+        assert_eq!(
+            listed["projects"][1]["default_environment"],
+            json!("production")
+        );
+        assert_eq!(
+            listed["projects"][1]["environments"],
+            json!(["production", "staging"])
+        );
+
+        // Unconfirmed, it names every Environment with what goes, and the exact retry.
+        let unconfirmed = error(store, &["project", "rm", "shop"]);
+        assert_eq!(unconfirmed["code"], json!("confirmation_required"));
+        assert_eq!(
+            unconfirmed["details"]["environments"][0]["services"],
+            json!(["web"])
+        );
+        assert_eq!(
+            unconfirmed["details"]["next"],
+            json!("ployz project rm shop --confirm shop")
+        );
+        failed(store, &["project", "rm", "shop", "--confirm", "blog"], 2);
+
+        // Nothing of it ever ran, so it goes at once, with no Server.
+        let removed = ok(store, &["project", "rm", "shop", "--confirm", "shop"]);
+        assert_eq!(removed["project"]["name"], json!("shop"));
+        assert_eq!(removed["environments"], json!(["staging", "production"]));
+        assert_eq!(removed["deployments"], json!([]));
+        let listed = ok(store, &["project", "ls"]);
+        assert_eq!(listed["projects"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            error(store, &["project", "rm", "shop", "--confirm", "shop"])["code"],
+            json!("not_found")
+        );
+    }
+}
+
+#[test]
 fn an_agent_reads_pr_plans_and_names_the_repository_to_change() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);

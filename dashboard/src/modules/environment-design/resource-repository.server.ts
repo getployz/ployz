@@ -1,12 +1,12 @@
 import { volumeDocumentRecord } from "./resource-document";
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
+import { and, eq, type SQL } from "drizzle-orm";
 import { Effect } from "effect";
 import { environmentCanvasNodePosition, environmentResource, resourceLineage } from "./tables";
 import { project } from "#/modules/project/tables";
 import { organizationIdForEnvironment, organizationIdForProject } from "#/db/scope-values.server";
 import { Database } from "#/server/database.server";
-import { Conflict } from "#/server/public-error";
+import { Conflict, NotFound } from "#/server/public-error";
 import { createResourceLineage } from "./authoring-repository.server";
 import { loadEnvironmentDocument } from "./working-state-repository.server";
 
@@ -53,7 +53,8 @@ export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourc
     if (!lineage) return yield* new Conflict({ message: "Could not allocate resource lineage." });
     const [resource] = yield* drizzle.insert(environmentResource).values({ organizationId: organizationIdForProject(input.projectId), projectId: input.projectId, environmentId: input.environmentId, lineageId: lineage.id, implementationType: "volume" }).returning();
     if (!resource) return yield* Effect.die("PostgreSQL did not return resource identity.");
-    const canvasPosition = yield* upsertResourceCanvasPosition({ ...input, resourceId: resource.id, resourceType: "volume" });
+    const canvasPosition = yield* upsertResourceCanvasPosition({
+      ...input, organizationId: organizationIdForEnvironment(input.environmentId), resourceId: resource.id, resourceType: "volume" });
     return { resource, lineage, canvasPosition };
   },
 );
@@ -61,6 +62,8 @@ export const createResourceIdentity = Effect.fn("EnvironmentDesign.createResourc
 export const upsertResourceCanvasPosition = Effect.fn(
   "EnvironmentDesign.upsertResourceCanvasPosition",
 )(function* (input: {
+  /** Whose it is: a position names the Environment by id only, which a Config Store one isn't in this database. */
+  readonly organizationId: string | SQL<string>;
   readonly environmentId: string;
   readonly resourceId: string;
   readonly resourceType: "volume";
@@ -71,7 +74,7 @@ export const upsertResourceCanvasPosition = Effect.fn(
   const rows = yield* database.drizzle
     .insert(environmentCanvasNodePosition)
     .values({
-      organizationId: organizationIdForEnvironment(input.environmentId),
+      organizationId: input.organizationId,
       environmentId: input.environmentId,
       resourceType: input.resourceType,
       resourceId: input.resourceId,
@@ -85,6 +88,8 @@ export const upsertResourceCanvasPosition = Effect.fn(
         environmentCanvasNodePosition.resourceType,
         environmentCanvasNodePosition.resourceId,
       ],
+      // Only its own Organization moves it.
+      setWhere: eq(environmentCanvasNodePosition.organizationId, input.organizationId),
       set: {
         x: Math.round(input.x),
         y: Math.round(input.y),
@@ -92,6 +97,6 @@ export const upsertResourceCanvasPosition = Effect.fn(
       },
     })
     .returning();
-  if (!rows[0]) return yield* Effect.die("PostgreSQL did not return the canvas position.");
+  if (!rows[0]) return yield* new NotFound({ message: "Environment not found." });
   return rows[0];
 });

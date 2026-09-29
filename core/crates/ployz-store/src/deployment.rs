@@ -670,7 +670,7 @@ pub(crate) fn retry(
     }
     if stored.summary.remove {
         let environment = scope::load_by_id(tx, &stored.environment)?;
-        crate::teardown::guard(tx, &environment)?;
+        crate::teardown::guard_removal(tx, &environment)?;
     }
     let number = queue(tx, &stored.environment)?;
     // Every frozen column comes from the source, so a retry never re-reads authored state.

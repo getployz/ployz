@@ -29,6 +29,8 @@ import { missingPrEnvironmentGrantsQueryOptions } from "#/modules/pr-environment
 import { prEnvironmentIds } from "#/modules/pr-environments/pull-request";
 import { useEnvironmentNotes } from "#/modules/project/environment-notes";
 import { Route as EnvironmentLayoutRoute } from "./route";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { StoreEnvironmentSettings, StoreProjectSettings } from "./-components/store-settings";
 
 const settingsSection = Schema.Literals(["environment", "project"]);
 
@@ -39,6 +41,8 @@ export const Route = createFileRoute(
     scope: Schema.optional(settingsSection.pipe(Schema.catchDecoding(() => Effect.succeed(Option.none())))),
   })),
   loader: async ({ params, context }) => {
+    // The Environment's loader read the Project's Environments, which is all its settings show.
+    if (storeEnabled) return;
     const { organizationSlug, projectSlug } = params;
     const environment = await requireEnvironment(context, params);
     await prefetchRemote(context,
@@ -50,6 +54,20 @@ export const Route = createFileRoute(
 });
 
 function RouteComponent() {
+  const params = Route.useParams();
+  const { scope: section = "environment" } = Route.useSearch();
+  if (!storeEnabled) return <LegacySettings />;
+  return (
+    <DashboardPage width="content">
+      <div className="flex flex-col gap-8">
+        {section === "environment" ? <StoreEnvironmentSettings {...params} /> : <StoreProjectSettings {...params} />}
+      </div>
+    </DashboardPage>
+  );
+}
+
+// TODO(#1275): goes with the dark gate.
+function LegacySettings() {
   const { organizationSlug, projectSlug, environmentSlug } = Route.useParams();
   const { scope: section = "environment" } = Route.useSearch();
   const { environmentId } = EnvironmentLayoutRoute.useLoaderData();

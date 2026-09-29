@@ -86,6 +86,10 @@ pub enum Command {
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
+    /// Delete a Project nothing of which runs on the Servers.
+    RemoveProject(crate::RemoveProject),
+    /// Forget an Organization's configuration once it has no Project.
+    RemoveOrganization(crate::RemoveOrganization),
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan),
 }
@@ -120,6 +124,8 @@ impl Command {
             | Self::SetBuildOrder(_)
             | Self::SetDefaultEnvironment(_)
             | Self::RemoveEnvironment(_)
+            | Self::RemoveProject(_)
+            | Self::RemoveOrganization(_)
             | Self::SetPrPlan(_) => Vec::new(),
         }
     }
@@ -166,6 +172,10 @@ pub enum Written {
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
+    /// A Project was deleted.
+    ProjectRemoved(crate::ProjectRemoved),
+    /// An Organization's configuration was forgotten.
+    OrganizationRemoved(crate::OrganizationRemoved),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
 }
@@ -221,6 +231,12 @@ pub(crate) fn run(
         }
         Command::RemoveEnvironment(remove) => {
             crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
+        }
+        Command::RemoveProject(remove) => {
+            crate::teardown::remove_project(tx, who, remove).map(Written::ProjectRemoved)
+        }
+        Command::RemoveOrganization(_) => {
+            crate::teardown::remove_organization(tx, who).map(Written::OrganizationRemoved)
         }
         Command::SetPrPlan(set) => {
             crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)

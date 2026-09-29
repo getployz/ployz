@@ -218,6 +218,26 @@ async fn an_image_service_deploys_through_the_hidden_store() {
             .len(),
         1
     );
+
+    // Removing the Project takes each Environment off the Servers, a Branch before
+    // its Parent and the Default Environment last, then deletes it all.
+    ployz(&["service", "add", "api", "--image", SERVICE_CONTAINER_IMAGE]);
+    ployz(&["set", "api.startCommand=sh -c 'sleep 600'"]);
+    assert_eq!(ployz(&["deploy"])["status"], json!("applied"));
+    ployz(&["env", "branch", "fix", "--copy", "api"]);
+    assert_eq!(
+        ployz(&["deploy", "--env", "fix"])["status"],
+        json!("applied")
+    );
+    let removed = ployz(&["project", "rm", "shop", "--confirm", "shop"]);
+    assert_eq!(
+        removed["environments"],
+        json!(["fix", "production"]),
+        "{removed}"
+    );
+    assert_eq!(removed["deployments"].as_array().unwrap().len(), 2);
+    wait_for_web(&mut client, &api_containers, 0).await;
+    assert_eq!(ployz(&["project", "ls"])["projects"], json!([]));
 }
 
 /// Whether a Server holds Docker Volume `name`.

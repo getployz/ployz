@@ -15,6 +15,9 @@ import { asTestDouble } from "#/lib/test-double";
 import { retireServerAccess, serverAccessLabel } from "#/modules/machines/server-access.server";
 import { organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { makePloyzLayer, Ployz } from "#/modules/runtime/ployz.server";
+import { OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
+import { callStore } from "#/modules/config-store/config-store.server";
+import { organization } from "#/modules/organization/tables";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { handleCliRequest } from "#/routes/api/cli/-cli.handler";
@@ -59,6 +62,7 @@ function fakeServers() {
           return capability;
         },
         clearManagementClient: async (label: string) => { server.slots.delete(label); },
+        inspect: async () => ({ management_clients: [...server.slots.keys()] }),
         close: async () => undefined,
       });
     },
@@ -104,7 +108,7 @@ const cliLayer = Effect.fn(function* (polar: PolarService, nodeEnv = "test", plo
     Layer.succeed(GithubApi, github.service),
     ployz,
   );
-  return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
+  return Layer.mergeAll(AuthLive.pipe(Layer.provide(services)), OrganizationRuntimeLive.pipe(Layer.provide(services)), services);
 });
 
 /** The fields these tests read from `/api/cli` replies. */
@@ -113,7 +117,7 @@ type Reply = {
   readonly token?: { readonly id: string; readonly secret: string; readonly organization: string };
   readonly tokens?: ReadonlyArray<{ readonly id: string; readonly current: boolean; readonly expired: boolean }>;
   readonly devices?: ReadonlyArray<{ readonly id: string; readonly current: boolean }>;
-  readonly removed?: { readonly id: string; readonly kind: string };
+  readonly removed?: boolean | { readonly id: string; readonly kind: string };
   readonly billing?: { readonly self_hosted: boolean; readonly pro: boolean; readonly custom_domains: boolean };
   readonly url?: string;
   readonly connections?: ReadonlyArray<{ readonly machine_id: string; readonly management: string }>;
@@ -129,6 +133,8 @@ type Reply = {
   readonly access?: string;
   readonly disconnected?: { readonly id: number; readonly account: string };
   readonly uninstall_url?: string;
+  readonly organization?: string;
+  readonly error?: { readonly code: string; readonly message: string; readonly details: { readonly next?: string } };
   readonly revoking?: ReadonlyArray<{ readonly id: string; readonly kind: string; readonly unconfirmed: ReadonlyArray<string> }>;
 };
 
@@ -141,6 +147,11 @@ const cli = Effect.fn(function* (method: string, path: string, as: As, body?: Re
   const init: RequestInit = { method, headers };
   if (body !== undefined) init.body = JSON.stringify(body);
   const exit = yield* Effect.exit(handleCliRequest(new Request(`${origin}/api/cli/${path}`, init)));
+  if (Exit.isSuccess(exit) && exit.value instanceof Response) {
+    const text = yield* Effect.promise(() => (exit.value as Response).text());
+    // SAFETY: test-only view of the handler's JSON; assertions check every field read.
+    return { status: exit.value.status, json: JSON.parse(text) as Reply, text };
+  }
   if (Exit.isSuccess(exit)) {
     // SAFETY: test-only view of the handler's JSON; assertions check every field read.
     return { status: 200, json: JSON.parse(JSON.stringify(exit.value)) as Reply, text: JSON.stringify(exit.value) };
@@ -468,6 +479,66 @@ it.live(
         assert.strictEqual(removed.json.uninstall_url, "https://github.com/organizations/acme/settings/installations/7");
         assert.strictEqual((yield* cli("DELETE", "github/7", alice)).status, 404);
         assert.deepInclude((yield* cli("GET", "github", alice)).json, { ready: false, installations: [] });
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "org rm refuses while the Organization has a Project, then unpairs every Server, clearing device keys, "
+    + "and keeps the Organization disabled until an offline Server confirms",
+  () =>
+    Effect.gen(function* () {
+      const fake = fakeServers();
+      const layer = yield* cliLayer({ mode: "self_hosted" }, "test", fake.layer);
+      yield* Effect.gen(function* () {
+        const database = yield* Database;
+        const machine = "00000000000000000000000000001260";
+        const alice = yield* signUp("alice");
+        const slug = alice.organization.slug;
+        const [owner] = yield* database.drizzle.select({ userId: member.userId }).from(member)
+          .where(eq(member.organizationId, alice.organization.id));
+        const userId = owner?.userId ?? assert.fail("no member");
+        yield* enroll(alice.organization.id, machine, true);
+        const server = { online: true, slots: new Map<string, string>([["cloud", "cloud-key"]]) };
+        fake.servers.set(machine, server);
+        const device = (yield* cli("GET", "tokens", alice)).json.devices?.[0]?.id ?? assert.fail("no device");
+        yield* cli("POST", "server-access", alice);
+        assert.isTrue(server.slots.has(serverAccessLabel(device)));
+
+        // Only the Organization the credential acts in.
+        const other = yield* cli("DELETE", "organizations/elsewhere", alice);
+        assert.strictEqual(other.status, 422);
+        assert.strictEqual(other.json.error?.details.next, "ployz org use elsewhere");
+
+        // A Project must go first, through its own teardown; nothing is unpaired meanwhile.
+        const write = (command: Parameters<typeof callStore>[2]) => callStore(alice.organization.id, userId, command);
+        const created = yield* write({ operation: "write", command: {
+          command: "create_project", id: "00000000-0000-4000-8000-000000001260", name: "shop",
+          default_environment: "00000000-0000-4000-8000-000000001261",
+        } });
+        assert.isTrue(created.ok);
+        const refused = yield* cli("DELETE", `organizations/${slug}`, alice);
+        assert.strictEqual(refused.status, 409);
+        assert.strictEqual(refused.json.error?.details.next, "ployz project rm shop --confirm shop");
+        assert.isTrue(server.slots.has("cloud"));
+        assert.isTrue((yield* write({ operation: "write", command: { command: "remove_project", project: "shop" } })).ok);
+
+        // A Server offline: the Organization stays, disabled, and says which Server must still confirm.
+        server.online = false;
+        const partial = yield* cli("DELETE", `organizations/${slug}`, alice);
+        assert.deepInclude(partial.json, { organization: slug, removed: false, servers: { confirmed: [], unconfirmed: [machine] } });
+        assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 1);
+        assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 1);
+
+        // The same command confirms it once the Server is back, clearing Cloud's key and every device key.
+        server.online = true;
+        const removed = yield* cli("DELETE", `organizations/${slug}`, alice);
+        assert.deepInclude(removed.json, { organization: slug, removed: true, servers: { confirmed: [machine], unconfirmed: [] } });
+        assert.deepStrictEqual([...server.slots.keys()], []);
+        assert.lengthOf(yield* database.drizzle.select().from(organization).where(eq(organization.id, alice.organization.id)), 0);
+        assert.lengthOf(yield* database.drizzle.select().from(organizationPairing), 0);
+        assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
       }).pipe(Effect.provide(layer));
     }),
   60_000,
