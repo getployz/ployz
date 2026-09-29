@@ -1,6 +1,7 @@
 //! Operating the selected Environment: `ps`, `exec` and `service start|stop|restart`
 //! map a bare Service name to the Environment's Namespace, which the hidden
 //! in-process Config Store (`PLOYZ_STORE`) fixes.
+#![expect(clippy::indexing_slicing, reason = "JSON fixture assertions")]
 
 use super::*;
 use serde_json::Value;
