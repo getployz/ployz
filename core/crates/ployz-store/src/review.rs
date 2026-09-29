@@ -38,6 +38,10 @@ pub struct DiffView {
     pub changes: Vec<NodeChange>,
     /// How many changes there are, counting each node and each Setting.
     pub total_count: usize,
+    /// Merged pull requests' values landed beside this Environment's own changes,
+    /// until its next Saved revision.
+    #[serde(default)]
+    pub hints: Vec<crate::PullRequestHint>,
 }
 
 /// What happens to one node, and its changed Settings.
@@ -128,6 +132,7 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
             saved.intent == canonicalize_environment_intent(environment.working.clone())
         }),
         total_count: changes.total_count,
+        hints: Vec::new(),
         changes: changes
             .groups
             .into_iter()

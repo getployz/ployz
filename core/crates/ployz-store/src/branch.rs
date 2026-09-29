@@ -81,6 +81,11 @@ pub struct SetupCommand {
 /// Working State into its Parent's and deletes nothing there. Update moves what
 /// the Parent deployed since the two last shared into the Branch, and is refused
 /// unless the Branch runs its Working State.
+///
+/// From a PR Environment, a Save is a Conditional Save into one of its
+/// Destinations (the Environments that deploy its target branch): it stages
+/// nothing now and goes live with the pull request's merge. `take` instead moves a
+/// pull request's value its Conditional Save left only as a hint in the Destination.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Move {
@@ -100,6 +105,29 @@ pub struct Move {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub version: Option<String>,
+    /// `now` stages the changes; `at_merge` saves them as a Conditional Save that
+    /// goes live with the pull request's merge, and `picks: []` withdraws it.
+    /// Omitted: `at_merge` from a PR Environment, else `now`.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub when: Option<When>,
+    /// Take the picked rows (omitted: every hint) from retained Conditional Save
+    /// `ID`, sealed secrets included, even once its PR Environment is gone: the
+    /// pull request's value replaces the Destination's own edit, staged. `from`,
+    /// `when` and `version` are then omitted.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub take: Option<String>,
+}
+
+/// When a Move's changes land.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum When {
+    /// Staged in the receiver now.
+    Now,
+    /// With the pull request's merge.
+    AtMerge,
 }
 
 /// Changes to move, by the name the Move view gives them.
@@ -129,6 +157,10 @@ pub struct MoveQuery {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub into: Option<EnvironmentRef>,
+    /// As [`Move::when`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub when: Option<When>,
 }
 
 /// The changes a Move would stage, and the version that guards it.
@@ -182,8 +214,13 @@ pub struct Moved {
     pub into: EnvironmentSummary,
     /// Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
     pub staged: Vec<String>,
-    /// The Branch now.
-    pub branch: BranchView,
+    /// The Branch now; none for a take.
+    pub branch: Option<BranchView>,
+    /// The Conditional Save now: standing after a Save at merge, the one taken
+    /// from after a take; none once withdrawn and for a Move now.
+    pub conditional_save: Option<crate::ConditionalSave>,
+    /// Pull requests whose GitHub check Cloud publishes again.
+    pub checks: Vec<crate::PullRequestRef>,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume
@@ -260,10 +297,10 @@ pub struct Branched {
 }
 
 /// A Branch's row.
-struct Row {
-    parent: EnvironmentId,
-    kept: bool,
-    base: SavedEnvironmentIntent,
+pub(crate) struct Row {
+    pub(crate) parent: EnvironmentId,
+    pub(crate) kept: bool,
+    pub(crate) base: SavedEnvironmentIntent,
     setup: Vec<Setup>,
 }
 
@@ -481,6 +518,12 @@ pub(crate) fn move_changes(
     who: &Actor,
     request: &Move,
 ) -> Result<Moved, RpcError> {
+    if request.take.is_some() {
+        return crate::conditional_save::take(tx, who, request);
+    }
+    if crate::conditional_save::at_merge(tx, who, request.from.as_ref(), request.when)? {
+        return crate::conditional_save::save(tx, who, request);
+    }
     let mut sides = sides(tx, who, request.from.as_ref(), request.into.as_ref(), true)?;
     if let Some(removal) = crate::teardown::removing(tx, &sides.branch().summary.id)? {
         return Err(crate::teardown::being_removed(sides.branch(), &removal));
@@ -501,13 +544,20 @@ pub(crate) fn move_changes(
             json!({ "version": version }),
         ));
     }
-    let picks = picks(&moving, &sides, &changes.rows, request.picks.as_deref())?;
+    let picks = picks(
+        &moving,
+        &sides.into.working,
+        &changes.rows,
+        request.picks.as_deref(),
+    )?;
     let staged = moving.apply(tx, who, &mut sides.into, picks)?;
     Ok(Moved {
-        branch: view(tx, sides.branch())?,
+        branch: Some(view(tx, sides.branch())?),
+        checks: crate::pull_request::project_checks(tx, &sides.into.summary.id)?,
         from: sides.from.summary,
         into: sides.into.summary,
         staged,
+        conditional_save: None,
     })
 }
 
@@ -516,47 +566,57 @@ pub(crate) fn move_view(
     who: &Actor,
     query: &MoveQuery,
 ) -> Result<MoveView, RpcError> {
+    if crate::conditional_save::at_merge(tx, who, query.from.as_ref(), query.when)? {
+        return crate::conditional_save::view(tx, who, query);
+    }
     let sides = sides(tx, who, query.from.as_ref(), query.into.as_ref(), false)?;
     let moving = moving(tx, &sides)?;
     let changes = moving.compare(&sides.into.working, None)?;
     let rows = changes
         .rows
         .iter()
-        .filter_map(|row| {
-            let BranchRole::Move { conflict, choice } = &row.role else {
-                return None;
-            };
-            let key = row.key.to_string();
-            let (lineage, path) = split(&key);
-            let variable = |intent: &SavedEnvironmentIntent, names| {
-                let key = path.strip_prefix("variables.")?;
-                let service = intent.services.iter().find(|s| s.lineage_id == lineage)?;
-                let found = service.variables.iter().find(|v| v.key == key)?;
-                Some(crate::variables::shown(found, names))
-            };
-            let names = sides.from.names();
-            let from = variable(&moving.from, &names).unwrap_or_else(|| shown(path, &row.from));
-            let names = sides.into.names();
-            let into =
-                variable(&sides.into.working, &names).unwrap_or_else(|| shown(path, &row.into));
-            Some(MoveRow {
-                row: moving.name(&sides.into.working, &key),
-                conflict: *conflict,
-                choice: choice.as_ref().map(|choice| MoveChoice {
-                    default: moving.default(choice),
-                    options: choice.options.clone(),
-                    secret: choice.secret,
-                }),
-                from,
-                into,
-            })
-        })
+        .filter_map(|row| move_row(&moving, &sides.from, &sides.into, row))
         .collect();
     Ok(MoveView {
         version: version(&sides.into, &changes.review),
         from: sides.from.summary,
         into: sides.into.summary,
         rows,
+    })
+}
+
+/// A moving row as the Move view shows it, from `from` into `into`; none for a row
+/// that never moves.
+pub(crate) fn move_row(
+    moving: &Moving,
+    from: &Environment,
+    into: &Environment,
+    row: &BranchRow,
+) -> Option<MoveRow> {
+    let BranchRole::Move { conflict, choice } = &row.role else {
+        return None;
+    };
+    let key = row.key.to_string();
+    let (lineage, path) = split(&key);
+    let variable = |intent: &SavedEnvironmentIntent, names| {
+        let key = path.strip_prefix("variables.")?;
+        let service = intent.services.iter().find(|s| s.lineage_id == lineage)?;
+        let found = service.variables.iter().find(|v| v.key == key)?;
+        Some(crate::variables::shown(found, names))
+    };
+    let (from_names, into_names) = (from.names(), into.names());
+    let from_value = variable(&moving.from, &from_names).unwrap_or_else(|| shown(path, &row.from));
+    let into_value = variable(&into.working, &into_names).unwrap_or_else(|| shown(path, &row.into));
+    Some(MoveRow {
+        row: moving.name(&into.working, &key),
+        conflict: *conflict,
+        choice: choice.as_ref().map(|choice| MoveChoice {
+            default: moving.default(choice),
+            options: choice.options.clone(),
+            secret: choice.secret,
+        }),
+        from: from_value,
+        into: into_value,
     })
 }
 
@@ -691,7 +751,7 @@ fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError> {
 }
 
 /// A Move's guard: the receiver's revision and core's review of the changes.
-fn version(into: &Environment, review: &str) -> String {
+pub(crate) fn version(into: &Environment, review: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, review.as_bytes());
     format!(
         "{}:{}",
@@ -703,9 +763,9 @@ fn version(into: &Environment, review: &str) -> String {
 /// Core's picks for `asked`: every change named or under a name, each variable
 /// the way asked or its default. A secret wanting a fresh value is refused: the
 /// Store never makes one up, and a Branch's own secret moves only when asked.
-fn picks(
+pub(crate) fn picks(
     moving: &Moving,
-    sides: &Sides,
+    into: &SavedEnvironmentIntent,
     rows: &[BranchRow],
     asked: Option<&[MovePick]>,
 ) -> Result<Vec<BranchPick>, RpcError> {
@@ -713,7 +773,7 @@ fn picks(
         .iter()
         .filter_map(|row| match &row.role {
             BranchRole::Move { choice, .. } => Some((
-                moving.name(&sides.into.working, &row.key.to_string()),
+                moving.name(into, &row.key.to_string()),
                 row,
                 choice.as_ref(),
             )),
@@ -1030,7 +1090,7 @@ pub(crate) fn live_names(
 }
 
 /// A Branch's view: its Parent, its Live Nodes and their owners, what Update would stage.
-fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
+pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let row = branch_row(tx, branch)?;
     let chain = chain(tx, &row.parent)?;
     let parent = chain.first().ok_or_else(|| error::corrupt("Branch"))?;
@@ -1093,25 +1153,26 @@ fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
 }
 
 /// One move between a Branch and an Environment it comes from: `from`'s changes
-/// over `base`, into the other side.
-struct Moving {
+/// over `base`, into the other side. A Conditional Save keeps it to land later.
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Moving {
     /// The Environment `from` belongs to: where arriving nodes' credentials are.
-    source: EnvironmentId,
+    pub(crate) source: EnvironmentId,
     /// The Branch whose base advances by what lands.
-    branch: EnvironmentId,
+    pub(crate) branch: EnvironmentId,
     /// Why nothing moves.
-    nothing: String,
-    from: SavedEnvironmentIntent,
-    base: SavedEnvironmentIntent,
+    pub(crate) nothing: String,
+    pub(crate) from: SavedEnvironmentIntent,
+    pub(crate) base: SavedEnvironmentIntent,
     /// The Parent's deployed values, offered for a variable.
-    parent: Option<SavedEnvironmentIntent>,
+    pub(crate) parent: Option<SavedEnvironmentIntent>,
     /// Lineages the receiver uses live.
-    provided: Vec<String>,
+    pub(crate) provided: Vec<String>,
     /// Whether `from` is a kept Branch: its secrets then stay by default.
-    from_kept: bool,
-    hostnames: BranchHostnames,
+    pub(crate) from_kept: bool,
+    pub(crate) hostnames: BranchHostnames,
     /// Into a Branch, where every variable lands with `from`'s value by default.
-    update: bool,
+    pub(crate) update: bool,
 }
 
 impl Moving {
@@ -1140,7 +1201,7 @@ impl Moving {
         })
     }
 
-    fn compare(
+    pub(crate) fn compare(
         &self,
         into: &SavedEnvironmentIntent,
         picks: Option<Vec<BranchPick>>,
@@ -1248,7 +1309,7 @@ fn split(key: &str) -> (&str, &str) {
 /// `source` (whose configuration was `from`) bring their registry credentials and
 /// get their Node Introductions, and a picked credential row brings its credential
 /// to the Service already there. Returns the nodes staged.
-fn land(
+pub(crate) fn land(
     tx: &mut dyn Tx,
     who: &Actor,
     branch: &mut Environment,
@@ -1462,7 +1523,7 @@ fn live_producers(
 
 /// Each Service lineage `intent`'s variables reference but it doesn't own, with the
 /// keys read from it: the nodes it uses live.
-fn used_live(intent: &SavedEnvironmentIntent) -> BTreeMap<String, BTreeSet<String>> {
+pub(crate) fn used_live(intent: &SavedEnvironmentIntent) -> BTreeMap<String, BTreeSet<String>> {
     let owned: BTreeSet<&str> = intent
         .services
         .iter()
@@ -1521,7 +1582,7 @@ fn ancestors(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Vec<EnvironmentId>, 
     Ok(found)
 }
 
-fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
+pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, RpcError> {
     let rows = tx.query(
         "SELECT parent_id, kept, base, setup FROM config_environment_branch WHERE environment_id = ?1",
         &[id.as_str().into()],
@@ -1549,7 +1610,7 @@ fn branch_row(tx: &mut dyn Tx, environment: &Environment) -> Result<Row, RpcErro
 
 /// The managed-hostname suffix an Environment's generated domains carry: `-NAME`
 /// for a Branch, none for a root.
-fn suffix(tx: &mut dyn Tx, environment: &Environment) -> Result<String, RpcError> {
+pub(crate) fn suffix(tx: &mut dyn Tx, environment: &Environment) -> Result<String, RpcError> {
     Ok(match row(tx, &environment.summary.id)? {
         Some(_) => format!("-{}", environment.summary.name),
         None => String::new(),

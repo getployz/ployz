@@ -62,6 +62,11 @@ pub struct PullRequest {
     /// Its merge commit, once merged.
     #[serde(default)]
     pub merge_commit: Option<String>,
+    /// Once merged: the target branch's head as the Store last saw it
+    /// ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
+    /// already. Its Conditional Saves then land with what that push deployed.
+    #[serde(default)]
+    pub merge_reached: Option<String>,
     /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
     pub updated: String,
 }
@@ -183,6 +188,18 @@ pub struct PrEnvironment {
 pub struct Destination {
     pub name: EnvironmentName,
     /// The PR Environment's changes a Save would move there.
+    pub changes: usize,
+    /// Its Conditional Save there, if any.
+    pub save: Option<DestinationSave>,
+}
+
+/// A PR Environment's Conditional Save into one Destination.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct DestinationSave {
+    pub id: String,
+    /// False once the PR Environment or the target branch changed since: save again.
+    pub standing: bool,
+    /// How many changes it holds.
     pub changes: usize,
 }
 
@@ -428,12 +445,67 @@ fn start_from(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Environment>
 }
 
 fn pr_environment(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError> {
-    Ok(!tx
-        .query(
-            "SELECT environment_id FROM config_pr_environment WHERE environment_id = ?1",
-            &[id.as_str().into()],
-        )?
-        .is_empty())
+    Ok(of(tx, id)?.is_some())
+}
+
+/// The pull request (repository ID, number) Environment `id` is the PR Environment of.
+pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<(u64, u64)>, RpcError> {
+    let rows = tx.query(
+        "SELECT repository_id, number FROM config_pr_environment WHERE environment_id = ?1",
+        &[id.as_str().into()],
+    )?;
+    rows.first()
+        .map(|row| {
+            let unsigned = |n: i64| u64::try_from(n).map_err(|_| error::corrupt("pull request"));
+            Ok((unsigned(row.int(0)?)?, unsigned(row.int(1)?)?))
+        })
+        .transpose()
+}
+
+/// The latest facts Cloud reported of a pull request.
+pub(crate) fn facts(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    repository_id: u64,
+    pr: u64,
+) -> Result<Option<PullRequest>, RpcError> {
+    tx.query(
+        "SELECT facts FROM config_pull_request \
+         WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
+        &[
+            who.organization.as_str().into(),
+            repository(repository_id)?.into(),
+            number(pr)?.into(),
+        ],
+    )?
+    .first()
+    .map(|row| serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("pull request")))
+    .transpose()
+}
+
+/// The pull request of every PR Environment in `environment`'s Project not being
+/// closed: a change there may move any of their checks.
+pub(crate) fn project_checks(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Vec<PullRequestRef>, RpcError> {
+    let rows = tx.query(
+        "SELECT DISTINCT p.repository_id, p.number FROM config_pr_environment p \
+         JOIN config_environment e ON e.id = p.environment_id \
+         JOIN config_environment s ON s.project_id = e.project_id \
+         JOIN config_environment_branch b ON b.environment_id = p.environment_id \
+         WHERE s.id = ?1 AND b.closing = 0 ORDER BY p.repository_id, p.number",
+        &[environment.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| {
+            let unsigned = |n: i64| u64::try_from(n).map_err(|_| error::corrupt("pull request"));
+            Ok(PullRequestRef {
+                repository_id: unsigned(row.int(0)?)?,
+                number: unsigned(row.int(1)?)?,
+            })
+        })
+        .collect()
 }
 
 /// Whether the Store is closing this Branch: nothing deploys it on push.
@@ -503,6 +575,7 @@ pub(crate) fn pull_request(
         }
     }
     if !event.open {
+        crate::conditional_save::settle(tx, who, event)?;
         for (environment, project) in &current {
             let plan = load(tx, project, event.repository_id)?.unwrap_or_else(off);
             if plan.remove_on_close {
@@ -941,23 +1014,7 @@ pub(crate) fn view(
     who: &Actor,
     query: &PullRequestQuery,
 ) -> Result<PullRequestView, RpcError> {
-    let pull_request: Option<PullRequest> = match tx
-        .query(
-            "SELECT facts FROM config_pull_request \
-             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
-            &[
-                who.organization.as_str().into(),
-                repository(query.repository_id)?.into(),
-                number(query.number)?.into(),
-            ],
-        )?
-        .first()
-    {
-        Some(row) => {
-            Some(serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("pull request"))?)
-        }
-        None => None,
-    };
+    let pull_request = facts(tx, who, query.repository_id, query.number)?;
     let target = pull_request
         .as_ref()
         .map(|facts| facts.target_branch.clone())
@@ -970,6 +1027,17 @@ pub(crate) fn view(
             let into = scope::load_by_id(tx, &into)?;
             destinations.push(Destination {
                 changes: branch::changes_into(tx, &environment, &into)?,
+                save: crate::conditional_save::standing_in(
+                    tx,
+                    &environment,
+                    &into.summary.id,
+                    &target,
+                )?
+                .map(|(id, standing, changes)| DestinationSave {
+                    id,
+                    standing,
+                    changes,
+                }),
                 name: into.summary.name,
             });
         }
@@ -988,7 +1056,8 @@ pub(crate) fn view(
     })
 }
 
-/// Whether the pull request is ready to merge, and why.
+/// Whether the pull request is ready to merge, and why: every Destination with
+/// changes has a standing Conditional Save.
 fn check(environments: &[PrEnvironment], target: &str) -> (bool, String) {
     let destinations: Vec<&Destination> = environments
         .iter()
@@ -997,11 +1066,13 @@ fn check(environments: &[PrEnvironment], target: &str) -> (bool, String) {
     if destinations.is_empty() {
         return (true, format!("No environment deploys {target}"));
     }
-    let changes: usize = destinations
+    let waiting: Vec<&&Destination> = destinations
         .iter()
-        .map(|destination| destination.changes)
-        .sum();
-    if changes == 0 {
+        .filter(|destination| {
+            destination.changes > 0 || destination.save.as_ref().is_some_and(|save| save.standing)
+        })
+        .collect();
+    if waiting.is_empty() {
         let names: BTreeSet<&str> = destinations
             .iter()
             .map(|destination| destination.name.as_str())
@@ -1014,14 +1085,37 @@ fn check(environments: &[PrEnvironment], target: &str) -> (bool, String) {
             ),
         );
     }
-    let plural = if changes == 1 { "change" } else { "changes" };
-    (false, format!("{changes} {plural} to save in Ployz"))
+    if waiting
+        .iter()
+        .any(|destination| destination.save.as_ref().is_some_and(|save| !save.standing))
+    {
+        return (false, "Changed since saved · save again".into());
+    }
+    let unsaved: usize = waiting
+        .iter()
+        .filter(|destination| destination.save.is_none())
+        .map(|destination| destination.changes)
+        .sum();
+    if unsaved > 0 {
+        return (false, format!("{} to save in Ployz", changes(unsaved)));
+    }
+    let saved: usize = waiting
+        .iter()
+        .filter_map(|destination| destination.save.as_ref())
+        .map(|save| save.changes)
+        .sum();
+    let verb = if saved == 1 { "goes" } else { "go" };
+    (true, format!("{} {verb} live with this PR", changes(saved)))
+}
+
+fn changes(n: usize) -> String {
+    format!("{n} {}", if n == 1 { "change" } else { "changes" })
 }
 
 /// Where a merge into `target` lands: each Environment of the Project, other than
 /// PR Environments, whose latest Saved State has a Service from the repository
 /// tracking `target`, with none above it tracking it too.
-fn destinations_of(
+pub(crate) fn destinations_of(
     tx: &mut dyn Tx,
     project: &crate::id::ProjectId,
     repository_id: u64,
@@ -1075,7 +1169,10 @@ fn destinations_of(
 fn validate(event: &PullRequest) -> Result<(), RpcError> {
     crate::git::valid_branch(&event.head_branch)?;
     crate::git::valid_branch(&event.target_branch)?;
-    for commit in std::iter::once(&event.head).chain(&event.merge_commit) {
+    for commit in std::iter::once(&event.head)
+        .chain(&event.merge_commit)
+        .chain(&event.merge_reached)
+    {
         if !ployz_core::is_lower_hex(commit, 40) {
             return Err(error::invalid(
                 "A commit is a full lowercase Git commit",
@@ -1094,10 +1191,10 @@ fn validate(event: &PullRequest) -> Result<(), RpcError> {
     crate::automation::timestamp(&event.updated)
 }
 
-fn repository(id: u64) -> Result<i64, RpcError> {
+pub(crate) fn repository(id: u64) -> Result<i64, RpcError> {
     i64::try_from(id).map_err(|_| error::invalid("Expected a GitHub repository ID", json!({})))
 }
 
-fn number(number: u64) -> Result<i64, RpcError> {
+pub(crate) fn number(number: u64) -> Result<i64, RpcError> {
     i64::try_from(number).map_err(|_| error::invalid("Expected a pull request number", json!({})))
 }

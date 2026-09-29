@@ -287,6 +287,10 @@ pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), 
         )?;
     }
     tx.execute(
+        "DELETE FROM config_conditional_save WHERE environment_id = ?1 OR pr_environment_id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    tx.execute(
         "DELETE FROM config_environment WHERE id = ?1",
         &[environment.as_str().into()],
     )?;

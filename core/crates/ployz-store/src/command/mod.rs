@@ -161,7 +161,7 @@ pub enum Written {
     /// The Build Order was set; it applies to the next build.
     BuildOrder(crate::BuildOrderView),
     /// Changes moved between a Branch and its Parent.
-    Moved(crate::Moved),
+    Moved(Box<crate::Moved>),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
@@ -209,7 +209,8 @@ pub(crate) fn run(
         Command::CreateBranch(create) => {
             crate::branch::create_branch(tx, who, create).map(Written::Branch)
         }
-        Command::Move(request) => crate::branch::move_changes(tx, who, request).map(Written::Moved),
+        Command::Move(request) => crate::branch::move_changes(tx, who, request)
+            .map(|moved| Written::Moved(Box::new(moved))),
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
         Command::SetBuildOrder(set) => {
