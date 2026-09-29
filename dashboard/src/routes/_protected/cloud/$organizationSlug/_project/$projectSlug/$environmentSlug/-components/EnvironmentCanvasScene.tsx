@@ -34,7 +34,11 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
+import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes, buildStoreServiceNodes } from "./canvas/nodes";
+import type { StoreCanvasService } from "./canvas/types";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { BranchPickingProvider } from "./new-branch/branch-picking";
 
@@ -68,7 +72,23 @@ export function PendingCanvas() {
   );
 }
 
-function CanvasWithData() {
+/** The canvas over the Config Store: its Services come from the Store's views. */
+function StoreCanvasWithData() {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const services = requireView(useStoreView(organizationSlug, servicesQuery(store)));
+  const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
+  const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const storeServices = services.services.map((service): StoreCanvasService => ({
+    service,
+    subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
+    changeCount: serviceChanges(diff, service.id).size,
+  }));
+  return <CanvasWithData storeServices={storeServices} />;
+}
+
+// TODO(#1275): one canvas, over the Store, once the dark gate goes.
+function CanvasWithData({ storeServices = null }: { storeServices?: StoreCanvasService[] | null }) {
   const collectionScope = useCollectionScope();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId, organizationId } = useLoaderData({
@@ -179,13 +199,14 @@ function CanvasWithData() {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
+  // Over the Store its Services are the canvas's; links between them come back with variables and mounts (#1263, #1264).
   const initialNodes = [...buildNodes(
-    activeServicesWithBoundEnv,
+    storeServices ? [] : activeServicesWithBoundEnv,
     canvasPositions,
     selectedNodeId,
     volumeResources,
-  ), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
-  const initialEdges = [...buildEdges(
+  ), ...buildStoreServiceNodes(storeServices ?? [], canvasPositions, selectedNodeId, environmentId), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
+  const initialEdges = storeServices ? [] : [...buildEdges(
     volumeResources,
     serviceVolumeAttachments,
     activeServicesWithBoundEnv,
@@ -210,6 +231,7 @@ function CanvasWithData() {
         nodeIntroductions={nodeIntroductions}
         canvasNodes={initialNodes}
         canvasEdges={initialEdges}
+        storeServices={storeServices}
       />
     </ReactFlowProvider>
   );
@@ -240,7 +262,7 @@ export function EnvironmentCanvasScene() {
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
           <Suspense fallback={<PendingCanvas />}>
-            <CanvasWithData key={canvasKey} />
+            {storeEnabled ? <StoreCanvasWithData key={canvasKey} /> : <CanvasWithData key={canvasKey} />}
           </Suspense>
         </DeploymentLightingProvider>
         <div ref={setBottomBarSlot} className="contents" />
