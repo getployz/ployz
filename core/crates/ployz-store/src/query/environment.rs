@@ -12,6 +12,7 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::id::VolumeName;
+use crate::policy;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, Target};
 use crate::storage::Tx;
@@ -77,7 +78,8 @@ pub(crate) fn environment(
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())
-        .map(|service| values(service, &environment.working));
+        .map(|service| values(tx, &environment, service))
+        .transpose()?;
     let whole = path.is_none() && !query.all;
     let mut settings = Vec::new();
     for service in services {
@@ -93,13 +95,14 @@ pub(crate) fn environment(
                 });
             }
         };
+        let policy = policy::load(tx, &environment.summary.id, &service.id)?;
         for setting in ServiceSetting::ALL {
             if !setting.applies(&service.config) {
                 continue;
             }
             row(
                 Target::Setting(setting),
-                setting.value(&service.config),
+                setting.value(&service.config, &policy),
                 setting.default(),
                 setting.apply(),
             );
@@ -146,13 +149,21 @@ pub(crate) fn environment(
 /// A Service's Settings as one object, the shape `set --patch` takes. Settings
 /// without a value are left out.
 pub(crate) fn values(
+    tx: &mut dyn Tx,
+    environment: &scope::Environment,
     service: &SavedServiceIntent,
-    intent: &SavedEnvironmentIntent,
-) -> Map<String, Value> {
+) -> Result<Map<String, Value>, RpcError> {
+    let policy = policy::load(tx, &environment.summary.id, &service.id)?;
+    let intent = &environment.working;
     let mut values: Map<String, Value> = ServiceSetting::ALL
         .into_iter()
         .filter(|setting| setting.applies(&service.config))
-        .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
+        .map(|setting| {
+            (
+                setting.name().to_owned(),
+                setting.value(&service.config, &policy),
+            )
+        })
         .filter(|(_, value)| !value.is_null())
         .collect();
     let env = variables::patch_values(service, intent);
@@ -166,7 +177,7 @@ pub(crate) fn values(
     if !mounts.is_empty() {
         values.insert("mounts".to_owned(), Value::Object(mounts));
     }
-    values
+    Ok(values)
 }
 
 /// Where `service` mounts Volumes, as (Volume name, path), sorted by name.

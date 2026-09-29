@@ -3454,6 +3454,7 @@ dependencies = [
  "hex",
  "ployz-core",
  "postgres",
+ "regex",
  "ring",
  "rusqlite",
  "serde",

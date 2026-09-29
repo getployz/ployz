@@ -447,7 +447,7 @@ fn valid_repository(name: &str) -> bool {
         && !matches!(repository, "." | "..")
 }
 
-fn valid_branch(branch: &str) -> Result<String, RpcError> {
+pub(crate) fn valid_branch(branch: &str) -> Result<String, RpcError> {
     let branch = branch.trim();
     let valid = !branch.is_empty()
         && branch.chars().count() <= 255

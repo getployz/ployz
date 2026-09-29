@@ -278,6 +278,14 @@ mod tests {
         if schema["type"] == "boolean" {
             return value.is_boolean();
         }
+        if schema["type"] == "array" {
+            return value.as_array().is_some_and(|items| {
+                schema
+                    .get("maxItems")
+                    .is_none_or(|max| items.len() as u64 <= max.as_u64().unwrap())
+                    && items.iter().all(|item| satisfies(item, &schema["items"]))
+            });
+        }
         let number = |key: &str| schema.get(key).and_then(Value::as_f64);
         let typed = match schema["type"].as_str().unwrap() {
             "string" => value.as_str().is_some_and(|text| {
