@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
+import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
+import { isInFlight } from "#/modules/config-store/store-deployments";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
 import { ConfirmDialog } from "#/components/confirm-dialog";
@@ -143,12 +144,12 @@ const conflicts = (view: MoveView) => view.rows.filter((row) => row.conflict).le
 const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => presentMoveRow(row).node))].join(", ");
 
 /** A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. */
-function RemovalNews({ lead, name, status, onFinish }: { lead: boolean; name: string; status: string; onFinish: () => void }) {
+function RemovalNews({ lead, name, status, onFinish }: { lead: boolean; name: string; status: DeploymentStatus; onFinish: () => void }) {
   if (status === "applied") {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off the servers" detail={`Finish closing ${name}`}
       action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Finish closing</Button>} />;
   }
-  return status === "queued" || status === "running" || status === "cancelling"
+  return isInFlight(status)
     ? <NewsRow lead={lead} icon={<PowerOffIcon />} title="Coming off the servers" detail="Then it closes" />
     : <NewsRow lead={lead} icon={<PowerOffIcon className="text-destructive" />} title="Couldn't come off the servers"
       detail="Some services may still run" action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Close again</Button>} />;
