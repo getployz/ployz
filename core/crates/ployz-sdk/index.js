@@ -62,6 +62,10 @@ class Client {
     return withRpcError(this._inner.register(assignment));
   }
 
+  setManagementClient(label) {
+    return withRpcError(this._inner.setManagementClient(label));
+  }
+
   clearManagementClient(label) {
     return withRpcError(this._inner.clearManagementClient(label));
   }
