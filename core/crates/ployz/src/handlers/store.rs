@@ -4,13 +4,13 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, Admit, Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject,
+    Actor, Admit, Cancel, Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject,
     CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited,
     EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, NamespaceQuery,
     NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated, ProjectName, Publish,
     Published, Query, RemoveService, RenameService, SealingKey, ServiceQuery, ServiceStaged,
-    ServiceView, ServicesQuery, ServicesView, Trusted,
+    ServiceView, ServicesQuery, ServicesView, Start, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -170,6 +170,16 @@ impl Store {
     pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
         let request = Command::Admit(admit.clone());
         self.call("write", &request, |store, who| store.admit(who, admit))
+    }
+
+    pub(crate) fn start(&self, start: &Start) -> Result<DeploymentSummary, StoreCallError> {
+        let request = Command::Start(start.clone());
+        self.call("write", &request, |store, who| store.start(who, start))
+    }
+
+    pub(crate) fn cancel(&self, cancel: &Cancel) -> Result<DeploymentSummary, StoreCallError> {
+        let request = Command::Cancel(cancel.clone());
+        self.call("write", &request, |store, who| store.cancel(who, cancel))
     }
 
     pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {
