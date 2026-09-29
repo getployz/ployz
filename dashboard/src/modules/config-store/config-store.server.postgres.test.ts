@@ -495,7 +495,7 @@ it.live(
 
         // Cloud, not the caller, names who uploaded it.
         const admitted = yield* request("write", alice, {
-          command: "admit", id: first, environment: here, services: [], version: null, retry: null,
+          command: "admit", id: first, environment: here, services: [], version: null, retry: null, accept_volume_loss: [],
           upload: { digest: "d".repeat(64), base: null, uploader: "mallory" },
         });
         assert.strictEqual(admitted.status, 200);
