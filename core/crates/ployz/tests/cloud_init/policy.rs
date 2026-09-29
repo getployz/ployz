@@ -111,8 +111,9 @@ async fn machine_init_and_add_send_policy_in_creation_without_an_update() {
         command.args([
             "--ployz-config",
             config.to_str().unwrap(),
-            "machine",
-            if adding { "add" } else { "init" },
+            "server",
+            "add",
+            "--standalone",
             &format!("ssh://root@{target_address}"),
             "--no-install",
             "--name",

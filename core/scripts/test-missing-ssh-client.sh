@@ -20,13 +20,13 @@ fi
 set +e
 output=$(
     PATH="$TMP/empty" PLOYZ_CONFIG="$TMP/config.yaml" \
-        "$BIN" machine init user@host --yes --accepts-ingress=false --context missing-ssh 2>&1
+        "$BIN" server add --standalone user@host --yes --accepts-ingress=false --context missing-ssh 2>&1
 )
 status=$?
 set -e
 
 if [ "$status" -eq 0 ]; then
-    echo "machine init succeeded without an ssh client" >&2
+    echo "server add --standalone succeeded without an ssh client" >&2
     exit 1
 fi
 printf '%s\n' "$output" | grep -Fq 'local ssh client not found; install an ssh client' || {

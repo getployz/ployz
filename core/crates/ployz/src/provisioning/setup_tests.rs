@@ -63,10 +63,10 @@ async fn bootstrap(release: &Path) -> Result<Bootstrap, ProvisionError> {
 /// A remote whose `ssh` runs `ssh_script` and whose `scp` logs and succeeds.
 fn remote(root: &Path, destination: &str, log: &Path, ssh_script: &str) -> Remote {
     let matches = crate::cli::command()
-        .try_get_matches_from(["ployz", "machine", "add", destination])
+        .try_get_matches_from(["ployz", "server", "add", destination])
         .unwrap();
     let matches = matches
-        .subcommand_matches("machine")
+        .subcommand_matches("server")
         .unwrap()
         .subcommand_matches("add")
         .unwrap();

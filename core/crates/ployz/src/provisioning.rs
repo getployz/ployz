@@ -582,11 +582,11 @@ mod tests {
     #[test]
     fn provisioning_ssh_allows_interactive_authentication_with_shared_options() {
         for (extra, seconds) in [(vec![], "5"), (vec!["--ssh-timeout", "17"], "17")] {
-            let mut args = vec!["ployz", "machine", "add", "root@host"];
+            let mut args = vec!["ployz", "server", "add", "root@host"];
             args.extend(extra);
             let root = crate::cli::command().try_get_matches_from(args).unwrap();
             let matches = root
-                .subcommand_matches("machine")
+                .subcommand_matches("server")
                 .unwrap()
                 .subcommand_matches("add")
                 .unwrap();
@@ -656,15 +656,23 @@ mod tests {
     #[test]
     fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
         assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--storage", "zfs"]),
+            storage_matches(["ployz", "server", "add", "root@host", "--storage", "zfs"]),
             StorageChoice::Zfs
         );
         assert_eq!(
-            storage_matches(["ployz", "machine", "init", "root@host", "--storage", "none"]),
+            storage_matches([
+                "ployz",
+                "server",
+                "add",
+                "--standalone",
+                "root@host",
+                "--storage",
+                "none"
+            ]),
             StorageChoice::None
         );
         assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--yes"]),
+            storage_matches(["ployz", "server", "add", "root@host", "--yes"]),
             StorageChoice::None
         );
     }
@@ -674,7 +682,7 @@ mod tests {
         let matches = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
-                "machine",
+                "server",
                 "add",
                 "root@host",
                 "--storage",
@@ -685,7 +693,7 @@ mod tests {
         assert_eq!(
             resolve_storage(
                 matches
-                    .subcommand_matches("machine")
+                    .subcommand_matches("server")
                     .unwrap()
                     .subcommand_matches("add")
                     .unwrap(),
@@ -699,7 +707,7 @@ mod tests {
     fn storage_matches<const N: usize>(args: [&str; N]) -> StorageChoice {
         let matches = crate::cli::command().try_get_matches_from(args).unwrap();
         let (_, matches) = matches
-            .subcommand_matches("machine")
+            .subcommand_matches("server")
             .unwrap()
             .subcommand()
             .unwrap();

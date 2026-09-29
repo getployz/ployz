@@ -1,24 +1,41 @@
-//! `ployz cloud enroll`: enroll `initialize` or `join` on this Machine.
+//! Cloud enrollment behind `ployz server add`, and `ployz cloud reset`.
 
 use std::{future::Future, time::Duration};
 
 use clap::{ArgMatches, Command};
 
-use crate::cli::{base, env, machine_policy_flags, positional, switch, value};
+use crate::cli::{base, switch};
 use ipnet::Ipv4Net;
 use ployz_core::{
     CloudEnrollToken, DescribeContractRequest, InitializeRequest, InspectRequest, JoinRequest,
     LocalMachinePhase, Machine, MachineDetails, MachineName, MachineToken, MachineTokenRequest,
-    ManagementCapability, ManagementClientLabel, SetManagementClientRequest, StorageChoice, op,
+    ManagementCapability, ManagementClientLabel, RpcErrorCode, SetManagementClientRequest,
+    StorageChoice, op,
 };
 
 use super::{Error, config_path, leaf_matches, required, runtime};
 use crate::cloud_enroll::{self, CloudPairing, EnrollIdentity, InitializeMode, Join, Outcome};
 use crate::connect::{Client, ConnectError};
-use crate::context::{ContextError, Transport};
+use crate::context::{Connection, ContextError, Transport};
 
-pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
-    enroll_with_installer(root, &|storage| async move {
+/// Enroll with `token`: over SSH to `DESTINATION`, or on the host this runs on.
+pub(super) fn enroll(
+    root: &ArgMatches,
+    token: CloudEnrollToken,
+    cloud_url: &str,
+) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    if matches.get_one::<String>("destination").is_some() {
+        // A remote host is provisioned once, up front, with this CLI's release.
+        if !matches.get_flag("no-install") {
+            runtime()?.block_on(crate::provisioning::provision(
+                matches,
+                super::server::requested_storage(matches),
+            ))?;
+        }
+        return enroll_token(root, token, cloud_url, &|_| async { Ok(()) });
+    }
+    enroll_token(root, token, cloud_url, &|storage| async move {
         if storage == StorageChoice::Zfs {
             crate::provisioning::provision_local(env!("CARGO_PKG_VERSION"), storage).await?;
         } else {
@@ -28,14 +45,14 @@ pub(super) fn enroll(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Run Cloud enrollment, installing this CLI's daemon version with `install`.
+/// Run `server add --token` enrollment, installing this CLI's daemon version with `install`.
 ///
 /// `install` receives `none` for software-only synchronization and `zfs` for
 /// storage preparation; tests substitute it to avoid provisioning a real daemon.
 ///
 /// # Errors
 ///
-/// Returns the same CLI failure as [`enroll`].
+/// Returns the same CLI failure as `ployz server add --token`.
 #[doc(hidden)]
 pub fn enroll_with_installer<Install, InstallFuture>(
     root: &ArgMatches,
@@ -46,19 +63,31 @@ where
     InstallFuture: Future<Output = Result<(), Error>>,
 {
     let matches = leaf_matches(root);
-    let initial_policy = super::machine::enrollment_policy(matches)?;
     let token = CloudEnrollToken::parse(required(matches, "token")?)?;
     let cloud_url = matches
         .get_one::<String>("cloud-url")
-        .expect("cloud-url has a default");
+        .map_or("ployz.dev", String::as_str);
+    enroll_token(root, token, cloud_url, install)
+}
+
+fn enroll_token<Install, InstallFuture>(
+    root: &ArgMatches,
+    token: CloudEnrollToken,
+    cloud_url: &str,
+    install: &Install,
+) -> Result<(), Error>
+where
+    Install: Fn(StorageChoice) -> InstallFuture,
+    InstallFuture: Future<Output = Result<(), Error>>,
+{
+    let matches = leaf_matches(root);
+    let initial_policy = super::machine::enrollment_policy(matches)?;
     let url = cloud_enroll::enroll_url(cloud_url, &token);
     let requested_name = matches
         .get_one::<String>("name")
         .map(MachineName::parse)
         .transpose()?;
-    let requested_storage = *matches
-        .get_one::<StorageChoice>("storage")
-        .expect("storage has a default");
+    let requested_storage = super::server::requested_storage(matches);
     let cluster_network = *matches
         .get_one::<Ipv4Net>("network")
         .expect("Cluster network has a default");
@@ -327,12 +356,12 @@ where
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
-            error.reworded(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
+            error.reworded(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options) to reconcile the observed state"))
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.reworded(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+        .map_err(|error| error.reworded(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -390,9 +419,9 @@ where
     if storage != StorageChoice::Zfs {
         return Ok(client);
     }
-    if !matches!(client.connection().transport(), Transport::Unix(_)) {
+    if !installs_here(matches, &client) {
         return Err(Error::usage(format!(
-            "zfs storage preparation requires running ployz cloud enroll on the Machine itself; connected through {}",
+            "zfs storage preparation requires running ployz server add on the Machine itself; connected through {}",
             client.connection()
         )));
     }
@@ -415,9 +444,9 @@ where
     if daemon.daemon_version == env!("CARGO_PKG_VERSION") {
         return Ok(client);
     }
-    if !matches!(client.connection().transport(), Transport::Unix(_)) {
+    if !installs_here(matches, &client) {
         return Err(Error::usage(format!(
-            "daemon version synchronization requires running ployz cloud enroll on the Machine itself; connected through {}",
+            "daemon version synchronization requires running ployz server add on the Machine itself; connected through {}",
             client.connection()
         )));
     }
@@ -440,17 +469,39 @@ async fn wait_matching_daemon(matches: &ArgMatches) -> Result<Client, Error> {
     Ok(client)
 }
 
-async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
-    let config = config_path(matches)?;
-    let connect = matches.get_one::<String>("connect").map(String::as_str);
-    match crate::connect::connect_with_ssh_timeout(
+/// The installer reaches the enrolling host: it runs there, or provisioned `DESTINATION`.
+fn installs_here(matches: &ArgMatches, client: &Client) -> bool {
+    matches.get_one::<String>("destination").is_some()
+        || matches!(client.connection().transport(), Transport::Unix(_))
+}
+
+/// Connect to the enrolling host: `DESTINATION`, else `--connect` or the local daemon.
+async fn dial(matches: &ArgMatches) -> Result<Client, ConnectError> {
+    if let Some(destination) = matches.get_one::<String>("destination") {
+        let mut connection: Connection = destination.parse()?;
+        if matches!(connection.transport(), Transport::Ssh { .. })
+            && let Some(key) = matches.get_one::<String>("ssh-key")
+        {
+            connection = connection.with_ssh_key_file(key)?;
+        }
+        return super::machine::connect_direct(matches, &connection).await;
+    }
+    let config = crate::context::expand_home(std::path::Path::new(
+        matches
+            .get_one::<String>("ployz-config")
+            .expect("ployz-config has a default"),
+    ));
+    crate::connect::connect_with_ssh_timeout(
         &config,
-        connect,
+        matches.get_one::<String>("connect").map(String::as_str),
         None,
         crate::cli::ssh_timeout(matches),
     )
     .await
-    {
+}
+
+async fn connect_machine(matches: &ArgMatches) -> Result<Client, Error> {
+    match dial(matches).await {
         Ok(client) => Ok(client),
         Err(ConnectError::Context(ContextError::NoConfig)) => {
             crate::provisioning::provision_local(
@@ -469,22 +520,12 @@ fn retry_local_connect(error: &ConnectError) -> bool {
 }
 
 async fn wait_client(matches: &ArgMatches) -> Result<Client, Error> {
-    let config = config_path(matches)?;
-    let connect = matches.get_one::<String>("connect").map(String::as_str);
     crate::setup_retry::run(
         &mut (),
         "Waiting for local daemon",
         crate::setup_retry::WAIT,
         retry_local_connect,
-        async |_| {
-            crate::connect::connect_with_ssh_timeout(
-                &config,
-                connect,
-                None,
-                crate::cli::ssh_timeout(matches),
-            )
-            .await
-        },
+        async |_| dial(matches).await,
     )
     .await
     .map_err(Into::into)
@@ -529,21 +570,13 @@ async fn wait_phase(
     } else {
         Duration::from_secs(60)
     };
-    let config = config_path(matches)?;
-    let connect = matches.get_one::<String>("connect").map(String::as_str);
     crate::setup_retry::run(
         &mut (),
         timeout_message,
         wait,
         ConnectError::is_setup_retryable,
         async |_| {
-            let mut client = crate::connect::connect_with_ssh_timeout(
-                &config,
-                connect,
-                None,
-                crate::cli::ssh_timeout(matches),
-            )
-            .await?;
+            let mut client = dial(matches).await?;
             let details = client
                 .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
                 .await?;
@@ -624,38 +657,48 @@ pub(crate) fn command() -> Command {
         .about("Manage Cloud")
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .arg(
-            value("cloud-url", None)
-                .default_value("ployz.dev")
-                .global(true),
+        .subcommand(
+            base("reset", "Give up your Organization's founding that never finished")
+                .long_about("Give up your Organization's founding that never finished, so the next ployz server add founds the Cluster again. Stop or erase the founding Server first. Needs `ployz login`.")
+                .arg(
+                    switch("yes", Some('y'))
+                        .help("Confirm the founding Server is stopped or erased"),
+                ),
         )
-        .subcommand(cloud_enroll())
-}
-
-fn cloud_enroll() -> Command {
-    machine_policy_flags(base("enroll", "Found or join a Cluster through Cloud"))
-        .arg(positional("token", true))
-        .arg(value("name", None))
-        .arg(
-            value("network", None)
-                .default_value("10.210.0.0/16")
-                .value_parser(clap::value_parser!(ipnet::Ipv4Net)),
-        )
-        .arg(
-            value("storage", None)
-                .default_value("none")
-                .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
-        )
-        .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
-        .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
 }
 
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::Supported;
     Some(match path {
-        "enroll" => (enroll, Supported),
+        "reset" => (reset, Supported),
         _ => return None,
+    })
+}
+
+fn reset(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    if !matches.get_flag("yes") {
+        return Err(Error::detailed(
+            RpcErrorCode::InvalidArgument,
+            "cloud reset gives up the unfinished founding; stop or erase the founding Server, then confirm with --yes",
+            serde_json::json!({ "next": "ployz cloud reset --yes" }),
+        ));
+    }
+    let store = crate::cloud_login::CredentialStore::beside(&config_path(matches)?);
+    runtime()?.block_on(async {
+        let signed_in = crate::cloud_login::signed_in(&store).await?;
+        let _: serde_json::Value = signed_in
+            .post(
+                "/api/cli/cloud/reset",
+                &serde_json::json!({
+                    "organizationSlug": signed_in.organization.slug,
+                    "confirmedFounderStoppedOrErased": true,
+                }),
+            )
+            .await?;
+        crate::output::say!("Reset the founding of {}", signed_in.organization.slug);
+        crate::output::emit(
+            &serde_json::json!({ "reset": true, "organization": signed_in.organization }),
+        )
     })
 }
