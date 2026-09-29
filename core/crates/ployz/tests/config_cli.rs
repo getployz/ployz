@@ -15,7 +15,10 @@ use std::process::Command;
 
 use ployz_core::RpcError;
 use ployz_core::config::ServiceGitAccess;
-use ployz_store::{Actor, AuthorizedRepository, ConfigStore, OrganizationId, SealingKey, Trusted};
+use ployz_store::{
+    Actor, AuthorizedRepository, Command as StoreCommand, ConfigStore, OrganizationId, RunnerId,
+    SealingKey, Trusted, Written,
+};
 use serde_json::{Value, json};
 
 /// Where the CLI's Config Store is.
@@ -101,10 +104,14 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
 /// Cloud's `/api/config` contract over one in-memory Store: the bearer
 /// `ployz_<org>` acts in Organization `<org>`; any other caller is refused 401.
 /// Its GitHub: installation 7 grants `acme/web`, with branches `main` and `dev`.
+/// Its worker runs each admitted Deployment with Cloud's runner, on a Cluster
+/// whose only Server never answers.
 fn fake_cloud() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
-    let store = ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap();
+    let store = std::sync::Arc::new(
+        ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap(),
+    );
     std::thread::spawn(move || {
         for stream in listener.incoming() {
             serve(&store, stream.unwrap()).unwrap();
@@ -113,7 +120,27 @@ fn fake_cloud() -> String {
     url
 }
 
-fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
+/// Cloud's worker: run an admitted Deployment in the background.
+fn dispatch(store: &std::sync::Arc<ConfigStore>, who: Actor, written: &Written) {
+    let Written::Deployment(admitted) = written else {
+        return;
+    };
+    let (store, id) = (std::sync::Arc::clone(store), admitted.id.clone());
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let unreachable = ployz::context::Connection::tcp("127.0.0.1:1".parse().unwrap());
+        // Its Deployment ends not executed, or was replaced before it started.
+        let _ = runtime.block_on(ployz::sdk::run_deployment(
+            store,
+            who,
+            id,
+            RunnerId::parse("cloud-worker").unwrap(),
+            vec![unreachable],
+        ));
+    });
+}
+
+fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut request = String::new();
     reader.read_line(&mut request)?;
@@ -143,7 +170,12 @@ fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
             answer(store.read(&who, &serde_json::from_slice(&body).unwrap()))
         }
         (Some(who), "/api/config/write") => {
-            answer(store.write_trusted(&who, &serde_json::from_slice(&body).unwrap(), &github()))
+            let command: StoreCommand = serde_json::from_slice(&body).unwrap();
+            let written = store.write_trusted(&who, &command, &github());
+            if let (StoreCommand::Admit(_), Ok(written)) = (&command, &written) {
+                dispatch(store, who, written);
+            }
+            answer(written)
         }
         (Some(who), "/api/cli/organizations") => {
             let id = who.organization.as_str();
@@ -726,21 +758,12 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
             ],
         );
         assert_eq!(deployed["saved"], json!(1));
-        match store {
-            // The CLI runs it: no Server answers, so it records that nothing ran.
-            Target::Local(_) => {
-                assert_eq!(code, Some(3), "{deployed}");
-                assert_eq!(deployed["status"], json!("failed"));
-                assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
-                assert_eq!(deployed["nodes"][0]["outcome"], json!("not_applied"));
-            }
-            // Cloud's runner runs it; the CLI only admits it.
-            Target::Cloud { .. } => {
-                assert_eq!(code, Some(0), "{deployed}");
-                assert_eq!(deployed["status"], json!("queued"));
-                assert_eq!(deployed["nodes"][0]["outcome"], json!("pending"));
-            }
-        }
+        // Its runner (this CLI, or Cloud's that `deploy` follows) finds no Server
+        // answering, so it records that nothing ran.
+        assert_eq!(code, Some(3), "{deployed}");
+        assert_eq!(deployed["status"], json!("failed"));
+        assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
+        assert_eq!(deployed["nodes"][0]["outcome"], json!("not_applied"));
         let id = deployed["id"].as_str().unwrap().to_owned();
         assert_eq!(
             deployed["next"],
@@ -755,21 +778,29 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         let status = ok(store, &["status"]);
         let show = json!(format!("ployz deployment show {id}"));
         assert_eq!(status["next"], show);
-        match store {
-            Target::Local(_) => {
-                assert_eq!(status["deploying"], json!([]));
-                assert_eq!(status["attention"][0]["reason"], json!("deployment_failed"));
-                assert_eq!(status["attention"][0]["deployment"], json!(id));
-            }
-            Target::Cloud { .. } => {
-                assert_eq!(status["deploying"][0]["id"], json!(id));
-                assert_eq!(status["attention"], json!([]));
-            }
-        }
+        assert_eq!(status["deploying"], json!([]));
+        assert_eq!(status["attention"][0]["reason"], json!("deployment_failed"));
+        assert_eq!(status["attention"][0]["deployment"], json!(id));
         let listed = ok(store, &["deployment", "ls", "--limit", "1"]);
         assert_eq!(listed["deployments"][0]["id"], json!(id));
         assert_eq!(listed["next_cursor"], Value::Null);
         failed(store, &["deployment", "show", "not-an-id"], 2);
+
+        // Detached, `deploy` returns the Deployment Cloud's runner runs at once.
+        match store {
+            Target::Local(_) => {
+                failed(store, &["deploy", "--detach"], 2);
+            }
+            Target::Cloud { .. } => {
+                let detached = ok(store, &["deploy", "--detach"]);
+                let id = detached["id"].as_str().unwrap();
+                assert_eq!(detached["number"], json!(2));
+                assert_eq!(
+                    detached["next"],
+                    json!(format!("ployz deployment show {id}"))
+                );
+            }
+        }
     }
 }
 

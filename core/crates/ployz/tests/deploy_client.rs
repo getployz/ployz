@@ -931,3 +931,133 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
     );
     server.abort();
 }
+
+/// Cloud's runner claims a Store Deployment, deploys it and records it into Applied
+/// State; a second delivery of the same Deployment finds nothing to run, and a
+/// cancel stops it.
+#[tokio::test]
+async fn cloud_runner_deploys_a_store_deployment_once() {
+    use ployz_store::{
+        Actor, Admit, ConfigStore, CreateProject, CreateService, DeploymentId, DeploymentStatus,
+        EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, ProjectId, ProjectName,
+        RunnerId, SealingKey, ServiceId,
+    };
+    use std::sync::Arc;
+
+    let store =
+        Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
+    let who = Actor {
+        organization: OrganizationId::parse("org").unwrap(),
+    };
+    store
+        .create_project(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse("00000000-0000-4000-8000-000000000002")
+                    .unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ployz_core::ServiceName::parse("web").unwrap(),
+                image: Some("nginx".into()),
+            },
+        )
+        .unwrap();
+    let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
+    store
+        .admit(
+            &who,
+            &Admit {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+            },
+        )
+        .unwrap();
+    let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
+    let run = |runner: &str| {
+        ployz::sdk::run_deployment(
+            Arc::clone(&store),
+            who.clone(),
+            id.clone(),
+            RunnerId::parse(runner).unwrap(),
+            vec![ployz::context::Connection::tcp(address)],
+        )
+    };
+
+    let summary = run("cloud-run-1").await.unwrap();
+    assert_eq!(summary.status, DeploymentStatus::Applied);
+    let view = store.deployment(&who, &id).unwrap();
+    assert_eq!(view.nodes[0].outcome, NodeStatus::Applied);
+    assert!(view.preview.is_some());
+
+    // A duplicate delivery runs as another runner and finds it ended.
+    let duplicate = run("cloud-run-2").await.unwrap_err();
+    assert_eq!(duplicate.code, ployz_core::RpcErrorCode::Conflict);
+    assert_eq!(
+        store.deployment(&who, &id).unwrap().deployment.status,
+        DeploymentStatus::Applied
+    );
+
+    // Cancelled while it runs, the runner stops it.
+    let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
+    let mut admit = Admit {
+        id: second.clone(),
+        environment: EnvironmentRef::default(),
+        services: Vec::new(),
+        version: None,
+    };
+    store.admit(&who, &admit).unwrap();
+    let running = tokio::spawn(ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        who.clone(),
+        second.clone(),
+        RunnerId::parse("cloud-run-3").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+    ));
+    while store.deployment(&who, &second).unwrap().preview.is_none() {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    store
+        .cancel(
+            &who,
+            &ployz_store::Cancel {
+                deployment: second.clone(),
+            },
+        )
+        .unwrap();
+    let cancelled = running.await.unwrap().unwrap();
+    assert_eq!(cancelled.status, DeploymentStatus::Cancelled);
+
+    // Cancelled while queued, it never runs.
+    admit.id = DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap();
+    store.admit(&who, &admit).unwrap();
+    store
+        .cancel(
+            &who,
+            &ployz_store::Cancel {
+                deployment: admit.id.clone(),
+            },
+        )
+        .unwrap();
+    let never = ployz::sdk::run_deployment(
+        Arc::clone(&store),
+        who.clone(),
+        admit.id.clone(),
+        RunnerId::parse("cloud-run-4").unwrap(),
+        vec![ployz::context::Connection::tcp(address)],
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(never.code, ployz_core::RpcErrorCode::Conflict);
+    server.abort();
+}
