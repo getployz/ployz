@@ -8,6 +8,7 @@ import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
+import { RelativeTime } from "#/components/relative-time";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
@@ -16,7 +17,7 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
+  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeLight, nodeStatusLabels, notExecuted, previewLines, targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -53,6 +54,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
   const skipped = notExecuted(deployment.outcome);
   const preview = previewLines(deployment.preview);
+  const admitted = admission(deployment);
   const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
 
   return (
@@ -66,7 +68,8 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
         <header className="flex flex-col gap-1">
           <p className="text-xs text-muted-foreground">
-            Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : null}
+            Saved revision {deployment.saved}{deployment.upload ? ` · ${uploadLabel(deployment.upload)}` : admitted.by ? ` · by ${admitted.by}` : null}
+            {admitted.at ? <> · <RelativeTime date={admitted.at} /></> : null}
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <h2 className="min-w-0 text-base font-medium break-words">Deploys {targetsLabel(deployment)}</h2>

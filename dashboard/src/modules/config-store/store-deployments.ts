@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { plural } from "#/lib/plural";
@@ -131,6 +131,18 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
 /** "every service", or the Services a targeted Deploy named. */
 export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>
   deployment.services.length === 0 ? "every service" : deployment.services.join(", ");
+
+// ponytail: the Store's DeploymentSummary is gaining these (who admitted it, when, in Unix seconds); once it has
+// them, read them off it and drop this type.
+type Admission = { admitted_by?: string | null; admitted_at?: number };
+
+/** Who admitted a Deployment and when: nobody for the Store's own automation, no time before the Store records it. */
+export function admission(deployment: (DeploymentSummary | DeploymentView) & Admission) {
+  return {
+    by: deployment.admitted_by ?? null,
+    at: deployment.admitted_at === undefined ? null : new Date(deployment.admitted_at * 1000),
+  };
+}
 
 /** Where an upload came from: "Uploaded by nick · abc1234 + changes". */
 export function uploadLabel(upload: UploadedSource) {
