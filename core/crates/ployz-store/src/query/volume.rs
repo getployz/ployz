@@ -80,6 +80,10 @@ pub struct RemovalsQuery {
     /// The Environment.
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// Ask about the Deploy that removes the Environment from the Servers, which
+    /// deletes every deployed Volume.
+    #[serde(default)]
+    pub remove: bool,
 }
 
 /// What a full Deploy would remove from the Servers: observe these Docker Volumes
@@ -146,7 +150,12 @@ pub(crate) fn removals(
         // Applied Volumes mean a Deployment was admitted, which fixed the Namespace.
         let namespace: Namespace =
             crate::deployment::namespace(tx, who, &environment.summary, false)?;
-        removal::removed(&review.head.applied, &environment.working, &namespace)?
+        let target = if query.remove {
+            review::empty(&environment.working)
+        } else {
+            environment.working.clone()
+        };
+        removal::removed(&review.head.applied, &target, &namespace)?
     };
     Ok(RemovalsView {
         environment: environment.summary,

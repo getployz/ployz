@@ -119,6 +119,7 @@ fn admit(
                 version: None,
                 upload: None,
                 retry: None,
+                remove: false,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
@@ -480,6 +481,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
                 version: None,
                 upload: None,
                 retry: Some(id(2)),
+                remove: false,
                 accept_volume_loss: Vec::new(),
             },
             &Trusted::default(),

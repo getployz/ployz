@@ -32,6 +32,12 @@ upload?: UploadedSource | null,
  */
 retry?: DeploymentId | null,
 /**
+ * Remove the Environment from the Servers: ship it empty, deleting its deployed
+ * Volumes, without touching Working or Saved State. `services`, `version`,
+ * `upload` and `retry` stay empty. `RemoveEnvironment` then deletes it.
+ */
+remove: boolean,
+/**
  * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
  * deletes data refuses with `confirmation_required` unless it names each one.
  */
@@ -372,7 +378,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "update_branch" } & UpdateBranch | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment;
 
 export type ConfigDomainEvidence = {
 /**
@@ -403,7 +409,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "build_log" } & BuildLogQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery | { "query": "namespace" } & NamespaceQuery | { "query": "domains" } & DomainsQuery | { "query": "domain" } & DomainQuery | { "query": "volumes" } & VolumesQuery | { "query": "volume" } & VolumeQuery | { "query": "removals" } & RemovalsQuery | { "query": "branch" } & BranchQuery | { "query": "build_order" } & BuildOrderQuery | { "query": "environments" } & EnvironmentsQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -425,9 +431,9 @@ volumes?: VolumeObservation,
  */
 uploader?: string | null, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "build_order" } & BuildOrderView | { "view": "environments" } & EnvironmentsView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -733,7 +739,12 @@ runner: RunnerId | null,
 /**
  * What its Services without a source of their own build from.
  */
-upload: UploadedSource | null, };
+upload: UploadedSource | null,
+/**
+ * Whether it removes the Environment from the Servers: it ships the empty
+ * Environment ([`NOTHING`]) and deletes the data it accepted.
+ */
+remove: boolean, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -771,7 +782,12 @@ runner: RunnerId | null,
 /**
  * What its Services without a source of their own build from.
  */
-upload: UploadedSource | null, };
+upload: UploadedSource | null,
+/**
+ * Whether it removes the Environment from the Servers: it ships the empty
+ * Environment ([`NOTHING`]) and deletes the data it accepted.
+ */
+remove: boolean, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -1003,6 +1019,20 @@ environment: EnvironmentSummary, };
 
 export type EnvironmentId = string;
 
+export type EnvironmentListing = { id: EnvironmentId, name: EnvironmentName,
+/**
+ * Whether it is the Project's Default Environment.
+ */
+default: boolean,
+/**
+ * The Environment it is a Branch of, if it is one.
+ */
+parent: EnvironmentName | null,
+/**
+ * Its latest Deployment, when that removes it from the Servers.
+ */
+removal: DeploymentSummary | null, };
+
 export type EnvironmentName = string;
 
 export type EnvironmentNodeType = "service" | "volume";
@@ -1030,6 +1060,8 @@ project: ProjectName | null,
  * The Environment, by name within the Project.
  */
 environment: EnvironmentName | null, };
+
+export type EnvironmentRemoved = { environment: EnvironmentSummary, };
 
 export type EnvironmentSummary = {
 /**
@@ -1063,6 +1095,14 @@ settings: Array<SettingRow>,
  * Settings without a value are left out.
  */
 values?: { [key in string]: JsonValue } | null, };
+
+export type EnvironmentsQuery = {
+/**
+ * The Project; omitted means the Organization's only Project.
+ */
+project: ProjectName | null, };
+
+export type EnvironmentsView = { project: ProjectSummary, environments: Array<EnvironmentListing>, };
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
@@ -1718,7 +1758,12 @@ export type RemovalsQuery = {
 /**
  * The Environment.
  */
-environment: EnvironmentRef, };
+environment: EnvironmentRef,
+/**
+ * Ask about the Deploy that removes the Environment from the Servers, which
+ * deletes every deployed Volume.
+ */
+remove: boolean, };
 
 export type RemovalsView = {
 /**
@@ -1735,6 +1780,8 @@ export type RemoveDomain = { environment: EnvironmentRef,
  * Its hostname, or a generated domain's prefix.
  */
 domain: string, };
+
+export type RemoveEnvironment = { environment: EnvironmentRef, };
 
 export type RemoveService = {
 /**
@@ -2136,6 +2183,8 @@ environment: EnvironmentSummary,
 services: Array<ServiceListing>, };
 
 export type SetBuildOrder = { build_order: BuildOrder | null, };
+
+export type SetDefaultEnvironment = { environment: EnvironmentRef, };
 
 export type SetManagementClientResponse = { capability: string | null, };
 

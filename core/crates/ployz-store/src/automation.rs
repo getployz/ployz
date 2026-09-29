@@ -511,6 +511,7 @@ fn admit(
         version: None,
         upload: None,
         retry: None,
+        remove: false,
         accept_volume_loss: Vec::new(),
     };
     let summary = deployment::admit(tx, who, &request, id, saved.revision, &frozen)?;

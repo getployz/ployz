@@ -162,7 +162,7 @@ it("leaves a Deploy's confirmation_required to its caller: a question for the us
   const details = { volumes: [{ id: "v", name: "pg-data", docker_volume: "ns_vol-v", deletes: [{ machine_id: "m1", name: "ns_vol-v" }] }], accept: ["pg-data"], version: "9:1:0.1" };
   test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "confirmation_required", message: "This Deploy permanently deletes the data of pg-data", details } });
   const writer = renderHook(() => useStoreWriter("acme")).result.current;
-  const admitted = writer.commit({ command: "admit", id: "d", environment: ref, services: [], version: null, accept_volume_loss: [] });
+  const admitted = writer.commit({ command: "admit", id: "d", environment: ref, services: [], version: null, remove: false, accept_volume_loss: [] });
   await expect(admitted.isPersisted.promise).rejects.toMatchObject({ code: "confirmation_required", details });
   expect(error).not.toHaveBeenCalled();
 });

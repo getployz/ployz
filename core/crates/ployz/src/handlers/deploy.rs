@@ -62,7 +62,7 @@ pub(crate) fn deploy_command() -> Command {
 }
 
 /// `--events` and `--detach`, for every command that queues a Deployment and follows it.
-fn following(command: Command) -> Command {
+pub(super) fn following(command: Command) -> Command {
     command
         .arg(
             value("events", None)
@@ -169,7 +169,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     // The in-process Store trusts this CLI to observe the Servers; Cloud observes
     // them itself.
     let volumes = match store.local() {
-        Some(_) if services.is_empty() => observe(matches, &store, &environment)?,
+        Some(_) if services.is_empty() => observe(matches, &store, &environment, false)?,
         Some(_) | None => None,
     };
     let id = DeploymentId::parse(mint())?;
@@ -189,6 +189,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
                 version: matches.get_one::<String>("expect-version").cloned(),
                 upload,
                 retry: None,
+                remove: false,
                 accept_volume_loss: accept,
             },
             volumes,
@@ -212,7 +213,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Open `--events` before queueing anything, so a bad path ships nothing.
-fn open_events(matches: &ArgMatches) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
+pub(super) fn open_events(
+    matches: &ArgMatches,
+) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
     Ok(matches
         .get_one::<String>("events")
         .map(std::fs::File::create)
@@ -231,6 +234,21 @@ fn ship(
     events: Option<std::io::BufWriter<std::fs::File>>,
     words: &[&str],
 ) -> Result<(), Error> {
+    let (view, ran, hint) = execute(matches, store, admitted, source, events, words)?;
+    finish_view(&view, Some(hint))?;
+    ran
+}
+
+/// Run or follow a queued Deployment until it ends (or return it at once with
+/// `--detach`): the Deployment, whether it applied, and the command to run next.
+pub(super) fn execute(
+    matches: &ArgMatches,
+    store: &Store,
+    admitted: &DeploymentSummary,
+    source: Option<&Path>,
+    events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
+) -> Result<(DeploymentView, Result<(), Error>, String), Error> {
     let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
     // Only the hidden in-process Store lets this CLI run the Deployment; Cloud's
     // runner runs it otherwise, and this command follows it unless detached.
@@ -288,8 +306,7 @@ fn ship(
                 .then(|| super::store::next(matches, &["deploy", "--upload", &dir]))
         })
         .unwrap_or(hint);
-    finish_view(&view, Some(hint))?;
-    ran
+    Ok((view, ran, hint))
 }
 
 /// Follow a Deployment Cloud's runner runs until it ends. Each change of its status
@@ -531,14 +548,16 @@ async fn build(
 /// When a Deploy removes deployed Volumes, observe which Servers hold their data:
 /// the evidence the in-process Store reviews it against. A Cluster it can't reach
 /// leaves the evidence out, so the Store refuses.
-fn observe(
+pub(super) fn observe(
     matches: &ArgMatches,
     store: &Store,
     environment: &ployz_store::EnvironmentRef,
+    remove: bool,
 ) -> Result<Option<VolumeObservation>, Error> {
     let removals = store
         .removals(&RemovalsQuery {
             environment: environment.clone(),
+            remove,
         })
         .map_err(failed(matches, &["deploy"]))?;
     if removals.volumes.is_empty() {
@@ -565,18 +584,34 @@ fn with_retry(
     matches: &ArgMatches,
     services: &[ServiceName],
 ) -> StoreCallError {
+    let version = match &error {
+        StoreCallError::Refused(error) => error
+            .details
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        StoreCallError::Cloud(_) => String::new(),
+    };
+    let mut words = vec!["deploy"];
+    words.extend(services.iter().map(ServiceName::as_str));
+    words.extend(["--expect-version", version.as_str()]);
+    accepting(error, matches, &words)
+}
+
+/// A refusal to delete Volume data names `words` again, accepting each Volume the
+/// refusal lists.
+pub(super) fn accepting(
+    error: StoreCallError,
+    matches: &ArgMatches,
+    words: &[&str],
+) -> StoreCallError {
     let StoreCallError::Refused(mut error) = error else {
         return error;
     };
     if error.code != ployz_core::RpcErrorCode::ConfirmationRequired {
         return StoreCallError::Refused(error);
     }
-    let version = error
-        .details
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
     let accept: Vec<String> = error
         .details
         .get("accept")
@@ -585,9 +620,7 @@ fn with_retry(
         .flatten()
         .filter_map(|name| name.as_str().map(str::to_owned))
         .collect();
-    let mut words = vec!["deploy"];
-    words.extend(services.iter().map(ServiceName::as_str));
-    words.extend(["--expect-version", version.as_str()]);
+    let mut words = words.to_vec();
     for name in &accept {
         words.extend(["--accept-volume-loss", name.as_str()]);
     }
@@ -793,6 +826,7 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
                 version: None,
                 upload: None,
                 retry: Some(source.clone()),
+                remove: false,
                 accept_volume_loss: Vec::new(),
             },
             None,
@@ -840,7 +874,7 @@ fn show(root: &ArgMatches) -> Result<(), Error> {
     finish_view(&view, None)
 }
 
-fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {
+pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error> {
     crate::output::finish(&Next::new(view, hint), || {
         say!(
             "Deployment #{} of {}/{}: {:?}",

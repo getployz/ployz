@@ -69,6 +69,8 @@ pub enum Query {
     Branch(crate::BranchQuery),
     /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderQuery),
+    /// A Project's Environments.
+    Environments(crate::EnvironmentsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -108,6 +110,8 @@ pub enum View {
     Branch(crate::BranchView),
     /// The Organization's Build Order.
     BuildOrder(crate::BuildOrderView),
+    /// A Project's Environments.
+    Environments(crate::EnvironmentsView),
 }
 
 pub(crate) fn run(
@@ -135,5 +139,8 @@ pub(crate) fn run(
         Query::Removals(query) => removals(tx, who, query).map(View::Removals),
         Query::Branch(query) => crate::branch::branch(tx, who, query).map(View::Branch),
         Query::BuildOrder(_) => crate::builders::build_order(tx, who).map(View::BuildOrder),
+        Query::Environments(query) => {
+            crate::teardown::environments(tx, who, query).map(View::Environments)
+        }
     }
 }
