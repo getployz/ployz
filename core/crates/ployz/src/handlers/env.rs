@@ -37,7 +37,10 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         project: project(matches)?,
         name,
     };
-    let created = store.create_environment(&actor, &create).map_err(failed)?;
+    let words = ["env", "new", create.name.as_str()];
+    let created = store
+        .create_environment(&actor, &create)
+        .map_err(failed(matches, &words))?;
     crate::output::finish(&created, || {
         say!(
             "Created Environment {} in Project {}.",

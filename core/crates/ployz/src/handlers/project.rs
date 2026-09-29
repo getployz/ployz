@@ -28,14 +28,18 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
 }
 
 fn new(root: &ArgMatches) -> Result<(), Error> {
-    let name = ProjectName::parse(required(leaf_matches(root), "name")?)?;
+    let matches = leaf_matches(root);
+    let name = ProjectName::parse(required(matches, "name")?)?;
     let (store, actor) = store()?;
     let create = CreateProject {
         id: ProjectId::parse(mint())?,
         name,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.create_project(&actor, &create).map_err(failed)?;
+    let words = ["project", "new", create.name.as_str()];
+    let created = store
+        .create_project(&actor, &create)
+        .map_err(failed(matches, &words))?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",

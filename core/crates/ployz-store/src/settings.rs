@@ -6,15 +6,14 @@
 use std::fmt;
 
 use ployz_core::config::{
-    AuthoredServiceConfig, SavedEnvironmentIntent, ServiceImageCredentials, ServiceSource,
-    default_max_retries, default_replicas, parse_service_setting,
+    AuthoredServiceConfig, ServiceImageCredentials, ServiceSource, default_max_retries,
+    default_replicas, parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::error;
-use crate::id::EnvironmentName;
 
 /// Whether a change waits for a Deploy or takes effect at once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -328,12 +327,12 @@ impl SettingPath {
         self.setting
     }
 
-    /// The path of one Setting of a stored Service.
-    pub(crate) fn of(service: &str, setting: ServiceSetting) -> Result<Self, RpcError> {
-        Ok(Self {
-            service: ServiceName::parse(service).map_err(|_| error::corrupt("Service name"))?,
+    /// The path of one Setting of `service`.
+    pub(crate) fn of(service: &ServiceName, setting: ServiceSetting) -> Self {
+        Self {
+            service: service.clone(),
             setting: Some(setting),
-        })
+        }
     }
 }
 
@@ -358,24 +357,4 @@ impl From<SettingPath> for String {
     fn from(value: SettingPath) -> Self {
         value.to_string()
     }
-}
-
-/// `service` names no Service in Working State: list the ones it could mean.
-pub(crate) fn no_service(
-    service: &ServiceName,
-    environment: &EnvironmentName,
-    working: &SavedEnvironmentIntent,
-) -> RpcError {
-    let names = working
-        .services
-        .iter()
-        .map(|service| service.slug.as_str())
-        .collect::<Vec<_>>();
-    error::not_found(
-        format!("No Service named {service} in Environment {environment}"),
-        json!({
-            "did_you_mean": error::did_you_mean(service.as_str(), names.iter().copied()),
-            "valid_children": names,
-        }),
-    )
 }
