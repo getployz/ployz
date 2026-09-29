@@ -1,12 +1,4 @@
-import {
-  decodeStrict,
-  strictParseOptions,
-} from "#/modules/environment-design/schema";
-import { useState } from "react";
-import { CircleAlertIcon } from "lucide-react";
 import { Schema, SchemaGetter } from "effect";
-import type { ServiceRoute } from "#/modules/environment-design/tables";
-import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -24,8 +16,11 @@ import {
   useAppForm,
   validateOnChangeOrBlur,
 } from "#/form";
-import { serviceRouteSchema } from "#/modules/environment-design/services";
+import { strictParseOptions } from "#/modules/environment-design/schema";
 import { domainPortSchema } from "./domain-port";
+
+/** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
+export type CustomDomain = { hostname: string; targetPort: number | null };
 
 const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
@@ -62,42 +57,29 @@ const customDomainFormOptions = appFormOptions.strictSchema({
   validators: [validateOnChangeOrBlur(customDomainFormSchema)],
 });
 
-function errorMessage<T>(error: T) {
-  return error instanceof Error
-    ? error.message
-    : "The custom domain could not be saved.";
-}
-
 export function CustomDomainDialog({
   route,
+  hostnameFixed = false,
   defaultTargetPort,
   onClose,
   onSubmit,
 }: {
-  route?: ServiceRoute;
+  route?: CustomDomain;
+  /** Editing changes only the port: a Store domain is addressed by its hostname. */
+  hostnameFixed?: boolean;
   defaultTargetPort: number | null;
   onClose: () => void;
-  onSubmit: (next: ServiceRoute) => void;
+  onSubmit: (next: CustomDomain) => void;
 }) {
-  const [saveFailure, setSaveFailure] = useState<string | null>(null);
-
   const form = useAppForm({
     ...customDomainFormOptions,
     defaultValues: {
       hostname: route?.hostname ?? "",
       port: route?.targetPort == null ? "" : String(route.targetPort),
     },
+    // Saving happens in the background and toasts on failure.
     onSubmit: ({ schemaOutputs }) => {
-      setSaveFailure(null);
-      let next: ServiceRoute;
-      try {
-        next = decodeStrict(serviceRouteSchema, { id: route?.id ?? crypto.randomUUID(), ...schemaOutputs[0] });
-      } catch (error) {
-        setSaveFailure(errorMessage(error));
-        return;
-      }
-      // Optimistic: saving rolls back and toasts on failure.
-      onSubmit(next);
+      onSubmit(schemaOutputs[0]);
       onClose();
     },
   });
@@ -122,6 +104,7 @@ export function CustomDomainDialog({
                     id="custom-domain-hostname"
                     label="Domain"
                     className="font-mono"
+                    disabled={hostnameFixed && route !== undefined}
                     placeholder="api.example.com"
                   />
                 )}
@@ -146,13 +129,6 @@ export function CustomDomainDialog({
                 )}
               </form.Field>
             </FieldGroup>
-            {saveFailure ? (
-              <Alert variant="destructive">
-                <CircleAlertIcon />
-                <AlertTitle>Custom domain not saved</AlertTitle>
-                <AlertDescription>{saveFailure}</AlertDescription>
-              </Alert>
-            ) : null}
             <DialogFooter>
               <DialogClose
                 render={

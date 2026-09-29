@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Resolver } from "node:dns/promises";
 import type { ClusterDomainStatus as StoreClusterDomainStatus, ConfigDomainEvidence, ConfigQuery, ConfigView, DnsLookup } from "@ployz/sdk";
-import { Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { clusterDomainStatus } from "#/modules/cluster-domain/cluster-domain";
 import { loadClusterDomain, reserveClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
@@ -12,6 +12,10 @@ import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime
 import type { StoreCall } from "./store.contract";
 
 const DNS_TIMEOUT_MS = 3_000;
+/** A slow or unreachable Cluster leaves statuses unobserved rather than holding up the page that reads them. */
+const OBSERVE_TIMEOUT = "5 seconds";
+/** How long one observation answers `domains` reads: an open drawer rereads them on every edit and every poll. */
+const OBSERVATION_TTL_MS = 15_000;
 
 /** The parts of a call that need domain evidence; decode it with this. The Store validates the whole call. */
 const EnvironmentRef = Schema.Struct({
@@ -50,8 +54,22 @@ const observeCluster = Effect.fn("ConfigStore.observeCluster")(function* (organi
     ingress_addresses: frame.machines.flatMap(({ machine }) =>
       machine.accepts_ingress && machine.public_ip !== null ? [machine.public_ip] : []),
   };
-}, Effect.scoped, Effect.catch((error) =>
+}, Effect.scoped, Effect.timeout(OBSERVE_TIMEOUT), Effect.catch((error) =>
   Effect.logWarning("No runtime frame for domain statuses; they read as unobserved.", error).pipe(Effect.as(null))));
+
+type ClusterObservation = Effect.Success<ReturnType<typeof observeCluster>>;
+// ponytail: one memo per Cloud process, never evicted; bounded by Organizations, and a TTL this short needs no sharing.
+const observations = new Map<string, { at: number; seen: ClusterObservation }>();
+
+/** The Cluster as last observed within the TTL, else observed now; a check (`fresh`) always observes now. */
+const observeClusterRecently = (organizationId: string, fresh: boolean) => Effect.gen(function* () {
+  const now = yield* Clock.currentTimeMillis;
+  const last = observations.get(organizationId);
+  if (!fresh && last !== undefined && now - last.at < OBSERVATION_TTL_MS) return last.seen;
+  const seen = yield* observeCluster(organizationId);
+  observations.set(organizationId, { at: now, seen });
+  return seen;
+});
 
 /** What DNS answers for `hostname` now. A name that doesn't resolve answers nothing. */
 export const lookUpHostname = (hostname: string) => Effect.promise(async (): Promise<DnsLookup> => {
@@ -68,7 +86,7 @@ export const lookUpHostname = (hostname: string) => Effect.promise(async (): Pro
 /**
  * What Cloud observes of the Organization's public domains, for the Store calls that need it. Adding a domain gets
  * the custom-domain capability; admitting a generated domain reserves the Cluster Domain first; reading domains
- * observes the Cluster; checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
+ * observes the Cluster (or reuses an observation from the last few seconds); checking one also looks up its DNS now and asks for a Cluster Domain sync. Nothing here comes
  * from the caller.
  */
 export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence")(function* (
@@ -100,7 +118,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   const evidence: ConfigDomainEvidence = {
     ...nothing,
     cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
-    ...(yield* observeCluster(organizationId)),
+    ...(yield* observeClusterRecently(organizationId, wanted.query === "domain")),
   };
   if (wanted.query === "domains") return evidence;
   // A check refreshes what Cloud knows: the Cluster Domain's records and certificate, and this domain's DNS.

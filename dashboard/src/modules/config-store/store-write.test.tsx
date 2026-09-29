@@ -9,7 +9,7 @@ import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
 import { environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
-import { editStoreEnvironment } from "./store-write";
+import { editStoreEnvironment, useStoreWriter } from "./store-write";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -144,4 +144,14 @@ it("refetches only the views a changed Store table family backs", () => {
   refetchStoreViews("acme", scope, "store_deployment");
   const invalidated = (key: readonly unknown[]) => queryClient.getQueryState(key)?.isInvalidated;
   expect([invalidated(settings), invalidated(diff), invalidated(deployments)]).toEqual([false, true, true]);
+});
+
+it("words a command's conflict as the Store does: a taken domain isn't a stale revision", async () => {
+  const test = setup(view(2, 1));
+  const error = vi.spyOn(toast, "error").mockImplementation(() => "toast");
+  test.write.mockResolvedValueOnce({ ok: false, refusal: { code: "conflict", message: "Another Service already has this domain", details: {} } });
+  const writer = renderHook(() => useStoreWriter("acme")).result.current;
+  const added = writer.commit({ command: "add_domain", environment: ref, service: "web", hostname: "shop.acme.com", port: null });
+  await expect(added.isPersisted.promise).rejects.toMatchObject({ code: "conflict" });
+  expect(error).toHaveBeenCalledWith("Another Service already has this domain");
 });

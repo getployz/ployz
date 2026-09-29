@@ -18,7 +18,7 @@ import { certificateFor, dnsRecordsFor, publicDomainStatus } from "#/modules/ser
 import { usePublicDomainContext } from "#/modules/services/use-public-domain-context";
 import type { ServiceDrawerState } from "./useServiceDrawerState";
 import { CustomDomainDialog } from "./CustomDomainDialog";
-import { DomainTitle, PublicDomainRow } from "./domain-row";
+import { DomainTitle, PublicDomainRow, statusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
 import { PrivateEndpointField } from "./PrivateEndpointField";
 
@@ -129,7 +129,7 @@ export function ServiceNetworkingSection({
                 }
                 label={hostname ?? managed.prefix}
                 portLabel={portLabel(managed.targetPort)}
-                status={status}
+                view={statusView(status)}
                 changed={managedDiff.changed}
                 onEdit={() => setEditor({ kind: "managed", prefix: managed.prefix })}
                 onDelete={() => commitManaged(managedList.filter((_, current) => current !== index))}
@@ -152,7 +152,7 @@ export function ServiceNetworkingSection({
                 }
                 label={route.hostname}
                 portLabel={portLabel(route.targetPort)}
-                status={status}
+                view={statusView(status)}
                 dnsRecords={dnsRecordsFor(route.hostname, clusterDomain, ingressAddresses)}
                 changed={routesDiff.changed}
                 onEdit={() => setEditor({ kind: "route", id: route.id })}
@@ -217,7 +217,7 @@ export function ServiceNetworkingSection({
           <CustomDomainDialog
             defaultTargetPort={defaultTargetPort}
             onClose={() => setEditor(null)}
-            onSubmit={(next) => commitRoutes([...routes, next])}
+            onSubmit={(next) => commitRoutes([...routes, { id: crypto.randomUUID(), ...next }])}
           />
         ) : null}
         {editor?.kind === "route" && editedRoute ? (
@@ -228,7 +228,7 @@ export function ServiceNetworkingSection({
             onSubmit={(next) =>
               commitRoutes(
                 routes.map((route) =>
-                  route.id === editor.id ? next : route
+                  route.id === editor.id ? { ...next, id: route.id } : route
                 )
               )
             }
