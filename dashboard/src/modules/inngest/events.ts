@@ -338,6 +338,11 @@ export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmitt
   return { id: `config-deployment-admitted-${data.deploymentId}`, name: configDeploymentAdmittedEvent, data } as const;
 }
 
+/** Deploy now: unkeyed, so it asks again for a queued Deployment its admission's event never ran. */
+export function createConfigDeploymentStartedEvent(data: ConfigDeploymentAdmittedEventData) {
+  return { name: configDeploymentAdmittedEvent, data } as const;
+}
+
 export function createEnvironmentDeployRequestedEvent(
   data: EnvironmentDeployRequestedEventData,
 ) {
@@ -509,6 +514,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createEnvironmentDeployRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
+  | ReturnType<typeof createConfigDeploymentStartedEvent>
   | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
   | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
   | ReturnType<typeof createGithubCheckSuiteTransitionEvent>

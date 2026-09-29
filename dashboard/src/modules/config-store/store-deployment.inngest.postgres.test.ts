@@ -52,7 +52,7 @@ it.live(
           { op: "set", path: "web.env.GREETING", value: "hi-${{ TOKEN }}" },
         ],
       });
-      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null });
+      yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, retry: null });
 
       const worker = createRunStoreDeployment(
         new Inngest({ id: "store-deployment-test" }),
@@ -75,7 +75,7 @@ it.live(
       expect(duplicate.result).toMatchObject({ nothingToRun: expect.any(String) });
 
       // A cancelled Deployment never runs.
-      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null });
+      yield* write({ command: "admit", id: CANCELLED, environment: here, services: [], version: null, retry: null });
       yield* write({ command: "cancel", deployment: CANCELLED });
       const cancelled = yield* run(CANCELLED);
       expect(cancelled.result).toMatchObject({ nothingToRun: expect.any(String) });
