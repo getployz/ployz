@@ -248,7 +248,7 @@ pub struct BranchPlanView {
     pub from: EnvironmentSummary,
     /// The preset this plan is, if any.
     pub preset: Option<BranchPreset>,
-    /// The presets worth offering: each plans differently from the others.
+    /// The presets worth offering: "uses" only when it copies more than "only".
     pub presets: Vec<BranchPreset>,
     /// Each node, as the Branch would have it.
     pub nodes: Vec<PlannedNode>,
@@ -1112,15 +1112,17 @@ pub(crate) fn branch_plan(
             .collect()
     };
     let owned = own(&planned);
-    let mut presets = Vec::new();
-    let mut seen = Vec::new();
-    for preset in [BranchPreset::Only, BranchPreset::Uses, BranchPreset::All] {
-        let copies = own(&plan(&BranchPicks::Preset { preset })?);
-        if !seen.contains(&copies) {
-            seen.push(copies);
-            presets.push(preset);
-        }
-    }
+    let only = own(&plan(&BranchPicks::Preset {
+        preset: BranchPreset::Only,
+    })?);
+    let uses = own(&plan(&BranchPicks::Preset {
+        preset: BranchPreset::Uses,
+    })?);
+    // "Plus what it uses" only when it adds something to "Only what changes".
+    let presets = match uses == only {
+        true => vec![BranchPreset::Only, BranchPreset::All],
+        false => vec![BranchPreset::Only, BranchPreset::Uses, BranchPreset::All],
+    };
     let role = |role: &BranchNodeRole| match role {
         BranchNodeRole::Own { .. } => PlannedRole::Own,
         BranchNodeRole::Live => PlannedRole::Live,

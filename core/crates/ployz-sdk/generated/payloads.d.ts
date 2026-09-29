@@ -180,7 +180,7 @@ from: EnvironmentSummary,
  */
 preset: BranchPreset | null,
 /**
- * The presets worth offering: each plans differently from the others.
+ * The presets worth offering: "uses" only when it copies more than "only".
  */
 presets: Array<BranchPreset>,
 /**
