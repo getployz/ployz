@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, parse_environment_intent,
+    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
+    parse_environment_intent,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -160,6 +161,85 @@ pub(crate) fn no_service(
             "valid_children": names,
         }),
     )
+}
+
+/// One node of an Environment, as its own rows store it beside the Environment.
+#[derive(Clone, Copy)]
+pub(crate) enum Node<'a> {
+    Service(&'a SavedServiceIntent),
+    Volume(&'a SavedVolumeIntent),
+}
+
+impl Node<'_> {
+    pub(crate) const fn node_type(self) -> &'static str {
+        match self {
+            Self::Service(_) => "service",
+            Self::Volume(_) => "volume",
+        }
+    }
+
+    pub(crate) fn document(self) -> String {
+        match self {
+            Self::Service(service) => serde_json::to_string(service),
+            Self::Volume(volume) => serde_json::to_string(volume),
+        }
+        .expect("a node is JSON")
+    }
+}
+
+/// Capture `node`'s Node Introduction in `environment`: it never changes after.
+pub(crate) fn introduce(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    node: Node<'_>,
+) -> Result<(), RpcError> {
+    let id = match node {
+        Node::Service(service) => service.id.as_str(),
+        Node::Volume(volume) => volume.resource_id.as_str(),
+    };
+    tx.execute(
+        "INSERT INTO config_node_introduction \
+         (environment_id, node_id, organization_id, node_type, node) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        &[
+            environment.as_str().into(),
+            id.into(),
+            who.organization.as_str().into(),
+            node.node_type().into(),
+            node.document().as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Rows of `(node, node_type)`, as one document shaped like `like`: Node
+/// Introductions, or Applied State (`what`, when one is unreadable).
+pub(crate) fn nodes(
+    rows: &[crate::storage::Row],
+    like: &SavedEnvironmentIntent,
+    what: &str,
+) -> Result<SavedEnvironmentIntent, RpcError> {
+    let mut intent = crate::review::empty(like);
+    let corrupt = |_| error::corrupt(what);
+    for row in rows {
+        let node_type: EnvironmentNodeType =
+            serde_json::from_value(json!(row.text(1)?)).map_err(corrupt)?;
+        let node = row.text(0)?;
+        match node_type {
+            EnvironmentNodeType::Service => {
+                intent
+                    .services
+                    .push(serde_json::from_str(node).map_err(corrupt)?);
+            }
+            EnvironmentNodeType::Volume => {
+                intent
+                    .volumes
+                    .push(serde_json::from_str(node).map_err(corrupt)?);
+            }
+        }
+    }
+    Ok(intent)
 }
 
 pub(crate) fn project(

@@ -338,20 +338,7 @@ pub(crate) fn introductions(
         "SELECT node, node_type FROM config_node_introduction WHERE environment_id = ?1",
         &[environment.summary.id.as_str().into()],
     )?;
-    let mut intent = empty(&environment.working);
-    for row in rows {
-        let corrupt = |_| error::corrupt("Node Introduction");
-        if row.text(1)? == "volume" {
-            intent
-                .volumes
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        } else {
-            intent
-                .services
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        }
-    }
-    Ok(intent)
+    crate::scope::nodes(&rows, &environment.working, "Node Introduction")
 }
 
 pub(crate) fn latest_saved(

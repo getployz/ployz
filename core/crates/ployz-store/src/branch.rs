@@ -1668,7 +1668,7 @@ pub(crate) fn land(
                 policy::store(tx, who, &id, &service.id, policy)?;
             }
         }
-        introduce(tx, who, &id, "service", &service.id, service)?;
+        scope::introduce(tx, who, &id, scope::Node::Service(service))?;
     }
     for pick in picks {
         let Some(lineage) = pick.key.strip_suffix(":source.credentials") else {
@@ -1687,38 +1687,12 @@ pub(crate) fn land(
             .any(|old| old.resource_id == volume.resource_id)
         {
             staged.push(format!("volumes.{}", volume.name));
-            introduce(tx, who, &id, "volume", &volume.resource_id, volume)?;
+            scope::introduce(tx, who, &id, scope::Node::Volume(volume))?;
         }
     }
     branch.live = live_names(tx, &id, &branch.working)?;
     staged.sort();
     Ok(staged)
-}
-
-fn introduce(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    environment: &EnvironmentId,
-    node_type: &str,
-    id: &str,
-    node: &impl Serialize,
-) -> Result<(), RpcError> {
-    tx.execute(
-        "INSERT INTO config_node_introduction \
-         (environment_id, node_id, organization_id, node_type, node) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        &[
-            environment.as_str().into(),
-            id.into(),
-            who.organization.as_str().into(),
-            node_type.into(),
-            serde_json::to_string(node)
-                .expect("a node is JSON")
-                .as_str()
-                .into(),
-        ],
-    )?;
-    Ok(())
 }
 
 /// Update and Own Copy rewrite what a Branch runs, so they wait until it runs its
@@ -1773,7 +1747,7 @@ fn failed_services(
         .filter(|service| {
             view.nodes
                 .iter()
-                .any(|node| node.id == service.id && !node.outcome.advances())
+                .any(|node| node.node.id() == service.id && !node.outcome.advances())
                 && !applied.services.contains(service)
         })
         .collect())

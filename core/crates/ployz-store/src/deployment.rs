@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, RuntimeOutcomeProjection,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceSource,
-    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
-    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
+    CompiledNodeConfig, EncryptedSecretValue, RuntimeOutcomeProjection, SavedEnvironmentIntent,
+    SavedServiceIntent, SavedVolumeIntent, ServiceSource, canonicalize_environment_intent,
+    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
+    project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
@@ -26,6 +26,7 @@ use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::error;
 use crate::id::{
     DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision, RunnerId,
+    ServiceId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
@@ -202,13 +203,8 @@ pub struct DeploymentView {
 /// What a Deployment did to one of its target nodes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NodeOutcome {
-    /// Whether it is a Service or a Volume.
-    #[serde(rename = "type")]
-    pub node_type: EnvironmentNodeType,
-    /// The node's entity ID.
-    pub id: String,
-    /// The node's name when admitted.
-    pub name: String,
+    #[serde(flatten)]
+    pub node: DeployedNode,
     pub outcome: NodeStatus,
 }
 
@@ -311,41 +307,91 @@ pub struct Claimed {
 
 /// One node a Deployment targets, as frozen at admission.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct TargetNode {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    /// The runtime Service a Service node lowers to, which its Node Outcome is
-    /// confirmed by; none for a Volume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) service: Option<ServiceName>,
-    /// For a Volume the Deployment removes: the Docker Volumes it deletes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) deletes: Option<Vec<DockerVolumeId>>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum TargetNode {
+    Service {
+        id: ServiceId,
+        name: ServiceName,
+        /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
+        runtime: ServiceName,
+    },
+    Volume {
+        id: VolumeId,
+        name: VolumeName,
+        /// For a Volume the Deployment removes: the Docker Volumes it deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deletes: Option<Vec<DockerVolumeId>>,
+    },
 }
 
 impl TargetNode {
-    fn service(service: &SavedServiceIntent) -> Self {
-        Self {
-            id: service.id.clone(),
-            name: service.slug.clone(),
-            service: Some(service.config.private_dns.clone()),
-            deletes: None,
-        }
+    fn service(service: &SavedServiceIntent) -> Result<Self, RpcError> {
+        Ok(Self::Service {
+            id: parse_stored(&service.id)?,
+            name: ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+            runtime: service.config.private_dns.clone(),
+        })
     }
 
-    fn volume(volume: &SavedVolumeIntent, deletes: Option<Vec<DockerVolumeId>>) -> Self {
-        Self {
-            id: volume.resource_id.clone(),
-            name: volume.name.clone(),
-            service: None,
+    fn volume(
+        volume: &SavedVolumeIntent,
+        deletes: Option<Vec<DockerVolumeId>>,
+    ) -> Result<Self, RpcError> {
+        Ok(Self::Volume {
+            id: parse_stored(&volume.resource_id)?,
+            name: parse_stored(&volume.name)?,
             deletes,
+        })
+    }
+
+    /// Its node ID.
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Self::Service { id, .. } => id.as_str(),
+            Self::Volume { id, .. } => id.as_str(),
         }
     }
 
-    const fn node_type(&self) -> EnvironmentNodeType {
-        match self.service {
-            Some(_) => EnvironmentNodeType::Service,
-            None => EnvironmentNodeType::Volume,
+    /// The node as views name it.
+    fn shown(&self) -> DeployedNode {
+        match self {
+            Self::Service { id, name, .. } => DeployedNode::Service {
+                id: id.clone(),
+                name: name.clone(),
+            },
+            Self::Volume { id, name, .. } => DeployedNode::Volume {
+                id: id.clone(),
+                name: name.clone(),
+            },
+        }
+    }
+}
+
+/// A node a Deployment targets, by its identity and its name when admitted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DeployedNode {
+    Service { id: ServiceId, name: ServiceName },
+    Volume { id: VolumeId, name: VolumeName },
+}
+
+impl DeployedNode {
+    /// Its name when admitted.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Service { name, .. } => name.as_str(),
+            Self::Volume { name, .. } => name.as_str(),
+        }
+    }
+
+    /// Its node ID.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Service { id, .. } => id.as_str(),
+            Self::Volume { id, .. } => id.as_str(),
         }
     }
 }
@@ -363,7 +409,7 @@ pub(crate) struct Frozen {
 impl Frozen {
     /// Whether this Deployment targets node `id`.
     pub(crate) fn targets(&self, id: &str) -> bool {
-        self.nodes.iter().any(|node| node.id == id)
+        self.nodes.iter().any(|node| node.id() == id)
     }
 }
 
@@ -425,7 +471,7 @@ pub(crate) fn freeze(
                     .filter(|old| !saved.services.iter().any(|new| new.id == old.id)),
             )
             .map(TargetNode::service)
-            .collect()
+            .collect::<Result<_, _>>()?
     } else {
         services
             .iter()
@@ -435,6 +481,7 @@ pub(crate) fn freeze(
                     .iter()
                     .find(|service| service.slug == name.as_str())
                     .map(TargetNode::service)
+                    .transpose()?
                     .ok_or_else(|| {
                         error::not_found(
                             format!("No Service named {name} to deploy"),
@@ -447,7 +494,7 @@ pub(crate) fn freeze(
     // A full Deploy applies every Volume; a narrowed one those its Services mount.
     let mounted = |volume: &SavedVolumeIntent| {
         saved.services.iter().any(|service| {
-            nodes.iter().any(|node| node.id == service.id)
+            nodes.iter().any(|node| node.id() == service.id)
                 && service
                     .volume_attachments
                     .iter()
@@ -459,7 +506,7 @@ pub(crate) fn freeze(
         .iter()
         .filter(|volume| services.is_empty() || mounted(volume))
         .map(|volume| TargetNode::volume(volume, None))
-        .collect();
+        .collect::<Result<_, _>>()?;
     nodes.extend(kept);
     if services.is_empty() {
         for loss in losses {
@@ -468,7 +515,7 @@ pub(crate) fn freeze(
                 .iter()
                 .find(|volume| volume.resource_id == loss.volume.id.as_str())
                 .ok_or_else(|| error::corrupt("Applied State"))?;
-            nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone())));
+            nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone()))?);
         }
     }
     // Live values and Setup Commands resolve at claim; checking without them is the same.
@@ -948,7 +995,10 @@ pub(crate) fn claim(
     let deletes = stored
         .nodes
         .iter()
-        .filter_map(|node| node.deletes.clone())
+        .filter_map(|node| match node {
+            TargetNode::Volume { deletes, .. } => deletes.clone(),
+            TargetNode::Service { .. } => None,
+        })
         .flatten()
         .collect();
     let organization = build::organization(tx, id)?;
@@ -1235,7 +1285,7 @@ fn node_outcomes(
             .services
             .iter()
             .filter(|service| {
-                nodes.iter().any(|node| node.id == service.id)
+                nodes.iter().any(|node| node.id() == service.id)
                     && service
                         .volume_attachments
                         .iter()
@@ -1256,20 +1306,30 @@ fn node_outcomes(
     nodes
         .iter()
         .map(|node| {
-            let status = match (&node.service, &node.deletes) {
-                (Some(name), _) => {
-                    service(name, saved.services.iter().any(|kept| kept.id == node.id))
-                }
-                (None, Some(_)) if !success => NodeStatus::NotAttempted,
-                (None, Some(deletes)) if deletes.iter().all(gone) => NodeStatus::Removed,
-                (None, Some(_)) => NodeStatus::Failed,
-                (None, None) => saved
+            let status = match node {
+                TargetNode::Service { id, runtime, .. } => service(
+                    runtime,
+                    saved.services.iter().any(|kept| kept.id == id.as_str()),
+                ),
+                TargetNode::Volume {
+                    deletes: Some(_), ..
+                } if !success => NodeStatus::NotAttempted,
+                TargetNode::Volume {
+                    deletes: Some(deletes),
+                    ..
+                } if deletes.iter().all(gone) => NodeStatus::Removed,
+                TargetNode::Volume {
+                    deletes: Some(_), ..
+                } => NodeStatus::Failed,
+                TargetNode::Volume {
+                    id, deletes: None, ..
+                } => saved
                     .volumes
                     .iter()
-                    .find(|volume| volume.resource_id == node.id)
+                    .find(|volume| volume.resource_id == id.as_str())
                     .map_or(NodeStatus::Unchanged, kept_volume),
             };
-            (node.id.clone(), status)
+            (node.id().to_owned(), status)
         })
         .collect()
 }
@@ -1297,30 +1357,24 @@ fn finish(
             stored
                 .run
                 .nodes
-                .get(&node.id)
+                .get(node.id())
                 .is_some_and(|status| status.advances())
         })
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
         for node in advanced {
-            let (applied, node_type) = match node.service {
-                Some(_) => (
-                    saved
-                        .services
-                        .iter()
-                        .find(|service| service.id == node.id)
-                        .map(json_text),
-                    "service",
-                ),
-                None => (
-                    saved
-                        .volumes
-                        .iter()
-                        .find(|volume| volume.resource_id == node.id)
-                        .map(json_text),
-                    "volume",
-                ),
+            let applied = match node {
+                TargetNode::Service { .. } => saved
+                    .services
+                    .iter()
+                    .find(|service| service.id == node.id())
+                    .map(scope::Node::Service),
+                TargetNode::Volume { .. } => saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == node.id())
+                    .map(scope::Node::Volume),
             };
             match applied {
                 Some(applied) => tx.execute(
@@ -1332,14 +1386,14 @@ fn finish(
                      DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node",
                     &[
                         stored.summary.id.as_str().into(),
-                        node.id.as_str().into(),
-                        applied.as_str().into(),
-                        node_type.into(),
+                        node.id().into(),
+                        applied.document().as_str().into(),
+                        applied.node_type().into(),
                     ],
                 )?,
                 None => tx.execute(
                     "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[stored.environment.as_str().into(), node.id.as_str().into()],
+                    &[stored.environment.as_str().into(), node.id().into()],
                 )?,
             };
         }
@@ -1380,23 +1434,11 @@ pub(crate) fn applied_state(
     environment: &EnvironmentId,
     like: &SavedEnvironmentIntent,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let mut applied = review::empty(like);
-    for row in tx.query(
+    let rows = tx.query(
         "SELECT node, node_type FROM config_applied WHERE environment_id = ?1 ORDER BY node_id",
         &[environment.as_str().into()],
-    )? {
-        let corrupt = |_| error::corrupt("Applied State");
-        if row.text(1)? == "volume" {
-            applied
-                .volumes
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        } else {
-            applied
-                .services
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        }
-    }
-    Ok(applied)
+    )?;
+    scope::nodes(&rows, like, "Applied State")
 }
 
 /// What reviews compare Working State against: Applied State, overlaid with the
@@ -1436,24 +1478,30 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("Deployment"))?;
     let mut intent = applied.clone();
     for node in nodes {
-        intent.services.retain(|service| service.id != node.id);
+        intent.services.retain(|service| service.id != node.id());
         intent
             .volumes
-            .retain(|volume| volume.resource_id != node.id);
-        intent.services.extend(
-            saved
-                .services
-                .iter()
-                .filter(|service| service.id == node.id)
-                .cloned(),
-        );
-        intent.volumes.extend(
-            saved
-                .volumes
-                .iter()
-                .filter(|volume| node.deletes.is_none() && volume.resource_id == node.id)
-                .cloned(),
-        );
+            .retain(|volume| volume.resource_id != node.id());
+        match node {
+            TargetNode::Service { .. } => intent.services.extend(
+                saved
+                    .services
+                    .iter()
+                    .filter(|service| service.id == node.id())
+                    .cloned(),
+            ),
+            // A Volume the Deployment removes isn't in Head.
+            TargetNode::Volume {
+                deletes: Some(_), ..
+            } => {}
+            TargetNode::Volume { deletes: None, .. } => intent.volumes.extend(
+                saved
+                    .volumes
+                    .iter()
+                    .filter(|volume| volume.resource_id == node.id())
+                    .cloned(),
+            ),
+        }
     }
     Ok(Head {
         token: format!("{}.{ended}", row.int(0)?),
@@ -1545,10 +1593,8 @@ pub(crate) fn view(
         .nodes
         .iter()
         .map(|node| NodeOutcome {
-            node_type: node.node_type(),
-            id: node.id.clone(),
-            name: node.name.clone(),
-            outcome: match (stored.run.nodes.get(&node.id), stored.summary.status) {
+            node: node.shown(),
+            outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
                 (

@@ -157,7 +157,7 @@ fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (node.name, node.outcome))
+        .map(|node| (node.node.name().to_owned(), node.outcome))
         .collect()
 }
 

@@ -386,7 +386,7 @@ fn follow(
             let nodes: Vec<String> = view
                 .nodes
                 .iter()
-                .map(|node| format!("{} {}", node.name, json_word(&node.outcome)))
+                .map(|node| format!("{} {}", node.node.name(), json_word(&node.outcome)))
                 .collect();
             eprintln!(
                 "{}: {}",
@@ -910,7 +910,7 @@ pub(super) fn say_view(view: &DeploymentView) {
         say!("  {}", provenance(upload));
     }
     for node in &view.nodes {
-        say!("  {}: {:?}", node.name, node.outcome);
+        say!("  {}: {:?}", node.node.name(), node.outcome);
     }
     for build in &view.builds {
         let commit = build

@@ -108,20 +108,7 @@ pub(crate) fn create_volume(
             }
         }
         scope::save_working(tx, &mut environment)?;
-        tx.execute(
-            "INSERT INTO config_node_introduction \
-             (environment_id, node_id, organization_id, node_type, node) \
-             VALUES (?1, ?2, ?3, 'volume', ?4)",
-            &[
-                environment.summary.id.as_str().into(),
-                create.id.as_str().into(),
-                who.organization.as_str().into(),
-                serde_json::to_string(&node)
-                    .expect("a Volume node is JSON")
-                    .as_str()
-                    .into(),
-            ],
-        )?;
+        scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
         Ok(VolumeStaged {
             volume: VolumeSummary {
                 id: create.id.clone(),
