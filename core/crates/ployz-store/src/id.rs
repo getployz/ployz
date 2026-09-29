@@ -92,6 +92,14 @@ store_string!(
     ServiceId, "a Service ID (a UUID)", is_uuid
 );
 store_string!(
+    /// A Deployment's durable identity, minted by the caller that admits it.
+    DeploymentId, "a Deployment ID (a UUID)", is_uuid
+);
+store_string!(
+    /// The durable identity of the runner that claims a Deployment and records what it did.
+    RunnerId, "a runner ID of 1-64 letters, digits, - or _", is_id
+);
+store_string!(
     /// A Project's name, unique in its Organization: a lowercase DNS label.
     ProjectName, "a Project name: lowercase letters, digits and -", is_name
 );

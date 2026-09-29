@@ -3,6 +3,7 @@
 //! [`Command`], each in one transaction. Storage is its only I/O.
 
 mod command;
+mod deployment;
 mod error;
 mod id;
 mod query;
@@ -14,6 +15,10 @@ mod storage;
 use ployz_core::RpcError;
 
 pub use command::*;
+pub use deployment::{
+    Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
+    RunEvidence,
+};
 pub use id::*;
 pub use query::*;
 pub use review::{DiffView, NodeChange};
@@ -59,5 +64,35 @@ impl ConfigStore {
     /// for what the command asks, or a storage error.
     pub fn write(&self, who: &Actor, command: Command) -> Result<Written, RpcError> {
         self.storage.write(|tx| command::run(tx, who, command))
+    }
+
+    /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent.
+    /// In-process only: never exposed over HTTPS.
+    ///
+    /// # Errors
+    /// Returns `not_found` for an unknown Deployment, `conflict` when another runner
+    /// owns it, a newer one replaced it, or it ended, or a storage error.
+    pub fn claim(&self, deployment: &DeploymentId, runner: &RunnerId) -> Result<Claimed, RpcError> {
+        self.storage
+            .write(|tx| deployment::claim(tx, deployment, runner))
+    }
+
+    /// Record what `runner` did with the Deployment it claimed; confirmed Node Outcomes
+    /// advance Applied State. Recording the same evidence twice changes nothing.
+    /// In-process only: never exposed over HTTPS.
+    ///
+    /// # Errors
+    /// Returns `conflict` when another runner owns the Deployment or it already
+    /// recorded different evidence, `invalid_argument` for evidence that does not
+    /// match it, or a storage error.
+    pub fn record(
+        &self,
+        deployment: &DeploymentId,
+        runner: &RunnerId,
+        evidence: RunEvidence,
+    ) -> Result<Written, RpcError> {
+        self.storage
+            .write(|tx| deployment::record(tx, deployment, runner, evidence))
+            .map(Written::Deployment)
     }
 }

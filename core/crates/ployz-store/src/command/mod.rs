@@ -1,6 +1,7 @@
 //! `write`'s commands. Each family lives in its own module and adds one
 //! [`Command`] variant, one [`Written`] variant, and one arm in [`run`].
 
+mod admit;
 mod edit;
 mod project;
 mod review;
@@ -10,6 +11,7 @@ use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+pub use admit::Admit;
 pub use edit::{Change, Edit, Edited};
 pub use project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
@@ -31,6 +33,7 @@ pub enum Command {
     Edit(Edit),
     Publish(Publish),
     Discard(Discard),
+    Admit(Admit),
 }
 
 /// What a command did.
@@ -43,6 +46,8 @@ pub enum Written {
     Edited(Edited),
     Published(Published),
     Discarded(Discarded),
+    /// A Deployment admitted, or what its runner recorded.
+    Deployment(crate::DeploymentSummary),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: Command) -> Result<Written, RpcError> {
@@ -61,6 +66,9 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: Command) -> Result<Writ
         Command::Edit(edit) => edit::run(tx, who, edit).map(Written::Edited),
         Command::Publish(publish) => review::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => review::discard(tx, who, discard).map(Written::Discarded),
+        Command::Admit(request) => replayable(tx, who, request.id.as_str(), &command, |tx| {
+            admit::admit(tx, who, request).map(Written::Deployment)
+        }),
     }
 }
 
