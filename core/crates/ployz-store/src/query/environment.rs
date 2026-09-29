@@ -77,7 +77,7 @@ pub(crate) fn environment(
     let values = path
         .filter(|path| path.target().is_none())
         .and_then(|_| services.first())
-        .map(|service| values(service, &environment.working));
+        .map(|service| values(service, &environment));
     let whole = path.is_none() && !query.all;
     let mut settings = Vec::new();
     for service in services {
@@ -112,7 +112,7 @@ pub(crate) fn environment(
                 VariableKey::parse(&variable.key).map_err(|_| crate::error::corrupt("variable"))?;
             row(
                 Target::Variable(key.clone()),
-                variables::shown(variable, &environment.working),
+                variables::shown(variable, &environment.names()),
                 Value::Null,
                 Apply::Staged,
             );
@@ -147,15 +147,16 @@ pub(crate) fn environment(
 /// without a value are left out.
 pub(crate) fn values(
     service: &SavedServiceIntent,
-    intent: &SavedEnvironmentIntent,
+    environment: &scope::Environment,
 ) -> Map<String, Value> {
+    let intent = &environment.working;
     let mut values: Map<String, Value> = ServiceSetting::ALL
         .into_iter()
         .filter(|setting| setting.applies(&service.config))
         .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
         .filter(|(_, value)| !value.is_null())
         .collect();
-    let env = variables::patch_values(service, intent);
+    let env = variables::patch_values(service, &environment.names());
     if !env.is_empty() {
         values.insert("env".to_owned(), Value::Object(env));
     }

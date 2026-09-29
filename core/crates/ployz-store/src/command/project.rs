@@ -155,7 +155,7 @@ fn insert_new_environment(
 }
 
 /// Insert an empty Environment.
-fn insert_environment(
+pub(crate) fn insert_environment(
     tx: &mut dyn Tx,
     who: &Actor,
     project: &Project,
