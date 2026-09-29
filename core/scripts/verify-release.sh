@@ -91,7 +91,9 @@ smoke_cli() {
     export PLOYZ_STORE="sqlite:$home/store.db"
     ployz project new smoke >/dev/null || fail "$archive cannot create a Project in the hidden SQLite Store"
     ployz service add web --image nginx:1 --project smoke >/dev/null || fail "$archive cannot add a Service"
-    ployz get web.replicas --project smoke | grep -Fq '"value": 1' || fail "$archive cannot read a Setting back"
+    # Capture first: `grep -q` exits on the first match and, under pipefail, the writer's SIGPIPE fails the pipe.
+    setting=$(ployz get web.replicas --project smoke) || fail "$archive cannot read a Setting back"
+    grep -Fq '"value": 1' <<<"$setting" || fail "$archive read back the wrong Setting: $setting"
     unset PLOYZ_STORE
     set +e
     cloud=$(PLOYZ_TOKEN=ployz_release_smoke ployz project ls)
@@ -147,7 +149,7 @@ case "${1:-}" in
             case "$archive" in
                 ployzd_*) binary=ployzd ;;
             esac
-            file "$directory/$binary" | grep -Fq 'statically linked' || fail "$archive is dynamically linked"
+            grep -Fq 'statically linked' <<<"$(file "$directory/$binary")" || fail "$archive is dynamically linked"
             rm -rf "$directory"
         done
         ;;
