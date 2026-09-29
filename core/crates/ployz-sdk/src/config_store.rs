@@ -197,7 +197,7 @@ impl ConfigStore {
         event: serde_json::Value,
     ) -> Result<serde_json::Value> {
         let who = actor(organization)?;
-        let event: ployz_store::SystemEvent = serde_json::from_value(event)
+        let event: ployz_store::SystemEvent = serde_json::from_value(whole(event))
             .map_err(|_| invalid_argument("Expected a system event"))?;
         let store = Arc::clone(&self.store);
         self.run(move || store.system(&who.organization, &event))
@@ -285,4 +285,33 @@ fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> 
         .transpose()
         .map_err(|_| invalid_argument("Expected Config Store evidence"))?
         .unwrap_or_default())
+}
+
+/// `value` with whole numbers as integers: JavaScript hands GitHub's IDs past 2^31
+/// over as floats, which integer fields refuse.
+fn whole(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Number(number) => match number.as_f64() {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "only whole, non-negative values below 2^53 are converted"
+            )]
+            Some(float)
+                if float.fract() == 0.0 && (0.0..9_007_199_254_740_992.0).contains(&float) =>
+            {
+                Value::from(float as u64)
+            }
+            Some(_) | None => Value::Number(number),
+        },
+        Value::Array(items) => Value::Array(items.into_iter().map(whole).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, whole(value)))
+                .collect(),
+        ),
+        Value::Null | Value::Bool(_) | Value::String(_) => value,
+    }
 }

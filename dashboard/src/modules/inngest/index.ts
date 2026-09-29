@@ -34,6 +34,7 @@ import { createPostPrCheck } from "#/modules/pr-environments/pr-check.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/config-store/store-github.inngest";
 import {
   createCancelVolumeRemove,
   createProcessVolumeRemove,
@@ -66,5 +67,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleClusterDomainSync(inngest),
     createPostPrCheck(inngest),
     createRunStoreDeployment(inngest),
+    createStoreGithubPush(inngest),
+    createStoreGithubCheckSuite(inngest),
   ];
 }

@@ -329,6 +329,9 @@ async function openConfigStore(url, sealingSecret) {
     runDeployment: (organization, deployment, runner, connections, checkouts, sourceFailure) =>
       withRpcError(store.runDeployment(organization, deployment, runner, connections, checkouts, sourceFailure)),
     abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
+    system: (organization, event) => withRpcError(store.system(organization, event)),
+    branchHead: (organization, repositoryId, branch) =>
+      withRpcError(store.branchHead(organization, repositoryId, branch)),
   };
 }
 

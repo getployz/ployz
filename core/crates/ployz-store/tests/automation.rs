@@ -108,14 +108,14 @@ fn push(base: Option<&str>, head: Option<&str>, changed: Option<&[&str]>) -> Sys
     })
 }
 
-fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, updated: u64) -> SystemEvent {
+fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8) -> SystemEvent {
     SystemEvent::CheckSuite(CheckSuite {
         repository_id: 11,
         suite: id,
         head: head.into(),
         status: status.into(),
         conclusion: conclusion.map(Into::into),
-        updated,
+        updated: format!("2026-09-29T10:{minute:02}:00Z"),
     })
 }
 
