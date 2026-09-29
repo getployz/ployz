@@ -2,9 +2,12 @@ import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigCommand, ConfigQuery, ConfigStore } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Effect } from "effect";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
+import { Database, type DatabaseService } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
@@ -13,13 +16,36 @@ const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk
   "openConfigStore" | "RpcError"
 >;
 
+/**
+ * The Store creates its tables when it first opens, after Cloud's migrations have run, so Cloud attaches its
+ * change log to them then. The lock serializes processes opening the Store at once.
+ */
+const attachChangeLog = Effect.gen(function* () {
+  const database = yield* Database;
+  yield* database.transaction(Effect.gen(function* () {
+    const { drizzle } = yield* Database;
+    yield* drizzle.execute(sql`select pg_advisory_xact_lock(1256)`);
+    for (const [table, { key }] of Object.entries(storeChangeSources)) {
+      const keys = sql.join(key.map((column) => sql`${column}::text`), sql`, `);
+      yield* drizzle.execute(sql`
+        select organization_change_attach(${table}::regclass, 'organization_id', variadic array[${keys}])
+        where not exists (select from pg_trigger where tgrelid = ${table}::regclass and tgname = 'organization_change_insert')
+      `);
+    }
+  }));
+});
+
 /** One Store handle per database for the process; a failed open is retried by the next call. */
 const opened = new Map<string, Promise<ConfigStore>>();
 
-function storeAt(url: string) {
+/** The Config Store in `database`, whose URL is `url`, with Cloud's change log attached to its tables. */
+export function storeAt(url: string, database: DatabaseService) {
   let store = opened.get(url);
   if (store === undefined) {
-    store = openConfigStore(url);
+    store = openConfigStore(url).then(async (handle) => {
+      await Effect.runPromise(attachChangeLog.pipe(Effect.provideService(Database, database)));
+      return handle;
+    });
     opened.set(url, store);
     store.catch(() => opened.delete(url));
   }
@@ -62,9 +88,9 @@ function refusal(error: { readonly code: string; readonly message: string; reado
  */
 export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
   const config = yield* AppConfig;
-  // TODO(#1275): dark until the Config Store cutover, and only against its own database.
-  const url = config.configStore.url;
-  if (config.nodeEnv === "production" || url === undefined) return yield* new NotFound({ message: "Not found." });
+  const database = yield* Database;
+  // TODO(#1275): dark in production until the Config Store cutover.
+  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
   if (request.method !== "POST" || (operation !== "read" && operation !== "write")) {
     return yield* new NotFound({ message: "Not found." });
@@ -76,7 +102,7 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
   });
   return yield* Effect.tryPromise({
     try: async () => {
-      const store = await storeAt(url.href);
+      const store = await storeAt(config.database.url.href, database);
       // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
       return operation === "read"
         ? await store.read(caller.organization.id, input as ConfigQuery)

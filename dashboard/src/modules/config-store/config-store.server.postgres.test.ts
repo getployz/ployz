@@ -1,6 +1,7 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
+import { sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
@@ -8,18 +9,16 @@ import { handleConfigRequest } from "#/modules/config-store/config-store.server"
 import { InngestClient } from "#/modules/inngest/client";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
-import { DatabaseLive } from "#/server/database.server";
+import { Database, DatabaseLive } from "#/server/database.server";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
 
-/** Cloud with the Config Store on its own database, as it runs while dark. */
-const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string; readonly storeless?: true } = {}) {
+/** Cloud with the Config Store in its database. */
+const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string } = {}) {
   const cloud = yield* postgresTestDatabase;
-  const store = yield* postgresTestDatabase;
-  const base = { ...testConfigEnvironment(), NODE_ENV: overrides.NODE_ENV ?? "test", DATABASE_URL: cloud.url.href };
-  const env = overrides.storeless === true ? base : { ...base, CONFIG_STORE_URL: store.url.href };
+  const env = { ...testConfigEnvironment(), NODE_ENV: overrides.NODE_ENV ?? "test", DATABASE_URL: cloud.url.href };
   const provider = ConfigProvider.fromEnv({ env });
   const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
   const services = Layer.mergeAll(
@@ -134,27 +133,56 @@ it.live(
 );
 
 it.live(
-  "the Config Store stays dark in production and without its own database",
+  "Store writes reach Cloud's change log once committed, and a refused write logs nothing",
   () =>
     Effect.gen(function* () {
-      for (const overrides of [{ NODE_ENV: "production" }, { storeless: true as const }]) {
-        const layer = yield* cloudLayer(overrides);
-        yield* Effect.gen(function* () {
-          // Not found before any credential is looked at.
-          assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
-        }).pipe(Effect.provide(layer));
-      }
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const { drizzle } = yield* Database;
+        let seen = 0;
+        /** The Store changes logged since the last call, as `table: keys`; each statement logs once. */
+        const logged = Effect.fn(function* () {
+          const rows = yield* drizzle.execute<{ seq: string; entry: string }>(sql`
+            select seq::text, source_table || ': ' || array_to_string(changed_ids, ',') as entry
+            from organization_change
+            where source_table like 'config_%' and seq > ${seen}
+              and organization_id = (select organization_id::uuid from config_project limit 1)
+            order by seq
+          `, "objects");
+          seen = Math.max(seen, ...rows.map((row) => Number(row.seq)));
+          return [...new Set(rows.map((row) => row.entry))];
+        });
+
+        assert.strictEqual((yield* request("write", alice, shop)).status, 200);
+        assert.deepStrictEqual(yield* logged(), [`config_project: ${PROJECT}`, `config_environment: ${ENVIRONMENT}`]);
+        assert.strictEqual((yield* request("write", alice, web)).status, 200);
+        assert.sameMembers(yield* logged(), [`config_environment: ${ENVIRONMENT}`, `config_node_introduction: ${ENVIRONMENT}`]);
+
+        // The edit locks and rewrites the Environment before refusing the value, and rolls it all back.
+        const refused = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: "many" }],
+        });
+        assert.strictEqual(refused.json.error?.code, "invalid_argument");
+        assert.deepStrictEqual(yield* logged(), []);
+
+        assert.strictEqual((yield* request("write", alice, { command: "publish", environment: here, version: null })).status, 200);
+        // Every write locks its Environment's row, which logs the Environment too.
+        assert.sameMembers(yield* logged(), [`config_environment: ${ENVIRONMENT}`, `config_saved: ${ENVIRONMENT}`]);
+      }).pipe(Effect.provide(layer));
     }),
   60_000,
 );
 
-it.effect("the Config Store never shares the dashboard's database", () =>
-  Effect.gen(function* () {
-    const url = "postgres://postgres:postgres@127.0.0.1:5432/ployz";
-    const provider = ConfigProvider.fromEnv({
-      env: { ...testConfigEnvironment(), DATABASE_URL: url, CONFIG_STORE_URL: url },
-    });
-    const exit = yield* Effect.exit(AppConfig.make.pipe(Effect.provide(ConfigProvider.layer(provider))));
-    assert.isTrue(Exit.isFailure(exit));
-  }),
+it.live(
+  "the Config Store stays dark in production",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer({ NODE_ENV: "production" });
+      yield* Effect.gen(function* () {
+        // Not found before any credential is looked at.
+        assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
 );
