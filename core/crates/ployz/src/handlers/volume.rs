@@ -145,11 +145,13 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     .machines,
                 &selectors,
             )?;
-            let result = client.inspect_volumes(&machines, &name).await;
+            let mut result = client.inspect_volumes(&machines, &name).await;
             // `not_found` only means the volume is not on that Machine.
-            let mut gaps = Gaps::of(&result);
-            gaps.failures
+            result
+                .failures
                 .retain(|failure| failure.error.code != RpcErrorCode::NotFound);
+            let gaps = Gaps::of(&result);
+            let unchecked = crate::failure::partial_failure_details(&result);
             let names = machines
                 .iter()
                 .map(|machine| (machine.machine.id, machine.machine.name.clone()))
@@ -165,31 +167,45 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     volume: success.value,
                 })
                 .collect();
-            match NameMatches::from_matches(volumes) {
-                NameMatches::None if gaps.failures.is_empty() && gaps.omitted.is_empty() => {
-                    Err(Error::not_found(format!(
-                        "Docker Volume {} was not found",
-                        name.as_str().escape_debug()
-                    )))
-                }
-                NameMatches::None => Err(Error::unavailable(format!(
-                    "Docker Volume {} was not found on the Machines that answered; one or more Machines failed: {}",
+            let volume = inspected(volumes, &name, &gaps)?;
+            if volume.is_none() {
+                eprintln!(
+                    "Docker Volume {} was not found on the Machines that answered; not checked: {}",
                     name.as_str().escape_debug(),
-                    gap_details(&gaps)
-                ))),
-                NameMatches::One(volume) => output::show_fanout("volume", &volume, &gaps),
-                volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
-                    "Docker Volume {} is ambiguous; select one Machine: {}",
-                    name.as_str().escape_debug(),
-                    volumes
-                        .iter()
-                        .map(|volume| volume.machine_name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))),
+                    unchecked
+                );
             }
+            output::show_fanout("volume", &volume, &gaps)
         })
     })
+}
+
+/// The one inspected volume, or `None` when it was not found but some Machine never
+/// answered, so its absence is unproven.
+fn inspected(
+    volumes: Vec<MachineVolume>,
+    name: &DockerVolumeName,
+    gaps: &Gaps,
+) -> Result<Option<MachineVolume>, Error> {
+    match NameMatches::from_matches(volumes) {
+        NameMatches::None if gaps.failures.is_empty() && gaps.omitted.is_empty() => {
+            Err(Error::not_found(format!(
+                "Docker Volume {} was not found",
+                name.as_str().escape_debug()
+            )))
+        }
+        NameMatches::None => Ok(None),
+        NameMatches::One(volume) => Ok(Some(volume)),
+        volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
+            "Docker Volume {} is ambiguous; select one Machine: {}",
+            name.as_str().escape_debug(),
+            volumes
+                .iter()
+                .map(|volume| volume.machine_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -515,19 +531,6 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
-fn gap_details(gaps: &Gaps) -> String {
-    gaps.failures
-        .iter()
-        .map(|failure| format!("{}: {}", failure.machine_id, failure.error.message))
-        .chain(
-            gaps.omitted
-                .iter()
-                .map(|machine_id| format!("{machine_id}: no terminal response")),
-        )
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -536,6 +539,19 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn an_unfound_volume_is_not_found_only_when_every_machine_answered() {
+        let name = DockerVolumeName::parse("data").unwrap();
+        let error = inspected(Vec::new(), &name, &Gaps::default()).unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::NotFound);
+
+        let gaps = Gaps {
+            omitted: vec![MachineId::parse("1".repeat(32)).unwrap()],
+            ..Gaps::default()
+        };
+        assert!(inspected(Vec::new(), &name, &gaps).unwrap().is_none());
+    }
 
     #[test]
     fn volume_selection_uses_fanout_for_lists_and_identity_for_create() {

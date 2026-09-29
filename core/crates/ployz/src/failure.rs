@@ -319,9 +319,10 @@ fn provision_code(error: &ProvisionError) -> RpcErrorCode {
         | ProvisionError::RemoteTransport(_)
         | ProvisionError::Connection(_)
         | ProvisionError::StorageChoice(_)
-        | ProvisionError::ZfsWithoutInstaller
-        | ProvisionError::NotRoot => RpcErrorCode::InvalidArgument,
-        ProvisionError::SudoRequired { .. } => RpcErrorCode::Unauthenticated,
+        | ProvisionError::ZfsWithoutInstaller => RpcErrorCode::InvalidArgument,
+        ProvisionError::NotRoot | ProvisionError::SudoRequired { .. } => {
+            RpcErrorCode::Unauthenticated
+        }
         ProvisionError::UnsupportedOs | ProvisionError::UnsupportedArchitecture(_) => {
             RpcErrorCode::Unsupported
         }
@@ -359,7 +360,8 @@ fn push_code(error: &PushError) -> RpcErrorCode {
         PushError::Cluster(error) => connect_code(error),
         PushError::ImageIngest(error) | PushError::PeerPull(error) => error.code.clone(),
         PushError::UnsupportedImageStore => RpcErrorCode::Unsupported,
-        PushError::Cancelled => RpcErrorCode::Internal,
+        // Ctrl-C or the caller stopped delivery: not a fault; it did not finish and can be retried.
+        PushError::Cancelled => RpcErrorCode::Unavailable,
     }
 }
 
@@ -386,6 +388,7 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
             401 | 403 => RpcErrorCode::Unauthenticated,
             404 => RpcErrorCode::NotFound,
             409 => RpcErrorCode::Conflict,
+            408 | 429 => RpcErrorCode::Unavailable,
             400..=499 => RpcErrorCode::InvalidArgument,
             _ => RpcErrorCode::Unavailable,
         },
@@ -710,6 +713,31 @@ mod tests {
         );
         assert_eq!(remove.to_string().matches(cause).count(), 1);
         assert_eq!(terminate(Err(remove)), ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn missing_root_is_unauthenticated() {
+        let failure = Failure::from(ProvisionError::NotRoot);
+        assert_eq!(failure.report().code, RpcErrorCode::Unauthenticated);
+    }
+
+    #[test]
+    fn cloud_http_status_codes_map_to_their_meaning() {
+        for (status, code) in [
+            (429, RpcErrorCode::Unavailable),
+            (408, RpcErrorCode::Unavailable),
+            (404, RpcErrorCode::NotFound),
+            (409, RpcErrorCode::Conflict),
+            (403, RpcErrorCode::Unauthenticated),
+            (422, RpcErrorCode::InvalidArgument),
+            (503, RpcErrorCode::Unavailable),
+        ] {
+            let failure = Failure::from(cloud_enroll::Error::Status {
+                status,
+                body: String::new(),
+            });
+            assert_eq!(failure.report().code, code, "HTTP {status}");
+        }
     }
 
     #[test]

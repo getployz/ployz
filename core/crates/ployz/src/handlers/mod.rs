@@ -60,7 +60,7 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if matches.subcommand().is_none() {
         if matches.get_flag("json") {
-            return Err(Error::usage("a command is required"));
+            return Err(Error::usage("a command is required").with_exit(2));
         }
         command.print_help()?;
         println!();

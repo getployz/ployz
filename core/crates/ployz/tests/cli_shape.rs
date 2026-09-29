@@ -285,7 +285,7 @@ fn json_without_a_command_is_the_version_or_an_error() {
     }
 
     let (code, json, _) = run_json(&["--json"]);
-    assert_eq!(code, Some(1));
+    assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "invalid_argument",
