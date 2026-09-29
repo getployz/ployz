@@ -33,7 +33,7 @@ use crate::removal::VolumeLoss;
 use crate::review::{self, Head};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
-use crate::storage::{Row, Tx};
+use crate::storage::{Row, Tx, name_of};
 use crate::variables;
 
 /// Where a Deployment is in its life.
@@ -63,30 +63,6 @@ impl DeploymentStatus {
     #[must_use]
     pub const fn in_flight(self) -> bool {
         matches!(self, Self::Queued | Self::Running | Self::Cancelling)
-    }
-
-    const ALL: [Self; 8] = [
-        Self::Queued,
-        Self::Superseded,
-        Self::Running,
-        Self::Applied,
-        Self::Failed,
-        Self::Unknown,
-        Self::Cancelling,
-        Self::Cancelled,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Superseded => "superseded",
-            Self::Running => "running",
-            Self::Applied => "applied",
-            Self::Failed => "failed",
-            Self::Unknown => "unknown",
-            Self::Cancelling => "cancelling",
-            Self::Cancelled => "cancelled",
-        }
     }
 }
 
@@ -441,7 +417,10 @@ const COLUMNS: &str = "id, environment_id, number, status, saved_revision, servi
 /// whose lease holds.
 pub(crate) fn in_flight_sql() -> String {
     format!(
-        "(status = 'queued' OR (status IN ('running', 'cancelling') AND lease > {}))",
+        "(status = '{}' OR (status IN ('{}', '{}') AND lease > {}))",
+        name_of(DeploymentStatus::Queued),
+        name_of(DeploymentStatus::Running),
+        name_of(DeploymentStatus::Cancelling),
         now()
     )
 }
@@ -713,11 +692,7 @@ pub(crate) fn admit(
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
             json_text(&summary.upload).as_str().into(),
-            frozen
-                .cluster_domain
-                .as_ref()
-                .map_or("", Hostname::as_str)
-                .into(),
+            frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             summary.admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
         ],
@@ -733,7 +708,7 @@ pub(crate) fn cluster_domain(
 ) -> Result<Option<Hostname>, RpcError> {
     tx.query(
         "SELECT cluster_domain FROM config_deployment \
-         WHERE environment_id = ?1 AND cluster_domain <> '' ORDER BY number DESC LIMIT 1",
+         WHERE environment_id = ?1 AND cluster_domain IS NOT NULL ORDER BY number DESC LIMIT 1",
         &[environment.as_str().into()],
     )?
     .first()
@@ -815,7 +790,7 @@ pub(crate) fn retry(
     tx.execute(
         "INSERT INTO config_build \
          (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, service, organization_id, commit_sha, 'pending', '', '' \
+         SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
          FROM config_build WHERE deployment_id = ?2",
         &[id.as_str().into(), source.as_str().into()],
     )?;
@@ -1045,9 +1020,9 @@ pub(crate) fn save_receipt(
         return Err(invalid_evidence("build receipt"));
     }
     tx.execute(
-        "INSERT INTO config_build_receipt (environment_id, service, receipt) \
-         VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, service) \
-         DO UPDATE SET receipt = excluded.receipt",
+        "INSERT INTO config_build_receipt (environment_id, service, organization_id, receipt) \
+         SELECT id, ?2, organization_id, ?3 FROM config_environment WHERE id = ?1 \
+         ON CONFLICT (environment_id, service) DO UPDATE SET receipt = excluded.receipt",
         &[
             environment.as_str().into(),
             service.as_str().into(),
@@ -1699,14 +1674,10 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
 }
 
 fn stored(row: &Row) -> Result<Stored, RpcError> {
-    let status = row.text(3)?;
     let json = |index: usize, what: &str| -> Result<Value, RpcError> {
         serde_json::from_str(row.text(index)?).map_err(|_| error::corrupt(what))
     };
-    let status = DeploymentStatus::ALL
-        .into_iter()
-        .find(|known| known.as_str() == status)
-        .ok_or_else(|| error::corrupt("Deployment status"))?;
+    let status: DeploymentStatus = row.variant(3, "Deployment status")?;
     let lease = row.int(12)?;
     // A runner whose lease lapsed is gone: what ran is unknown.
     let lapsed = matches!(
@@ -1741,10 +1712,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         namespace: Namespace::parse(row.text(7)?).map_err(|_| error::corrupt("Namespace"))?,
         run: serde_json::from_value(json(8, "Deployment run")?)
             .map_err(|_| error::corrupt("Deployment run"))?,
-        cluster_domain: match row.text(10)? {
-            "" => None,
-            name => Some(parse_stored(name)?),
-        },
+        cluster_domain: row.optional_text(10)?.map(parse_stored).transpose()?,
         lease,
     })
 }
@@ -1754,7 +1722,7 @@ fn save(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",
         &[
-            stored.summary.status.as_str().into(),
+            name_of(stored.summary.status).as_str().into(),
             json_text(&stored.run).as_str().into(),
             stored.summary.id.as_str().into(),
             stored.summary.runner.as_ref().map(RunnerId::as_str).into(),

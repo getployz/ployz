@@ -155,10 +155,11 @@ pub(crate) fn head(
             branch.as_str().into(),
         ],
     )?;
-    Ok(match rows.first() {
-        Some(row) if !row.text(0)?.is_empty() => Some(row.parse(0, "branch head")?),
-        Some(_) | None => None,
-    })
+    rows.first()
+        .and_then(|row| row.optional_text(0).transpose())
+        .transpose()?
+        .map(|head| CommitSha::parse(head).map_err(|_| error::corrupt("branch head")))
+        .transpose()
 }
 
 fn branch_head(
@@ -192,13 +193,13 @@ fn branch_head(
             json!({ "head": stored }),
         ));
     }
-    let new = event.head.as_ref().map_or("", CommitSha::as_str);
+    let new = event.head.as_ref().map(CommitSha::as_str);
     let written = match &stored {
         None => tx.execute(
             "INSERT INTO config_branch (organization_id, repository_id, branch, head) \
              VALUES (?1, ?2, ?3, ?4) \
              ON CONFLICT (organization_id, repository_id, branch) \
-             DO UPDATE SET head = excluded.head WHERE config_branch.head = ''",
+             DO UPDATE SET head = excluded.head WHERE config_branch.head IS NULL",
             &[
                 organization.into(),
                 repository_id.into(),
@@ -299,7 +300,7 @@ fn check_suite(
             suite.into(),
             event.head.as_str().into(),
             event.status.as_str().into(),
-            event.conclusion.as_deref().unwrap_or_default().into(),
+            event.conclusion.as_deref().into(),
             event.updated.as_str().into(),
         ],
     )?;

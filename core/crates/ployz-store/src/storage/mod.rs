@@ -12,65 +12,11 @@ use ployz_core::RpcError;
 
 use crate::error;
 
-/// One migration per ticket, applied once, in order, each as one batch.
-const MIGRATIONS: &[(&str, &str)] = &[
-    (
-        "0001_config_store",
-        include_str!("migrations/0001_config_store.sql"),
-    ),
-    (
-        "0002_saved_state",
-        include_str!("migrations/0002_saved_state.sql"),
-    ),
-    (
-        "0003_deployments",
-        include_str!("migrations/0003_deployments.sql"),
-    ),
-    (
-        "0004_registry_credentials",
-        include_str!("migrations/0004_registry_credentials.sql"),
-    ),
-    (
-        "0005_uploaded_source",
-        include_str!("migrations/0005_uploaded_source.sql"),
-    ),
-    (
-        "0006_cluster_domain",
-        include_str!("migrations/0006_cluster_domain.sql"),
-    ),
-    (
-        "0007_git_builds",
-        include_str!("migrations/0007_git_builds.sql"),
-    ),
-    (
-        "0008_applied_volumes",
-        include_str!("migrations/0008_applied_volumes.sql"),
-    ),
-    (
-        "0009_git_automation",
-        include_str!("migrations/0009_git_automation.sql"),
-    ),
-    (
-        "0010_branches",
-        include_str!("migrations/0010_branches.sql"),
-    ),
-    (
-        "0011_github_builds",
-        include_str!("migrations/0011_github_builds.sql"),
-    ),
-    (
-        "0012_pr_environments",
-        include_str!("migrations/0012_pr_environments.sql"),
-    ),
-    (
-        "0013_conditional_saves",
-        include_str!("migrations/0013_conditional_saves.sql"),
-    ),
-    (
-        "0014_deployment_runs",
-        include_str!("migrations/0014_deployment_runs.sql"),
-    ),
-];
+/// Migrations, applied once, in order, each as one batch.
+const MIGRATIONS: &[(&str, &str)] = &[(
+    "0001_config_store",
+    include_str!("migrations/0001_config_store.sql"),
+)];
 
 pub(crate) enum Storage {
     Sqlite(sqlite::Sqlite),
@@ -140,6 +86,15 @@ pub(crate) fn attempt<T>(
     }
     tx.execute("RELEASE SAVEPOINT attempt", &[])?;
     result
+}
+
+/// A unit enum variant as the Store stores it: its serde name, so SQL and JSON
+/// always agree.
+pub(crate) fn name_of(variant: impl serde::Serialize) -> String {
+    serde_json::to_value(variant)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("a unit variant serializes as its name")
 }
 
 /// A statement runner inside one open transaction.
@@ -229,6 +184,17 @@ impl Row {
             .ok()
             .and_then(|value| T::try_from(value).ok())
             .ok_or_else(|| error::corrupt(what))
+    }
+
+    /// A text column as the unit enum variant of that serde name; anything else is
+    /// `what`, corrupt.
+    pub(crate) fn variant<T: serde::de::DeserializeOwned>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<T, RpcError> {
+        serde_json::from_value(serde_json::Value::String(self.text(index)?.to_owned()))
+            .map_err(|_| error::corrupt(what))
     }
 
     /// A JSON document column as `T`; one it can't be is `what`, corrupt.
