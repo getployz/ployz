@@ -7,7 +7,7 @@ import { slugifySegment } from "#/utils/slug";
 import { getDuplicateEnvironmentNodeNameMessage, isEnvironmentNodeNameTaken, resolveUniqueEnvironmentNodeName } from "./environment-node-names";
 import { environmentDesignFields } from "./fields";
 import { listEnvironmentNodeNameIdentities, requireEnvironmentForActorById } from "./authoring-repository.server";
-import { createResourceIdentity, getResourceIdentity, getVolumeResource, upsertResourceCanvasPosition } from "./resource-repository.server";
+import { createResourceIdentity, getVolumeResource, upsertResourceCanvasPosition } from "./resource-repository.server";
 import { loadEnvironmentDocument, requireDocumentRevision, writeEnvironmentDocument } from "./working-state-repository.server";
 import type { CreateVolumeResourceInput, DeleteVolumeResourceInput, UpdateEnvironmentResourceCanvasPositionInput, UpdateVolumeResourceInput } from "./resources";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -62,10 +62,6 @@ export const updateEnvironmentResourceCanvasPosition = Effect.fn(
   input: UpdateEnvironmentResourceCanvasPositionInput,
 ) {
   yield* requireEnvironmentForActorById(actor, input);
-  return yield* withMutationResult(Effect.gen(function* () {
-    yield* loadEnvironmentDocument(input.environmentId, true);
-    const resource = yield* getResourceIdentity(input.environmentId, input.resourceId);
-    if (resource === null) return yield* new NotFound({ message: "Resource not found." });
-    return yield* upsertResourceCanvasPosition({ ...input, resourceType: resource.implementationType });
-  }));
+  // Positions are presentation: a Config Store Volume is placed before the Store creates it.
+  return yield* withMutationResult(upsertResourceCanvasPosition({ ...input, resourceType: "volume" }));
 });

@@ -54,6 +54,7 @@ function Architecture() {
       <CanvasNodeList
         services={[]}
         storeServices={null}
+        storeVolumes={null}
         liveNodes={[]}
         servicesById={new Map()}
         selectedNodeId={nodeId}

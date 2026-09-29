@@ -1,5 +1,5 @@
 import { queryOptions, useMutationState, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
-import type { Change, ConfigQuery, ConfigView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery } from "@ployz/sdk";
+import type { Change, ConfigQuery, ConfigView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery, VolumesQuery } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -179,6 +179,11 @@ export function diffQuery(environment: EnvironmentRef): { query: "diff" } & Diff
 /** An Environment's public domains with their status: the Networking section of every Service drawer. */
 export function domainsQuery(environment: EnvironmentRef): { query: "domains" } & DomainsQuery {
   return { query: "domains", environment, service: null };
+}
+
+/** An Environment's Volumes with where Services mount them: the canvas's Volumes and their links. */
+export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } & VolumesQuery {
+  return { query: "volumes", environment };
 }
 
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */
