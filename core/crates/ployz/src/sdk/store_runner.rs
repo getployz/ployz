@@ -372,6 +372,17 @@ impl Run {
             input.sources.extend(one(&service, target.source));
             input.uploads.extend(one(&service, target.upload));
         }
+        // A Service GitHub built keeps its pin, so its receipt's fingerprint matches.
+        for source in &claimed.sources {
+            if let Some(commit) = &source.commit
+                && input.build_receipts.contains_key(&source.service)
+            {
+                input
+                    .source_commits
+                    .entry(source.service.clone())
+                    .or_insert_with(|| commit.clone());
+            }
+        }
         session
             .prepare_with(input, claimed.intent.registry_auth)?
             .finished()
