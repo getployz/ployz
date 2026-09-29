@@ -1,3 +1,5 @@
+import type { Effect } from "effect";
+import type { StoreGithubServices } from "#/modules/config-store/store-github.server";
 import {
   closeStoreEnvironments,
   observeStorePullRequest,
@@ -9,13 +11,14 @@ import type { PloyzInngest, PloyzStepTools } from "#/modules/inngest/client";
 import { createConfigDeploymentAdmittedEvent, githubPullRequestReceivedEventType } from "#/modules/inngest/events";
 import { runInngestEffect } from "#/server/run.server";
 
-type StoreEffectRunner = typeof runInngestEffect;
+type StoreEffectRunner = <A, E extends Error>(program: Effect.Effect<A, E, StoreGithubServices>) => Promise<A>;
 
 /** Each its own step after the Store's, so a failed one retries alone: the observation is already applied. */
 async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: StoreOutcome, runEffect: StoreEffectRunner) {
   if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(createConfigDeploymentAdmittedEvent));
-  const closed = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : 0;
-  return { admitted: done.deployments.map((deployment) => deployment.deploymentId), closing: closed };
+  const removals = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : [];
+  if (removals.length > 0) await step.sendEvent("dispatch-removals", removals.map(createConfigDeploymentAdmittedEvent));
+  return { admitted: done.deployments.map((deployment) => deployment.deploymentId), removals: removals.map((removal) => removal.deploymentId) };
 }
 
 /**
