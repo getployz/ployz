@@ -4,15 +4,15 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, AddDomain, Admit, BuildOrderQuery, BuildOrderView, SetBuildOrder, BuildLogQuery, BuildLogView, Cancel, Command, ConfigStore,
-    CreateEnvironment, CreateGitService, CreateProject, CreateService, DeploymentId,
-    DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery, DeploymentsView,
-    DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery, DomainStaged, DomainView,
-    DomainsQuery, DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
-    EnvironmentView, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
-    ProjectCreated, ProjectName, Publish, Published, Query, RemoveDomain, RemoveService,
-    RenameService, SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery,
-    ServicesView, Start, Trusted,
+    Actor, AddDomain, Admit, BuildLogQuery, BuildLogView, BuildOrderQuery, BuildOrderView, Cancel,
+    Command, ConfigStore, CreateEnvironment, CreateGitService, CreateProject, CreateService,
+    DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery,
+    DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence, DomainQuery,
+    DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited, EnvironmentCreated,
+    EnvironmentQuery, EnvironmentRef, EnvironmentView, NamespaceQuery, NamespaceView,
+    OrganizationId, PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query,
+    RemoveDomain, RemoveService, RenameService, SealingKey, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, ServicesView, SetBuildOrder, Start, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -194,7 +194,9 @@ impl Store {
         set: &SetBuildOrder,
     ) -> Result<BuildOrderView, StoreCallError> {
         let request = Command::SetBuildOrder(set.clone());
-        self.call("write", &request, |store, who| store.set_build_order(who, set))
+        self.call("write", &request, |store, who| {
+            store.set_build_order(who, set)
+        })
     }
 
     pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {

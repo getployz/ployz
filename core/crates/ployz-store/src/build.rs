@@ -248,6 +248,7 @@ struct BuildRow {
     log: String,
     /// The GitHub run it was handed to, if any.
     github: Option<GithubState>,
+    organization: String,
 }
 
 impl BuildRow {
@@ -267,7 +268,8 @@ impl BuildRow {
 
 fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     tx.query(
-        "SELECT service, commit_sha, status, message, log, github FROM config_build \
+        "SELECT service, commit_sha, status, message, log, github, organization_id \
+         FROM config_build \
          WHERE deployment_id = ?1 ORDER BY service",
         &[id.as_str().into()],
     )?
@@ -289,6 +291,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
                     Some(serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))?)
                 }
             },
+            organization: row.text(6)?.to_owned(),
         })
     })
     .collect()
@@ -469,6 +472,8 @@ struct GithubState {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct GithubBuild {
     pub id: GithubBuildId,
+    /// The Organization whose Servers receive its image.
+    pub organization: String,
     pub status: BuildStatus,
     pub run: GithubRun,
     /// Set once the run checked in.
@@ -513,6 +518,8 @@ pub enum GithubEnd {
     /// GitHub couldn't take it, or failed it for its own reasons: the next Builder
     /// takes it. Users read the message.
     Skipped { message: String },
+    /// As `Skipped`, only while its run hasn't checked in: a run that started keeps it.
+    Unstarted { message: String },
 }
 
 fn github_row(tx: &mut dyn Tx, stored: &Stored, id: &GithubBuildId) -> Result<BuildRow, RpcError> {
@@ -560,6 +567,7 @@ impl BuildRow {
         let github = self.github.as_ref()?;
         Some(GithubBuild {
             id: id.clone(),
+            organization: self.organization.clone(),
             status: self.status,
             run: github.run.clone(),
             grant: github.grant.clone(),
@@ -745,9 +753,12 @@ pub(crate) fn github_end(
 ) -> Result<BuildStatus, RpcError> {
     let stored = deployment::locked(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
-    let holds = match run_id {
-        Some(run_id) => row.building_on(run_id).is_some(),
-        None => row.status == BuildStatus::Pending && row.github.is_none(),
+    let holds = match (run_id, end) {
+        (Some(run_id), GithubEnd::Unstarted { .. }) => row
+            .building_on(run_id)
+            .is_some_and(|github| github.grant.is_none()),
+        (Some(run_id), _) => row.building_on(run_id).is_some(),
+        (None, _) => row.status == BuildStatus::Pending && row.github.is_none(),
     };
     if !holds {
         return Err(error::conflict("This build already ended", json!({})));
@@ -772,7 +783,7 @@ pub(crate) fn github_end(
             )
         }
         // The next Builder starts it afresh.
-        GithubEnd::Skipped { message } => {
+        GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
             (BuildStatus::Pending, trimmed(Some(message)), None)
         }

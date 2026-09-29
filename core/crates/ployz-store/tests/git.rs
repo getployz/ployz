@@ -787,6 +787,17 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
     let id = dispatched(&store, &who);
     store.github_check_in(&id, RUN, &grant()).unwrap();
     assert_eq!(store.github_outstanding(&id.deployment).unwrap().len(), 1);
+    // The start-within limit lost to the check-in: the run that started keeps it.
+    let unstarted = GithubEnd::Unstarted {
+        message: "no runner started the build in time".into(),
+    };
+    assert_eq!(
+        store
+            .github_end(&id, Some(RUN), &unstarted)
+            .unwrap_err()
+            .code,
+        RpcErrorCode::Conflict
+    );
 
     // GitHub failed it for its own reasons: pending again, with why, for the servers.
     let skip = GithubEnd::Skipped {

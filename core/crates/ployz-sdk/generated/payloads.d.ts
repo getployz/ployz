@@ -930,7 +930,11 @@ status: BuildStatus | null,
  */
 message: string | null, };
 
-export type GithubBuild = { id: GithubBuildId, status: BuildStatus, run: GithubRun,
+export type GithubBuild = { id: GithubBuildId,
+/**
+ * The Organization whose Servers receive its image.
+ */
+organization: string, status: BuildStatus, run: GithubRun,
 /**
  * Set once the run checked in.
  */
