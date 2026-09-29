@@ -128,8 +128,9 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
     let mut sourceless = Vec::new();
     for (name, (root_dir, settings)) in frozen.checkouts {
         let Some(repository) = input.sources.remove(&name) else {
-            if frozen.uploaded.contains_key(&name) {
-                // Only its receipt can serve it now; checked below.
+            // An upload, or a commit built elsewhere (GitHub): only its receipt can
+            // serve it now; checked below.
+            if frozen.identities.contains_key(&name) {
                 sourceless.push(name);
                 continue;
             }
@@ -217,12 +218,15 @@ pub(crate) fn capture(mut input: PreparationInput) -> Result<CapturedPreparation
             })
         })
         .collect::<Vec<BuiltService>>();
-    let missing: Vec<ServiceName> = sourceless
+    let (uploads, commits): (Vec<ServiceName>, Vec<ServiceName>) = sourceless
         .into_iter()
         .filter(|name| !reusable.iter().any(|built| &built.name == name))
-        .collect();
-    if !missing.is_empty() {
-        return Err(upload_needed(&missing));
+        .partition(|name| frozen.uploaded.contains_key(name));
+    if let Some(name) = commits.first() {
+        return Err(invalid(format!("missing checkout for {name}")));
+    }
+    if !uploads.is_empty() {
+        return Err(upload_needed(&uploads));
     }
     Ok(CapturedPreparation {
         intent,
@@ -708,6 +712,14 @@ mod tests {
         let rebuilt = capture(sourced).unwrap();
         assert!(rebuilt.reusable.is_empty());
         assert_eq!(rebuilt.build.targets().count(), 1);
+        // A commit built elsewhere (GitHub) needs no checkout while its receipt matches.
+        let mut built = input(&git, false, Some(&commit), None);
+        built.build_receipts = serde_json::from_value(receipt(&clean.fingerprints[&web])).unwrap();
+        assert_eq!(capture(built).unwrap().reusable.len(), 1);
+        let unbuilt = capture(input(&git, false, Some(&commit), None))
+            .err()
+            .unwrap();
+        assert_eq!(unbuilt.code, RpcErrorCode::InvalidArgument, "{unbuilt:?}");
         // Refused: a bad digest, a commit and an upload together, an upload for an image.
         let image = service(json!({"type":"image", "version":1, "image":"nginx",
             "credentials":{"type":"none"}}));
