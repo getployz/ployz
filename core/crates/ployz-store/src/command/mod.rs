@@ -80,6 +80,10 @@ pub enum Command {
     CopyNode(crate::CopyNode),
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch),
+    /// Make an Environment its Project's Default Environment.
+    SetDefaultEnvironment(crate::SetDefaultEnvironment),
+    /// Delete an Environment nothing of which runs on the Servers.
+    RemoveEnvironment(crate::RemoveEnvironment),
 }
 
 impl Command {
@@ -108,7 +112,9 @@ impl Command {
             | Self::RemoveDomain(_)
             | Self::UpdateBranch(_)
             | Self::CopyNode(_)
-            | Self::KeepBranch(_) => Vec::new(),
+            | Self::KeepBranch(_)
+            | Self::SetDefaultEnvironment(_)
+            | Self::RemoveEnvironment(_) => Vec::new(),
         }
     }
 }
@@ -144,6 +150,10 @@ pub enum Written {
     Domain(crate::DomainStaged),
     /// A Branch was made, updated, given an Own Copy, or kept.
     Branch(crate::Branched),
+    /// The Default Environment changed: the Project's Environments after it.
+    DefaultEnvironment(crate::EnvironmentsView),
+    /// An Environment was deleted.
+    EnvironmentRemoved(crate::EnvironmentRemoved),
 }
 
 pub(crate) fn run(
@@ -190,6 +200,12 @@ pub(crate) fn run(
         }
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
+        Command::SetDefaultEnvironment(set) => {
+            crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
+        }
+        Command::RemoveEnvironment(remove) => {
+            crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
+        }
     }
 }
 

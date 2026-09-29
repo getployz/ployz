@@ -10,7 +10,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use super::{Command, replayable};
-use crate::deployment::{self, DeploymentSummary, UploadedSource};
+use crate::deployment::{self, DeploymentStatus, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;
 use crate::id::{DeploymentId, VolumeName};
@@ -45,6 +45,11 @@ pub struct Admit {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub retry: Option<DeploymentId>,
+    /// Remove the Environment from the Servers: ship it empty, deleting its deployed
+    /// Volumes, without touching Working or Saved State. `services`, `version`,
+    /// `upload` and `retry` stay empty. `RemoveEnvironment` then deletes it.
+    #[serde(default)]
+    pub remove: bool,
     /// Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
     /// deletes data refuses with `confirmation_required` unless it names each one.
     #[serde(default)]
@@ -100,13 +105,14 @@ fn admitted(
 ) -> Result<DeploymentSummary, RpcError> {
     if let Some(source) = &admit.retry {
         if admit.environment != EnvironmentRef::default()
+            || admit.remove
             || !admit.services.is_empty()
             || admit.version.is_some()
             || admit.upload.is_some()
             || !admit.accept_volume_loss.is_empty()
         {
             return Err(error::invalid(
-                "A retry ships what its Deployment froze: leave environment, services, \
+                "A retry ships what its Deployment froze: leave environment, remove, services, \
                  version, upload and accept_volume_loss empty",
                 json!({}),
             ));
@@ -114,6 +120,9 @@ fn admitted(
         // The retry deletes exactly the Docker Volumes its source's review accepted,
         // which the copied target nodes carry: nothing new, so no new review.
         return deployment::retry(tx, who, &admit.id, source);
+    }
+    if admit.remove {
+        return removal(tx, who, admit, trusted);
     }
     let environment = scope::lock(tx, who, &admit.environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
@@ -166,4 +175,60 @@ fn admitted(
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     deployment::admit(tx, who, admit, id, saved, &frozen)
+}
+
+/// Queue the Deployment that removes an Environment from the Servers: the empty
+/// Environment against everything Applied State holds, under the same destructive
+/// review as any Deploy. A running Deployment must end first, so the removal's
+/// targets are everything that ran.
+fn removal(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    admit: &Admit,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
+    if !admit.services.is_empty() || admit.version.is_some() || admit.upload.is_some() {
+        return Err(error::invalid(
+            "A removal ships nothing: leave services, version and upload empty",
+            json!({}),
+        ));
+    }
+    let environment = scope::lock(tx, who, &admit.environment)?;
+    crate::teardown::guard(tx, &environment)?;
+    let id = &environment.summary.id;
+    let history = deployment::history(tx, id, i64::MAX)?;
+    if let Some(running) = history.iter().find(|deployment| {
+        matches!(
+            deployment.status,
+            DeploymentStatus::Running | DeploymentStatus::Cancelling
+        )
+    }) {
+        return Err(error::conflict(
+            format!(
+                "Deployment #{} is running: wait for it or cancel it before removing {}",
+                running.number, environment.summary.name
+            ),
+            json!({ "deployment": running.id }),
+        ));
+    }
+    let review = review::review(tx, &environment)?;
+    let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
+    let empty = review::empty(&environment.working);
+    let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
+    let losses = removal::review(
+        removed,
+        trusted.volumes.as_ref(),
+        &admit.accept_volume_loss,
+        &review.view.version,
+    )?;
+    let frozen = deployment::freeze(
+        id,
+        &empty,
+        &review.head.applied,
+        &[],
+        namespace,
+        None,
+        &losses,
+    )?;
+    deployment::admit(tx, who, admit, id, deployment::NOTHING, &frozen)
 }

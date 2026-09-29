@@ -198,6 +198,9 @@ fn insert_branch(
     create: &CreateBranch,
 ) -> Result<Branched, RpcError> {
     let parent = scope::lock(tx, who, &create.from)?;
+    if let Some(removal) = crate::teardown::removing(tx, &parent.summary.id)? {
+        return Err(crate::teardown::being_removed(&parent, &removal));
+    }
     let project = scope::project(tx, who, Some(&parent.summary.project))?;
     let taken = tx.query(
         "SELECT id FROM config_environment WHERE project_id = ?1 AND name = ?2",

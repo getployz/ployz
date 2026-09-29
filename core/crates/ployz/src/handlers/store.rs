@@ -9,7 +9,8 @@ use ployz_store::{
     CreateVolume, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
     DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, KeepBranch,
+    EnvironmentCreated, EnvironmentQuery, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
+    RemoveEnvironment, SetDefaultEnvironment, EnvironmentRef, EnvironmentView, KeepBranch,
     NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated,
     ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView, RemoveDomain,
     RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
@@ -319,6 +320,34 @@ impl Store {
     pub(crate) fn copy_node(&self, copy: &CopyNode) -> Result<Branched, StoreCallError> {
         let request = Command::CopyNode(copy.clone());
         self.call("write", &request, |store, who| store.copy_node(who, copy))
+    }
+
+    pub(crate) fn environments(
+        &self,
+        query: &EnvironmentsQuery,
+    ) -> Result<EnvironmentsView, StoreCallError> {
+        let request = Query::Environments(query.clone());
+        self.call("read", &request, |store, who| store.environments(who, query))
+    }
+
+    pub(crate) fn set_default_environment(
+        &self,
+        set: &SetDefaultEnvironment,
+    ) -> Result<EnvironmentsView, StoreCallError> {
+        let request = Command::SetDefaultEnvironment(set.clone());
+        self.call("write", &request, |store, who| {
+            store.set_default_environment(who, set)
+        })
+    }
+
+    pub(crate) fn remove_environment(
+        &self,
+        remove: &RemoveEnvironment,
+    ) -> Result<EnvironmentRemoved, StoreCallError> {
+        let request = Command::RemoveEnvironment(remove.clone());
+        self.call("write", &request, |store, who| {
+            store.remove_environment(who, remove)
+        })
     }
 
     pub(crate) fn keep_branch(&self, keep: &KeepBranch) -> Result<Branched, StoreCallError> {

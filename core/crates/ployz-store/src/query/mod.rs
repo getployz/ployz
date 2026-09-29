@@ -67,6 +67,8 @@ pub enum Query {
     Removals(RemovalsQuery),
     /// A Branch: its Parent, Live Nodes and pending Update.
     Branch(crate::BranchQuery),
+    /// A Project's Environments.
+    Environments(crate::EnvironmentsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -104,6 +106,8 @@ pub enum View {
     Removals(RemovalsView),
     /// A Branch.
     Branch(crate::BranchView),
+    /// A Project's Environments.
+    Environments(crate::EnvironmentsView),
 }
 
 pub(crate) fn run(
@@ -130,5 +134,8 @@ pub(crate) fn run(
         Query::Volume(query) => volume(tx, who, query).map(View::Volume),
         Query::Removals(query) => removals(tx, who, query).map(View::Removals),
         Query::Branch(query) => crate::branch::branch(tx, who, query).map(View::Branch),
+        Query::Environments(query) => {
+            crate::teardown::environments(tx, who, query).map(View::Environments)
+        }
     }
 }

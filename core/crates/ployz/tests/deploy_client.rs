@@ -984,6 +984,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
                 version: None,
                 upload: None,
                 retry: None,
+                remove: false,
                 accept_volume_loss: Vec::new(),
             },
             &ployz_store::Trusted::default(),
@@ -1028,6 +1029,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         version: None,
         upload: None,
         retry: None,
+        remove: false,
         accept_volume_loss: Vec::new(),
     };
     store
@@ -1151,6 +1153,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
                     version: None,
                     upload: None,
                     retry: None,
+                    remove: false,
                     accept_volume_loss: accept,
                 },
                 &trusted,

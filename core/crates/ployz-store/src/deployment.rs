@@ -103,7 +103,13 @@ pub struct DeploymentSummary {
     pub runner: Option<RunnerId>,
     /// What its Services without a source of their own build from.
     pub upload: Option<UploadedSource>,
+    /// Whether it removes the Environment from the Servers: it ships the empty
+    /// Environment ([`NOTHING`]) and deletes the data it accepted.
+    pub remove: bool,
 }
+
+/// The Saved revision a removal ships: the empty Environment. Saved revisions count from 1.
+pub(crate) const NOTHING: Revision = Revision(0);
 
 /// An Uploaded Source: a directory's content, identified by its digest and never by
 /// a commit. Services without a source of their own build from it.
@@ -567,6 +573,7 @@ pub(crate) fn admit(
         services: services.to_vec(),
         runner: None,
         upload,
+        remove: saved == NOTHING,
     };
     tx.execute(
         "INSERT INTO config_deployment \
@@ -641,6 +648,10 @@ pub(crate) fn retry(
             ));
         }
         DeploymentStatus::Superseded => return Err(superseded(source)),
+    }
+    if stored.summary.remove {
+        let environment = scope::load_by_id(tx, &stored.environment)?;
+        crate::teardown::guard(tx, &environment)?;
     }
     let number = queue(tx, &stored.environment)?;
     // Every frozen column comes from the source, so a retry never re-reads authored state.
@@ -1111,6 +1122,24 @@ fn finish(
     Ok(stored.summary)
 }
 
+/// `environment`'s latest `limit` Deployments that weren't superseded, newest first.
+pub(crate) fn history(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    limit: i64,
+) -> Result<Vec<DeploymentSummary>, RpcError> {
+    tx.query(
+        &format!(
+            "SELECT {COLUMNS} FROM config_deployment \
+             WHERE environment_id = ?1 AND status <> 'superseded' ORDER BY number DESC LIMIT ?2"
+        ),
+        &[environment.as_str().into(), limit.into()],
+    )?
+    .iter()
+    .map(|row| stored(row).map(|stored| stored.summary))
+    .collect()
+}
+
 /// What reviews compare Working State against: Applied State, overlaid with the
 /// target nodes of the Deployment in flight, if any. Its token changes whenever a
 /// Deployment is admitted or ends.
@@ -1337,6 +1366,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             runner: None,
             upload: serde_json::from_value(json(9, "Deployment upload")?)
                 .map_err(|_| error::corrupt("Deployment upload"))?,
+            remove: revision(row.int(4)?)? == NOTHING,
         },
         environment: parse_stored(row.text(1)?)?,
         nodes: serde_json::from_value(json(6, "Deployment")?)
@@ -1390,6 +1420,9 @@ pub(crate) fn saved_at(
     environment: &EnvironmentId,
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
+    if revision == NOTHING {
+        return scope::load_by_id(tx, environment).map(|loaded| review::empty(&loaded.working));
+    }
     let rows = tx.query(
         "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
         &[
