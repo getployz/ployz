@@ -11,9 +11,10 @@
 //! head is compare-and-set against the one Cloud compared from, and a check suite
 //! keeps its newest result.
 
+use crate::id::{BranchName, CommitSha, RepositoryId};
 use std::collections::BTreeMap;
 
-use ployz_core::config::{SavedServiceIntent, ServiceGitBranch, ServiceSource};
+use ployz_core::config::SavedServiceIntent;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,15 +48,14 @@ pub enum SystemEvent {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct BranchHead {
-    #[ts(type = "number")]
-    pub repository_id: u64,
-    pub branch: String,
+    pub repository_id: RepositoryId,
+    pub branch: BranchName,
     /// The head Cloud compared from: the Store's, as [`crate::ConfigStore::branch_head`]
     /// read it. Anything else is `conflict`: read it again and compare again.
     #[serde(default)]
-    pub base: Option<String>,
+    pub base: Option<CommitSha>,
     /// The head now; none once the branch was deleted.
-    pub head: Option<String>,
+    pub head: Option<CommitSha>,
     /// The paths `base..head` changed, when `head` is ahead of `base` and GitHub
     /// listed every one. None (a force-push, diverged or long history) deploys every
     /// Service that follows the branch.
@@ -64,19 +64,18 @@ pub struct BranchHead {
     /// The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
     /// Cloud found `head` is or descends from: this push carries those saves.
     #[serde(default)]
-    pub merged: Vec<String>,
+    pub merged: Vec<CommitSha>,
 }
 
 /// A check suite of a commit, as Cloud read it just now.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CheckSuite {
-    #[ts(type = "number")]
-    pub repository_id: u64,
+    pub repository_id: RepositoryId,
     #[ts(type = "number")]
     pub suite: u64,
     /// The commit it checks.
-    pub head: String,
+    pub head: CommitSha,
     /// GitHub's status: `queued`, `in_progress`, `completed`, ….
     pub status: String,
     /// GitHub's conclusion once completed.
@@ -144,20 +143,20 @@ pub(crate) fn system(
 pub(crate) fn head(
     tx: &mut dyn Tx,
     organization: &OrganizationId,
-    repository_id: u64,
-    branch: &str,
-) -> Result<Option<String>, RpcError> {
+    repository_id: RepositoryId,
+    branch: &BranchName,
+) -> Result<Option<CommitSha>, RpcError> {
     let rows = tx.query(
         "SELECT head FROM config_branch \
          WHERE organization_id = ?1 AND repository_id = ?2 AND branch = ?3",
         &[
             organization.as_str().into(),
-            repository(repository_id)?.into(),
-            branch.into(),
+            repository_id.into(),
+            branch.as_str().into(),
         ],
     )?;
     Ok(match rows.first() {
-        Some(row) if !row.text(0)?.is_empty() => Some(row.text(0)?.to_owned()),
+        Some(row) if !row.text(0)?.is_empty() => Some(row.parse(0, "branch head")?),
         Some(_) | None => None,
     })
 }
@@ -168,10 +167,7 @@ fn branch_head(
     event: &BranchHead,
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
-    let branch = crate::git::valid_branch(&event.branch)?;
-    for commit in event.base.iter().chain(&event.head).chain(&event.merged) {
-        commit_sha(commit)?;
-    }
+    let branch = &event.branch;
     if event
         .changed
         .iter()
@@ -183,9 +179,9 @@ fn branch_head(
             json!({}),
         ));
     }
-    let repository_id = repository(event.repository_id)?;
+    let repository_id = event.repository_id;
     let organization = who.organization.as_str();
-    let stored = head(tx, &who.organization, event.repository_id, &branch)?;
+    let stored = head(tx, &who.organization, repository_id, branch)?;
     if stored == event.head {
         // Seen already: a replay, or a head that moved and came back.
         return Ok(Automated::default());
@@ -196,7 +192,7 @@ fn branch_head(
             json!({ "head": stored }),
         ));
     }
-    let new = event.head.as_deref().unwrap_or_default();
+    let new = event.head.as_ref().map_or("", CommitSha::as_str);
     let written = match &stored {
         None => tx.execute(
             "INSERT INTO config_branch (organization_id, repository_id, branch, head) \
@@ -238,7 +234,7 @@ fn branch_head(
             branch.as_str().into(),
         ],
     )?;
-    let Some(new) = &event.head else {
+    let Some(head) = &event.head else {
         return Ok(Automated::default());
     };
     // The first head seen deploys every Service that follows the branch.
@@ -248,15 +244,15 @@ fn branch_head(
         &[organization.into()],
     )?;
     let mut carried =
-        crate::conditional_save::carried(tx, who, event.repository_id, &branch, &event.merged)?;
+        crate::conditional_save::carried(tx, who, event.repository_id, branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
         let environment =
             EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
         let push = Push {
             repository_id: event.repository_id,
-            branch: &branch,
-            head: new,
+            branch,
+            head,
         };
         let saves = carried.remove(&environment).unwrap_or_default();
         deploy(
@@ -278,8 +274,7 @@ fn check_suite(
     event: &CheckSuite,
     trusted: &Trusted,
 ) -> Result<Automated, RpcError> {
-    commit_sha(&event.head)?;
-    let repository_id = repository(event.repository_id)?;
+    let repository_id = event.repository_id;
     let suite = i64::try_from(event.suite)
         .map_err(|_| error::invalid("Expected a check suite ID", json!({})))?;
     timestamp(&event.updated)?;
@@ -326,9 +321,10 @@ fn check_suite(
             serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("waiting deploy"))?;
         let saves: Vec<ConditionalSaveId> =
             serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("waiting deploy"))?;
+        let branch: BranchName = row.parse(1, "waiting deploy")?;
         let push = Push {
             repository_id: event.repository_id,
-            branch: row.text(1)?,
+            branch: &branch,
             head: &event.head,
         };
         deploy(
@@ -345,9 +341,9 @@ fn check_suite(
 }
 
 struct Push<'a> {
-    repository_id: u64,
-    branch: &'a str,
-    head: &'a str,
+    repository_id: RepositoryId,
+    branch: &'a BranchName,
+    head: &'a CommitSha,
 }
 
 /// Which of the Services that follow the branch deploy.
@@ -437,15 +433,7 @@ fn admit(
     let mut selected: Vec<&SavedServiceIntent> = Vec::new();
     let mut wait = false;
     for service in &saved.intent.services {
-        let ServiceSource::Git {
-            repository_id,
-            branch: ServiceGitBranch::Connected { name },
-            ..
-        } = &service.config.source
-        else {
-            continue;
-        };
-        if *repository_id != push.repository_id || name != push.branch {
+        if !crate::git::tracks(service, push.repository_id, push.branch) {
             continue;
         }
         let policy = policy::load(tx, id, &service.id)?;
@@ -462,8 +450,8 @@ fn admit(
     }
     let key: [crate::storage::Param<'_>; 3] = [
         id.as_str().into(),
-        repository(push.repository_id)?.into(),
-        push.branch.into(),
+        push.repository_id.into(),
+        push.branch.as_str().into(),
     ];
     let [environment_param, repository_param, branch_param] = key;
     if selected.is_empty() || trusted.runnable().is_err() {
@@ -489,7 +477,7 @@ fn admit(
                 repository_param,
                 branch_param,
                 who.organization.as_str().into(),
-                push.head.into(),
+                push.head.as_str().into(),
                 serde_json::to_string(&services)
                     .expect("JSON")
                     .as_str()
@@ -531,9 +519,9 @@ fn admit(
             .collect::<Result<Vec<_>, _>>()
             .map_err(|_| error::corrupt("Service name"))?,
     };
-    let pins: BTreeMap<ServiceName, String> = selected
+    let pins: BTreeMap<ServiceName, CommitSha> = selected
         .iter()
-        .map(|service| (service.config.private_dns.clone(), push.head.to_owned()))
+        .map(|service| (service.config.private_dns.clone(), push.head.clone()))
         .collect();
     // Generated domains expand under the Cluster Domain Cloud reserved for the
     // Environment's last Deploy.
@@ -557,7 +545,7 @@ pub(crate) fn auto_admit(
     who: &Actor,
     (environment, saved): (&scope::Environment, &review::Saved),
     services: &[ServiceName],
-    (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, String>),
+    (cluster_domain, pins): (Option<&Hostname>, &BTreeMap<ServiceName, CommitSha>),
 ) -> Result<DeploymentSummary, RpcError> {
     let id = &environment.summary.id;
     if cluster_domain.is_none() && domain::has_generated(&saved.intent) {
@@ -604,8 +592,8 @@ fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcErro
          WHERE organization_id = ?1 AND repository_id = ?2 AND head = ?3",
         &[
             who.organization.as_str().into(),
-            repository(push.repository_id)?.into(),
-            push.head.into(),
+            push.repository_id.into(),
+            push.head.as_str().into(),
         ],
     )?;
     let mut passed = !suites.is_empty();
@@ -633,20 +621,6 @@ pub(crate) fn timestamp(updated: &str) -> Result<(), RpcError> {
     }
     Err(error::invalid(
         "Expected GitHub's updated_at, like 2026-09-29T10:00:00Z",
-        json!({}),
-    ))
-}
-
-fn repository(id: u64) -> Result<i64, RpcError> {
-    i64::try_from(id).map_err(|_| error::invalid("Expected a GitHub repository ID", json!({})))
-}
-
-fn commit_sha(commit: &str) -> Result<(), RpcError> {
-    if ployz_core::is_lower_hex(commit, 40) {
-        return Ok(());
-    }
-    Err(error::invalid(
-        "A head is a full lowercase Git commit",
         json!({}),
     ))
 }

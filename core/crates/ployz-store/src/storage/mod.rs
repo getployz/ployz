@@ -214,6 +214,32 @@ impl Row {
         }
     }
 
+    /// A text column as `T`; one it can't be is `what`, corrupt.
+    pub(crate) fn parse<T: TryFrom<String>>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<T, RpcError> {
+        T::try_from(self.text(index)?.to_owned()).map_err(|_| error::corrupt(what))
+    }
+
+    /// An integer column as `T`; one it can't be is `what`, corrupt.
+    pub(crate) fn number<T: TryFrom<u64>>(&self, index: usize, what: &str) -> Result<T, RpcError> {
+        u64::try_from(self.int(index)?)
+            .ok()
+            .and_then(|value| T::try_from(value).ok())
+            .ok_or_else(|| error::corrupt(what))
+    }
+
+    /// A JSON document column as `T`; one it can't be is `what`, corrupt.
+    pub(crate) fn json<T: serde::de::DeserializeOwned>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<T, RpcError> {
+        serde_json::from_str(self.text(index)?).map_err(|_| error::corrupt(what))
+    }
+
     /// A text column that may be NULL.
     pub(crate) fn optional_text(&self, index: usize) -> Result<Option<&str>, RpcError> {
         match self.0.get(index) {

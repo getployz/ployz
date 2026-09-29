@@ -1002,7 +1002,7 @@ pub(crate) fn claim(
         .flatten()
         .collect();
     let organization = build::organization(tx, id)?;
-    let build_order = crate::builders::order(tx, &organization)?;
+    let build_order = crate::builders::order(tx, organization.as_str())?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,

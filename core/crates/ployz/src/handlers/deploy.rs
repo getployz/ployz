@@ -913,10 +913,9 @@ pub(super) fn say_view(view: &DeploymentView) {
         say!("  {}: {:?}", node.node.name(), node.outcome);
     }
     for build in &view.builds {
-        let commit = build
-            .commit
-            .as_deref()
-            .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
+        let commit = build.commit.as_ref().map_or("the upload", |commit| {
+            commit.as_str().get(..7).unwrap_or(commit.as_str())
+        });
         let reason = build.message.as_deref().unwrap_or_default();
         say!(
             "  build {} from {commit}: {:?} {reason}",

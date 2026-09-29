@@ -152,6 +152,120 @@ store_string!(
     Hostname, "a hostname like app.example.com", is_hostname
 );
 
+/// A full lowercase Git commit.
+fn is_commit(value: &str) -> bool {
+    ployz_core::is_lower_hex(value, 40)
+}
+
+/// A GitHub repository as `owner/name`.
+fn is_repository(name: &str) -> bool {
+    let Some((owner, repository)) = name.split_once('/') else {
+        return false;
+    };
+    let fits = |part: &str, extra: &[u8]| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || extra.contains(&c))
+    };
+    name.len() <= ployz_core::config::REPOSITORY_MAX
+        && fits(owner, b"")
+        && fits(repository, b"_.")
+        && !matches!(repository, "." | "..")
+}
+
+/// A Git branch name, as Git allows one.
+fn is_branch(branch: &str) -> bool {
+    !branch.is_empty()
+        && branch.chars().count() <= ployz_core::config::BRANCH_MAX
+        && !branch.contains("..")
+        && !branch.starts_with(['-', '/'])
+        && !branch.ends_with(['/', '.'])
+        && branch
+            .chars()
+            .all(|c| !c.is_whitespace() && !c.is_control() && !"~^:?*[\\".contains(c))
+}
+
+store_string!(
+    /// A full lowercase Git commit, as GitHub names one.
+    CommitSha, "a full lowercase Git commit", is_commit
+);
+store_string!(
+    /// A GitHub repository, as `owner/name`.
+    RepositoryName, "a GitHub repository as owner/name", is_repository
+);
+store_string!(
+    /// A Git branch's name.
+    BranchName, "a Git branch name", is_branch
+);
+
+// A GitHub number: what JavaScript holds exactly, so 1 to 2^53 - 1.
+macro_rules! github_number {
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+        #[serde(try_from = "u64", into = "u64")]
+        #[ts(type = "number")]
+        pub struct $name(u64);
+
+        impl $name {
+            /// Accept `value` if GitHub could have minted it.
+            ///
+            /// # Errors
+            /// Returns `invalid_argument` naming what was expected.
+            pub fn parse(value: u64) -> Result<Self, RpcError> {
+                if (1..=9_007_199_254_740_991).contains(&value) {
+                    Ok(Self(value))
+                } else {
+                    Err(error::invalid(concat!("Expected ", $what), serde_json::Value::Null))
+                }
+            }
+
+            /// The number.
+            #[must_use]
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(formatter)
+            }
+        }
+
+        impl TryFrom<u64> for $name {
+            type Error = RpcError;
+
+            fn try_from(value: u64) -> Result<Self, Self::Error> {
+                Self::parse(value)
+            }
+        }
+
+        impl From<$name> for u64 {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+
+        impl From<$name> for crate::storage::Param<'_> {
+            fn from(value: $name) -> Self {
+                // At most 2^53 - 1, so it fits.
+                Self::Int(i64::try_from(value.0).unwrap_or(i64::MAX))
+            }
+        }
+    };
+}
+
+github_number!(
+    /// GitHub's ID for a repository.
+    RepositoryId, "a GitHub repository ID"
+);
+github_number!(
+    /// A pull request's number in its repository.
+    PullRequestNumber, "a pull request number"
+);
+
 /// Working State's revision: it advances by one with every write that changes it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]

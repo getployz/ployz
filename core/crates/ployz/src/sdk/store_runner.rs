@@ -482,7 +482,7 @@ fn targets(
         };
         targets.push(Target {
             service: source.service.clone(),
-            commit: Some(commit.clone()),
+            commit: Some(commit.to_string()),
             source: Some(checkout.clone()),
             upload: None,
             preferred_machine: source.preferred_machine,

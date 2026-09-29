@@ -272,7 +272,11 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
             crate::output::say!(
                 "== {} from {}: {:?}",
                 build.build.service,
-                build.build.commit.as_deref().unwrap_or("the upload"),
+                build
+                    .build
+                    .commit
+                    .as_ref()
+                    .map_or("the upload", ployz_store::CommitSha::as_str),
                 build.build.status
             );
             crate::output::say!("{}", build.log);

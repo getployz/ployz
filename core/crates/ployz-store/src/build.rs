@@ -3,6 +3,7 @@
 //! builds the same commit. Services without a source of their own build from the
 //! Deployment's upload. The runner reports each build's progress and log here.
 
+use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
 use std::collections::BTreeMap;
 
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
@@ -26,20 +27,19 @@ pub struct GitSource {
     /// Its runtime Service name.
     pub service: ServiceName,
     /// The GitHub repository, as `owner/name`.
-    pub repository: String,
+    pub repository: RepositoryName,
     /// GitHub's ID for it.
-    #[ts(type = "number")]
-    pub repository_id: u64,
+    pub repository_id: RepositoryId,
     /// How Cloud reads it.
     pub access: ServiceGitAccess,
     /// The branch it follows; none once it was disconnected.
-    pub branch: Option<String>,
+    pub branch: Option<BranchName>,
     /// The directory it builds from, inside the repository.
     pub root_dir: String,
     /// Its Dockerfile, relative to `root_dir`, when it builds from one.
     pub dockerfile_path: Option<String>,
     /// The commit it builds; none until pinned.
-    pub commit: Option<String>,
+    pub commit: Option<CommitSha>,
     /// The Builders its build tries, in turn: its Preferred Builder, then the
     /// Organization's Build Order.
     pub builders: Vec<Builder>,
@@ -102,7 +102,7 @@ pub struct BuildView {
     /// The Service's name when admitted.
     pub service: String,
     /// The commit it builds; none when it builds from the Deployment's upload.
-    pub commit: Option<String>,
+    pub commit: Option<CommitSha>,
     pub status: BuildStatus,
     /// Why it failed.
     pub message: Option<String>,
@@ -137,7 +137,7 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
-    commits: &BTreeMap<ServiceName, String>,
+    commits: &BTreeMap<ServiceName, CommitSha>,
 ) -> Result<Vec<GitSource>, RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
@@ -152,12 +152,6 @@ pub(crate) fn pin(
             return Err(error::invalid(
                 format!("This Deployment builds no Git Service {service}"),
                 json!({ "services": sources.iter().map(|source| &source.service).collect::<Vec<_>>() }),
-            ));
-        }
-        if !ployz_core::is_lower_hex(commit, 40) {
-            return Err(error::invalid(
-                "A pin is a full lowercase Git commit",
-                json!({ "service": service }),
             ));
         }
         tx.execute(
@@ -255,13 +249,14 @@ pub(crate) fn log(
 
 struct BuildRow {
     service: ServiceName,
-    commit: String,
+    /// None when it builds from the Deployment's upload.
+    commit: Option<CommitSha>,
     status: BuildStatus,
     message: String,
     log: String,
     /// The GitHub run it was handed to, if any.
     github: Option<GithubState>,
-    organization: String,
+    organization: OrganizationId,
 }
 
 impl BuildRow {
@@ -280,7 +275,7 @@ impl BuildRow {
                     | crate::deployment::TargetNode::Volume { .. } => None,
                 })
                 .unwrap_or_else(|| self.service.to_string()),
-            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+            commit: self.commit.clone(),
             status: self.status,
             message: (!self.message.is_empty()).then(|| self.message.clone()),
         }
@@ -299,7 +294,10 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
         let status = row.text(2)?;
         Ok(BuildRow {
             service: ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("build"))?,
-            commit: row.text(1)?.to_owned(),
+            commit: match row.text(1)? {
+                "" => None,
+                _ => Some(row.parse(1, "build commit")?),
+            },
             status: BuildStatus::ALL
                 .into_iter()
                 .find(|known| known.as_str() == status)
@@ -312,7 +310,7 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
                     Some(serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))?)
                 }
             },
-            organization: row.text(6)?.to_owned(),
+            organization: row.parse(6, "build")?,
         })
     })
     .collect()
@@ -347,7 +345,7 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
             continue;
         };
         (source.builders, source.preferred_machine) =
-            builders::walk(tx, &organization, &stored.environment, &service.id)?;
+            builders::walk(tx, organization.as_str(), &stored.environment, &service.id)?;
         sources.push(source);
     }
     Ok(sources)
@@ -371,11 +369,11 @@ fn source_of(
     };
     Some(GitSource {
         service: config.private_dns.clone(),
-        repository: repository.clone(),
-        repository_id: *repository_id,
+        repository: RepositoryName::parse(repository.as_str()).ok()?,
+        repository_id: RepositoryId::parse(*repository_id).ok()?,
         access: access.clone(),
         branch: match branch {
-            ServiceGitBranch::Connected { name } => Some(name.clone()),
+            ServiceGitBranch::Connected { name } => BranchName::parse(name.as_str()).ok(),
             ServiceGitBranch::Disconnected { .. } => None,
         },
         root_dir: root_dir.clone(),
@@ -386,9 +384,7 @@ fn source_of(
                 .clone()
                 .unwrap_or_else(|| "Dockerfile".into())
         }),
-        commit: row
-            .filter(|row| !row.commit.is_empty())
-            .map(|row| row.commit.clone()),
+        commit: row.and_then(|row| row.commit.clone()),
         builders: Vec::new(),
         preferred_machine: None,
         status: row.map(|row| row.status),
@@ -398,16 +394,14 @@ fn source_of(
     })
 }
 
-pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<String, RpcError> {
-    Ok(tx
-        .query(
-            "SELECT organization_id FROM config_deployment WHERE id = ?1",
-            &[id.as_str().into()],
-        )?
-        .first()
-        .ok_or_else(|| error::corrupt("Deployment"))?
-        .text(0)?
-        .to_owned())
+pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
+    tx.query(
+        "SELECT organization_id FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment"))?
+    .parse(0, "Deployment")
 }
 
 fn append(log: &mut String, more: &str) {
@@ -477,7 +471,7 @@ pub struct GithubRun {
     /// The workflow and branch its OIDC token must name.
     pub workflow_ref: String,
     /// The repository, as `owner/name` when dispatched.
-    pub repository: String,
+    pub repository: RepositoryName,
     #[ts(type = "number")]
     pub installation_id: u64,
 }
@@ -500,8 +494,18 @@ struct GithubState {
     checked_in_at: Option<u64>,
     /// How many `ployz build --events` lines it took.
     received: u64,
-    /// The platforms it built, once its final report came; empty: it failed.
-    platforms: Option<Vec<String>>,
+    /// How it ended, once its final report came.
+    ended: Option<RunEnd>,
+}
+
+/// How a GitHub run ended, as its final report says.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "end", rename_all = "snake_case")]
+pub enum RunEnd {
+    /// It built the image for these platforms.
+    Built { platforms: Vec<String> },
+    /// Its build failed.
+    Failed,
 }
 
 /// A Git build handed to GitHub, as Cloud follows it.
@@ -509,7 +513,7 @@ struct GithubState {
 pub struct GithubBuild {
     pub id: GithubBuildId,
     /// The Organization whose Servers receive its image.
-    pub organization: String,
+    pub organization: OrganizationId,
     pub status: BuildStatus,
     pub run: GithubRun,
     /// Set once the run checked in.
@@ -517,8 +521,8 @@ pub struct GithubBuild {
     /// When it checked in, in Unix seconds.
     #[ts(type = "number | null")]
     pub checked_in_at: Option<u64>,
-    /// The platforms it built, once its final report came; empty: it failed.
-    pub platforms: Option<Vec<String>>,
+    /// How it ended, once its final report came.
+    pub ended: Option<RunEnd>,
 }
 
 /// The claims of a GitHub Actions OIDC token Cloud verified, as GitHub sends them.
@@ -531,12 +535,12 @@ pub struct GithubClaims {
 }
 
 /// One batch of a run's log lines, starting at line `from`, and once its build
-/// ended, the platforms it built (empty: it failed).
+/// ended, how.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GithubReport {
     pub from: u64,
     pub lines: Vec<String>,
-    pub platforms: Option<Vec<String>>,
+    pub ended: Option<RunEnd>,
 }
 
 /// How a GitHub build ended.
@@ -608,7 +612,7 @@ impl BuildRow {
             run: github.run.clone(),
             grant: github.grant.clone(),
             checked_in_at: github.checked_in_at,
-            platforms: github.platforms.clone(),
+            ended: github.ended.clone(),
         })
     }
 
@@ -648,7 +652,7 @@ pub(crate) fn github_dispatched(
         grant: None,
         checked_in_at: None,
         received: 0,
-        platforms: None,
+        ended: None,
     };
     save_github(tx, id, BuildStatus::Building, "", &log, Some(&github))
 }
@@ -704,12 +708,15 @@ pub(crate) fn github_input(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     sealing: &crate::SealingKey,
-) -> Result<(serde_json::Value, String, Option<serde_json::Value>), RpcError> {
+) -> Result<(serde_json::Value, CommitSha, Option<serde_json::Value>), RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
+    let commit = row
+        .commit
+        .ok_or_else(|| error::corrupt("GitHub build commit"))?;
     let input = deployment::input(tx, &stored, sealing)?;
     let receipt = deployment::receipts(tx, &stored.environment)?.remove(&id.service);
-    Ok((input, row.commit, receipt))
+    Ok((input, commit, receipt))
 }
 
 /// Run `run_id` checked in and got `grant`: the build starts. Accepted once, while
@@ -754,7 +761,7 @@ pub(crate) fn github_report(
     if github.grant.is_none() {
         return Err(error::conflict("This build has not checked in", json!({})));
     }
-    if github.platforms.is_some() {
+    if github.ended.is_some() {
         return Err(error::conflict("This build already ended", json!({})));
     }
     if report.from > github.received {
@@ -773,7 +780,7 @@ pub(crate) fn github_report(
     }
     let mut github = github.clone();
     github.received = github.received.max(report.from + report.lines.len() as u64);
-    github.platforms.clone_from(&report.platforms);
+    github.ended.clone_from(&report.ended);
     save_github(tx, id, row.status, &row.message, &log, Some(&github))?;
     Ok(github.received)
 }

@@ -63,7 +63,9 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let store = store::store(root)?;
     let created = if let Some(repo) = matches.get_one::<String>("repo") {
         let (repository, branch) = match repo.split_once('@') {
-            Some((repository, branch)) => (repository, Some(branch.to_owned())),
+            Some((repository, branch)) => {
+                (repository, Some(ployz_store::BranchName::parse(branch)?))
+            }
             None => (repo.as_str(), None),
         };
         let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
@@ -72,7 +74,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
                 id,
                 environment,
                 name: name.clone(),
-                repository: repository.to_owned(),
+                repository: ployz_store::RepositoryName::parse(repository)?,
                 branch,
             })
             .map_err(store::failed(matches, &words))?

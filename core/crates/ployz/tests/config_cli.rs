@@ -249,11 +249,11 @@ static UPLOADS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
 fn github() -> Trusted {
     Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
-            branches: vec!["dev".into()],
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
+            branches: vec![ployz_store::BranchName::parse("dev").unwrap()],
         }],
         ..Trusted::default()
     }

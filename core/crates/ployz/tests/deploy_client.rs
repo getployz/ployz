@@ -1267,10 +1267,10 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         .unwrap();
     let trusted = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
             branches: Vec::new(),
         }],
         ..Trusted::default()
@@ -1282,7 +1282,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
                 id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
-                repository: "acme/web".into(),
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
                 branch: None,
             },
             &trusted,
@@ -1313,7 +1313,14 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         .unwrap();
     let web = ployz_core::ServiceName::parse("web").unwrap();
     store
-        .pin(&id, &[(web.clone(), "a".repeat(40))].into())
+        .pin(
+            &id,
+            &[(
+                web.clone(),
+                ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
+            )]
+            .into(),
+        )
         .unwrap();
     let build = GithubBuildId {
         deployment: id.clone(),

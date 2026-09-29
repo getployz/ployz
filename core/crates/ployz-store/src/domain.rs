@@ -248,12 +248,32 @@ pub enum DomainAction {
 /// One DNS record to create at the domain's DNS provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DnsRecord {
-    /// `CNAME`, `A` or `AAAA`.
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: DnsRecordKind,
     /// Relative to the registrable domain; `@` is its apex.
     pub name: String,
     pub value: String,
+}
+
+/// The kind of a DNS record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub enum DnsRecordKind {
+    #[serde(rename = "CNAME")]
+    Cname,
+    #[serde(rename = "A")]
+    A,
+    #[serde(rename = "AAAA")]
+    Aaaa,
+}
+
+impl std::fmt::Display for DnsRecordKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Cname => "CNAME",
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+        })
+    }
 }
 
 pub(crate) fn add_domain(
@@ -812,7 +832,7 @@ fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord>
         && name != "@"
     {
         return vec![DnsRecord {
-            kind: "CNAME".into(),
+            kind: DnsRecordKind::Cname,
             name,
             value: cluster.name.to_string(),
         }];
@@ -821,7 +841,11 @@ fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord>
         .ingress_addresses
         .iter()
         .map(|address| DnsRecord {
-            kind: if address.contains(':') { "AAAA" } else { "A" }.into(),
+            kind: if address.contains(':') {
+                DnsRecordKind::Aaaa
+            } else {
+                DnsRecordKind::A
+            },
             name: name.clone(),
             value: address.clone(),
         })
@@ -885,7 +909,7 @@ mod tests {
             action,
             Some(DomainAction::Dns {
                 records: vec![DnsRecord {
-                    kind: "CNAME".into(),
+                    kind: DnsRecordKind::Cname,
                     name: "app".into(),
                     value: "acme.ployz.app".into(),
                 }]
@@ -920,8 +944,8 @@ mod tests {
             panic!("expected DNS records");
         };
         assert_eq!(
-            records.first().map(|record| record.kind.as_str()),
-            Some("A")
+            records.first().map(|record| record.kind),
+            Some(DnsRecordKind::A)
         );
         assert_eq!(
             records.first().map(|record| record.name.as_str()),
