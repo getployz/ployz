@@ -1,8 +1,8 @@
 //! `ployz deploy` and `ployz deployment`: ship an Environment from the Config Store,
-//! and read, retry, start and cancel its Deployments. Cloud's runner runs a Deployment admitted over HTTPS,
-//! and `deploy` follows it until it ends. With the hidden in-process Store this CLI
-//! is the Deployment's runner: it claims it, prepares and confirms it on the
-//! Cluster, and records what happened.
+//! and read, retry, start and cancel its Deployments. Cloud's runner runs a
+//! Deployment admitted over HTTPS, and `deploy` follows it until it ends. With the
+//! hidden in-process Store this CLI is the Deployment's runner: it claims it,
+//! prepares and confirms it on the Cluster, and records what happened.
 
 use std::io::Write as _;
 use std::time::Duration;
