@@ -32,6 +32,7 @@ const notOrganizationOwned = {
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
   config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
   config_migration: "The Config Store's applied migrations.",
+  config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;

@@ -44,6 +44,7 @@ async fn ployz_build_pushes_into_a_machine_with_a_build_grant() {
             deployment: deployment.clone(),
             sources: BTreeMap::from([(app.clone(), root.path().to_owned())]),
             source_commits: BTreeMap::from([(app.clone(), commit.clone())]),
+            uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,

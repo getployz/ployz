@@ -14,11 +14,13 @@ use ployz_core::config::{
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, ExecutionError, Namespace, RpcError, ServiceName,
 };
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::command::Admit;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
 use crate::registry;
@@ -95,6 +97,45 @@ pub struct DeploymentSummary {
     pub services: Vec<ServiceName>,
     /// The runner that claimed it.
     pub runner: Option<RunnerId>,
+    /// What its Services without a source of their own build from.
+    pub upload: Option<UploadedSource>,
+}
+
+/// An Uploaded Source: a directory's content, identified by its digest and never by
+/// a commit. Services without a source of their own build from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UploadedSource {
+    /// Lowercase hex sha256 of the uploaded paths, bytes, modes and links.
+    pub digest: String,
+    /// The commit the directory was checked out at, if it was a Git checkout.
+    /// Provenance only: it never identifies the build.
+    #[serde(default)]
+    pub base: Option<UploadBase>,
+}
+
+/// Where an upload came from: "base abc123", plus "+ changes" when it differs from it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct UploadBase {
+    pub commit: String,
+    /// Whether the directory held changes the commit doesn't.
+    pub changed: bool,
+}
+
+impl UploadedSource {
+    pub(crate) fn check(&self) -> Result<(), RpcError> {
+        let base = self.base.as_ref();
+        if ployz_core::is_lower_hex(&self.digest, 64)
+            && base.is_none_or(|base| ployz_core::is_lower_hex(&base.commit, 40))
+        {
+            return Ok(());
+        }
+        Err(error::invalid(
+            "An upload names a lowercase sha256 digest and a full lowercase Git commit",
+            json!({ "upload": self }),
+        ))
+    }
 }
 
 /// A Deployment with its recorded Deploy Preview and every Node Outcome.
@@ -163,13 +204,22 @@ pub enum RunEvidence {
     /// The runner stopped without knowing whether it executed: the outcome is unknown
     /// once it recorded a Deploy Preview, and nothing executed before that.
     Abandoned,
+    /// The build receipts preparation produced, by runtime Service name. Each replaces
+    /// that Service's latest receipt in the Environment.
+    Built(BTreeMap<ServiceName, Value>),
 }
 
 /// A claimed Deployment and the frozen Deploy Intent its runner executes.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Claimed {
     pub deployment: DeploymentSummary,
+    /// Services without a source of their own are left out; they build from
+    /// `deployment.upload` through the SDK's preparation of `input`.
     pub intent: DeployIntent,
+    /// The lowering input `intent` came from: what SDK preparation takes.
+    pub input: Value,
+    /// The latest build receipt of each Service, by runtime name: hints preparation verifies.
+    pub receipts: BTreeMap<ServiceName, Value>,
 }
 
 /// One node a Deployment targets, as frozen at admission.
@@ -213,7 +263,7 @@ struct Stored {
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run";
+     namespace, run, upload";
 
 /// Freeze a Deployment of `saved`: its target nodes, checked to lower to a Deploy
 /// Intent. `services` narrows it; none targets every Service, including the removal
@@ -277,7 +327,7 @@ fn lower(
     services: &[ServiceName],
     namespace: Namespace,
     unseal: Option<&SealingKey>,
-) -> Result<DeployIntent, RpcError> {
+) -> Result<(Value, DeployIntent), RpcError> {
     let compiled = compile_environment_intent(environment.as_str(), saved.clone());
     let mut resolved = variables::resolve(&compiled, unseal)?;
     let snapshots: Vec<Value> = compiled
@@ -310,14 +360,15 @@ fn lower(
         "lineages": lineages,
         "selected": selected,
     });
-    lower_deployment(serde_json::from_value(input).expect("lowering input is valid")).map_err(
-        |error| {
+    let intent =
+        lower_deployment(serde_json::from_value(input.clone()).expect("lowering input is valid"))
+            .map_err(|error| {
             error::invalid(
                 format!("This Environment can't deploy: {}", error.message),
                 json!({ "path": error.path }),
             )
-        },
-    )
+        })?;
+    Ok((input, intent))
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
@@ -325,13 +376,32 @@ fn lower(
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &DeploymentId,
+    admit: &Admit,
     environment: &EnvironmentId,
     saved: Revision,
-    services: &[ServiceName],
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
+    let (id, services) = (&admit.id, &admit.services);
     let environment_id = environment.as_str();
+    // Without a new upload, Services without a source keep building from the latest one.
+    let upload = match &admit.upload {
+        Some(upload) => {
+            upload.check()?;
+            Some(upload.clone())
+        }
+        None => match tx
+            .query(
+                "SELECT upload FROM config_deployment \
+                 WHERE environment_id = ?1 AND upload <> 'null' ORDER BY number DESC LIMIT 1",
+                &[environment_id.into()],
+            )?
+            .first()
+        {
+            Some(row) => serde_json::from_str(row.text(0)?)
+                .map_err(|_| error::corrupt("Deployment upload"))?,
+            None => None,
+        },
+    };
     tx.execute(
         "UPDATE config_deployment SET status = 'superseded' \
          WHERE environment_id = ?1 AND status = 'queued'",
@@ -353,12 +423,13 @@ pub(crate) fn admit(
         saved,
         services: services.to_vec(),
         runner: None,
+        upload,
     };
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10)",
+          namespace, run, credentials, upload) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -370,6 +441,7 @@ pub(crate) fn admit(
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
+            json_text(&summary.upload).as_str().into(),
         ],
     )?;
     Ok(summary)
@@ -489,7 +561,7 @@ pub(crate) fn claim(
         }
     }
     let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-    let mut intent = lower(
+    let (input, mut intent) = lower(
         &stored.environment,
         &saved,
         &stored.summary.services,
@@ -508,9 +580,24 @@ pub(crate) fn claim(
             serde_json::from_str(text).map_err(|_| error::corrupt("Deployment credentials"))
         })?;
     intent.registry_auth = registry::unseal(credentials, sealing)?;
+    let receipts = tx
+        .query(
+            "SELECT service, receipt FROM config_build_receipt WHERE environment_id = ?1",
+            &[stored.environment.as_str().into()],
+        )?
+        .iter()
+        .map(|row| {
+            Ok((
+                ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?,
+                serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?,
+            ))
+        })
+        .collect::<Result<_, RpcError>>()?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
+        input,
+        receipts,
     }))
 }
 
@@ -598,6 +685,25 @@ pub(crate) fn record(
                 DeploymentStatus::Failed
             };
             finish(tx, stored, outcome, status)
+        }
+        RunEvidence::Built(receipts) => {
+            running(&stored)?;
+            for (service, receipt) in &receipts {
+                if !receipt.is_object() {
+                    return Err(invalid_evidence("build receipt"));
+                }
+                tx.execute(
+                    "INSERT INTO config_build_receipt (environment_id, service, receipt) \
+                     VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, service) \
+                     DO UPDATE SET receipt = excluded.receipt",
+                    &[
+                        stored.environment.as_str().into(),
+                        service.as_str().into(),
+                        json_text(receipt).as_str().into(),
+                    ],
+                )?;
+            }
+            Ok(stored.summary)
         }
         RunEvidence::NotExecuted(reason) => {
             let reason = reason.chars().take(500).collect();
@@ -861,6 +967,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             services: serde_json::from_value(json(5, "Deployment")?)
                 .map_err(|_| error::corrupt("Deployment"))?,
             runner: None,
+            upload: serde_json::from_value(json(9, "Deployment upload")?)
+                .map_err(|_| error::corrupt("Deployment upload"))?,
         },
         environment: parse_stored(row.text(1)?)?,
         nodes: serde_json::from_value(json(6, "Deployment")?)

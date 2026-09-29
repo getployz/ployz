@@ -186,6 +186,7 @@ async fn prepare(
             deployment,
             sources: BTreeMap::from([(name.clone(), root.to_owned())]),
             source_commits: BTreeMap::from([(name, "a".repeat(40))]),
+            uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
