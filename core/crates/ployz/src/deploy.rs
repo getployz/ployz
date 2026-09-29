@@ -20,7 +20,9 @@ mod progress;
 mod render;
 mod report;
 
-pub(crate) use apply::{ConfirmGate, apply_requested, deploy_scale, emit_outcome};
+pub(crate) use apply::{
+    ApplyError, ConfirmGate, apply_requested, deploy_scale, emit_outcome, execute,
+};
 pub use pipeline::DeployError;
 pub(crate) use planning::capacity::endpoint_capacity_error;
 pub use planning::{

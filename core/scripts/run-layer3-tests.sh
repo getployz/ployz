@@ -75,6 +75,10 @@ run_suite workflow_layer3 cargo test --locked --no-fail-fast --package ployz \
     --test workflow_layer3 \
     -- --ignored --test-threads=1
 
+run_suite store_deploy_cluster cargo test --locked --no-fail-fast --package ployz \
+    --test store_deploy_cluster \
+    -- --ignored --test-threads=1
+
 # Ten certificate cases at 15-180 seconds each; about 15 minutes locally.
 SUITE_TIMEOUT=20m run_suite certificates_cluster cargo test --locked --no-fail-fast --package ployz \
     --test certificates_cluster \

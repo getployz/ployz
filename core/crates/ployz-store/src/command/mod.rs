@@ -2,6 +2,7 @@
 //! [`Command`] variant, one [`Written`] variant, one arm in [`run`], and a typed
 //! method on [`ConfigStore`](crate::ConfigStore) that calls the same function.
 
+mod admit;
 mod edit;
 mod project;
 mod review;
@@ -13,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+pub use admit::Admit;
+pub(crate) use admit::admit;
 pub(crate) use edit::edit;
 pub use edit::{Change, Edit, Edited};
 pub use project::{
@@ -45,6 +48,7 @@ pub enum Command {
     Publish(Publish),
     /// Return Working State, or part of it, to what is deployed.
     Discard(Discard),
+    Admit(Admit),
 }
 
 impl Command {
@@ -57,6 +61,7 @@ impl Command {
             }
             Self::CreateEnvironment(create) => vec![create.id.as_str()],
             Self::CreateService(create) => vec![create.id.as_str()],
+            Self::Admit(admit) => vec![admit.id.as_str()],
             Self::Edit(_) | Self::Publish(_) | Self::Discard(_) => Vec::new(),
         }
     }
@@ -79,6 +84,8 @@ pub enum Written {
     Published(Published),
     /// Changes were discarded.
     Discarded(Discarded),
+    /// A Deployment admitted, or what its runner recorded.
+    Deployment(crate::DeploymentSummary),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: &Command) -> Result<Written, RpcError> {
@@ -91,6 +98,7 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: &Command) -> Result<Wri
         Command::Edit(edit) => self::edit(tx, who, edit).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
+        Command::Admit(request) => admit(tx, who, request).map(Written::Deployment),
     }
 }
 

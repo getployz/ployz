@@ -4,10 +4,11 @@
 use clap::{Arg, ArgMatches};
 use ployz_core::{RpcError, RpcErrorCode};
 use ployz_store::{
-    Actor, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService, DiffQuery,
-    DiffView, Discard, Discarded, Edit, Edited, EnvironmentCreated, EnvironmentName,
-    EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId, ProjectCreated, ProjectName,
-    Publish, Published, Query, ServiceCreated,
+    Actor, Admit, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
+    DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery,
+    DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited, EnvironmentCreated,
+    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId, PlanQuery,
+    PlanView, ProjectCreated, ProjectName, Publish, Published, Query, ServiceCreated,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -128,6 +129,38 @@ impl Store {
     pub(crate) fn edit(&self, edit: &Edit) -> Result<Edited, StoreCallError> {
         let request = Command::Edit(edit.clone());
         self.call("write", &request, |store, who| store.edit(who, edit))
+    }
+
+    pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        let request = Command::Admit(admit.clone());
+        self.call("write", &request, |store, who| store.admit(who, admit))
+    }
+
+    pub(crate) fn plan(&self, query: &PlanQuery) -> Result<PlanView, StoreCallError> {
+        let request = Query::Plan(query.clone());
+        self.call("read", &request, |store, who| store.plan(who, query))
+    }
+
+    pub(crate) fn deployments(
+        &self,
+        query: &DeploymentsQuery,
+    ) -> Result<DeploymentsView, StoreCallError> {
+        let request = Query::Deployments(query.clone());
+        self.call("read", &request, |store, who| store.deployments(who, query))
+    }
+
+    pub(crate) fn deployment(&self, id: &DeploymentId) -> Result<DeploymentView, StoreCallError> {
+        let request = Query::Deployment(DeploymentQuery { id: id.clone() });
+        self.call("read", &request, |store, who| store.deployment(who, id))
+    }
+
+    /// The in-process Store, which only the hidden test mode has: there this CLI
+    /// runs Deployments itself. `claim` and `record` never cross HTTPS.
+    pub(crate) fn local(&self) -> Option<&ConfigStore> {
+        match self {
+            Self::Local(store, _) => Some(store),
+            Self::Cloud(..) => None,
+        }
     }
 
     /// Run in-process, or send `request` to Cloud's `read` or `write`. Cloud answers

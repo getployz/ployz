@@ -322,7 +322,7 @@ fn an_agent_reviews_publishes_and_discards() {
         );
         assert_eq!(
             diff.get("next"),
-            Some(&json!(format!("ployz publish --version {version}")))
+            Some(&json!(format!("ployz deploy --expect-version {version}")))
         );
 
         // A review taken before another edit is stale.
@@ -339,9 +339,15 @@ fn an_agent_reviews_publishes_and_discards() {
         let published = ok(store, &["publish", "--version", fresh]);
         assert_eq!(published.get("saved"), Some(&json!(1)));
         assert_eq!(published.get("created"), Some(&json!(true)));
+        assert_eq!(published.get("next"), Some(&json!("ployz deploy")));
         let diff = ok(store, &["diff"]);
         assert_eq!(diff.get("published"), Some(&json!(true)));
-        assert_eq!(diff.get("next"), None, "nothing left to publish");
+        let version = diff["version"].as_str().unwrap();
+        assert_eq!(
+            diff.get("next"),
+            Some(&json!(format!("ployz deploy --expect-version {version}"))),
+            "published is not yet deployed"
+        );
 
         // The Service is published but not deployed: discarding it unpublishes it too.
         let discarded = ok(store, &["discard", "web"]);
@@ -558,4 +564,73 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
         json.pointer("/error/details/next"),
         Some(&json!("ployz login"))
     );
+}
+
+#[test]
+fn an_agent_plans_deploys_and_reads_the_deployment() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        ok(store, &["service", "add", "api", "--image", "nginx:1"]);
+
+        let plan = ok(store, &["deploy", "web", "--plan"]);
+        let version = plan["version"].as_str().unwrap().to_owned();
+        assert_eq!(plan["namespace"], json!("shop-production"));
+        assert_eq!(plan["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(plan["unresolved"], json!(["operations"]));
+        assert_eq!(
+            plan["next"],
+            json!(format!("ployz deploy web --expect-version {version}"))
+        );
+        assert_eq!(
+            error(store, &["deploy", "nope", "--plan"])["code"],
+            json!("not_found")
+        );
+
+        // A review taken before another edit is stale.
+        ok(store, &["set", "web.replicas=2"]);
+        let stale = error(store, &["deploy", "--expect-version", &version]);
+        assert_eq!(stale["code"], json!("conflict"));
+        assert_eq!(stale["details"]["next"], json!("ployz diff"));
+
+        let (code, deployed) = ployz(
+            Some(store),
+            &[
+                "deploy",
+                "--connect",
+                "tcp://127.0.0.1:1",
+                "--ssh-timeout",
+                "1",
+            ],
+        );
+        assert_eq!(deployed["saved"], json!(1));
+        match store {
+            // The CLI runs it: no Server answers, so it records that nothing ran.
+            Target::Local(_) => {
+                assert_eq!(code, Some(3), "{deployed}");
+                assert_eq!(deployed["status"], json!("failed"));
+                assert_eq!(deployed["outcome"]["type"], json!("not_executed"));
+                assert_eq!(deployed["nodes"][0]["outcome"], json!("not_applied"));
+            }
+            // Cloud's runner runs it; the CLI only admits it.
+            Target::Cloud { .. } => {
+                assert_eq!(code, Some(0), "{deployed}");
+                assert_eq!(deployed["status"], json!("queued"));
+                assert_eq!(deployed["nodes"][0]["outcome"], json!("pending"));
+            }
+        }
+        let id = deployed["id"].as_str().unwrap().to_owned();
+        assert_eq!(
+            deployed["next"],
+            json!(format!("ployz deployment show {id}"))
+        );
+
+        let shown = ok(store, &["deployment", "show", &id]);
+        assert_eq!(shown["id"], json!(id));
+        assert_eq!(shown.get("next"), None);
+        let listed = ok(store, &["deployment", "ls", "--limit", "1"]);
+        assert_eq!(listed["deployments"][0]["id"], json!(id));
+        assert_eq!(listed["next_cursor"], Value::Null);
+        failed(store, &["deployment", "show", "not-an-id"], 2);
+    }
 }
