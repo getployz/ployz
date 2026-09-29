@@ -11,9 +11,9 @@ use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
     CreateService, CreateVolume, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
-    EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, OrganizationId,
-    ProjectId, ProjectName, RunEvidence, RunnerId, ServiceId, ServiceQuery, SettingPath,
-    SetupCommand, Trusted, UpdateBranch, VolumeId, VolumeName,
+    EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, Move, MoveQuery,
+    OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, ServiceId, ServiceQuery,
+    SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -458,21 +458,21 @@ fn a_branch_uses_what_its_parent_runs_live_down_the_tree() {
 fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_state() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, true);
-    let made = store
+    store
         .create_branch(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
-    let update = UpdateBranch {
-        environment: at("fix-web"),
-        expect: None,
+    let update = Move {
+        into: Some(at("fix-web")),
+        ..Move::default()
     };
     // Never deployed: it doesn't run its Working State yet.
     assert_eq!(
-        code(store.update_branch(&who, &update)),
+        code(store.move_changes(&who, &update)),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 2, true);
     assert_eq!(
-        store.update_branch(&who, &update).unwrap_err().message,
+        store.move_changes(&who, &update).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -497,13 +497,39 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     deploy(&store, &who, "production", 3, true);
     let mut pending = view(&store).update;
     pending.sort();
-    assert_eq!(pending, ["web.source.image", "web.variables.NEW"]);
+    assert_eq!(pending, ["web.env.NEW", "web.image"]);
 
-    let stale = UpdateBranch {
-        environment: at("fix-web"),
-        expect: Some(made.branch.environment.revision),
+    let review = store
+        .move_view(
+            &who,
+            &MoveQuery {
+                into: Some(at("fix-web")),
+                ..MoveQuery::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(review.from.name.as_str(), "production");
+    let stale = Move {
+        version: Some("0:0".into()),
+        ..update.clone()
     };
-    assert!(store.update_branch(&who, &stale).is_ok());
+    assert_eq!(
+        code(store.move_changes(&who, &stale)),
+        RpcErrorCode::Conflict
+    );
+    let reviewed = Move {
+        version: Some(review.version),
+        ..update.clone()
+    };
+    assert_eq!(
+        store
+            .move_changes(&who, &reviewed)
+            .unwrap()
+            .into
+            .name
+            .as_str(),
+        "fix-web"
+    );
     let web = values(&store, &who, "fix-web", "web");
     assert_eq!(
         (web["image"].clone(), web["env"]["NEW"].clone()),
@@ -512,12 +538,12 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     // The base advanced: nothing left, and the change waits for a Deploy.
     assert!(view(&store).update.is_empty());
     assert_eq!(
-        code(store.update_branch(&who, &update)),
+        code(store.move_changes(&who, &update)),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 4, true);
     assert_eq!(
-        store.update_branch(&who, &update).unwrap_err().message,
+        store.move_changes(&who, &update).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -526,7 +552,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     deploy(&store, &who, "fix-web", 5, false);
     assert!(
         store
-            .update_branch(&who, &update)
+            .move_changes(&who, &update)
             .unwrap_err()
             .message
             .contains("aren't deployed")
@@ -676,4 +702,190 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
             .is_empty()
     );
     assert!(!store.keep_branch(&who, &keep(false)).unwrap().branch.kept);
+}
+
+fn save(picks: &[(&str, Option<&str>)], version: Option<&str>) -> Move {
+    Move {
+        from: Some(at("fix-web")),
+        picks: (!picks.is_empty()).then(|| {
+            picks
+                .iter()
+                .map(|(row, choice)| ployz_store::MovePick {
+                    row: (*row).to_owned(),
+                    choice: choice.map(|choice| serde_json::from_value(json!(choice)).unwrap()),
+                })
+                .collect()
+        }),
+        version: version.map(str::to_owned),
+        ..Move::default()
+    }
+}
+
+#[test]
+fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, true);
+    store
+        .create_branch(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+    set(
+        &store,
+        &who,
+        "fix-web",
+        &[
+            ("web.image", json!("web:2")),
+            ("web.env.NEW", json!("1")),
+            ("web.env.API_KEY", json!({ "secret": "branch-secret" })),
+        ],
+    );
+    // The Parent changed the image too: saving it overwrites that.
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.env.OWN", json!("mine"))],
+    );
+    set(
+        &store,
+        &who,
+        "production",
+        &[("web.image", json!("web:hot"))],
+    );
+    let query = MoveQuery {
+        from: Some(at("fix-web")),
+        ..MoveQuery::default()
+    };
+    let review = store.move_view(&who, &query).unwrap();
+    assert_eq!(review.into.name.as_str(), "production");
+    let rows: Vec<(&str, bool)> = review
+        .rows
+        .iter()
+        .map(|row| (row.row.as_str(), row.conflict))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            ("web.env.API_KEY", false),
+            ("web.env.NEW", false),
+            ("web.image", true)
+        ]
+    );
+    let image = &review.rows[2];
+    assert_eq!(
+        (&image.from, &image.into),
+        (&json!("web:2"), &json!("web:hot"))
+    );
+    // A Branch's own new secret never moves by default: it wants a fresh value.
+    let token = &review.rows[0];
+    assert_eq!(token.from, json!({ "secret": true }));
+    let choice = token.choice.as_ref().unwrap();
+    assert!(choice.secret);
+    assert_eq!(json!(choice.default), json!("new"));
+    let refused = store.move_changes(&who, &save(&[], None)).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(refused.details["rows"], json!(["web.env.API_KEY"]));
+    assert_eq!(
+        code(store.move_changes(&who, &save(&[("nope", None)], None))),
+        RpcErrorCode::NotFound
+    );
+    assert_eq!(
+        code(store.move_changes(&who, &save(&[("web.image", Some("from"))], None))),
+        RpcErrorCode::InvalidArgument
+    );
+    // Only a Branch saves, into its own Parent.
+    let root = Move {
+        from: Some(at("production")),
+        ..Move::default()
+    };
+    assert_eq!(
+        code(store.move_changes(&who, &root)),
+        RpcErrorCode::InvalidArgument
+    );
+
+    // A review goes stale when the Parent moves on; nothing lands.
+    set(&store, &who, "production", &[("web.replicas", json!(2))]);
+    let stale = save(&[("web.image", None)], Some(&review.version));
+    assert_eq!(
+        code(store.move_changes(&who, &stale)),
+        RpcErrorCode::Conflict
+    );
+    assert_eq!(
+        values(&store, &who, "production", "web")["image"],
+        json!("web:hot")
+    );
+
+    let version = store.move_view(&who, &query).unwrap().version;
+    let saved = store
+        .move_changes(
+            &who,
+            &save(
+                &[("web.image", None), ("web.env.NEW", None)],
+                Some(&version),
+            ),
+        )
+        .unwrap();
+    assert_eq!(saved.staged, ["web"]);
+    assert_eq!(saved.branch.environment.name.as_str(), "fix-web");
+    let web = values(&store, &who, "production", "web");
+    assert_eq!(
+        (
+            &web["image"],
+            &web["env"]["NEW"],
+            &web["env"]["OWN"],
+            web["replicas"].clone()
+        ),
+        (&json!("web:2"), &json!("1"), &json!("mine"), json!(2))
+    );
+    // The unpicked secret stays in the Branch and still moves later.
+    let rows = store.move_view(&who, &query).unwrap().rows;
+    assert_eq!(
+        rows.iter().map(|row| row.row.as_str()).collect::<Vec<_>>(),
+        ["web.env.API_KEY"]
+    );
+    let input = deploy(&store, &who, "production", 2, true);
+    assert!(
+        snapshot(&input, &uuid(3))["resolvedEnv"]
+            .get("API_KEY")
+            .is_none()
+    );
+    // Picked `from`, the Branch's sealed value lands as it is.
+    store
+        .move_changes(&who, &save(&[("web.env", Some("from"))], None))
+        .unwrap();
+    let input = deploy(&store, &who, "production", 3, true);
+    assert_eq!(
+        snapshot(&input, &uuid(3))["resolvedEnv"]["API_KEY"],
+        "branch-secret"
+    );
+    assert_eq!(
+        store
+            .move_changes(&who, &save(&[], None))
+            .unwrap_err()
+            .message,
+        "Nothing to save into production"
+    );
+
+    // No Save from a Branch on its way off the Servers.
+    set(&store, &who, "fix-web", &[("web.env.LATE", json!("1"))]);
+    deploy(&store, &who, "fix-web", 4, true);
+    store
+        .admit(
+            &who,
+            &Admit {
+                id: DeploymentId::parse(uuid(90)).unwrap(),
+                environment: at("fix-web"),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: None,
+                remove: true,
+                accept_volume_loss: Vec::new(),
+            },
+            &Trusted::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        code(store.move_changes(&who, &save(&[], None))),
+        RpcErrorCode::Conflict
+    );
 }
