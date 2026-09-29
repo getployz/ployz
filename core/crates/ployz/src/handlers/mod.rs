@@ -15,6 +15,7 @@ pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
 pub(crate) mod env;
+pub(crate) mod github;
 pub(crate) mod ingress;
 pub(crate) mod login;
 mod operator;
@@ -261,6 +262,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("env", rest) => env::handler(rest),
         ("explain", "") => Some((catalog::explain, Json::Supported)),
         ("get", "") => Some((config::get, Json::Supported)),
+        ("github", rest) => github::handler(rest),
         ("ingress", rest) => ingress::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),

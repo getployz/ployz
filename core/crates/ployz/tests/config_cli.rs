@@ -13,7 +13,8 @@ use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
 use ployz_core::RpcError;
-use ployz_store::{Actor, ConfigStore, OrganizationId};
+use ployz_core::config::ServiceGitAccess;
+use ployz_store::{Actor, AuthorizedRepository, ConfigStore, OrganizationId, Trusted};
 use serde_json::{Value, json};
 
 /// Where the CLI's Config Store is.
@@ -98,6 +99,7 @@ fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
 
 /// Cloud's `/api/config` contract over one in-memory Store: the bearer
 /// `ployz_<org>` acts in Organization `<org>`; any other caller is refused 401.
+/// Its GitHub: installation 7 grants `acme/web`, with branches `main` and `dev`.
 fn fake_cloud() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -140,8 +142,28 @@ fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
             answer(store.read(&who, &serde_json::from_slice(&body).unwrap()))
         }
         (Some(who), "/api/config/write") => {
-            answer(store.write(&who, &serde_json::from_slice(&body).unwrap()))
+            answer(store.write_trusted(&who, &serde_json::from_slice(&body).unwrap(), &github()))
         }
+        (Some(_), "/api/cli/github") => (
+            200,
+            json!({
+                "install_url": "https://github.com/apps/ployz/installations/new",
+                "linked": true, "ready": true,
+                "installations": [{ "id": 7, "account": "acme", "account_type": "Organization", "repositories": 1 }],
+                "repositories": [{ "repository": "acme/web", "private": true, "default_branch": "main", "installation": 7 }],
+            }),
+        ),
+        (Some(_), "/api/cli/github/branches?repository=acme/web") => (
+            200,
+            json!({ "repository": "acme/web", "access": "installation", "default_branch": "main", "branches": ["dev", "main"] }),
+        ),
+        (Some(_), "/api/cli/github/7") => (
+            200,
+            json!({
+                "disconnected": { "id": 7, "account": "acme" },
+                "uninstall_url": "https://github.com/organizations/acme/settings/installations/7",
+            }),
+        ),
         (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
     };
     let reply = reply.to_string();
@@ -150,6 +172,18 @@ fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
         "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
         reply.len()
     )
+}
+
+fn github() -> Trusted {
+    Trusted {
+        repositories: vec![AuthorizedRepository {
+            repository: "acme/web".into(),
+            repository_id: 11,
+            access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
+            default_branch: "main".into(),
+            branches: vec!["dev".into()],
+        }],
+    }
 }
 
 fn answer<T: serde::Serialize>(result: Result<T, RpcError>) -> (u16, Value) {
@@ -537,4 +571,75 @@ fn cloud_answers_only_a_credential_in_its_own_organization() {
         json.pointer("/error/details/next"),
         Some(&json!("ployz login"))
     );
+}
+
+#[test]
+fn a_repository_service_is_checked_by_cloud() {
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        if let Target::Local(_) = store {
+            // The hidden local Store can't ask GitHub, so it connects no repository.
+            let refused = error(store, &["service", "add", "web", "--repo", "acme/web"]);
+            assert_eq!(refused["code"], "not_found", "{refused}");
+            assert_eq!(refused["details"]["next"], "ployz github connect");
+            continue;
+        }
+        let created = ok(store, &["service", "add", "web", "--repo", "acme/web@dev"]);
+        assert!(
+            created["staged"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("web.branch")),
+            "{created}"
+        );
+        let got = ok(store, &["get", "web"]);
+        assert_eq!(got["values"]["repository"], "acme/web");
+        assert_eq!(got["values"]["branch"], "dev");
+
+        let gone = error(store, &["service", "add", "api", "--repo", "acme/web@gone"]);
+        assert_eq!(
+            gone["details"]["next"], "ployz github ls acme/web",
+            "{gone}"
+        );
+        assert!(!gone.to_string().contains("gone"), "{gone}");
+        let other = error(store, &["service", "add", "api", "--repo", "acme/other"]);
+        assert_eq!(other["details"]["next"], "ployz github connect", "{other}");
+        let usage = failed(
+            store,
+            &[
+                "service", "add", "api", "--repo", "acme/web", "--image", "nginx",
+            ],
+            2,
+        );
+        assert_eq!(usage["code"], "invalid_argument");
+
+        ok(store, &["set", "web.branch=main", "web.rootDir=/apps/web"]);
+        let diff = ok(store, &["diff"]);
+        assert!(diff.to_string().contains("web.rootDir"), "{diff}");
+    }
+}
+
+#[test]
+fn github_lists_branches_and_disconnects_in_cloud() {
+    let [_, cloud] = targets();
+    let listed = ok(&cloud, &["github", "ls"]);
+    assert_eq!(listed["repositories"][0]["repository"], "acme/web");
+    assert!(listed.get("next").is_none(), "{listed}");
+    let branches = ok(&cloud, &["github", "ls", "acme/web"]);
+    assert_eq!(branches["branches"], json!(["dev", "main"]));
+    let missing = error(&cloud, &["github", "ls", "acme/nope"]);
+    assert_eq!(missing["code"], "not_found");
+    assert_eq!(
+        failed(&cloud, &["github", "ls", "not a repo"], 1)["code"],
+        "invalid_argument"
+    );
+    let removed = ok(&cloud, &["github", "disconnect", "7"]);
+    assert_eq!(removed["disconnected"]["account"], "acme");
+    assert_eq!(
+        error(&cloud, &["github", "disconnect", "8"])["code"],
+        "not_found"
+    );
+    let pending = ok(&cloud, &["github", "connect"]);
+    assert_eq!(pending["status"], "pending");
+    assert_eq!(pending["next"], "ployz github connect --wait");
 }

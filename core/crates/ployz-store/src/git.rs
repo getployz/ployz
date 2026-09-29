@@ -270,45 +270,50 @@ impl GitSetting {
                 config.build.command = Some(text);
                 validate_build(config, self)
             }
-            Self::Repository | Self::Branch | Self::RootDir => {
+            Self::Repository => {
                 let ServiceSource::Git {
                     repository,
                     repository_id,
                     access,
-                    root_dir,
                     branch,
                     ..
                 } = &mut config.source
                 else {
-                    return Err(setting.invalid("this Service does not build from a repository"));
+                    return Err(not_git(setting));
                 };
-                match self {
-                    Self::Repository if repository.eq_ignore_ascii_case(text.trim()) => {}
-                    Self::Repository => {
-                        let found = authorized(trusted, &text)?;
-                        let keeps_branch = matches!(branch,
-                            ServiceGitBranch::Connected { name } if found.has_branch(name));
-                        if !keeps_branch {
-                            *branch = ServiceGitBranch::Connected {
-                                name: found.default_branch.clone(),
-                            };
-                        }
-                        repository.clone_from(&found.repository);
-                        *repository_id = found.repository_id;
-                        *access = found.access.clone();
-                    }
-                    Self::Branch => {
-                        *branch = ServiceGitBranch::Connected {
-                            name: valid_branch(&text)?,
-                        };
-                    }
-                    _ => {
-                        *root_dir = setting.decode(
-                            parse_service_setting(json!({ "field": "rootDir", "value": text }))
-                                .map_err(|error| setting.invalid(&error.message))?,
-                        )?;
-                    }
+                if repository.eq_ignore_ascii_case(text.trim()) {
+                    return Ok(());
                 }
+                let found = authorized(trusted, &text)?;
+                let keeps_branch = matches!(branch,
+                    ServiceGitBranch::Connected { name } if found.has_branch(name));
+                if !keeps_branch {
+                    *branch = ServiceGitBranch::Connected {
+                        name: found.default_branch.clone(),
+                    };
+                }
+                repository.clone_from(&found.repository);
+                *repository_id = found.repository_id;
+                *access = found.access.clone();
+                Ok(())
+            }
+            Self::Branch => {
+                let ServiceSource::Git { branch, .. } = &mut config.source else {
+                    return Err(not_git(setting));
+                };
+                *branch = ServiceGitBranch::Connected {
+                    name: valid_branch(&text)?,
+                };
+                Ok(())
+            }
+            Self::RootDir => {
+                let ServiceSource::Git { root_dir, .. } = &mut config.source else {
+                    return Err(not_git(setting));
+                };
+                *root_dir = setting.decode(
+                    parse_service_setting(json!({ "field": "rootDir", "value": text }))
+                        .map_err(|error| setting.invalid(&error.message))?,
+                )?;
                 Ok(())
             }
         }
@@ -325,9 +330,7 @@ impl GitSetting {
                     "/".clone_into(root_dir);
                     Ok(())
                 }
-                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => {
-                    Err(setting.invalid("this Service does not build from a repository"))
-                }
+                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Err(not_git(setting)),
             },
             Self::BuildMethod => {
                 config.build.build_method = BuildMethod::default();
@@ -393,6 +396,10 @@ pub(crate) fn check_sources(
         }
     }
     Ok(())
+}
+
+fn not_git(setting: ServiceSetting) -> RpcError {
+    setting.invalid("this Service does not build from a repository")
 }
 
 /// The branch asked for isn't one Cloud saw in `repository`; the branch is never echoed.
