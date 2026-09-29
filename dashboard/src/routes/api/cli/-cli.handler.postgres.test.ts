@@ -368,6 +368,8 @@ it.live(
         const second = (yield* cli("POST", "tokens", alice, { name: "ci-2", expires_in_days: 30 })).json.token
           ?? assert.fail("no token");
         const ci2 = { bearer: second.secret };
+        const third = (yield* cli("POST", "tokens", alice, { name: "ci-3", expires_in_days: 30 })).json.token
+          ?? assert.fail("no token");
         const revoked = (yield* cli("DELETE", `tokens/${token.id}`, alice)).json;
         assert.deepStrictEqual(revoked.servers, { confirmed: [first], unconfirmed: [] });
         assert.isFalse(fake.servers.get(first)?.slots.has(serverAccessLabel(token.id)));
@@ -402,6 +404,13 @@ it.live(
         assert.deepStrictEqual([...swept.confirmed].sort(), [first, later]);
         assert.isFalse(fake.servers.get(first)?.slots.has(serverAccessLabel(second.id)));
         assert.lengthOf(yield* database.drizzle.select().from(serverAccess), 0);
+
+        // So is a member leaving the Organization.
+        yield* cli("POST", "server-access", { bearer: third.secret });
+        assert.isTrue(laterServer.slots.has(serverAccessLabel(third.id)));
+        yield* database.drizzle.delete(member).where(eq(member.organizationId, alice.organization.id));
+        yield* retireServerAccess();
+        assert.isFalse(laterServer.slots.has(serverAccessLabel(third.id)));
       }).pipe(Effect.provide(layer));
     }),
   60_000,
