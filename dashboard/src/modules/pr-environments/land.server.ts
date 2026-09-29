@@ -346,8 +346,9 @@ export const carryInWaitingTriggers = Effect.fn("PrEnvironments.carryInWaitingTr
       }
       // Under the queue lock the head must still be the one that has the merge commit, else the push that moved it
       // decides; and nothing may wait for CI at it, or that trigger carries them instead.
-      if (yield* landNow(save.id, save.destinationEnvironmentId, () => Effect.all([processedHeadFor(pullRequest.installationId, save), latestTriggerFor(save)])
-        .pipe(Effect.map(([now, latest]) => now === head && !waitsAtHead(latest))))) break;
+      const stillCarries = () => Effect.all([processedHeadFor(pullRequest.installationId, save), latestTriggerFor(save)])
+        .pipe(Effect.map(([now, latest]) => now === head && !waitsAtHead(latest)));
+      if (yield* landNow(save.id, save.destinationEnvironmentId, stillCarries)) break;
     }
   }
 });
