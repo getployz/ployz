@@ -441,10 +441,8 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 cursor: None,
             })
             .map_err(failed(matches, &["status"]))?;
-        let in_flight =
-            |status| matches!(status, DeploymentStatus::Queued | DeploymentStatus::Running);
         let ended = page.deployments.iter().find(|deployment| {
-            !in_flight(deployment.status) && deployment.status != DeploymentStatus::Superseded
+            !deployment.status.in_flight() && deployment.status != DeploymentStatus::Superseded
         });
         if let Some(ended) = ended {
             let reason = match ended.status {
@@ -453,7 +451,9 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
                 DeploymentStatus::Queued
                 | DeploymentStatus::Superseded
                 | DeploymentStatus::Running
-                | DeploymentStatus::Applied => None,
+                | DeploymentStatus::Applied
+                | DeploymentStatus::Cancelling
+                | DeploymentStatus::Cancelled => None,
             };
             if let Some(reason) = reason {
                 attention.push(Attention {
@@ -467,7 +467,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
         deploying = page
             .deployments
             .into_iter()
-            .filter(|deployment| in_flight(deployment.status))
+            .filter(|deployment| deployment.status.in_flight())
             .collect();
     }
     let staged = diff.as_ref().map(|diff| Staged {
