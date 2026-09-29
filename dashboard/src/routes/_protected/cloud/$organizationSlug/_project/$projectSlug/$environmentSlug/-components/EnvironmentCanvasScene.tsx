@@ -34,10 +34,10 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes, buildStoreServiceNodes } from "./canvas/nodes";
-import type { StoreCanvasService } from "./canvas/types";
+import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes, buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
+import type { StoreCanvas, StoreCanvasService } from "./canvas/types";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { BranchPickingProvider } from "./new-branch/branch-picking";
@@ -79,16 +79,17 @@ function StoreCanvasWithData() {
   const services = requireView(useStoreView(organizationSlug, servicesQuery(store)));
   const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
   const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
+  const volumes = requireView(useStoreView(organizationSlug, volumesQuery(store)));
   const storeServices = services.services.map((service): StoreCanvasService => ({
     service,
     subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
     changeCount: serviceChanges(diff, service.id).size,
   }));
-  return <CanvasWithData storeServices={storeServices} />;
+  return <CanvasWithData store={{ services: storeServices, volumes: volumes.volumes, totalChanges: diff.total_count }} />;
 }
 
 // TODO(#1275): one canvas, over the Store, once the dark gate goes.
-function CanvasWithData({ storeServices = null }: { storeServices?: StoreCanvasService[] | null }) {
+function CanvasWithData({ store = null }: { store?: StoreCanvas | null }) {
   const collectionScope = useCollectionScope();
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { environmentId, organizationId } = useLoaderData({
@@ -199,14 +200,14 @@ function CanvasWithData({ storeServices = null }: { storeServices?: StoreCanvasS
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
   );
-  // Over the Store its Services are the canvas's; links between them come back with variables and mounts (#1263, #1264).
-  const initialNodes = [...buildNodes(
-    storeServices ? [] : activeServicesWithBoundEnv,
+  // Over the Store its Services and Volumes are the canvas's, linked by mounts; reference links aren't drawn yet.
+  const initialNodes = [...(store ? buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId) : buildNodes(
+    activeServicesWithBoundEnv,
     canvasPositions,
     selectedNodeId,
     volumeResources,
-  ), ...buildStoreServiceNodes(storeServices ?? [], canvasPositions, selectedNodeId, environmentId), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
-  const initialEdges = storeServices ? [] : [...buildEdges(
+  )), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
+  const initialEdges = store ? buildStoreEdges(store) : [...buildEdges(
     volumeResources,
     serviceVolumeAttachments,
     activeServicesWithBoundEnv,
@@ -231,7 +232,7 @@ function CanvasWithData({ storeServices = null }: { storeServices?: StoreCanvasS
         nodeIntroductions={nodeIntroductions}
         canvasNodes={initialNodes}
         canvasEdges={initialEdges}
-        storeServices={storeServices}
+        store={store}
       />
     </ReactFlowProvider>
   );

@@ -7,7 +7,7 @@ import {
   ReactFlow,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
+import { useLoaderData, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
@@ -26,6 +26,7 @@ import { useServiceCreator } from "./useServiceCreator";
 import { LIVE_EDGE_STYLE } from "./nodes";
 import { useBranchPicking } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
+import { useStoreDeploy } from "./useStoreDeploy";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
 import { BranchButton } from "./BranchButton";
@@ -40,7 +41,7 @@ import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "../environment-route-paths";
-import type { CanvasResourceNode, StoreCanvasService } from "./types";
+import type { CanvasResourceNode, StoreCanvas } from "./types";
 import { useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { DestructiveChangesDialog } from "./DestructiveChangesDialog";
 import { getServiceIcon } from "./service-node-helpers";
@@ -62,7 +63,7 @@ export function CanvasFlow({
   nodeIntroductions,
   canvasNodes,
   canvasEdges,
-  storeServices,
+  store,
 }: {
   organizationId: string;
   environmentId: string;
@@ -72,8 +73,8 @@ export function CanvasFlow({
   nodeIntroductions: EnvironmentNodeIntroduction[];
   canvasNodes: CanvasResourceNode[];
   canvasEdges: Edge[];
-  /** The Config Store's Services, which replace the legacy ones on the canvas; null while the Store is dark. */
-  storeServices: StoreCanvasService[] | null;
+  /** The Config Store's Services and Volumes, which replace the legacy ones on the canvas; null while the Store is dark. */
+  store: StoreCanvas | null;
 }) {
   const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
     (service) => service.service.deletedAt == null,
@@ -83,6 +84,7 @@ export function CanvasFlow({
   const [destructiveConfirmationOpen, setDestructiveConfirmationOpen] =
     useState(false);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const storeDeploy = useStoreDeploy(params.organizationSlug, useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store, environmentId);
   const branch = useWorkspace(params.organizationSlug).branches.find((row) => row.environmentId === environmentId);
   const navigate = useNavigate();
   const locationKey = useLocation({ select: (location) => location.href });
@@ -92,9 +94,9 @@ export function CanvasFlow({
   });
   const { selectedNodeId } = useCanvasInspectorSelection();
   const navigationNodes = useEnvironmentNavigationNodes(params).nodes;
-  const findableNodes = storeServices
-    ? [...storeServices.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
-      ...navigationNodes.filter((node) => node.type === "volume")]
+  const findableNodes = store
+    ? [...store.services.map(({ service }) => ({ id: service.id, name: service.name, type: "service" as const })),
+      ...store.volumes.map((volume) => ({ id: volume.id, name: volume.name, type: "volume" as const }))]
     : navigationNodes;
   const {
     canvasChangeState,
@@ -219,7 +221,8 @@ export function CanvasFlow({
       </div>
       <CanvasNodeList
         services={activeServicesWithBoundEnv}
-        storeServices={storeServices}
+        storeServices={store?.services ?? null}
+        storeVolumes={store?.volumes ?? null}
         liveNodes={canvasNodes.flatMap((node) => node.type === "live" ? [node.data.liveNode] : [])}
         selectedNodeId={selectedNodeId}
         servicesById={servicesById}
@@ -241,13 +244,14 @@ export function CanvasFlow({
       <BottomBar
           key={locationKey}
           environmentId={environmentId}
-          groups={diffGroups}
-          totalChanges={totalChanges}
-          canDeploy={canDeploy && !isSubmittingDeploymentSnapshot}
+          // TODO(#1273): the Store's review in Details, Discard and Save; only Deploy goes through the Store so far.
+          groups={store ? [] : diffGroups}
+          totalChanges={store ? store.totalChanges : totalChanges}
+          canDeploy={store ? true : canDeploy && !isSubmittingDeploymentSnapshot}
           commitMessage={commitMessage}
-          canSaveWithoutDeploying={canSave}
+          canSaveWithoutDeploying={store ? false : canSave}
           onCommitMessageChange={setCommitMessage}
-          onDeploy={() => {
+          onDeploy={store ? storeDeploy.deploy : () => {
             requestDeploy();
           }}
           onSaveWithoutDeploying={() => {
@@ -291,6 +295,7 @@ export function CanvasFlow({
           await volumeCreator.createVolume(input);
         }}
       />
+      {store ? storeDeploy.dialog : null}
       <DestructiveChangesDialog
         open={destructiveConfirmationOpen}
         onOpenChange={setDestructiveConfirmationOpen}
