@@ -400,12 +400,17 @@ impl ServiceSetting {
             .into_iter()
             .find(|setting| setting.name() == name)
             .ok_or_else(|| {
-                let names = Self::ALL.map(Self::name);
+                // `env` and `mounts` hold keyed children, so they are suggested too.
+                let names = Self::ALL
+                    .map(Self::name)
+                    .into_iter()
+                    .chain(["env", "mounts"]);
+                let first = name.split('.').next().unwrap_or(name);
                 error::invalid(
                     "Unknown Service Setting",
                     json!({
-                        "did_you_mean": error::did_you_mean(name, names),
-                        "valid_children": names,
+                        "did_you_mean": error::did_you_mean(first, names.clone()),
+                        "valid_children": names.collect::<Vec<_>>(),
                     }),
                 )
             })

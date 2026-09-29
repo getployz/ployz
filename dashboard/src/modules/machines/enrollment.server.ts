@@ -13,7 +13,7 @@ import {
 import { organizationPairing as schemaOrganizationPairing } from "#/modules/runtime/tables";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { Ployz, PloyzProviderError, rpcErrorCode } from "#/modules/runtime/ployz.server";
+import { Ployz, PloyzProviderError, ployzVersion, rpcErrorCode } from "#/modules/runtime/ployz.server";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import {
   enrollmentExpiry,
@@ -95,6 +95,7 @@ export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
     return mintedEnrollment({
       origin: config.app.url.origin,
       token,
+      version: ployzVersion(),
       expiresAt,
     });
   },

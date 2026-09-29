@@ -74,8 +74,47 @@ run_archive() {
     else
         output=$("$directory/installed" "$flag")
     fi
-    rm -rf "$directory"
     [ "$output" = "$EXPECTED_VERSION" ] || fail "$archive returned version '$output'"
+    [ "$binary" = ployz ] && smoke_cli "$archive" "$directory/installed" "$runner"
+    rm -rf "$directory"
+}
+
+# The released CLI's two Config Store paths: the hidden in-process SQLite Store,
+# and Cloud over HTTPS with the binary's own TLS roots (a refused token proves the
+# handshake; `unavailable` would mean TLS or DNS failed).
+smoke_cli() {
+    archive=$1 binary=$2 runner=$3
+    home=$(mktemp -d)
+    # $runner is empty or a command prefix such as `qemu-aarch64`.
+    # shellcheck disable=SC2086
+    ployz() { env HOME="$home" PLOYZ_CONFIG="$home/config.yaml" $runner "$binary" --json "$@"; }
+    export PLOYZ_STORE="sqlite:$home/store.db"
+    ployz project new smoke >/dev/null || fail "$archive cannot create a Project in the hidden SQLite Store"
+    ployz service add web --image nginx:1 --project smoke >/dev/null || fail "$archive cannot add a Service"
+    ployz get web.replicas --project smoke | grep -Fq '"value": 1' || fail "$archive cannot read a Setting back"
+    unset PLOYZ_STORE
+    set +e
+    cloud=$(PLOYZ_TOKEN=ployz_release_smoke ployz project ls)
+    set -e
+    code=$(printf '%s' "$cloud" | sed -n 's/.*"code":"\([a-z_]*\)".*/\1/p')
+    case "$code" in
+        unauthenticated | unsupported) ;;
+        *) fail "$archive did not reach Cloud over HTTPS: $cloud" ;;
+    esac
+    rm -rf "$home"
+}
+
+# install.sh, fetched alone, installs this archive for the host it runs on.
+install_native() {
+    archive=$1
+    release=$(mktemp -d)
+    mkdir -p "$release/releases/download/v$EXPECTED_VERSION" "$release/bin"
+    cp "$DIST/$archive" "$release/releases/download/v$EXPECTED_VERSION/"
+    (cd "$release/releases/download/v$EXPECTED_VERSION" && printf '%s  %s\n' "$(sha256 "$archive")" "$archive" > checksums.txt)
+    PLOYZ_GITHUB_URL="file://$release" INSTALL_BIN_DIR="$release/bin" sh "$ROOT/install.sh" "$EXPECTED_VERSION" \
+        || fail "install.sh could not install $archive"
+    [ "$("$release/bin/ployz" --version)" = "$EXPECTED_VERSION" ] || fail "install.sh installed the wrong ployz"
+    rm -rf "$release"
 }
 
 case "${1:-}" in
@@ -83,6 +122,7 @@ case "${1:-}" in
         require_archives ployz_macos_amd64.tar.gz ployz_macos_arm64.tar.gz
         run_archive ployz_macos_arm64.tar.gz ployz "arch -arm64"
         run_archive ployz_macos_amd64.tar.gz ployz "arch -x86_64"
+        install_native "ployz_macos_$(uname -m | sed 's/x86_64/amd64/').tar.gz"
         ;;
     linux)
         require_archives ployz_linux_amd64.tar.gz ployz_linux_arm64.tar.gz ployzd_linux_amd64.tar.gz ployzd_linux_arm64.tar.gz
@@ -90,6 +130,7 @@ case "${1:-}" in
         run_archive ployzd_linux_amd64.tar.gz ployzd
         run_archive ployz_linux_arm64.tar.gz ployz qemu-aarch64
         run_archive ployzd_linux_arm64.tar.gz ployzd qemu-aarch64
+        install_native ployz_linux_amd64.tar.gz
         for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
             probe="$ROOT/target/$target/release/sqlite-probe"
             chmod +x "$probe"
