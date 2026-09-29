@@ -38,7 +38,7 @@ export function ServiceCommandField({
   }
 
   const button = (
-    <Button type="button" variant={compact ? "link" : "outline"} size={compact ? "sm" : "default"}
+    <Button type="button" variant={compact ? "link" : "outline"} size={compact ? "sm" : "default"} className="self-start"
       data-changed={isChanged || undefined} onClick={() => setDraft({ source: value, text: "", error: null })}>
       <PlusIcon data-icon="inline-start" />{label}
     </Button>
