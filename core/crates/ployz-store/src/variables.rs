@@ -175,37 +175,7 @@ pub(crate) fn set(
                 "it is secret, and a secret never becomes plain text: set it with --secret",
             ));
         }
-        (Some(Input::Text(text)), _) => {
-            let template = parse_variable_template(&text, |name| {
-                names
-                    .iter()
-                    .find(|(_, slug)| slug.as_str() == name)
-                    .map(|(lineage, _)| lineage.clone())
-            });
-            if let Some(name) = template.unresolved.first() {
-                let names = names.values().map(String::as_str);
-                return Err(error::invalid(
-                    format!("{key}: a reference names no Service in this Environment"),
-                    json!({
-                        "did_you_mean": error::did_you_mean(name, names.clone()),
-                        "valid_children": names.collect::<Vec<_>>(),
-                    }),
-                ));
-            }
-            let fingerprint = plain_fingerprint(&template.parts);
-            let value = match template.parts.as_slice() {
-                [] => SavedVariableValue::Literal {
-                    value: String::new(),
-                },
-                [ValuePart::Text { value }] => SavedVariableValue::Literal {
-                    value: value.clone(),
-                },
-                _ => SavedVariableValue::Template {
-                    parts: template.parts,
-                },
-            };
-            (value, fingerprint)
-        }
+        (Some(Input::Text(text)), _) => text_value(key, &text, &names)?,
         (Some(Input::Seal(plaintext)), current) => {
             let fingerprint = sealing.fingerprint(&plaintext);
             match current {
@@ -245,6 +215,44 @@ pub(crate) fn set(
         None => variables.push(next),
     }
     Ok(true)
+}
+
+/// Text as a variable's value, referencing Services by their names in `names`
+/// (lineage → name), with its fingerprint.
+pub(crate) fn text_value(
+    key: &VariableKey,
+    text: &str,
+    names: &BTreeMap<String, String>,
+) -> Result<(SavedVariableValue, String), RpcError> {
+    let template = parse_variable_template(text, |name| {
+        names
+            .iter()
+            .find(|(_, slug)| slug.as_str() == name)
+            .map(|(lineage, _)| lineage.clone())
+    });
+    if let Some(name) = template.unresolved.first() {
+        let names = names.values().map(String::as_str);
+        return Err(error::invalid(
+            format!("{key}: a reference names no Service in this Environment"),
+            json!({
+                "did_you_mean": error::did_you_mean(name, names.clone()),
+                "valid_children": names.collect::<Vec<_>>(),
+            }),
+        ));
+    }
+    let fingerprint = plain_fingerprint(&template.parts);
+    let value = match template.parts.as_slice() {
+        [] => SavedVariableValue::Literal {
+            value: String::new(),
+        },
+        [ValuePart::Text { value }] => SavedVariableValue::Literal {
+            value: value.clone(),
+        },
+        _ => SavedVariableValue::Template {
+            parts: template.parts,
+        },
+    };
+    Ok((value, fingerprint))
 }
 
 fn secret(variable: &SavedVariableIntent) -> bool {
