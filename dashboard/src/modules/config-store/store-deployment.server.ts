@@ -10,6 +10,7 @@ import { loadOrganizationConnections } from "#/modules/machines/connections.serv
 import type { AppConfig } from "#/server/config.server";
 import type { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /** What running a Store Deployment needs from Cloud. */
 export type StoreDeploymentServices = AppConfig | Database | SecretEncryption | GithubApi;
@@ -20,7 +21,7 @@ export class StoreDeploymentRunFailure extends Data.TaggedError("StoreDeployment
 export class SourceUnreadable extends Data.TaggedError("SourceUnreadable")<{ readonly message: string }> {}
 
 const storeCall = <A>(call: () => Promise<A>) =>
-  Effect.tryPromise({ try: call, catch: (cause) => new StoreDeploymentRunFailure({ cause }) });
+  storeTry(call).pipe(Effect.mapError((cause) => new StoreDeploymentRunFailure({ cause })));
 
 const fromGithub = <A, E, R>(effect: Effect.Effect<A, E, R>) => effect.pipe(Effect.mapError((error) => new SourceUnreadable({
   message: error instanceof GithubSourceError ? error.message : "GitHub didn't answer while reading the source. Deploy again.",
@@ -113,10 +114,7 @@ export const abandonStoreDeployment = Effect.fn("StoreDeployment.abandon")(funct
   organizationId: string, deploymentId: string, runner: string,
 ) {
   const store = yield* cloudStore;
-  return yield* Effect.tryPromise({
-    try: async () => ({ abandoned: await store.abandonDeployment(deploymentId, runner) }),
-    catch: (cause) => cause,
-  }).pipe(
+  return yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, runner) })).pipe(
     // It never claimed it, or another runner owns it now.
     Effect.catch((cause) => isConflict(cause)
       ? Effect.succeed({ nothingToRun: cause.message })

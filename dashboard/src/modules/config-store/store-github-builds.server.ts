@@ -10,6 +10,7 @@ import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventD
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /**
  * GitHub as a Builder for Store Deployments. Before the runner claims a Deployment, each Git Service whose walk
@@ -32,7 +33,7 @@ export const START_WITHIN_MINUTES = 3;
 class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly cause: unknown }> {}
 
 const storeCall = <A>(call: () => Promise<A>) =>
-  Effect.tryPromise({ try: call, catch: (cause) => new StoreGithubFailure({ cause }) });
+  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
 
 /** One Git build the walk hands to GitHub first. No secret: it is a step's output. */
 export type StoreGithubTarget = {

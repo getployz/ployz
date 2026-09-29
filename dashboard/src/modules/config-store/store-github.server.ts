@@ -17,6 +17,7 @@ import type {
 } from "#/modules/github/github-ingestion.contracts";
 import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /** What Cloud's GitHub workers need to feed the Store. */
 export type StoreGithubServices = StoreDeploymentServices;
@@ -24,7 +25,7 @@ export type StoreGithubServices = StoreDeploymentServices;
 export class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly cause: unknown }> {}
 
 const storeCall = <A>(call: () => Promise<A>) =>
-  Effect.tryPromise({ try: call, catch: (cause) => new StoreGithubFailure({ cause }) });
+  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
 
 function isConflict(cause: unknown): cause is StoreGithubFailure {
   return cause instanceof StoreGithubFailure && typeof cause.cause === "object" && cause.cause !== null

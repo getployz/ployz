@@ -2,6 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigQuery, ConfigTrusted, ConfigView } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { githubBranchExists, resolveReadableRepository } from "#/modules/github/readable-repository.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /** The parts of a command that name a repository or branch; decode it with this. The Store validates the whole command. */
 const Text = Schema.String;
@@ -69,7 +70,7 @@ export const gatherGitEvidence = Effect.fn("ConfigStore.gatherGitEvidence")(func
   for (const [service, want] of wanted(command)) {
     if (want.stored && (want.repository === undefined || want.branch === undefined)) {
       // An edit keeps the Service's current repository or branch; read them to check the other.
-      const view = yield* Effect.tryPromise(() => read({
+      const view = yield* storeTry(() => read({
         query: "environment",
         environment: { project: environment?.project ?? null, environment: environment?.environment ?? null },
         path: service,
