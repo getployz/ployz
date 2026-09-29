@@ -1,4 +1,6 @@
-use clap::ArgMatches;
+use clap::{ArgMatches, Command};
+
+use crate::cli::{base, env, positional, switch, volume_acceptance};
 use ployz_core::{ProjectName, derive_projects};
 
 use crate::{
@@ -180,4 +182,30 @@ mod tests {
             }
         }
     }
+}
+
+pub(crate) fn command() -> Command {
+    base("project", "Manage projects")
+        .arg_required_else_help(true)
+        .subcommand(base("ls", "List projects"))
+        .subcommand(
+            base("rm", "Remove a project")
+                .arg(switch("volumes", None).help(
+                    "Also remove this Project's visible managed volumes after the plan identifies each one",
+                ))
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+                .arg(positional("project", true))
+                .arg(
+                    volume_acceptance().requires("volumes"),
+                ),
+        )
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::Supported;
+    Some(match path {
+        "ls" => (list, Supported),
+        "rm" => (remove, Supported),
+        _ => return None,
+    })
 }

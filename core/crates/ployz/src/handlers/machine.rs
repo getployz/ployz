@@ -3,7 +3,12 @@ use std::{
     path::PathBuf,
 };
 
-use clap::ArgMatches;
+use clap::{Arg, ArgAction, ArgMatches, Command, ValueHint};
+
+use crate::cli::{
+    base, connection_args, env, log_flags, machine_policy_flags, many, positional, switch, value,
+    volume_acceptance,
+};
 use ployz_core::{
     AdvertisedEndpoint, BuildConcurrencyUpdate, MachineName, MachineTarget, MachineUpdate,
     PublicIpUpdate, UpdateMachineRequest, op,
@@ -382,4 +387,119 @@ mod tests {
             "all"
         );
     }
+}
+
+pub(crate) fn command() -> Command {
+    base("machine", "Manage machines")
+        .arg_required_else_help(true)
+        .subcommand(machine_add())
+        .subcommand(machine_init())
+        .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
+            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
+        .subcommand(
+            base(
+                "inspect",
+                "Inspect a machine: telemetry, round-trip times, and its latest upgrade attempt",
+            )
+            .arg(positional("machine", true)),
+        )
+        .subcommand(
+            log_flags(base("logs", "Show machine logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
+        )
+        .subcommand(base("ls", "List machines"))
+        .subcommand(
+            base("rm", "Remove a machine")
+                .arg(switch("no-reset", None).help(
+                    "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable",
+                ))
+                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+                .arg(positional("machine", true))
+                .arg(
+                    volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host; --yes cannot bypass this"),
+                ),
+        )
+        .subcommand(machine_upgrade())
+        .subcommand(
+            machine_policy_flags(base("update", "Update machine configuration"))
+                .arg(many("label-rm", None).value_name("KEY"))
+                .arg(value("name", None))
+                .arg(value("public-ip", None))
+                .arg(
+                    value("build-concurrency", None)
+                        .value_name("N|auto")
+                        .help("Builds this Machine runs at once; auto follows its roles and RAM"),
+                )
+                .arg(many("wg-endpoint", None))
+                .arg(positional("machine", true)),
+        )
+}
+
+fn machine_add() -> Command {
+    provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
+}
+
+fn machine_init() -> Command {
+    let command = Command::new("init")
+        .about("Initialise a cluster on this Machine or a remote machine")
+        .args(connection_args(false))
+        .arg(value("context", Some('c')).default_value("default"))
+        .arg(value("network", None).default_value("10.210.0.0/16"));
+    provisioning_flags(command).arg(positional("destination", false))
+}
+
+fn machine_upgrade() -> Command {
+    base("upgrade", "Upgrade explicitly selected machines")
+        .arg_required_else_help(true)
+        .arg(
+            positional("version", true)
+                .value_name("VERSION")
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+        )
+        .arg(
+            many("machine", Some('m'))
+                .required(true)
+                .help("Machine name or ID; repeat for an explicit sequence"),
+        )
+}
+
+fn provisioning_flags(command: Command) -> Command {
+    machine_policy_flags(command)
+        .arg(value("name", None))
+        .arg(switch("no-install", None))
+        .arg(
+            value("storage", None)
+                .value_parser(clap::value_parser!(ployz_core::StorageChoice))
+                .help("Prepare ZFS storage or keep this Machine currently stateless"),
+        )
+        .arg(value("public-ip", None).default_value("auto"))
+        .arg(
+            value("ssh-key", Some('i'))
+                .default_value("~/.ssh/id_ed25519")
+                .value_hint(ValueHint::FilePath),
+        )
+        .arg(
+            value("version", None)
+                .env(env::DAEMON_VERSION)
+                .default_value(env!("CARGO_PKG_VERSION"))
+                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
+        )
+        .arg(many("wg-endpoint", None))
+        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
+        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
+}
+
+pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
+    use super::Json::Supported;
+    Some(match path {
+        "add" => (add, Supported),
+        "init" => (init, Supported),
+        "build-cache-clear" => (clear_build_cache, Supported),
+        "inspect" => (inspect, Supported),
+        "logs" => (super::operator::machine_logs, Supported),
+        "ls" => (list, Supported),
+        "rm" => (remove, Supported),
+        "update" => (update, Supported),
+        "upgrade" => (upgrade, Supported),
+        _ => return None,
+    })
 }

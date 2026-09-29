@@ -1,5 +1,7 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
 
+use crate::handlers;
+
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
     pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
@@ -18,22 +20,22 @@ pub fn command() -> Command {
                 .global(true)
                 .help("Print the result as one JSON object on stdout"),
         )
-        .subcommand(build())
-        .subcommand(cloud())
-        .subcommand(ctx())
-        .subcommand(ingress())
-        .subcommand(machine())
-        .subcommand(project())
-        .subcommand(service())
-        .subcommand(volume())
+        .subcommand(handlers::build::command())
+        .subcommand(handlers::cloud::command())
+        .subcommand(handlers::context::command())
+        .subcommand(handlers::ingress::command())
+        .subcommand(handlers::machine::command())
+        .subcommand(handlers::project::command())
+        .subcommand(handlers::service::command())
+        .subcommand(handlers::volume::command())
         .subcommand(completion())
 }
 
-fn base(name: &'static str, about: &'static str) -> Command {
+pub(crate) fn base(name: &'static str, about: &'static str) -> Command {
     Command::new(name).about(about).args(connection_args(true))
 }
 
-fn connection_args(include_context: bool) -> Vec<Arg> {
+pub(crate) fn connection_args(include_context: bool) -> Vec<Arg> {
     let mut args = vec![
         value("connect", None).env(env::CONNECT).global(true),
         value("ssh-timeout", None)
@@ -64,7 +66,7 @@ pub(crate) fn ssh_timeout(matches: &clap::ArgMatches) -> std::time::Duration {
     ))
 }
 
-fn value(name: &'static str, short: Option<char>) -> Arg {
+pub(crate) fn value(name: &'static str, short: Option<char>) -> Arg {
     let arg = Arg::new(name).long(name).action(ArgAction::Set);
     match short {
         Some(short) => arg.short(short),
@@ -72,17 +74,17 @@ fn value(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
-fn many(name: &'static str, short: Option<char>) -> Arg {
+pub(crate) fn many(name: &'static str, short: Option<char>) -> Arg {
     value(name, short)
         .action(ArgAction::Append)
         .value_delimiter(',')
 }
 
-fn repeated(name: &'static str) -> Arg {
+pub(crate) fn repeated(name: &'static str) -> Arg {
     value(name, None).action(ArgAction::Append)
 }
 
-fn switch(name: &'static str, short: Option<char>) -> Arg {
+pub(crate) fn switch(name: &'static str, short: Option<char>) -> Arg {
     let arg = Arg::new(name).long(name).action(ArgAction::SetTrue);
     match short {
         Some(short) => arg.short(short),
@@ -90,11 +92,11 @@ fn switch(name: &'static str, short: Option<char>) -> Arg {
     }
 }
 
-fn positional(name: &'static str, required: bool) -> Arg {
+pub(crate) fn positional(name: &'static str, required: bool) -> Arg {
     Arg::new(name).required(required).action(ArgAction::Set)
 }
 
-fn trailing(name: &'static str) -> Arg {
+pub(crate) fn trailing(name: &'static str) -> Arg {
     Arg::new(name)
         .num_args(0..)
         .action(ArgAction::Append)
@@ -102,119 +104,7 @@ fn trailing(name: &'static str) -> Arg {
         .trailing_var_arg(true)
 }
 
-fn ingress() -> Command {
-    base("ingress", "Manage the Ingress Proxy")
-        .arg_required_else_help(true)
-        .subcommand(
-            base("deploy", "Deploy the Ingress Proxy")
-                .arg(value("image", None))
-                .arg(many("constraint", None))
-                .arg(switch("recreate", None))
-                .arg(switch("skip-health", None)),
-        )
-}
-
-fn ctx() -> Command {
-    base("ctx", "Manage local contexts")
-        .arg_required_else_help(true)
-        .subcommand(base("ls", "List contexts"))
-        .subcommand(
-            base(
-                "use",
-                "Select a context and optionally its default connection",
-            )
-            .arg(positional("context-name", false))
-            .arg(
-                value("connection", None)
-                    .help("Connection label or 1-based index in the selected context"),
-            ),
-        )
-        .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
-}
-
-fn service_exec() -> Command {
-    base("exec", "Execute a command in a service container")
-        .arg(value("container", None))
-        .arg(switch("detach", Some('d')))
-        .arg(switch("no-tty", Some('T')))
-        .arg(positional("service", true))
-        .arg(trailing("command"))
-}
-
-fn build() -> Command {
-    Command::new("build")
-        .about("Build one Git Service and push it into a Machine with a Build Grant")
-        .long_about("Build one Git Service and push it into a Machine with a Build Grant.\n\nChecks out --commit and refuses to build unless the build inputs match --fingerprint. When the GitHub Actions cache runtime (ACTIONS_RUNTIME_TOKEN and its cache URLs) is in the environment, Buildx uses the GitHub Actions cache.")
-        .arg(
-            value("grant", None)
-                .env(env::BUILD_GRANT)
-                .hide_env_values(true)
-                .required(true)
-                .help("Build Grant naming the receiving Machine; prefer the environment variable"),
-        )
-        .arg(
-            value("deployment", None)
-                .required(true)
-                .value_hint(ValueHint::FilePath)
-                .help("Frozen deployment JSON holding exactly one Git-sourced Service"),
-        )
-        .arg(value("commit", None).required(true).help("Commit to build"))
-        .arg(
-            value("fingerprint", None)
-                .required(true)
-                .help("Expected build-input fingerprint; the build is refused on mismatch"),
-        )
-        .arg(
-            value("source", None)
-                .default_value(".")
-                .value_hint(ValueHint::DirPath)
-                .help("Repository working tree of the Service"),
-        )
-        .arg(
-            value("events", None)
-                .value_hint(ValueHint::FilePath)
-                .help("Also write build progress to this file, one JSON line per event"),
-        )
-}
-
-fn cloud() -> Command {
-    Command::new("cloud")
-        .about("Manage Cloud")
-        .subcommand_required(true)
-        .arg_required_else_help(true)
-        .arg(
-            value("cloud-url", None)
-                .default_value("ployz.dev")
-                .global(true),
-        )
-        .subcommand(cloud_enroll())
-}
-
-fn cloud_enroll() -> Command {
-    machine_policy_flags(base("enroll", "Found or join a Cluster through Cloud"))
-        .arg(positional("token", true))
-        .arg(value("name", None))
-        .arg(
-            value("network", None)
-                .default_value("10.210.0.0/16")
-                .value_parser(clap::value_parser!(ipnet::Ipv4Net)),
-        )
-        .arg(
-            value("storage", None)
-                .default_value("none")
-                .value_parser(clap::value_parser!(ployz_core::StorageChoice)),
-        )
-        .arg(value("ingress-image", None).help("Caddy image to deploy when founding a Cluster"))
-        .arg(switch("reset", None).help("Reset an initialized Machine before enrollment"))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-}
-
-fn service_inspect() -> Command {
-    base("inspect", "Inspect a service").arg(positional("service", true))
-}
-
-fn log_flags(command: Command) -> Command {
+pub(crate) fn log_flags(command: Command) -> Command {
     command
         .arg(switch("follow", Some('f')))
         .arg(many("machine", Some('m')))
@@ -224,76 +114,7 @@ fn log_flags(command: Command) -> Command {
         .arg(switch("utc", None))
 }
 
-fn service_logs() -> Command {
-    log_flags(base("logs", "Show logs")).arg(
-        Arg::new("service-or-container")
-            .required(true)
-            .num_args(1..)
-            .action(ArgAction::Append),
-    )
-}
-
-fn machine() -> Command {
-    base("machine", "Manage machines")
-        .arg_required_else_help(true)
-        .subcommand(machine_add())
-        .subcommand(machine_init())
-        .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
-            .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
-        .subcommand(
-            base(
-                "inspect",
-                "Inspect a machine: telemetry, round-trip times, and its latest upgrade attempt",
-            )
-            .arg(positional("machine", true)),
-        )
-        .subcommand(
-            log_flags(base("logs", "Show machine logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
-        )
-        .subcommand(base("ls", "List machines"))
-        .subcommand(
-            base("rm", "Remove a machine")
-                .arg(switch("no-reset", None).help(
-                    "Remove the Machine from the Cluster without resetting it; use when the Machine is unreachable",
-                ))
-                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-                .arg(positional("machine", true))
-                .arg(
-                    volume_acceptance().conflicts_with("no-reset").help("Accept loss of Cluster access: repeat once per exact volume name; reset does not erase volume data on the host; --yes cannot bypass this"),
-                ),
-        )
-        .subcommand(machine_upgrade())
-        .subcommand(
-            machine_policy_flags(base("update", "Update machine configuration"))
-                .arg(many("label-rm", None).value_name("KEY"))
-                .arg(value("name", None))
-                .arg(value("public-ip", None))
-                .arg(
-                    value("build-concurrency", None)
-                        .value_name("N|auto")
-                        .help("Builds this Machine runs at once; auto follows its roles and RAM"),
-                )
-                .arg(many("wg-endpoint", None))
-                .arg(positional("machine", true)),
-        )
-}
-
-fn machine_upgrade() -> Command {
-    base("upgrade", "Upgrade explicitly selected machines")
-        .arg_required_else_help(true)
-        .arg(
-            positional("version", true)
-                .value_name("VERSION")
-                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
-        )
-        .arg(
-            many("machine", Some('m'))
-                .required(true)
-                .help("Machine name or ID; repeat for an explicit sequence"),
-        )
-}
-
-fn machine_policy_flags(command: Command) -> Command {
+pub(crate) fn machine_policy_flags(command: Command) -> Command {
     command
         .arg(many("label-add", None).value_name("KEY=VALUE"))
         .args(
@@ -302,172 +123,11 @@ fn machine_policy_flags(command: Command) -> Command {
         )
 }
 
-fn provisioning_flags(command: Command) -> Command {
-    machine_policy_flags(command)
-        .arg(value("name", None))
-        .arg(switch("no-install", None))
-        .arg(
-            value("storage", None)
-                .value_parser(clap::value_parser!(ployz_core::StorageChoice))
-                .help("Prepare ZFS storage or keep this Machine currently stateless"),
-        )
-        .arg(value("public-ip", None).default_value("auto"))
-        .arg(
-            value("ssh-key", Some('i'))
-                .default_value("~/.ssh/id_ed25519")
-                .value_hint(ValueHint::FilePath),
-        )
-        .arg(
-            value("version", None)
-                .env(env::DAEMON_VERSION)
-                .default_value(env!("CARGO_PKG_VERSION"))
-                .value_parser(clap::value_parser!(ployz_core::MachineRelease)),
-        )
-        .arg(many("wg-endpoint", None))
-        .arg(value("wg-mtu", None).value_parser(clap::value_parser!(u32).range(1..)))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-}
-
-fn machine_add() -> Command {
-    provisioning_flags(base("add", "Add a remote machine")).arg(positional("destination", true))
-}
-
-fn machine_init() -> Command {
-    let command = Command::new("init")
-        .about("Initialise a cluster on this Machine or a remote machine")
-        .args(connection_args(false))
-        .arg(value("context", Some('c')).default_value("default"))
-        .arg(value("network", None).default_value("10.210.0.0/16"));
-    provisioning_flags(command).arg(positional("destination", false))
-}
-
-fn project() -> Command {
-    base("project", "Manage projects")
-        .arg_required_else_help(true)
-        .subcommand(base("ls", "List projects"))
-        .subcommand(
-            base("rm", "Remove a project")
-                .arg(switch("volumes", None).help(
-                    "Also remove this Project's visible managed volumes after the plan identifies each one",
-                ))
-                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-                .arg(positional("project", true))
-                .arg(
-                    volume_acceptance().requires("volumes"),
-                ),
-        )
-}
-
-fn service_proxy() -> Command {
-    base("proxy", "Proxy a local port to a service")
-        .arg(positional("service", true))
-        .arg(positional("port", true))
-}
-
-fn service_ps() -> Command {
-    base("ps", "List service containers").arg(
-        value("sort", None)
-            .default_value("service")
-            .value_parser(["service", "machine", "health"]),
-    )
-}
-
-fn service_ls() -> Command {
-    base("ls", "List services")
-}
-
-fn volume_acceptance() -> Arg {
+pub(crate) fn volume_acceptance() -> Arg {
     repeated("accept-volume-loss")
         .num_args(1)
         .value_name("name")
         .help("Accept permanent deletion: repeat once per exact volume name in the full deletion list; --yes cannot bypass this")
-}
-
-fn service_rm() -> Command {
-    base("rm", "Remove services")
-        .arg(value("project-name", Some('p')))
-        .arg(switch("volumes", None).help(
-            "Also remove this Service's named Docker Volumes after the containers are removed",
-        ))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(volume_acceptance().requires("volumes"))
-        .arg(services())
-}
-
-fn services() -> Arg {
-    Arg::new("service")
-        .required(true)
-        .num_args(1..)
-        .action(ArgAction::Append)
-}
-
-fn service_scale() -> Command {
-    base("scale", "Scale a service")
-        .arg(switch("skip-health", None))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(positional("service", true))
-        .arg(positional("replicas", true))
-}
-
-fn service_start() -> Command {
-    base("start", "Start services").arg(services())
-}
-
-fn service_stop() -> Command {
-    base("stop", "Stop services")
-        .arg(services())
-        .arg(value("signal", None).default_value("SIGTERM"))
-        .arg(value("timeout", Some('t')).default_value("10"))
-}
-
-fn service() -> Command {
-    base("service", "Manage services")
-        .arg_required_else_help(true)
-        .subcommand(service_exec())
-        .subcommand(service_inspect())
-        .subcommand(service_ls())
-        .subcommand(service_logs())
-        .subcommand(service_proxy())
-        .subcommand(service_ps())
-        .subcommand(service_rm())
-        .subcommand(service_scale())
-        .subcommand(service_start())
-        .subcommand(service_stop())
-}
-
-fn volume() -> Command {
-    base("volume", "Manage volumes")
-        .arg_required_else_help(true)
-        .subcommand(
-            base("create", "Create a volume")
-                .arg(value("machine", Some('m')))
-                .arg(
-                    value("size", None)
-                        .value_parser(crate::volume::ProvisionedVolumeSize::parse)
-                        .help("Provisioned Volume quota; without it the volume is a plain local Docker Volume"),
-                )
-                .arg(positional("volume-name", true)),
-        )
-        .subcommand(
-            base("inspect", "Inspect a volume")
-                .arg(value("machine", Some('m')))
-                .arg(positional("volume-name", true)),
-        )
-        .subcommand(
-            base("ls", "List volumes").arg(many("machine", Some('m'))),
-        )
-        .subcommand(
-            base("rm", "Remove volumes")
-                .arg(switch("force", None))
-                .arg(many("machine", Some('m')))
-                .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-                .arg(
-                    Arg::new("volume-name")
-                        .required(true)
-                        .num_args(1..)
-                        .action(ArgAction::Append),
-                ),
-        )
 }
 
 fn completion() -> Command {
