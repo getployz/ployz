@@ -27,6 +27,11 @@ pub struct Trusted {
     #[serde(default)]
     #[ts(optional = nullable)]
     pub uploader: Option<String>,
+    /// How many Servers the Organization has enrolled, when Cloud counted them for an
+    /// admission; none when nobody counted.
+    #[serde(default)]
+    #[ts(optional)]
+    pub servers: Option<u32>,
 }
 
 /// What the Servers answered when asked which of `sought` they hold. It is relative

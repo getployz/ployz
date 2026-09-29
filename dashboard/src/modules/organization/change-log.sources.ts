@@ -19,6 +19,7 @@ export const storeChangeSources = {
   config_pr_plan: { key: ["project_id"] },
   config_pr_environment: { key: ["environment_id"] },
   config_conditional_save: { key: ["environment_id"] },
+  config_pull_request: { key: ["repository_id", "number"] },
 } satisfies Record<string, { key: readonly string[] }>;
 
 /**

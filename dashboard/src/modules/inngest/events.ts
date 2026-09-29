@@ -67,6 +67,7 @@ export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
+export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -108,6 +109,9 @@ export type ConfigPrCheckRequestedEventData = {
   /** `repositoryId:number`: one pull request's posts run one at a time. */
   pullRequestKey: string;
 };
+
+/** A member left an Organization (when the request named it): their devices' holders on its Servers go now. */
+export type ServerAccessRetireRequestedEventData = { organizationId: string | null };
 
 /** A Config Store Deployment was admitted; Cloud's worker runs it. */
 export type ConfigDeploymentAdmittedEventData = {
@@ -151,6 +155,10 @@ export const organizationBillingSyncRequestedEventType = eventType(
 export const configPrCheckRequestedEventType = eventType(
   configPrCheckRequestedEvent,
   { schema: staticSchema<ConfigPrCheckRequestedEventData>() },
+);
+export const serverAccessRetireRequestedEventType = eventType(
+  serverAccessRetireRequestedEvent,
+  { schema: staticSchema<ServerAccessRetireRequestedEventData>() },
 );
 export const configDeploymentAdmittedEventType = eventType(
   configDeploymentAdmittedEvent,
@@ -266,6 +274,10 @@ export function createConfigPrCheckRequestedEvent(input: { organizationId: strin
     name: configPrCheckRequestedEvent,
     data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies ConfigPrCheckRequestedEventData,
   } as const;
+}
+
+export function createServerAccessRetireRequestedEvent(data: ServerAccessRetireRequestedEventData) {
+  return { name: serverAccessRetireRequestedEvent, data } as const;
 }
 
 export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {
@@ -399,6 +411,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
+  | ReturnType<typeof createServerAccessRetireRequestedEvent>
   | ReturnType<typeof createConfigPrCheckRequestedEvent>
   | ReturnType<typeof createConfigDeploymentStartedEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>

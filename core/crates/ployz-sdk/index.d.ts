@@ -265,8 +265,11 @@ export declare function allocateEnrollment(request: RegisterRequest, snapshot: E
 
 /** One Config Store; every call acts in one Organization and rejects with RpcError. */
 export interface ConfigStore {
-  /** `trusted` is what Cloud observed itself, such as a domain's certificates; never the caller's. */
-  read(organization: string, query: ConfigQuery, trusted?: ConfigTrusted): Promise<ConfigView>;
+  /**
+   * The view of the same name as the query. `trusted` is what Cloud observed itself, such as a domain's certificates;
+   * never the caller's.
+   */
+  read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
   /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
@@ -289,7 +292,7 @@ export interface ConfigStore {
     sources?: { checkouts?: Record<string, string>; upload?: string; failure?: string },
   ): Promise<DeploymentSummary>;
   /** Cloud's worker only: `runner` stopped without finishing; the outcome is unknown once it prepared. */
-  abandonDeployment(deployment: string, runner: string): Promise<ConfigWritten>;
+  abandonDeployment(deployment: string, runner: string): Promise<DeploymentSummary>;
   /**
    * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
    * Deployments it admitted, or rejects `conflict` when a branch head's `base` is no longer the Store's head.

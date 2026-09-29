@@ -1,16 +1,17 @@
 import "@tanstack/react-start/server-only";
 import type { GithubBuild, GithubClaims } from "@ployz/sdk";
-import { Data, Effect } from "effect";
-import { cancelStoreGithubBuilds, cloudStore, storeRefusal } from "#/modules/config-store/config-store.server";
-import { isConflict, pinStoreSources } from "#/modules/config-store/store-deployment.server";
+import { Effect } from "effect";
+import { cancelStoreGithubBuilds } from "#/modules/config-store/config-store.server";
+import { cloudStore, refusedWith, type StoreRefused, storeTry } from "#/modules/config-store/store-sdk.server";
+import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
-import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 /**
  * GitHub as a Builder for Store Deployments. Before the runner claims a Deployment, each Git Service whose walk
@@ -30,11 +31,6 @@ export const GITHUB_CHECK_INTERVAL = "10m";
 /** How long GitHub has to start a build a later Builder could take. */
 export const START_WITHIN_MINUTES = 3;
 
-class StoreGithubFailure extends Data.TaggedError("StoreGithubFailure")<{ readonly cause: unknown }> {}
-
-const storeCall = <A>(call: () => Promise<A>) =>
-  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
-
 /** One Git build the walk hands to GitHub first. No secret: it is a step's output. */
 export type StoreGithubTarget = {
   build: string;
@@ -52,26 +48,44 @@ const connectionsOf = Effect.fn("StoreGithub.connections")(function* (organizati
 });
 
 /**
- * Pin the Deployment's Git Services and list those whose walk starts with GitHub and haven't started. Anything else
- * (an unreadable source, a Deployment no longer wanted) is left to the runner, which records it.
+ * Whether any Server takes builds now, as the Cluster reports it. No answer reads as yes: the runner then says why the
+ * Servers couldn't build.
+ */
+const serversBuild = Effect.fn("StoreGithub.serversBuild")(function* (organizationId: string) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return true;
+  const frame = yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+  return frame.machines.some(({ machine }) => machine.accepts_builds);
+}, Effect.scoped, Effect.timeout("5 seconds"), Effect.orElseSucceed(() => true));
+
+/**
+ * Pin the Deployment's Git Services and list those whose walk starts with GitHub and haven't started; a walk that
+ * starts with the Servers starts with its next Builder when no Server takes builds. Anything else (an unreadable
+ * source, a Deployment no longer wanted) is left to the runner, which records it.
  */
 export const planStoreGithubBuilds = Effect.fn("StoreGithub.plan")(function* (data: ConfigDeploymentAdmittedEventData) {
   const store = yield* cloudStore;
   const sources = yield* pinStoreSources(store, data.organizationId, data.deploymentId).pipe(
     Effect.catchTag("SourceUnreadable", () => Effect.succeed([])),
-    Effect.catchTag("StoreDeploymentRunFailure", (error) => isConflict(error.cause) ? Effect.succeed([]) : Effect.fail(error)),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed([])),
   );
-  return sources
-    // A build GitHub skipped (with why) belongs to the next Builder.
-    .filter((source) => source.builders[0] === "github" && source.status === "pending" && source.message === null)
-    .map((source): StoreGithubTarget => ({
+  // A build GitHub skipped (with why) belongs to the next Builder.
+  const pending = sources.filter((source) => source.status === "pending" && source.message === null);
+  const servers = pending.some((source) => source.builders[0] === "servers" && source.builders.includes("github"))
+    ? yield* serversBuild(data.organizationId)
+    : true;
+  return pending.flatMap((source): StoreGithubTarget[] => {
+    const walk = servers ? source.builders : source.builders.filter((builder) => builder !== "servers");
+    if (walk[0] !== "github") return [];
+    return [{
       build: `${data.deploymentId}.${source.service}`,
       service: source.service,
       repository: source.repository,
       repositoryId: source.repository_id,
       installationId: source.access.type === "github-installation" ? source.access.installationId : null,
-      hasNext: source.builders.length > 1,
-    }));
+      hasNext: walk.length > 1,
+    }];
+  });
 });
 
 export type StoreGithubStart = { kind: "dispatched"; runId: number } | { kind: "done" };
@@ -85,9 +99,9 @@ const done = { kind: "done" } as const;
  */
 export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (organizationId: string, target: StoreGithubTarget) {
   const store = yield* cloudStore;
-  const skip = (message: string) => storeCall(() => store.githubSkip(target.build, message)).pipe(
+  const skip = (message: string) => storeTry(() => store.githubSkip(target.build, message)).pipe(
     // It started or ended meanwhile (a retried step): nothing to do.
-    Effect.catchTag("StoreGithubFailure", (error) => isConflict(error.cause) ? Effect.void : Effect.fail(error)),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.void),
     Effect.as<StoreGithubStart>(done),
   );
   if (target.installationId === null) return yield* skip(`GitHub builds need the Ployz GitHub App on ${target.repository}`);
@@ -100,7 +114,7 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       return yield* skip(`${repository} has no .github/workflows/ployz-build.yml on its default branch`);
     }
     const connections = yield* connectionsOf(organizationId);
-    const start = yield* storeCall(() => store.githubStart(target.build, connections));
+    const start = yield* storeTry(() => store.githubStart(target.build, connections));
     if (start.kind !== "dispatch") return done;
     const config = yield* AppConfig;
     const fullName = workflow.fullName;
@@ -108,23 +122,23 @@ export const startStoreGithubBuild = Effect.fn("StoreGithub.start")(function* (o
       installationId, fullName, defaultBranch: workflow.defaultBranch,
       inputs: { build: target.build, cloud: config.app.url.origin, runner: start.runner },
     });
-    const handed = yield* storeCall(() => store.githubDispatched(target.build, {
+    // The run must not build untracked: whatever stops Cloud recording it (cancelled or replaced meanwhile, a
+    // failure it retries) cancels it first.
+    const cancel = cancelGithubRun({ installationId, fullName, runId: run.runId }).pipe(Effect.ignore);
+    const handed = yield* storeTry(() => store.githubDispatched(target.build, {
       run_id: run.runId, run_url: run.runUrl, workflow_ref: run.workflowRef, repository: fullName, installation_id: installationId,
     })).pipe(
       Effect.as(true),
-      Effect.catchTag("StoreGithubFailure", (error) => isConflict(error.cause) ? Effect.succeed(false) : Effect.fail(error)),
+      Effect.catchIf(refusedWith("conflict"), () => cancel.pipe(Effect.as(false))),
+      Effect.onError(() => cancel),
     );
-    if (!handed) {
-      // Cancelled or replaced while dispatching: the run must not build.
-      yield* cancelGithubRun({ installationId, fullName, runId: run.runId }).pipe(Effect.ignore);
-      return done;
-    }
+    if (!handed) return done;
     return { kind: "dispatched", runId: run.runId } satisfies StoreGithubStart;
   }).pipe(
     // GitHub failing before dispatch is GitHub being unusable, not the build failing.
     Effect.catchTag("GithubObservationError", (error) => skip(`GitHub couldn't take the build: ${error.message}`)),
     // Started or ended by a retried step already.
-    Effect.catchTag("StoreGithubFailure", (error) => isConflict(error.cause) ? Effect.succeed(done) : Effect.fail(error)),
+    Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(done)),
   );
 });
 
@@ -143,17 +157,17 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
   organizationId: string, target: StoreGithubTarget, seen: { ended: boolean; startLimit: boolean },
 ) {
   const store = yield* cloudStore;
-  const build = yield* storeCall(() => store.githubBuild(target.build));
+  const build = yield* storeTry(() => store.githubBuild(target.build));
   if (build.status !== "building") return "done" as const;
   const deploymentId = build.id.slice(0, build.id.indexOf("."));
-  const view = yield* storeCall(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
-  if (view.view === "deployment" && view.status !== "queued" && view.status !== "running") {
+  const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
+  if (view.status !== "queued" && view.status !== "running") {
     yield* cancelStoreGithubBuilds(organizationId, deploymentId);
     return "done" as const;
   }
   const finish = (timedOut: boolean) => Effect.gen(function* () {
     const connections = yield* connectionsOf(organizationId);
-    const finished = yield* storeCall(() => store.githubFinish(target.build, timedOut, connections));
+    const finished = yield* storeTry(() => store.githubFinish(target.build, timedOut, connections));
     return finished === "waiting" ? "waiting" as const : "done" as const;
   });
   if (build.checked_in_at !== null && Date.now() - build.checked_in_at * 1000 > GITHUB_RUN_BUDGET_MS) {
@@ -174,7 +188,7 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
 /** Whether a build GitHub holds is still on GitHub: a final report may settle it before a wait begins. */
 export const storeGithubBuildOpen = Effect.fn("StoreGithub.open")(function* (target: StoreGithubTarget) {
   const store = yield* cloudStore;
-  return (yield* storeCall(() => store.githubBuild(target.build))).status === "building";
+  return (yield* storeTry(() => store.githubBuild(target.build))).status === "building";
 });
 
 const bearer = (request: Request) => /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? null;
@@ -189,15 +203,14 @@ const runnerClaims = Effect.fn("StoreGithub.claims")(function* (request: Request
 });
 
 /** The Store's refusal, as the runner's API answers it. */
-const refused = (error: StoreGithubFailure) => {
-  const refusal = storeRefusal(error.cause) ?? { code: "internal", message: "Refused." };
-  const { message } = refusal;
-  switch (refusal.code) {
+const refused = (error: StoreRefused) => {
+  const { message } = error;
+  switch (error.code) {
     case "unauthenticated": return new Forbidden({ message });
     case "not_found": return new NotFound({ message });
     case "conflict": return new Conflict({ message });
     case "invalid_argument": return new Validation({ message });
-    default: return new BuildGrantUnavailable({ cause: error.cause });
+    default: return new BuildGrantUnavailable({ cause: error });
   }
 };
 
@@ -209,10 +222,10 @@ export const checkInStoreGithubBuild = Effect.fn("StoreGithub.checkIn")(function
   const claims = yield* runnerClaims(request);
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
-    const build = yield* storeCall(() => store.githubBuild(buildId));
+    const build = yield* storeTry(() => store.githubBuild(buildId));
     const connections = yield* connectionsOf(build.organization);
-    return yield* storeCall(() => store.githubCheckIn(buildId, claims, connections));
-  }).pipe(Effect.catchTag("StoreGithubFailure", (error) => Effect.fail(refused(error))));
+    return yield* storeTry(() => store.githubCheckIn(buildId, claims, connections));
+  }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });
 
 const MAX_STEPS_REPORT_BYTES = 16 * 1024 * 1024;
@@ -227,12 +240,12 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
   const report: unknown = yield* Effect.try({ try: () => JSON.parse(text), catch: () => new Validation({ message: "The report is not Build Steps." }) });
   const store = yield* cloudStore;
   return yield* Effect.gen(function* () {
-    const build = yield* storeCall(() => store.githubBuild(buildId));
-    const reported = yield* storeCall(() => store.githubReport(buildId, claims, report));
+    const build = yield* storeTry(() => store.githubBuild(buildId));
+    const reported = yield* storeTry(() => store.githubReport(buildId, claims, report));
     if (reported.ended) {
       const connections = yield* connectionsOf(build.organization);
       // The walk's next look ends it otherwise.
-      yield* storeCall(() => store.githubFinish(buildId, false, connections)).pipe(
+      yield* storeTry(() => store.githubFinish(buildId, false, connections)).pipe(
         Effect.catch((error) => Effect.logWarning("Could not end a reported GitHub build.", error)),
       );
       yield* sendInngestEvent(createGithubBuildRunCompletedEvent({ id: `reported-${buildId}`, runId: build.run.run_id })).pipe(
@@ -240,5 +253,5 @@ export const recordStoreGithubBuildSteps = Effect.fn("StoreGithub.steps")(functi
       );
     }
     return { received: reported.received };
-  }).pipe(Effect.catchTag("StoreGithubFailure", (error) => Effect.fail(refused(error))));
+  }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.fail(refused(error))));
 });

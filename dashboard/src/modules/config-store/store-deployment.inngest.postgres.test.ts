@@ -1,21 +1,18 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import { gzipSync } from "node:zlib";
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
 import type { ConfigCommand, ConfigTrusted, ServiceId } from "@ployz/sdk";
-import { ConfigProvider, Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import { Inngest } from "inngest";
 import { Header } from "tar";
 import { expect } from "vitest";
-import { cloudStore } from "#/modules/config-store/config-store.server";
-import { createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
-import { GithubApi, GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import { recordStoreDeploymentRun, unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
+import { GithubObservationError, type GithubApiService } from "#/modules/github/github-observation.api";
 import { configDeploymentAdmittedEvent } from "#/modules/inngest/events";
-import { AppConfig } from "#/server/config.server";
-import { DatabaseLive } from "#/server/database.server";
 import { makeInngestEffectRunner } from "#/server/run.server";
-import { postgresTestDatabase } from "#/test/postgres";
-import { SecretEncryptionLive } from "#/utils/encrypted-secret.server";
+import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000a001";
 const PROJECT = "00000000-0000-4000-8000-00000000a002";
@@ -23,10 +20,10 @@ const ENVIRONMENT = "00000000-0000-4000-8000-00000000a003";
 const SERVICE = "00000000-0000-4000-8000-00000000a004";
 const DEPLOYED = "00000000-0000-4000-8000-00000000a101";
 const CANCELLED = "00000000-0000-4000-8000-00000000a102";
+const LOST = "00000000-0000-4000-8000-00000000a103";
+const QUEUED = "00000000-0000-4000-8000-00000000a104";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
-
-const noGithub: GithubApiService = { json: () => Effect.die("no Git in this test"), archive: () => Effect.die("no Git in this test") };
 
 const admitted = (deploymentId: string) => ({
   name: configDeploymentAdmittedEvent,
@@ -37,14 +34,8 @@ it.live(
   "Cloud's worker runs an admitted Deployment once, honours a cancel, and no step carries its secrets",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
+      const services = yield* Layer.build(yield* storeTestCloud());
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand) => Effect.promise(() => store.write(ORGANIZATION, command));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
@@ -59,11 +50,10 @@ it.live(
       });
       yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
 
-      const worker = createRunStoreDeployment(
-        new Inngest({ id: "store-deployment-test" }),
-        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
-          Effect.provide(services), Effect.provideService(GithubApi, noGithub)))),
-      );
+      const runner: Parameters<typeof createRunStoreDeployment>[1] =
+        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
+      const inngest = new Inngest({ id: "store-deployment-test" });
+      const worker = createRunStoreDeployment(inngest, runner);
       const run = (deploymentId: string) =>
         Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());
 
@@ -93,6 +83,25 @@ it.live(
         // SAFETY: the failure handler reads only the failed run's ID and its triggering event.
         Promise.resolve(onFailure({ event: { data: { run_id: "never-claimed", event: admitted(DEPLOYED) } } } as never)));
       expect(abandoned).toMatchObject({ nothingToRun: expect.any(String) });
+
+      // A run cancelled in Inngest after it claimed its Deployment records that it stopped: it never reads running.
+      yield* write({ command: "admit", id: LOST, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      yield* recordStoreDeploymentRun("cancelled-run", admitted(LOST).data).pipe(Effect.provide(services));
+      yield* Effect.promise(() => store.runDeployment(ORGANIZATION, LOST, "cloud-cancelled-run", [], { failure: "stopped" }));
+      const stop = (runId: string) => Effect.promise(async () => (await new InngestTestEngine({
+        function: createCancelStoreDeployment(inngest, runner),
+        events: [{ name: "inngest/function.cancelled", data: { function_id: "run-store-deployment", run_id: runId } }],
+      }).execute()).result);
+      expect(yield* stop("cancelled-run")).toMatchObject({ abandoned: { id: LOST } });
+      // Recorded runs are forgotten once stopped, and other functions' runs were never recorded.
+      expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
+
+      // An admission whose hand-off was lost is handed over again by the sweep, once it has waited.
+      yield* write({ command: "admit", id: QUEUED, environment: here, services: [], version: null, retry: null, remove: false, accept_volume_loss: [] });
+      const later = new Date(Date.now() + 11 * 60_000);
+      const unclaimed = yield* unclaimedStoreDeployments(later).pipe(Effect.provide(services));
+      expect(unclaimed.map((deployment) => deployment.deploymentId)).toContain(QUEUED);
+      expect(yield* unclaimedStoreDeployments(new Date()).pipe(Effect.provide(services))).toEqual([]);
 
       // Every serialized step and result holds only summaries: never a secret or a Deploy Intent.
       const steps = yield* Effect.promise(() =>
@@ -137,14 +146,9 @@ it.live(
   "Cloud's worker pins a Git Service's commit once and checks it out for the runner; a source it can't read is why nothing ran",
   () =>
     Effect.gen(function* () {
-      const cloud = yield* postgresTestDatabase;
-      const env = { ...testConfigEnvironment(), NODE_ENV: "test", DATABASE_URL: cloud.url.href };
-      const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))));
-      const services = yield* Layer.build(Layer.mergeAll(
-        configLayer,
-        DatabaseLive.pipe(Layer.provide(configLayer)),
-        SecretEncryptionLive.pipe(Layer.provide(configLayer)),
-      ));
+      const state = { branchGone: false, heads: 0, archives: [] as string[] };
+      const services = yield* Layer.build(yield* storeTestCloud({ github: github(state) }));
+      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -155,11 +159,9 @@ it.live(
       });
       yield* write({ command: "admit", id: DEPLOYED, environment: here, services: [], version: null, remove: false, accept_volume_loss: [] });
 
-      const state = { branchGone: false, heads: 0, archives: [] as string[] };
       const worker = createRunStoreDeployment(
         new Inngest({ id: "store-deployment-git-test" }),
-        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
-          Effect.provide(services), Effect.provideService(GithubApi, github(state))))),
+        makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services)))),
       );
       const run = (deploymentId: string) =>
         Effect.promise(() => new InngestTestEngine({ function: worker, events: [admitted(deploymentId)] }).execute());

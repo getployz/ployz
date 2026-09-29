@@ -19,7 +19,7 @@ const missingGrant = (installationId: number) => fetchAppInstallationPermissions
 export const listMissingStorePrGrants = Effect.fn("PrEnvironments.listMissingStoreGrants")(
   function* (actor: Actor, input: { organizationSlug: string; projectSlug: string }) {
     const result = yield* callStoreAsMember(actor, input.organizationSlug, { operation: "read", query: { query: "pr_plans", project: input.projectSlug } });
-    const view = result.ok && "view" in result.value && result.value.view === "pr_plans" ? result.value : null;
+    const view = result.ok ? result.value : null;
     const installationIds = [...new Set(view?.plans.map((plan) => plan.installation_id))];
     // GitHub not answering hides the warning rather than the page; the next read asks again.
     const checked = yield* Effect.forEach(installationIds, (installationId) => missingGrant(installationId).pipe(

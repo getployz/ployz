@@ -1,16 +1,13 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigQuery, ConfigTrusted, ConfigView } from "@ployz/sdk";
+import type { ConfigTrusted } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { githubBranchExists, resolveReadableRepository } from "#/modules/github/readable-repository.server";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
+import { EnvironmentRef, environmentOf, type StoreCall, type StoreRead } from "./store.contract";
 
 /** The parts of a command that name a repository or branch; decode it with this. The Store validates the whole command. */
 const Text = Schema.String;
-const EnvironmentRef = Schema.Struct({
-  project: Schema.optional(Schema.NullOr(Text)),
-  environment: Schema.optional(Schema.NullOr(Text)),
-});
-export const GitCommand = Schema.Union([
+const GitCommand = Schema.Union([
   Schema.Struct({
     command: Schema.Literal("create_git_service"),
     name: Text,
@@ -60,10 +57,12 @@ function wanted(command: typeof GitCommand.Type) {
  */
 export const gatherGitEvidence = Effect.fn("ConfigStore.gatherGitEvidence")(function* (
   organizationId: string,
-  command: typeof GitCommand.Type | undefined,
-  read: (query: ConfigQuery) => Promise<ConfigView>,
+  call: StoreCall,
+  read: StoreRead,
 ) {
   const trusted: Pick<ConfigTrusted, "repositories"> = { repositories: [] };
+  if (call.operation !== "write") return trusted;
+  const command = Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(call.command));
   if (command === undefined) return trusted;
   const environment = command.command === "edit" ? command.environment : undefined;
   const branches = new Map<string, Set<string>>();
@@ -72,13 +71,11 @@ export const gatherGitEvidence = Effect.fn("ConfigStore.gatherGitEvidence")(func
       // An edit keeps the Service's current repository or branch; read them to check the other.
       const view = yield* storeTry(() => read({
         query: "environment",
-        environment: { project: environment?.project ?? null, environment: environment?.environment ?? null },
+        environment: environmentOf(environment),
         path: service,
         all: false,
       })).pipe(Effect.option);
-      const found = Option.getOrUndefined(view);
-      const values = found?.view === "environment" ? found.values : undefined;
-      const current = Option.getOrUndefined(Schema.decodeUnknownOption(SourceSettings)(values));
+      const current = Option.getOrUndefined(Schema.decodeUnknownOption(SourceSettings)(Option.getOrUndefined(view)?.values));
       want.repository ??= current?.repository;
       want.branch ??= current?.branch;
     }

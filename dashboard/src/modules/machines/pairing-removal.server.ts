@@ -4,7 +4,7 @@ import type { MachineId } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { enrollmentAllocation, machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
+import { enrollmentAllocation, machineEnrollmentToken, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -76,6 +76,8 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
           .where(eq(organizationPairing.organizationId, organizationId));
         // This also retires the old generation's preferred-entry flag.
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+        // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
+        yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
         yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }

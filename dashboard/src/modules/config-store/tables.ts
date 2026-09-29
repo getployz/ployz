@@ -21,3 +21,14 @@ export const uploadChunk = pgTable(
     check("upload_chunk_index_check", sql`${table.index} >= 0`),
   ],
 );
+
+/**
+ * One run of Cloud's worker for one Deployment, recorded before it does anything, so cancelling the run in Inngest
+ * finds the Deployment to stop. It goes when the run ends.
+ */
+export const deploymentRun = pgTable("deployment_run", {
+  runId: text("run_id").primaryKey(),
+  organizationId: uuid("organization_id").notNull().references(() => organization.id, { onDelete: "cascade" }),
+  deploymentId: text("deployment_id").notNull(),
+  createdAt: timestamp("created_at", { mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
