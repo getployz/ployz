@@ -4,7 +4,6 @@ import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/compone
 import { useStoreWriter, StoreRefused } from "#/modules/config-store/store-write";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { useEnvironmentPlace } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
 
 type Acceptance = Pick<VolumeLoss, "accept" | "version">;
 
@@ -16,11 +15,12 @@ type Acceptance = Pick<VolumeLoss, "accept" | "version">;
  * reads every Volume that goes, types where, and the Deploy is admitted again accepting exactly those. Any other
  * refusal (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
-export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef, environmentId: string,
+export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
   onAdmitted: (deploymentId: string) => void) {
   const writer = useStoreWriter(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
-  const place = useEnvironmentPlace(organizationSlug, environmentId);
+  // What the user types to confirm: where the data goes from.
+  const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
 
   function check(refused: VolumeLoss): DeletionCheck<Acceptance> {

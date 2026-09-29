@@ -11,7 +11,7 @@ import {
 import { Polar } from "#/modules/billing/polar-provider.server";
 import {
   getOrganizationForUserBySlug,
-} from "#/modules/environment-design/workspace-repository.server";
+} from "#/modules/organization/organization-state.server";
 import type { Actor } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";

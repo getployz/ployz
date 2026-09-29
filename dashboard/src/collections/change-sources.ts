@@ -16,29 +16,15 @@ export const storeViewSources = {
 } satisfies Record<StoreViewName, readonly [ChangeSource, ...ChangeSource[]]>;
 
 /**
- * The source tables each change stream name reads: an Org Store collection, `organization`, the
- * change-state projection, or a Config Store table family. A collection's first source is its key table: its rows are keyed by the key
- * that table logs, and every other source logs that same key through a foreign key to it.
+ * The source tables each change stream name reads: an Org Store collection, `organization`, or a Config Store table
+ * family. A collection's first source is its key table: its rows are keyed by the key that table logs, and every other
+ * source logs that same key through a foreign key to it.
  */
 export const changeNameSources = {
   organization: ["organization"],
-  // Progress lands in environment_deployment_event, which is deliberately not a source.
-  environment_change_state: ["environment_deployment", "environment_saved_state_snapshot"],
-  project: ["project"],
-  environment: ["environment"],
-  environment_summary: ["environment"],
-  environment_branch: ["environment_branch", "pr_environment"],
-  pr_environment_plan: ["pr_environment_plan"],
-  conditional_save: ["conditional_save"],
-  service: ["service"],
-  resource_lineage: ["resource_lineage"],
-  environment_resource: ["environment_resource"],
   environment_canvas_node_position: ["environment_canvas_node_position"],
-  environment_deployment: ["environment_deployment", "environment_deployment_event"],
-  environment_node_introduction: ["environment_node_introduction"],
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
-  organization_build_order: ["organization_build_order"],
   ...storeViewSources,
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
 

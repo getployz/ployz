@@ -10,7 +10,7 @@ import { AdmitCommand, gatherVolumeEvidence } from "#/modules/config-store/volum
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { storeTry } from "#/modules/config-store/store-sdk.server";
-import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
+import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
   createConfigDeploymentAdmittedEvent,
@@ -255,9 +255,6 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
 export const callStoreAsMember = Effect.fn("ConfigStore.callAsMember")(function* (
   actor: Actor, organizationSlug: string, call: StoreCall,
 ) {
-  const config = yield* AppConfig;
-  // TODO(#1275): dark in production until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
   // Only Cloud's own Organization removal forgets an Organization's configuration.

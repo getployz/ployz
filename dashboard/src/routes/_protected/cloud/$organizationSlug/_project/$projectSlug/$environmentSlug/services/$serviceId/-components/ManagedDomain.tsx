@@ -1,4 +1,4 @@
-import { Schema, SchemaGetter } from "effect";
+import { Effect, Schema, SchemaGetter, SchemaIssue } from "effect";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -16,13 +16,25 @@ import {
   useAppForm,
   validateOnChangeOrBlur,
 } from "#/form";
-import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
-import {
-  serviceManagedHostnamePrefixSchema,
-  serviceManagedHostnameSchema,
-} from "#/modules/environment-design/services";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { parseServiceSetting, type ServiceManagedHostname } from "@ployz/sdk/config";
+import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
+
+/** A field core admits: Effect owns the form's envelope, Rust the rule. */
+function coreSetting<T>(parse: <Input>(value: Input) => T) {
+  const decoded = Schema.declare<T>((value): value is T => {
+    try { parse(value); return true; } catch { return false; }
+  });
+  return decoded.pipe(Schema.decodeTo(decoded, {
+    decode: SchemaGetter.transformOrFail((value, options) => Effect.try({
+      try: () => parse(value),
+      catch: (cause) => new SchemaIssue.InvalidValue({ message: cause instanceof Error ? cause.message : "Invalid domain" }, undefined, options),
+    })),
+    encode: SchemaGetter.transform((value) => value),
+  }));
+}
+const serviceManagedHostnamePrefixSchema = coreSetting((value) => parseServiceSetting("managedHostnamePrefix", value));
+const serviceManagedHostnameSchema = coreSetting((value) => parseServiceSetting("managedHostnameValue", value));
 
 export function ManagedDomainDialog({
   mode = "edit",

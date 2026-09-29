@@ -5,7 +5,6 @@ import { callStore, cloudStore, refusal } from "#/modules/config-store/config-st
 import type { StoreCall } from "#/modules/config-store/store.contract";
 import { receiveUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
-import { AppConfig } from "#/server/config.server";
 import { NotFound, Validation } from "#/server/public-error";
 
 /**
@@ -14,9 +13,6 @@ import { NotFound, Validation } from "#/server/public-error";
  * admits next builds from. Nothing else of the Store is reachable over HTTPS.
  */
 export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
-  const config = yield* AppConfig;
-  // TODO(#1275): dark in production until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
   const upload = /^upload\/([^/]+)$/.exec(operation)?.[1];
   if (request.method !== "POST" || (operation !== "read" && operation !== "write" && upload === undefined)) {

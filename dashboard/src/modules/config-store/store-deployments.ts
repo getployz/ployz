@@ -1,21 +1,52 @@
-import type { DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeStatus, Outcome, ServiceListing, UploadedSource } from "@ployz/sdk";
+import type {
+  ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
+} from "@ployz/sdk";
 import { Option, Schema } from "effect";
-import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
-import type { DeploymentNodeView, DeploymentViewStatus } from "#/modules/deployments/deployment-view";
-import { presentSettingChange } from "#/modules/services/service-deployment-diff/fields";
 import { settingTitle } from "./catalog";
+
+/** One changed Setting in Details. */
+export type ChangeRow = {
+  changeKey: string;
+  label: string;
+  kind: ChangeKind;
+  /** Its Store path, which Discard takes. */
+  path: string;
+  currentValue: string;
+  newValue: string;
+  canDiscard: boolean;
+};
+
+/** One changed node in Details, with its changed Settings. */
+export type ChangeGroup = {
+  nodeType: NodeChange["type"];
+  nodeId: string;
+  nodeName: string;
+  lifecycle: NodeChange["lifecycle"];
+  rows: ChangeRow[];
+  changeCount: number;
+  canDiscard: boolean;
+  serviceSourceType?: ServiceListing["source"];
+};
+
+/** A Setting the catalog doesn't title: a variable, a mount, a route, or a Volume's own. */
+function untitledLabel(nodeType: NodeChange["type"], setting: string) {
+  if (nodeType === "volume") return setting === "node" ? "Volume" : setting === "name" ? "Name" : setting;
+  if (setting.startsWith("env.")) return `Environment variable ${setting.slice(4)}`;
+  if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
+  if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Public route";
+  return setting;
+}
 
 /**
  * The Store's review as the bottom bar's Details groups it: one group per changed node, one row per changed Setting.
  * Rows discard by their Store path (`web.replicas`), a Service by its name. The Store can't discard a Volume node,
  * so only Services' changes offer Discard.
  */
-export function changeGroups(diff: DiffView, services: readonly ServiceListing[]): CanvasEnvironmentChangeGroup[] {
+export function changeGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
   return diff.changes.map((node) => ({
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
-    summaryLabel: "",
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
     canDiscard: node.type === "service",
@@ -28,7 +59,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         changeKey: `${node.id}:${row.path}`,
         path: row.path,
         kind: row.kind,
-        label: setting === "name" ? "Name" : title ?? presentSettingChange(node.type, setting, row.before, row.after).label,
+        label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
         // Only a catalog Setting discards alone; a variable, mount, domain or rename goes with its Service.
@@ -60,23 +91,33 @@ export const deploymentStatusLabels = {
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
 
+/** A Deployment as its icon shows it. */
+export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "cancelled";
+
+/** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
+export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "not_applied";
+
+export const nodeLightLabels = {
+  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", not_applied: "Not applied",
+} satisfies Record<NodeLight, string>;
+
 /** Each status in the icons' vocabulary. `unknown` (its runner vanished mid-run) needs a look, like a failure. */
 export const deploymentStatusIcons = {
   queued: "queued", running: "deploying", cancelling: "deploying", applied: "deployed", failed: "failed",
   unknown: "failed", cancelled: "cancelled", superseded: "cancelled",
-} satisfies Record<DeploymentStatus, DeploymentViewStatus>;
+} satisfies Record<DeploymentStatus, DeploymentLight>;
 
 export const nodeStatusLabels = {
   pending: "Pending", applied: "Applied", not_applied: "Not applied", unknown: "Unknown",
 } satisfies Record<NodeStatus, string>;
 
-/** A node's outcome in the badges' and canvas lighting's vocabulary; a pending node reads as its Deployment does. */
-export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): DeploymentNodeView["outcome"] {
+/** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
+export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
   if (outcome === "applied") return "deployed";
   if (outcome === "unknown") return "failed";
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
-  return "not_attempted";
+  return "not_applied";
 }
 
 /** "every service", or the Services a targeted Deploy named. */

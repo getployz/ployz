@@ -12,10 +12,10 @@ import {
   startPostgresTestHarness,
 } from "#/test/postgres";
 
-type ServiceRow = { id: string; name: string; organizationId: string };
-type Organization = { id: string; slug: string; userId: string; projectId: string; environmentId: string };
+type PositionRow = { id: string; resourceId: string; x: number; organizationId: string };
+type Organization = { id: string; slug: string; userId: string; environmentId: string };
 
-describe("incremental Service reads from the Organization change log", () => {
+describe("incremental canvas position reads from the Organization change log", () => {
   let harness: PostgresTestHarness;
   let alpha: Organization;
   let beta: Organization;
@@ -23,35 +23,29 @@ describe("incremental Service reads from the Organization change log", () => {
   const sql = (text: string, values: unknown[] = []) => harness.pool.query(text, values);
 
   async function createOrganization(slug: string): Promise<Organization> {
-    const organization = { id: randomUUID(), slug, userId: randomUUID(), projectId: randomUUID(), environmentId: randomUUID() };
+    const organization = { id: randomUUID(), slug, userId: randomUUID(), environmentId: randomUUID() };
     await sql("insert into organization (id, name, slug) values ($1, $2, $2)", [organization.id, slug]);
     await sql("insert into \"user\" (id, email, name) values ($1, $2, $2)", [organization.userId, `${slug}@example.test`]);
     await sql("insert into member (user_id, organization_id, role) values ($1, $2, 'owner')", [organization.userId, organization.id]);
-    await sql("insert into project (id, organization_id, name, slug) values ($1, $2, 'api', 'api')", [organization.projectId, organization.id]);
-    await sql(
-      "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'production', 'production', '{}')",
-      [organization.environmentId, organization.id, organization.projectId],
-    );
     return organization;
   }
 
-  /** One statement, so one change log row per Organization. */
-  async function createServices(organization: Organization, names: string[]) {
-    const result = await harness.pool.query<{ id: string }>(`
-      with lineage as (
-        insert into service_lineage (organization_id, project_id, canonical_name, canonical_slug)
-        select $3, $1, name, name from unnest($2::text[]) as name returning id, canonical_name
-      )
-      insert into service (organization_id, project_id, environment_id, lineage_id, name)
-      select $3, $1, $4, id, canonical_name from lineage returning id
-    `, [organization.projectId, names, organization.id, organization.environmentId]);
-    return result.rows.map((row) => row.id);
+  /** One statement, so one change log row per Organization. Returns each position's Service id. */
+  async function createPositions(organization: Organization, count: number) {
+    const result = await harness.pool.query<{ resource_id: string }>(`
+      insert into environment_canvas_node_position (organization_id, environment_id, resource_type, resource_id, x, y)
+      select $1, $2, 'service', gen_random_uuid(), 0, 0 from generate_series(1, $3) returning resource_id
+    `, [organization.id, organization.environmentId, count]);
+    return result.rows.map((row) => row.resource_id);
   }
+
+  const moveTo = (resourceId: string, x: number) =>
+    sql("update environment_canvas_node_position set x = $2 where resource_id = $1", [resourceId, x]);
 
   function read(organization: Organization, since?: string) {
     return harness.runEffect(readCollection({ userId: organization.userId }, {
-      table: "service", userId: organization.userId, organizationSlug: organization.slug, since,
-    })) as Promise<CollectionRead<ServiceRow>>;
+      table: "environment_canvas_node_position", userId: organization.userId, organizationSlug: organization.slug, since,
+    })) as Promise<CollectionRead<PositionRow>>;
   }
 
   async function cursorNow(organization: Organization) {
@@ -69,14 +63,14 @@ describe("incremental Service reads from the Organization change log", () => {
   });
 
   it("returns an Organization's own changes since the cursor and never another's", async () => {
-    const [alphaService] = await createServices(alpha, [`web-${randomUUID().slice(0, 8)}`]);
-    await createServices(beta, [`web-${randomUUID().slice(0, 8)}`]);
+    const [alphaNode = ""] = await createPositions(alpha, 1);
+    await createPositions(beta, 1);
     const since = await cursorNow(alpha);
 
-    await sql("update service set name = 'renamed' where id = $1", [alphaService]);
+    await moveTo(alphaNode, 7);
 
     const alphaChanges = await read(alpha, since);
-    expect(alphaChanges).toMatchObject({ full: false, deleted: [], rows: [{ id: alphaService, name: "renamed" }] });
+    expect(alphaChanges).toMatchObject({ full: false, deleted: [], rows: [{ resourceId: alphaNode, x: 7 }] });
     const betaChanges = await read(beta, since);
     expect(betaChanges).toMatchObject({ full: false, deleted: [], rows: [] });
     // Nothing changed, yet the cursor still moves forward.
@@ -88,52 +82,53 @@ describe("incremental Service reads from the Organization change log", () => {
     expect(quiet).toMatchObject({ full: false, deleted: [], rows: [] });
   });
 
-  it("returns a deleted Service as a deleted id", async () => {
-    const [service] = await createServices(alpha, [`worker-${randomUUID().slice(0, 8)}`]);
+  it("returns a deleted row by its key", async () => {
+    const [node] = await createPositions(alpha, 1);
     const since = await cursorNow(alpha);
 
-    await sql("delete from service where id = $1", [service]);
+    await sql("delete from environment_canvas_node_position where resource_id = $1", [node]);
 
-    expect(await read(alpha, since)).toMatchObject({ full: false, rows: [], deleted: [service] });
+    expect(await read(alpha, since)).toMatchObject({ full: false, rows: [], deleted: [`service:${node}`] });
     expect(await read(beta, since)).toMatchObject({ full: false, rows: [], deleted: [] });
   });
 
-  it("falls back to a full read when one statement touches more than 100 Services", async () => {
+  it("falls back to a full read when one statement touches more than 100 rows", async () => {
     const since = await cursorNow(alpha);
 
-    const created = await createServices(alpha, Array.from({ length: 101 }, (_, index) => `bulk-${index}-${randomUUID().slice(0, 8)}`));
+    const created = await createPositions(alpha, 101);
 
     const changes = await read(alpha, since);
     expect(changes.full).toBe(true);
     // The window still names its tables, so the change stream refetches their collections.
     expect(await harness.runEffect(readChangeWindow({ organizationId: alpha.id, since })))
-      .toMatchObject({ kind: "full", sourceTables: expect.arrayContaining(["service"]) });
-    expect(changes.rows.map((row) => row.id)).toEqual(expect.arrayContaining(created));
+      .toMatchObject({ kind: "full", sourceTables: expect.arrayContaining(["environment_canvas_node_position"]) });
+    expect(changes.rows.map((row) => row.resourceId)).toEqual(expect.arrayContaining(created));
     expect(changes.rows.every((row) => row.organizationId === alpha.id)).toBe(true);
   });
 
   it("holds back changes until every older transaction finishes, and skips none", async () => {
-    const [first, second, third] = await createServices(alpha, ["a", "b", "c"].map((name) => `${name}-${randomUUID().slice(0, 8)}`));
+    const [first, second, third = ""] = await createPositions(alpha, 3);
     const since = await cursorNow(alpha);
     const older = await harness.pool.connect();
     const newer = await harness.pool.connect();
+    const move = "update environment_canvas_node_position set x = $2 where resource_id = $1";
     try {
-      // `older` takes its transaction id first but logs its Service change last.
+      // `older` takes its transaction id first but logs its change last.
       await older.query("begin");
       await older.query("select pg_current_xact_id()");
       await newer.query("begin");
-      await newer.query("update service set name = 'second' where id = $1", [second]);
-      await older.query("update service set name = 'first' where id = $1", [first]);
+      await newer.query(move, [second, 2]);
+      await older.query(move, [first, 1]);
       await older.query("commit");
       // A later transaction commits while `newer` still holds an earlier change.
-      await sql("update service set name = 'third' where id = $1", [third]);
+      await moveTo(third, 3);
 
       const held = await read(alpha, since);
-      expect(held.rows.map((row) => row.name)).toEqual(["first"]);
+      expect(held.rows.map((row) => row.x)).toEqual([1]);
 
       await newer.query("commit");
       const released = await read(alpha, held.cursor);
-      expect(released.rows.map((row) => row.name).sort()).toEqual(["second", "third"]);
+      expect(released.rows.map((row) => row.x).sort((a, b) => a - b)).toEqual([2, 3]);
     } finally {
       await newer.query("rollback").catch(() => undefined);
       older.release();
@@ -147,9 +142,9 @@ describe("incremental Service reads from the Organization change log", () => {
     const loggedXids = async () => (await sql("select xid::text from organization_change group by xid order by xid")).rows.map((row) => row.xid as string);
 
     it("prunes changes older than 24 hours and keeps newer ones", async () => {
-      await createServices(alpha, [`old-${randomUUID().slice(0, 8)}`]);
+      await createPositions(alpha, 1);
       await ageAll();
-      await createServices(alpha, [`new-${randomUUID().slice(0, 8)}`]);
+      await createPositions(alpha, 1);
       const [newest] = (await loggedXids()).slice(-1);
 
       await harness.runEffect(pruneChangeLog());
@@ -158,7 +153,7 @@ describe("incremental Service reads from the Organization change log", () => {
     });
 
     it("keeps the newest logged transaction when every change is older than 24 hours", async () => {
-      await createServices(alpha, [`quiet-${randomUUID().slice(0, 8)}`]);
+      await createPositions(alpha, 1);
       await ageAll();
       const [newest] = (await loggedXids()).slice(-1);
 
@@ -173,7 +168,7 @@ describe("incremental Service reads from the Organization change log", () => {
       try {
         await running.query("begin");
         await running.query("select pg_current_xact_id()");
-        await createServices(alpha, [`later-${randomUUID().slice(0, 8)}`]);
+        await createPositions(alpha, 1);
         await ageAll();
         const before = await loggedXids();
 
@@ -189,15 +184,15 @@ describe("incremental Service reads from the Organization change log", () => {
 
     it("reads in full, flagged as such, from a since below the oldest change", async () => {
       const stale = await cursorNow(alpha);
-      const [service] = await createServices(alpha, [`fresh-${randomUUID().slice(0, 8)}`]);
+      const [node] = await createPositions(alpha, 1);
       await ageAll();
-      await createServices(beta, [`fresh-${randomUUID().slice(0, 8)}`]);
+      await createPositions(beta, 1);
       await harness.runEffect(pruneChangeLog());
       const fence = await cursorNow(alpha);
 
       const expired = await read(alpha, stale);
       expect(expired.full).toBe(true);
-      expect(expired.rows.map((row) => row.id)).toContain(service);
+      expect(expired.rows.map((row) => row.resourceId)).toContain(node);
       // At or above the oldest change nothing was pruned, so the read stays incremental.
       expect(await read(alpha, fence)).toMatchObject({ full: false, rows: [], deleted: [] });
     });
@@ -219,10 +214,7 @@ describe("every Org Store collection reads its changes from the Organization cha
   let harness: PostgresTestHarness;
   const organizationId = randomUUID();
   const userId = randomUUID();
-  const projectId = randomUUID();
   const environmentId = randomUUID();
-  const branchId = randomUUID();
-  const deploymentId = randomUUID();
   const slug = `every-${randomUUID().slice(0, 8)}`;
 
   const sql = (text: string, values: unknown[] = []) => harness.pool.query(text, values);
@@ -234,58 +226,15 @@ describe("every Org Store collection reads its changes from the Organization cha
 
   beforeAll(async () => {
     harness = await startPostgresTestHarness({ ownServer: true });
-    const lineageId = randomUUID();
-    const snapshotId = randomUUID();
     await sql("insert into organization (id, name, slug) values ($1, $2, $2)", [organizationId, slug]);
     await sql("insert into \"user\" (id, email, name) values ($1, $2, $2)", [userId, `${userId}@example.test`]);
     await sql("insert into member (user_id, organization_id, role) values ($1, $2, 'owner')", [userId, organizationId]);
-    await sql("insert into project (id, organization_id, name, slug) values ($1, $2, 'api', 'api')", [projectId, organizationId]);
-    await sql(
-      "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'production', 'production', '{}')",
-      [environmentId, organizationId, projectId],
-    );
-    await sql(`
-      with lineage as (
-        insert into service_lineage (organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, 'web', 'web') returning id
-      )
-      insert into service (organization_id, project_id, environment_id, lineage_id, name) select $1, $2, $3, id, 'web' from lineage
-    `, [organizationId, projectId, environmentId]);
-    await sql(
-      "insert into environment (id, organization_id, project_id, name, namespace, intent) values ($1, $2, $3, 'fix-web', 'fix-web', '{}')",
-      [branchId, organizationId, projectId],
-    );
-    const sealedBase = { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret", encryptedValue: { ciphertext: "sealed-ciphertext" } } }] }] };
-    await sql(`insert into environment_branch (environment_id, organization_id, project_id, parent_environment_id, base, setup_commands, created_by_user_id)
-      values ($1, $2, $3, $4, $5, '[{"lineageId": "web", "command": "pnpm seed"}]', $6)`,
-    [branchId, organizationId, projectId, environmentId, JSON.stringify(sealedBase), userId]);
-    await sql(`insert into pr_environment_plan (organization_id, project_id, repository_id, installation_id, repository, start_from_environment_id)
-      values ($1, $2, 42, 7, 'acme/app', $3)`, [organizationId, projectId, environmentId]);
-    await sql(`insert into conditional_save (organization_id, project_id, pr_environment_id, repository_id, pr_number, destination_environment_id,
-      rows, picks, landing, working_revision, target_branch, saved_by_user_id)
-      values ($1, $2, $3, 42, 142, $4, '[]', '[]', '{}', gen_random_uuid(), 'main', $5)`, [organizationId, projectId, branchId, environmentId, userId]);
-    await sql(`insert into pr_environment (environment_id, organization_id, project_id, repository_id, number, title, author, head_branch, target_branch, commits)
-      values ($1, $2, $3, 42, 142, 'Discounts', 'maya', 'discounts', 'main', 1)`, [branchId, organizationId, projectId]);
-    await sql("insert into resource_lineage (id, organization_id, project_id, canonical_name, canonical_slug) values ($1, $2, $3, 'data', 'data')",
-      [lineageId, organizationId, projectId]);
-    await sql("insert into environment_resource (organization_id, project_id, environment_id, lineage_id, implementation_type) values ($1, $2, $3, $4, 'volume')",
-      [organizationId, projectId, environmentId, lineageId]);
-    await sql("insert into environment_canvas_node_position (organization_id, environment_id, resource_type, resource_id, x, y) values ($1, $2, 'volume', $3, 1, 2)",
-      [organizationId, environmentId, lineageId]);
-    await sql("insert into environment_saved_state_snapshot (id, organization_id, environment_id, actor_id, intent, volume_deletion_authorizations) values ($1, $2, $3, $4, '{}', '[]')",
-      [snapshotId, organizationId, environmentId, userId]);
-    await sql("insert into environment_deployment (id, organization_id, environment_id, trigger_origin, saved_state_snapshot_id) values ($1, $2, $3, '{}', $4)",
-      [deploymentId, organizationId, environmentId, snapshotId]);
-    await sql("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"queued\"}')",
-      [organizationId, deploymentId]);
-    await sql("insert into environment_node_config_snapshot (organization_id, environment_deployment_id, environment_id, node_type, node_id, node_lineage_id, config) values ($1, $2, $3, 'volume', $4, $4, '{}')",
-      [organizationId, deploymentId, environmentId, lineageId]);
-    await sql("insert into environment_node_introduction (organization_id, environment_id, node_type, node_id, node_lineage_id, config) values ($1, $2, 'volume', $3, $3, '{}')",
-      [organizationId, environmentId, lineageId]);
+    await sql("insert into environment_canvas_node_position (organization_id, environment_id, resource_type, resource_id, x, y) values ($1, $2, 'volume', gen_random_uuid(), 1, 2)",
+      [organizationId, environmentId]);
     await sql("insert into organization_pairing (organization_id, encrypted_pairing_secret, founder_claim_machine_id, founder_public_key) values ($1, '{}', $2, 'key')",
       [organizationId, "0".repeat(32)]);
     await sql("insert into organization_cluster_domain (organization_id, endpoint, name, encrypted_token, reserved_at, lease_renewed_at) values ($1, 'https://dns.example.test/', 'acme.ployz.test', '{}', now(), now())",
       [organizationId]);
-    await sql("insert into organization_build_order (organization_id, build_order) values ($1, 'github-only')", [organizationId]);
   }, 60_000);
 
   afterAll(async () => {
@@ -310,53 +259,10 @@ describe("every Org Store collection reads its changes from the Organization cha
     }
   });
 
-  it("reads a Branch's row with its Parent and Setup Commands, and no sealed ciphertext in its base", async () => {
-    const { rows } = await read("environment_branch");
-    expect(rows).toMatchObject([{
-      environmentId: branchId, parentEnvironmentId: environmentId, kept: false, createdByUserId: userId,
-      setupCommands: [{ lineageId: "web", command: "pnpm seed" }],
-      base: { services: [{ variables: [{ name: "TOKEN", value: { kind: "secret" } }] }] },
-    }]);
-    expect(JSON.stringify(rows)).not.toMatch(/encryptedValue|sealed-ciphertext/u);
-  });
-
-  it("moves a deployment's progress when an event is logged", async () => {
-    const since = (await read("environment_deployment")).cursor;
-    await sql("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
-      [organizationId, deploymentId]);
-    expect(await read("environment_deployment", since)).toMatchObject({
-      full: false, rows: [{ id: deploymentId, runtimeProgress: { stage: "building" } }],
-    });
-  });
-
-  it("lets a failed deployment retry only while it staged no volume removal", async () => {
-    const canRetry = async () => (await read("environment_deployment")).rows.find((row) => "id" in row && row.id === deploymentId);
-    expect(await canRetry()).toMatchObject({ canRetry: false });
-    await sql("update environment_deployment set status = 'failed', finished_at = now() where id = $1", [deploymentId]);
-    expect(await canRetry()).toMatchObject({ canRetry: true });
-    await sql("insert into volume_remove_attempt (organization_id, requested_by_user_id, environment_id, environment_deployment_id, volumes) values ($1, $2, $3, $4, '[{}]')",
-      [organizationId, userId, environmentId, deploymentId]);
-    expect(await canRetry()).toMatchObject({ canRetry: false });
-  });
-
   it("names the organization when it is renamed", async () => {
     const { cursor: since } = await harness.runEffect(readChangeWindow({ organizationId, since: undefined }));
     await sql("update organization set name = 'Renamed' where id = $1", [organizationId]);
     const window = await harness.runEffect(readChangeWindow({ organizationId, since }));
     expect(collectionsOf(window.sourceTables)).toEqual(["organization"]);
-  });
-
-  it("names the change-state projection on Save and deployment status, never on progress", async () => {
-    const names = async (text: string, values: unknown[]) => {
-      const { cursor: since } = await harness.runEffect(readChangeWindow({ organizationId, since: undefined }));
-      await sql(text, values);
-      return collectionsOf((await harness.runEffect(readChangeWindow({ organizationId, since }))).sourceTables);
-    };
-    expect(await names("insert into environment_saved_state_snapshot (organization_id, environment_id, actor_id, intent, volume_deletion_authorizations) values ($1, $2, $3, '{}', '[]')",
-      [organizationId, environmentId, userId])).toContain("environment_change_state");
-    expect(await names("update environment_deployment set status = 'planning' where id = $1", [deploymentId]))
-      .toContain("environment_change_state");
-    expect(await names("insert into environment_deployment_event (organization_id, deployment_id, progress) values ($1, $2, '{\"stage\": \"building\"}')",
-      [organizationId, deploymentId])).not.toContain("environment_change_state");
   });
 });

@@ -2,18 +2,17 @@
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PublicDomainStatus } from "#/modules/services/public-domain-status";
-import { DomainTitle, PublicDomainRow, statusView, storeStatusView } from "./domain-row";
+import { DomainTitle, PublicDomainRow, storeStatusView, type DomainStatusView } from "./domain-row";
 
-const row = (status: PublicDomainStatus) => (
+const row = (view: DomainStatusView, live = false) => (
   <PublicDomainRow
     organizationSlug="acme"
     title={
-      <DomainTitle hostname="www.acme.com" live={status.kind === "live"} />
+      <DomainTitle hostname="www.acme.com" live={live} />
     }
     label="www.acme.com"
     portLabel="Port 8080"
-    view={statusView(status)}
+    view={view}
     dnsRecords={[{ type: "CNAME", name: "www", value: "acme.ployz.app" }]}
     changed={false}
     onEdit={vi.fn()}
@@ -28,7 +27,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("opens a live domain and says nothing else", () => {
-    render(row({ kind: "live" }));
+    render(row({ icon: null, phrase: null, action: null }, true));
 
     expect(screen.getByRole("link").getAttribute("href")).toBe("https://www.acme.com");
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -36,7 +35,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("stays quiet when the status is unknown", () => {
-    render(row({ kind: "unknown" }));
+    render(row({ icon: null, phrase: null, action: null }));
 
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.getByText("→ Port 8080")).toBeTruthy();
@@ -44,7 +43,7 @@ describe("PublicDomainRow", () => {
   });
 
   it("shows the DNS record to add only when asked, with a copyable name and value", () => {
-    render(row({ kind: "needs_dns" }));
+    render(row({ icon: null, phrase: "Waiting for DNS update", action: "dns" }));
 
     expect(screen.queryByRole("link")).toBeNull();
     expect(screen.queryByText("CNAME")).toBeNull();

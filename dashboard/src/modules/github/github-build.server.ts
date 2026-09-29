@@ -1,6 +1,5 @@
 import "@tanstack/react-start/server-only";
 
-import { sql } from "drizzle-orm";
 import { Effect, Schema } from "effect";
 import {
   GITHUB_BUILD_WORKFLOW_FILE,
@@ -11,8 +10,7 @@ import { githubIdSchema, githubRepositoryFullNameSchema } from "#/modules/github
 import { GithubApi, GithubObservationError } from "#/modules/github/github-observation.api";
 import type { Actor } from "#/modules/identity/actor";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
-import { environmentSavedStateSnapshot as snapshot } from "#/modules/deployments/tables";
-import { Database } from "#/server/database.server";
+import { callStoreAsMember } from "#/modules/config-store/config-store.server";
 
 const repositorySchema = Schema.Struct({
   id: githubIdSchema,
@@ -112,36 +110,27 @@ export const githubRunCompleted = Effect.fn("Github.runCompleted")(function* (in
   return run.status === "completed";
 });
 
-/** GitHub repositories that the latest Saved State of any of the organization's Environments builds from. */
-export const listOrganizationGithubRepositories = Effect.fn("Github.listOrganizationRepositories")(
-  function* (organizationId: string) {
-    const { drizzle } = yield* Database;
-    const rows = yield* drizzle.execute<{ installationId: string; repositoryId: string; fullName: string }>(sql`
-      with latest as (
-        select distinct on (${snapshot.environmentId}) ${snapshot.intent} as intent
-        from ${snapshot}
-        where ${snapshot.organizationId} = ${organizationId}
-        order by ${snapshot.environmentId}, ${snapshot.createdAt} desc, ${snapshot.id} desc
-      ), sources as (
-        select service -> 'config' -> 'source' as source
-        from latest, jsonb_array_elements(latest.intent -> 'services') as service
-      )
-      select distinct on ("installationId", "repositoryId")
-        (source -> 'access' ->> 'installationId')::bigint as "installationId",
-        (source ->> 'repositoryId')::bigint as "repositoryId",
-        source ->> 'repository' as "fullName"
-      from sources
-      where source ->> 'type' = 'git' and source -> 'access' ->> 'type' = 'github-installation'
-      order by "installationId", "repositoryId"
-    `, "objects");
-    return rows.map((row) => ({ ...row, installationId: Number(row.installationId), repositoryId: Number(row.repositoryId) }));
-  },
-);
+/** The GitHub repositories the Organization's Services build from: each Project's PR plans list its repositories. */
+const listStoreGithubRepositories = Effect.fn("Github.listStoreRepositories")(function* (actor: Actor, organizationSlug: string) {
+  const projects = yield* callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "projects" } });
+  if (!projects.ok || !("view" in projects.value) || projects.value.view !== "projects") return [];
+  const plans = yield* Effect.forEach(projects.value.projects, (project) =>
+    callStoreAsMember(actor, organizationSlug, { operation: "read", query: { query: "pr_plans", project: project.name } }), { concurrency: 4 });
+  const found = new Map<string, { installationId: number; repositoryId: number; fullName: string }>();
+  for (const result of plans) {
+    if (!result.ok || !("view" in result.value) || result.value.view !== "pr_plans") continue;
+    for (const plan of result.value.plans) {
+      found.set(`${plan.installation_id}:${plan.repository_id}`,
+        { installationId: plan.installation_id, repositoryId: plan.repository_id, fullName: plan.repository });
+    }
+  }
+  return [...found.values()];
+});
 
 export const listGithubBuildRepositories = Effect.fn("Github.listBuildRepositories")(
   function* (actor: Actor, input: { organizationSlug: string }) {
-    const organization = yield* requireInfrastructureOrganization(actor, input.organizationSlug);
-    const repositories = yield* listOrganizationGithubRepositories(organization.id);
+    yield* requireInfrastructureOrganization(actor, input.organizationSlug);
+    const repositories = yield* listStoreGithubRepositories(actor, input.organizationSlug);
     return yield* Effect.forEach(repositories, (repository) =>
       checkGithubBuildWorkflow(repository.installationId, repository.repositoryId).pipe(
         Effect.map((checked): GithubBuildRepository => ({

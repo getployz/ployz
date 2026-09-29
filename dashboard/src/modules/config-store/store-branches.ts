@@ -2,7 +2,9 @@ import type { BranchOption, BranchPlanView, EnvironmentView, JsonValue, LiveNode
 import type { BranchPlan } from "@ployz/sdk/config";
 import catalog from "@ployz/sdk/catalog.json";
 import { asRecord, asString } from "#/lib/json";
-import type { PresentedRow } from "#/modules/branches/branch-review";
+
+/** One changed setting of one node as a sheet or news row words it: `before` is the receiver's, `after` what would land. */
+export type PresentedRow = { key: string; lineageId: string; node: string; label: string; before: string; after: string };
 
 /** A Move row's node: `web` of `web`, `web.image` and `web.env.KEY`. A row that is only a node adds it. */
 export const moveRowNode = (row: string) => row.split(".")[0] ?? row;

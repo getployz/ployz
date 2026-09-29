@@ -28,7 +28,7 @@ import {
   type DashboardScope,
 } from "#/components/dashboard-navigation-model";
 import { useDashboardSection } from "#/components/use-dashboard-section";
-import { organizationStateQueryOptions } from "#/modules/environment-design/workspace.queries";
+import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 import { toast } from "sonner";
 import { Result } from "effect";
 

@@ -1,9 +1,9 @@
 import { Schema } from "effect";
 import type { Change, EnvironmentRef, EnvironmentView, ServiceListing, SettingRow } from "@ployz/sdk";
-import { getManagedServiceExports } from "#/modules/environment-design/managed-service-exports";
-import { buildReferenceTargets } from "#/modules/environment-design/variable-autocomplete";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
+import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 import { serviceSettingRows } from "./store-services";
 import type { useStoreWriter } from "./store-write";
 

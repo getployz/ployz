@@ -1,4 +1,3 @@
-import { applyCreatedService, applyCreatedResource } from "#/modules/environment-design/apply-created-node";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useStillHere } from "#/hooks/use-still-here";
 import { preloadGithubRepos } from "#/modules/github/github.collection";
@@ -6,7 +5,6 @@ import { useEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { ChevronRightIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { InputGroupInput } from "#/components/ui/input-group";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
@@ -26,29 +24,11 @@ import {
   getCreateMenuItems,
 } from "#/components/create-menu-items";
 import { Spinner } from "#/components/ui/spinner";
-import { createVolumeResourceServerFn } from "#/modules/environment-design/resource-functions";
-import {
-  loadWorkspaceEnvironment,
-} from "#/modules/environment-design/workspace.queries";
-import { createEmptyProjectServerFn } from "#/modules/environment-design/workspace-functions";
-import {
-  createEmptyServiceSource,
-  createGitServiceSource,
-  createImageServiceSource,
-  type ServiceSource,
-} from "#/modules/environment-design/services";
-import {
-  getEnvironmentsCollection, getEnvironmentSummariesCollection, environmentSummary,
-  getProjectsCollection,
-} from "#/collections/collections";
-import { createServiceServerFn } from "#/modules/environment-design/service-functions";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
-  ENVIRONMENT_RESOURCE_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
 import { useCreateStoreService } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
-import { storeEnabled } from "#/modules/config-store/store.contract";
 import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, requireView, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -73,21 +53,10 @@ function pickerPresentation(panel: Panel, mode: CreateMode) {
   };
 }
 
-type ProjectCreatedResult = {
-  project: {
-    slug: string;
-  };
-  environment: {
-    id: string;
-    namespace: string;
-  };
-};
-
 type ProjectCommandProps = {
   mode?: "project";
   organizationSlug: string;
   initialPanel?: InitialPanel;
-  onCreated?: (result: ProjectCreatedResult) => void | Promise<void>;
 };
 
 type ServiceCommandProps = {
@@ -182,8 +151,6 @@ type CreationTarget = {
   canvasPosition: { x: number; y: number };
 };
 
-type StoreCreationTarget = CreationTarget & { environmentName: string };
-
 function useServiceCreateActions({
   props,
   setPanel,
@@ -196,14 +163,9 @@ function useServiceCreateActions({
   const collectionScope = useCollectionScope();
   const navigate = useNavigate();
   const markHere = useStillHere();
-  const createEmptyProject = useServerFn(createEmptyProjectServerFn);
-  const createService = useServerFn(createServiceServerFn);
   const createStoreService = useCreateStoreService(props.organizationSlug);
-  const createVolumeResource = useServerFn(createVolumeResourceServerFn);
-
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
-  const createdProjectRef = useRef<Awaited<ReturnType<typeof createEmptyProject>> | null>(null);
-  const createdStoreProjectRef = useRef<StoreCreationTarget | null>(null);
+  const createdProjectRef = useRef<CreationTarget | null>(null);
   const storeWriter = useStoreWriter(props.organizationSlug);
   // The ref guards re-entry (two clicks in one tick); the state only renders it.
   const creatingRef = useRef(false);
@@ -230,7 +192,6 @@ function useServiceCreateActions({
     try {
       await action();
       createdProjectRef.current = null;
-      createdStoreProjectRef.current = null;
     } catch (error) {
       setFailure(error);
     } finally {
@@ -240,64 +201,18 @@ function useServiceCreateActions({
     }
   }
 
-  async function getServiceModeEnvironment() {
-    if (props.mode !== "service") {
-      throw new Error("Service mode environment is unavailable in project mode");
-    }
-
-    if (storeEnabled) {
-      const listed = requireView(await collectionScope.queryClient.fetchQuery(
-        storeViewOptions(props.organizationSlug, collectionScope, environmentsQuery(props.projectSlug))));
-      const environment = listed.environments.find((row) => row.name === props.environmentSlug);
-      if (!environment) throw new Error("Environment not found");
-      return {
-        projectSlug: props.projectSlug,
-        environmentSlug: props.environmentSlug,
-        environmentId: environment.id,
-        environmentName: environment.name,
-        canvasPosition: props.canvasPosition,
-      };
-    }
-
-    const environment = await loadWorkspaceEnvironment(props, collectionScope);
-    if (!environment) {
-      throw new Error("Environment not found");
-    }
-
-    return {
-      projectSlug: props.projectSlug,
-      environmentSlug: props.environmentSlug,
-      environmentId: environment.id,
-      environmentName: environment.name,
-      canvasPosition: props.canvasPosition,
-    };
+  async function serviceModeTarget(props: ServiceCommandProps): Promise<CreationTarget> {
+    const listed = requireView(await collectionScope.queryClient.fetchQuery(
+      storeViewOptions(props.organizationSlug, collectionScope, environmentsQuery(props.projectSlug))));
+    const environment = listed.environments.find((row) => row.name === props.environmentSlug);
+    if (!environment) throw new Error("Environment not found");
+    return { projectSlug: props.projectSlug, environmentSlug: environment.name, environmentId: environment.id,
+      canvasPosition: props.canvasPosition };
   }
 
+  /** A new Project, named like `brave-otter`, whose Default Environment takes the first Service. */
   async function createProjectTarget(): Promise<CreationTarget> {
-    const receipt = createdProjectRef.current ?? await createEmptyProject({
-      data: { organizationSlug: props.organizationSlug },
-    });
-    createdProjectRef.current = receipt;
-    // Rerun on a retry too: the writes are upserts, and the step that failed may have been one of them.
-    await Promise.all([
-      getProjectsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.project),
-      getEnvironmentsCollection(props.organizationSlug, collectionScope).writeCommitted(receipt.data.environment),
-      getEnvironmentSummariesCollection(props.organizationSlug, collectionScope).writeCommitted(environmentSummary(receipt.data.environment)),
-    ]);
-    if (props.mode !== "service") {
-      await props.onCreated?.(receipt.data);
-    }
-    return {
-      projectSlug: receipt.data.project.slug,
-      environmentSlug: receipt.data.environment.namespace,
-      environmentId: receipt.data.environment.id,
-      canvasPosition: { x: 0, y: 0 },
-    };
-  }
-
-  /** A new Config Store Project, named like `brave-otter`, whose Default Environment takes the first Service. */
-  async function createStoreProjectTarget(): Promise<StoreCreationTarget> {
-    const made = createdStoreProjectRef.current ?? await (async (): Promise<StoreCreationTarget> => {
+    const made = createdProjectRef.current ?? await (async (): Promise<CreationTarget> => {
       // SAFETY: Project and Environment ids are UUIDs the caller mints; the Store checks them.
       const id = crypto.randomUUID() as ProjectId;
       // SAFETY: as above.
@@ -305,23 +220,14 @@ function useServiceCreateActions({
       const written = await storeWriter.commit({ command: "create_project", id, name: randomName(), default_environment: environment })
         .isPersisted.promise;
       if (written.written !== "project") throw new Error("The Store didn't create the project.");
-      return { projectSlug: written.project.name, environmentSlug: written.environment.name, environmentName: written.environment.name,
+      return { projectSlug: written.project.name, environmentSlug: written.environment.name,
         environmentId: written.environment.id, canvasPosition: { x: 0, y: 0 } };
     })();
-    createdStoreProjectRef.current = made;
+    createdProjectRef.current = made;
     return made;
   }
 
-  async function getCreationTarget(): Promise<CreationTarget> {
-    return props.mode === "service"
-      ? getServiceModeEnvironment()
-      : createProjectTarget();
-  }
-
-  async function navigateToEnvironment(target: {
-    projectSlug: string;
-    environmentSlug: string;
-  }) {
+  async function navigateToEnvironment(target: CreationTarget) {
     await navigate({
       to: ENVIRONMENT_INDEX_ROUTE_TO,
       params: {
@@ -333,85 +239,27 @@ function useServiceCreateActions({
     });
   }
 
-  const createServiceFromSource = (source: ServiceSource) =>
+  const createServiceFromSource = (source: NewServiceSource) =>
     whileCreating(async () => {
       const stillHere = markHere();
-      if (storeEnabled) {
-        const target = props.mode === "service" ? await getServiceModeEnvironment() : await createStoreProjectTarget();
-        const created = await createStoreService({
-          store: { project: target.projectSlug, environment: target.environmentName },
-          environmentId: target.environmentId,
-          position: target.canvasPosition,
-        }, newServiceSource(source));
-        if (props.mode === "service") {
-          await props.onCreated?.(created, stillHere());
-          return;
-        }
-        await navigate({
-          to: ENVIRONMENT_SERVICE_ROUTE_TO,
-          params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
-            serviceId: created.service.id },
-          search: (prev) => prev,
-        });
-        return;
-      }
-      const target = await getCreationTarget();
-      const result = await createService({
-        data: {
-          organizationSlug: props.organizationSlug,
-          environmentId: target.environmentId,
-          x: target.canvasPosition.x,
-          y: target.canvasPosition.y,
-          source,
-        },
-      });
-      await applyCreatedService(props.organizationSlug, collectionScope, result.data);
+      const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget();
+      const created = await createStoreService({
+        store: { project: target.projectSlug, environment: target.environmentSlug },
+        environmentId: target.environmentId,
+        position: target.canvasPosition,
+      }, source);
       if (props.mode === "service") {
         // Someone who navigated away while it saved stays there; the service still lands on the canvas.
-        await props.onCreated?.(result.data, stillHere());
+        await props.onCreated?.(created, stillHere());
         return;
       }
       await navigate({
         to: ENVIRONMENT_SERVICE_ROUTE_TO,
-        params: {
-          organizationSlug: props.organizationSlug,
-          projectSlug: target.projectSlug,
-          environmentSlug: target.environmentSlug,
-          serviceId: result.data.service.id,
-        },
+        params: { organizationSlug: props.organizationSlug, projectSlug: target.projectSlug, environmentSlug: target.environmentSlug,
+          serviceId: created.service.id },
         search: (prev) => prev,
       });
     });
-
-  async function createVolume() {
-    if (props.mode === "service" && props.onCreateVolume) {
-      props.onCreateVolume();
-      return;
-    }
-
-    const target = await getCreationTarget();
-    const result = await createVolumeResource({
-      data: {
-        organizationSlug: props.organizationSlug,
-        environmentId: target.environmentId,
-        name: "data",
-        x: 0,
-        y: 0,
-      },
-    });
-    await applyCreatedResource(props.organizationSlug, collectionScope, result);
-
-    await navigate({
-      to: ENVIRONMENT_RESOURCE_ROUTE_TO,
-      params: {
-        organizationSlug: props.organizationSlug,
-        projectSlug: target.projectSlug,
-        environmentSlug: target.environmentSlug,
-        resourceId: result.data.resource.id,
-      },
-      search: (prev) => prev,
-    });
-  }
 
   function selectCreateItem(itemId: CreateMenuItemId) {
     if (itemId === "git-repository") {
@@ -423,15 +271,16 @@ function useServiceCreateActions({
       return;
     }
     if (itemId === "empty-service") {
-      void createServiceFromSource(createEmptyServiceSource());
+      void createServiceFromSource({ type: "empty" });
       return;
     }
     if (itemId === "volume") {
-      void whileCreating(createVolume);
+      // Only the canvas offers a Volume, and it places one itself.
+      if (props.mode === "service") props.onCreateVolume?.();
       return;
     }
 
-    void whileCreating(() => (storeEnabled ? createStoreProjectTarget() : createProjectTarget()).then(navigateToEnvironment));
+    void whileCreating(() => createProjectTarget().then(navigateToEnvironment));
   }
 
   return {
@@ -441,11 +290,6 @@ function useServiceCreateActions({
     setActivePanel,
     createServiceFromSource,
   };
-}
-
-function newServiceSource(source: ServiceSource): NewServiceSource {
-  if (source.type === "git") return { type: "git", repository: source.repository, branch: source.branch.type === "connected" ? source.branch.name : null };
-  return source.type === "image" ? { type: "image", image: source.image } : { type: "empty" };
 }
 
 export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
@@ -496,7 +340,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
           disabled={isPending}
           onBack={() => setActivePanel("root")}
           onSelectImage={(image) => {
-            void createServiceFromSource(createImageServiceSource({ image }));
+            void createServiceFromSource({ type: "image", image });
           }}
         />
       ) : (
@@ -532,20 +376,8 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
               mode={mode}
               query={query}
               disabled={isPending}
-              onSelectRepo={({
-                fullName,
-                repositoryId,
-                access,
-                defaultBranch,
-              }) => {
-                void createServiceFromSource(
-                  createGitServiceSource({
-                    repository: fullName,
-                    repositoryId,
-                    access,
-                    branch: { type: "connected", name: defaultBranch },
-                  }),
-                );
+              onSelectRepo={({ fullName, defaultBranch }) => {
+                void createServiceFromSource({ type: "git", repository: fullName, branch: defaultBranch });
               }}
             />
           ) : null}

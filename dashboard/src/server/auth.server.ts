@@ -32,10 +32,10 @@ import {
   sendInngestEvent,
 } from "#/modules/inngest/client";
 import {
+  getOrganizationSlugById,
   handleSessionCreated,
   handleUserCreated,
-} from "#/modules/environment-design/workspace-bootstrap.server";
-import { getOrganizationSlugById } from "#/modules/environment-design/workspace-repository.server";
+} from "#/modules/organization/organization-state.server";
 import { Actor } from "#/modules/identity/actor";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { asString } from "#/lib/json";

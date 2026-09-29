@@ -4,7 +4,7 @@ import {
   createEmbeddedCheckout,
   getBillingState,
 } from "#/modules/billing/billing.server";
-import { trimmedString } from "#/modules/environment-design/schema";
+import { trimmedString } from "#/lib/schema";
 import {
   actorMiddleware,
   publicErrorMiddleware,
