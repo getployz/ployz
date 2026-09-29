@@ -10,7 +10,8 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService, Edit,
     EnvironmentId, EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentView,
-    OrganizationId, ProjectId, ProjectName, Query, Revision, ServiceId, SettingPath, View, Written,
+    OrganizationId, ProjectId, ProjectName, Query, Revision, ServiceLineageId, SettingPath, View,
+    Written,
 };
 use serde_json::{Value, json};
 
@@ -44,7 +45,7 @@ fn create_environment(id: &str, project: Option<&str>, name: &str) -> CreateEnvi
 
 fn create_service(id: &str, name: &str, image: &str) -> CreateService {
     CreateService {
-        id: ServiceId::parse(uuid(id)).unwrap(),
+        id: ServiceLineageId::parse(uuid(id)).unwrap(),
         environment: EnvironmentRef::default(),
         name: ServiceName::parse(name).unwrap(),
         image: Some(image.into()),
@@ -549,7 +550,7 @@ fn malformed_ids_and_names_are_refused_without_echo() {
         (|value| OrganizationId::parse(value).map(drop), ""),
         (|value| ProjectId::parse(value).map(drop), "not-a-uuid"),
         (|value| EnvironmentId::parse(value).map(drop), "staging"),
-        (|value| ServiceId::parse(value).map(drop), "web"),
+        (|value| ServiceLineageId::parse(value).map(drop), "web"),
         (|value| ProjectName::parse(value).map(drop), "Shop_1"),
         (|value| EnvironmentName::parse(value).map(drop), "-prod"),
     ];

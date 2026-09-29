@@ -597,7 +597,7 @@ export type CreateGitService = {
 /**
  * The new Service's ID, also its lineage.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * The Environment to create it in.
  */
@@ -633,7 +633,7 @@ export type CreateService = {
 /**
  * The new Service's ID, also its lineage.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * The Environment to create it in.
  */
@@ -1765,7 +1765,7 @@ data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
 export type NodeName = string;
 
-export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
+export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
@@ -2461,6 +2461,8 @@ export type ServiceId = string & { readonly __brand: "ServiceId" };
 
 export type ServiceImageCredentials = { "type": "none" } | { "type": "configured", credentialId: string, };
 
+export type ServiceLineageId = string;
+
 export type ServiceListing = {
 /**
  * Where its image comes from.
@@ -2473,7 +2475,7 @@ change: ReviewLifecycleKind | null,
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -2558,7 +2560,7 @@ export type ServiceSummary = {
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -2576,7 +2578,7 @@ environment: EnvironmentSummary,
 /**
  * The lineage its Environment copies share.
  */
-lineage: ServiceId,
+lineage: ServiceLineageId,
 /**
  * Its Settings as one object, the shape `set --patch` takes. A removed Service
  * shows what is deployed.
@@ -2597,7 +2599,7 @@ change: ReviewLifecycleKind | null,
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */

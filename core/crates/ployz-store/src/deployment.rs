@@ -25,7 +25,7 @@ use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::error;
 use crate::id::{
     CommitSha, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision,
-    RunnerId, ServiceId, VolumeId, VolumeName,
+    RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
@@ -282,7 +282,7 @@ pub struct Claimed {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum TargetNode {
     Service {
-        id: ServiceId,
+        id: ServiceLineageId,
         name: ServiceName,
         /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
         runtime: ServiceName,
@@ -344,8 +344,14 @@ impl TargetNode {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DeployedNode {
-    Service { id: ServiceId, name: ServiceName },
-    Volume { id: VolumeId, name: VolumeName },
+    Service {
+        id: ServiceLineageId,
+        name: ServiceName,
+    },
+    Volume {
+        id: VolumeId,
+        name: VolumeName,
+    },
 }
 
 impl DeployedNode {

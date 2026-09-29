@@ -11,7 +11,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, Command, ConfigStore, CreateProject, CreateService, DiffQuery, Edit,
     EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RemoveService,
-    RenameService, ServiceId, ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
+    RenameService, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
 };
 use serde_json::json;
 
@@ -44,7 +44,7 @@ fn shop() -> (ConfigStore, Actor) {
             .create_service(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: name(service),
                     image: image.map(Into::into),
@@ -171,7 +171,7 @@ fn a_rename_keeps_the_private_dns_name() {
         RpcErrorCode::Conflict
     );
     let web = CreateService {
-        id: ServiceId::parse(uuid(5)).unwrap(),
+        id: ServiceLineageId::parse(uuid(5)).unwrap(),
         environment: EnvironmentRef::default(),
         name: name("web"),
         image: None,
@@ -227,7 +227,7 @@ fn removing_a_new_service_drops_it_from_working_state() {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse(uuid(6)).unwrap(),
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: name("worker"),
                 image: None,

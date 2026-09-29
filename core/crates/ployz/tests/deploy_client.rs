@@ -942,7 +942,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
         DeploymentStatus, EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, ProjectId,
-        ProjectName, RunnerId, SealingKey, ServiceId,
+        ProjectName, RunnerId, SealingKey, ServiceLineageId,
     };
     use std::sync::Arc;
 
@@ -964,7 +964,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
                 image: Some("nginx".into()),
@@ -1088,8 +1088,8 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     use ployz_store::{
         Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
         DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef, Mount, OrganizationId,
-        ProjectId, ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey, ServiceId,
-        Trusted, VolumeId, VolumeName, VolumesQuery,
+        ProjectId, ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey,
+        ServiceLineageId, Trusted, VolumeId, VolumeName, VolumesQuery,
     };
     use std::sync::Arc;
 
@@ -1112,7 +1112,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: web.clone(),
                 image: Some("postgres".into()),
@@ -1247,7 +1247,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         Actor, Admit, AuthorizedRepository, BuildOrder, Command, ConfigStore, CreateGitService,
         CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef,
         GithubBuildId, GithubEnd, OrganizationId, Outcome, ProjectId, ProjectName, RunnerId,
-        SealingKey, ServiceId, SetBuildOrder, Trusted,
+        SealingKey, ServiceLineageId, SetBuildOrder, Trusted,
     };
     use std::sync::Arc;
 
@@ -1279,7 +1279,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         .create_git_service(
             &who,
             &CreateGitService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
                 repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),

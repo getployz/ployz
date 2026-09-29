@@ -11,7 +11,8 @@ use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
     ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
     Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, Retry, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
+    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, SettingPath, Trusted, View,
+    Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -67,7 +68,7 @@ fn evidence() -> Trusted {
 
 fn create(repository: &str, branch: Option<&str>) -> CreateGitService {
     CreateGitService {
-        id: ServiceId::parse(SERVICE).unwrap(),
+        id: ServiceLineageId::parse(SERVICE).unwrap(),
         environment: EnvironmentRef::default(),
         name: ServiceName::parse("web").unwrap(),
         repository: backend::repo_name(repository),
@@ -320,7 +321,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         .create_service(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("api").unwrap(),
                 image: Some("nginx:1".into()),

@@ -16,7 +16,8 @@ use ployz_store::{
     CreateService, CreateVolume, Deploy, DeploymentId, DeploymentStatus, EnvironmentId,
     EnvironmentName, EnvironmentRef, EnvironmentsQuery, Mount, OrganizationId, ProjectId,
     ProjectName, Removal, RemovalsQuery, RemoveEnvironment, RemoveProject, Retry, RunEvidence,
-    RunnerId, ServiceId, SetDefaultEnvironment, Trusted, VolumeId, VolumeName, VolumeObservation,
+    RunnerId, ServiceLineageId, SetDefaultEnvironment, Trusted, VolumeId, VolumeName,
+    VolumeObservation,
 };
 use serde_json::json;
 
@@ -57,7 +58,7 @@ fn shop() -> (ConfigStore, Actor) {
             .create_service(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: Some("postgres:17".into()),

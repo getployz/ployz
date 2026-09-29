@@ -4,7 +4,7 @@
 use clap::{ArgMatches, Command};
 use ployz_core::ServiceName;
 use ployz_store::{
-    CreateGitService, CreateService, RemoveService, RenameService, ServiceId, ServiceQuery,
+    CreateGitService, CreateService, RemoveService, RenameService, ServiceLineageId, ServiceQuery,
     ServiceStaged, ServicesQuery,
 };
 
@@ -57,7 +57,7 @@ pub(super) fn rm_command() -> Command {
 /// Add an image, GitHub repository or empty Service to Working State.
 pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = ServiceId::parse(store::mint())?;
+    let id = ServiceLineageId::parse(store::mint())?;
     let environment = store::environment(matches)?;
     let name = service_name(matches, "name")?;
     let store = store::store(root)?;
