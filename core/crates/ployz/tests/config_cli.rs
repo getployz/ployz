@@ -435,6 +435,33 @@ fn the_catalog_describes_settings_without_a_store() {
     );
     let (_, again) = ployz(None, &["schema"]);
     assert_eq!(schema.to_string(), again.to_string(), "deterministic");
+    let commands = schema
+        .get("x-ployz-commands")
+        .and_then(Value::as_array)
+        .unwrap();
+    let set = commands
+        .iter()
+        .find(|entry| entry.get("command") == Some(&json!("set")))
+        .unwrap();
+    assert_eq!(set.get("json"), Some(&json!(true)));
+    assert!(
+        set.get("args")
+            .and_then(Value::as_array)
+            .unwrap()
+            .iter()
+            .any(|arg| arg.get("name") == Some(&json!("--patch")))
+    );
+    let completion = commands
+        .iter()
+        .find(|entry| entry.get("command") == Some(&json!("completion")))
+        .unwrap();
+    assert_eq!(completion.get("json"), Some(&json!(false)));
+    assert!(
+        commands
+            .iter()
+            .all(|entry| entry.get("command") != Some(&json!("service"))),
+        "groups are not commands"
+    );
 
     let (code, one) = ployz(None, &["schema", "web.replicas"]);
     assert_eq!(code, Some(0));
