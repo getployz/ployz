@@ -3,18 +3,18 @@
 
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
-use serde_json::json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use ts_rs::TS;
 
 use super::{Command, replayable};
-use crate::domain;
-use crate::{Actor, Trusted};
 use crate::deployment::{self, DeploymentSummary};
+use crate::domain;
 use crate::id::DeploymentId;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::{Actor, Trusted};
 
 /// Deploy an Environment: all of it, or only some Services.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]

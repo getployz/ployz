@@ -11,7 +11,10 @@ use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, ServiceManagedHostname, ServiceRoute,
     parse_environment_intent,
 };
-use ployz_core::{CertificateHost, IngressHost, RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{
+    CertificateAvailability, CertificateFailureKind, CertificateObservation, IngressHost, RpcError,
+    RpcErrorCode, ServiceName,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -67,28 +70,12 @@ pub enum ClusterDomainStatus {
     /// No ingress Server has a public address.
     NoPublicIp,
     /// These ingress Servers don't answer on port 80.
-    Port80 { addresses: Vec<String> },
+    #[serde(rename = "port_80")]
+    Port80 {
+        addresses: Vec<String>,
+    },
     /// Its wildcard certificate expired.
     HttpsDown,
-}
-
-/// One certificate as the Cluster reports it, in the Engine's own vocabulary.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
-#[serde(deny_unknown_fields)]
-pub struct CertificateObservation {
-    /// The hostname it is held under, or a `*.parent` wildcard.
-    pub hostname: String,
-    /// `pending`, `available` or `failure`.
-    pub status: String,
-    /// Why the last attempt failed, such as `does_not_resolve`.
-    #[serde(default)]
-    pub failure_kind: Option<String>,
-    /// When the Cluster tries again after a failure.
-    #[serde(default)]
-    pub next_attempt_at: Option<String>,
-    /// Whether it was issued through a proxy in front of the Servers.
-    #[serde(default)]
-    pub via_proxy: bool,
 }
 
 /// What DNS answered for one hostname.
@@ -410,7 +397,12 @@ pub(crate) fn domains(
     let head = crate::deployment::head(tx, &environment)?;
     let domains = domains_of(&environment.working, trusted)
         .into_iter()
-        .filter(|domain| query.service.as_ref().is_none_or(|name| *name == domain.service))
+        .filter(|domain| {
+            query
+                .service
+                .as_ref()
+                .is_none_or(|name| *name == domain.service)
+        })
         .map(|domain| row(domain, &environment.working, &head, trusted))
         .collect();
     Ok(DomainsView {
@@ -538,10 +530,7 @@ fn no_domain(environment: &Environment, trusted: &Trusted) -> RpcError {
         .map(|domain| domain.shown().to_owned())
         .collect::<Vec<_>>();
     error::not_found(
-        format!(
-            "No such domain in Environment {}",
-            environment.summary.name
-        ),
+        format!("No such domain in Environment {}", environment.summary.name),
         json!({ "valid_children": names }),
     )
 }
@@ -652,12 +641,13 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         }
     }
     // Every domain lands on the same ingress Servers.
-    match evidence.cluster_domain.as_ref().map(|cluster| &cluster.status) {
+    match evidence
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.status)
+    {
         Some(ClusterDomainStatus::NoServers) => {
-            return attention(
-                "No Server receives traffic",
-                Some(DomainAction::AddServer),
-            );
+            return attention("No Server receives traffic", Some(DomainAction::AddServer));
         }
         Some(ClusterDomainStatus::NoPublicIp) => {
             return attention("No ingress Server has a public IP", None);
@@ -672,7 +662,11 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
     }
     let hostname = match &domain.name {
         DomainName::Generated { .. } => {
-            return match evidence.cluster_domain.as_ref().map(|cluster| &cluster.status) {
+            return match evidence
+                .cluster_domain
+                .as_ref()
+                .map(|cluster| &cluster.status)
+            {
                 Some(ClusterDomainStatus::Ready) => (DomainStatus::Ready, None, None),
                 Some(ClusterDomainStatus::HttpsDown) => {
                     setting_up("HTTPS is down; Ployz is fixing it")
@@ -686,7 +680,9 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
         return setting_up("Cloud can't see the Servers right now");
     };
     let certificate = certificate_for(hostname, certificates);
-    if certificate.is_some_and(|certificate| certificate.status == "available") {
+    if certificate
+        .is_some_and(|certificate| certificate.status == CertificateAvailability::Available)
+    {
         let proxy = certificate.is_some_and(|certificate| certificate.via_proxy);
         return (
             DomainStatus::Ready,
@@ -708,24 +704,34 @@ fn status(domain: &Domain, deployed: Deployed, evidence: &DomainEvidence) -> Sta
     }
     let retry = || {
         certificate
-            .and_then(|certificate| certificate.next_attempt_at.as_deref())
+            .and_then(|certificate| certificate.backoff.as_ref())
+            .map(|backoff| backoff.next_attempt_at.as_str())
             .map_or_else(|| "shortly".to_owned(), |at| format!("at {at}"))
     };
-    let Some(certificate) = certificate.filter(|certificate| certificate.status == "failure")
+    let Some(certificate) =
+        certificate.filter(|certificate| certificate.status == CertificateAvailability::Failure)
     else {
         return setting_up("Issuing certificate");
     };
-    match certificate.failure_kind.as_deref() {
-        Some("does_not_resolve" | "reaches_elsewhere") if points_here == Some(true) => {
+    let failure = certificate
+        .backoff
+        .as_ref()
+        .map(|backoff| &backoff.failure_kind);
+    match failure {
+        Some(CertificateFailureKind::DoesNotResolve | CertificateFailureKind::ReachesElsewhere)
+            if points_here == Some(true) =>
+        {
             setting_up(format!(
                 "DNS points here now; the certificate is retried {}",
                 retry()
             ))
         }
-        Some("does_not_resolve") => attention("Waiting for DNS", dns()),
-        Some("reaches_elsewhere") => attention("DNS points to another server", dns()),
-        Some("unreachable") => attention("Port 80 is closed", None),
-        Some("redirects_to_https") => attention(
+        Some(CertificateFailureKind::DoesNotResolve) => attention("Waiting for DNS", dns()),
+        Some(CertificateFailureKind::ReachesElsewhere) => {
+            attention("DNS points to another server", dns())
+        }
+        Some(CertificateFailureKind::Unreachable) => attention("Port 80 is closed", None),
+        Some(CertificateFailureKind::RedirectsToHttps) => attention(
             "Your proxy redirects to HTTPS: exempt /.well-known/acme-challenge/* from it",
             None,
         ),
@@ -740,21 +746,29 @@ fn certificate_for<'evidence>(
 ) -> Option<&'evidence CertificateObservation> {
     let host = IngressHost::parse(hostname.as_str()).ok()?;
     let covers = |certificate: &&CertificateObservation, wildcard: bool| {
-        CertificateHost::parse(certificate.hostname.as_str())
-            .is_ok_and(|held| held.is_wildcard() == wildcard && held.covers(&host))
+        certificate.hostname.is_wildcard() == wildcard && certificate.hostname.covers(&host)
     };
     certificates
         .iter()
         .find(|certificate| covers(certificate, false))
-        .or_else(|| certificates.iter().find(|certificate| covers(certificate, true)))
+        .or_else(|| {
+            certificates
+                .iter()
+                .find(|certificate| covers(certificate, true))
+        })
 }
 
 /// Whether DNS sends `lookup`'s hostname to these Servers; none when the evidence
 /// can't tell.
 fn points_here(lookup: &DnsLookup, evidence: &DomainEvidence) -> Option<bool> {
-    let cluster = evidence.cluster_domain.as_ref().map(|cluster| &cluster.name);
+    let cluster = evidence
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
     if let (Some(cname), Some(cluster)) = (&lookup.cname, cluster)
-        && cname.trim_end_matches('.').eq_ignore_ascii_case(cluster.as_str())
+        && cname
+            .trim_end_matches('.')
+            .eq_ignore_ascii_case(cluster.as_str())
     {
         return Some(true);
     }
@@ -830,12 +844,17 @@ mod tests {
             }),
             certificates: Some(
                 certificate
-                    .map(|(status, failure)| CertificateObservation {
-                        hostname: "app.example.com".into(),
-                        status: status.into(),
-                        failure_kind: failure.map(Into::into),
-                        next_attempt_at: Some("2026-09-29T12:00:00Z".into()),
-                        via_proxy: false,
+                    .map(|(status, failure)| {
+                        serde_json::from_value(serde_json::json!({
+                            "hostname": "app.example.com",
+                            "status": status,
+                            "backoff": failure.map(|kind| serde_json::json!({
+                                "failure_kind": kind,
+                                "next_attempt_at": "2026-09-29T12:00:00Z",
+                                "failures": 1,
+                            })),
+                        }))
+                        .unwrap()
                     })
                     .into_iter()
                     .collect(),
@@ -889,8 +908,14 @@ mod tests {
         let Some(DomainAction::Dns { records }) = action else {
             panic!("expected DNS records");
         };
-        assert_eq!(records.first().map(|record| record.kind.as_str()), Some("A"));
-        assert_eq!(records.first().map(|record| record.name.as_str()), Some("@"));
+        assert_eq!(
+            records.first().map(|record| record.kind.as_str()),
+            Some("A")
+        );
+        assert_eq!(
+            records.first().map(|record| record.name.as_str()),
+            Some("@")
+        );
     }
 
     #[test]
@@ -905,12 +930,24 @@ mod tests {
                 Some(DomainAction::Deploy)
             )
         );
-        assert_eq!(status(&domain, Deployed::Deploying, &ready).0, DomainStatus::SettingUp);
-        assert_eq!(status(&domain, Deployed::Yes, &ready).0, DomainStatus::Ready);
+        assert_eq!(
+            status(&domain, Deployed::Deploying, &ready).0,
+            DomainStatus::SettingUp
+        );
+        assert_eq!(
+            status(&domain, Deployed::Yes, &ready).0,
+            DomainStatus::Ready
+        );
         let pending = evidence(Some(("pending", None)));
-        assert_eq!(status(&domain, Deployed::Yes, &pending).0, DomainStatus::SettingUp);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &pending).0,
+            DomainStatus::SettingUp
+        );
         let authority = evidence(Some(("failure", Some("authority"))));
-        assert_eq!(status(&domain, Deployed::Yes, &authority).0, DomainStatus::SettingUp);
+        assert_eq!(
+            status(&domain, Deployed::Yes, &authority).0,
+            DomainStatus::SettingUp
+        );
         let mut offline = ready.clone();
         offline.cluster_domain = offline.cluster_domain.map(|cluster| ClusterDomain {
             status: ClusterDomainStatus::NoServers,

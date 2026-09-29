@@ -256,7 +256,8 @@ export declare function allocateEnrollment(request: RegisterRequest, snapshot: E
 
 /** One Config Store; every call acts in one Organization and rejects with RpcError. */
 export interface ConfigStore {
-  read(organization: string, query: ConfigQuery): Promise<ConfigView>;
+  /** `trusted` is what Cloud observed itself, such as a domain's certificates; never the caller's. */
+  read(organization: string, query: ConfigQuery, trusted?: ConfigTrusted): Promise<ConfigView>;
   /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
   write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
   /**

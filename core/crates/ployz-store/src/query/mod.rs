@@ -24,8 +24,8 @@ pub use service::{
 };
 pub(crate) use service::{service, services};
 
-use crate::{Actor, Trusted};
 use crate::storage::Tx;
+use crate::{Actor, Trusted};
 
 /// One question about authored configuration, answered from one consistent state.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
