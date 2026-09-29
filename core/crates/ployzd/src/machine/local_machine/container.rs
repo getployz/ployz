@@ -243,38 +243,38 @@ impl LocalMachine {
         .await
     }
 
-    /// Start or reconcile image ingest while holding Machine mutation admission.
+    /// Start or reconcile image ingest without taking a turn in Machine admission:
+    /// a Build Grant mint answers while a Deploy or image transfer runs. The ingest
+    /// serializes its own reconciliation, and daemon shutdown removes its helper, so a
+    /// Reset racing it leaves at most a disposable helper behind.
     ///
     /// # Errors
     ///
-    /// Returns when this Machine is not participating, admission is busy, or the ingest helper
-    /// cannot start.
+    /// Returns when this Machine is not participating, an installation or upgrade is active,
+    /// or the ingest helper cannot start.
     pub(crate) async fn ensure_image_ingest(
         &self,
         ingest: Arc<ImageIngest>,
     ) -> Result<ImageIngestOpened, Error> {
-        let local = self.clone();
-        self.finish_mutation(async move {
-            let record = local.record();
-            let address = record
-                .machine()
-                .filter(|_| record.phase() == LocalMachinePhase::Participating)
-                .map(|machine| machine.management_address())
-                .ok_or_else(|| {
-                    Error::StoragePreparation(
-                        ImageIngestReason::NotParticipating
-                            .rpc_error("Machine is not participating"),
-                    )
-                })?;
-            ingest
-                .open(address)
-                .await
-                .map_err(Error::StoragePreparation)
-        })
-        .await
+        let _installation = self.admit_installation()?;
+        let record = self.record();
+        let address = record
+            .machine()
+            .filter(|_| record.phase() == LocalMachinePhase::Participating)
+            .map(|machine| machine.management_address())
+            .ok_or_else(|| {
+                Error::StoragePreparation(
+                    ImageIngestReason::NotParticipating.rpc_error("Machine is not participating"),
+                )
+            })?;
+        ingest
+            .open(address)
+            .await
+            .map_err(Error::StoragePreparation)
     }
 
-    /// Pull one image from peer ingest while holding Machine mutation admission.
+    /// Pull one image from peer ingest under shared admission: transfers run side by
+    /// side, and exclusive work, such as Reset or image removal, waits for them.
     ///
     /// # Errors
     ///
@@ -284,7 +284,8 @@ impl LocalMachine {
         request: PullImageFromMachineRequest,
     ) -> Result<ImagePulled, Error> {
         let local = self.clone();
-        self.finish_mutation(async move {
+        let shared = self.owner.admission_lock().read_owned().await;
+        self.finish_admitted(shared, async move {
             local.containers.as_ref().ok_or(Error::DockerUnavailable)?;
             crate::docker::pull_from_ingest(&request.pull, request.source, &request.platform)
                 .await?;

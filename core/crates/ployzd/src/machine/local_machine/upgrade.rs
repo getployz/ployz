@@ -28,7 +28,7 @@ impl LocalMachine {
         let _local = self
             .owner
             .admission_lock()
-            .try_lock_owned()
+            .try_write_owned()
             .map_err(|_| crate::mutation::Error::Busy)?;
         self.require_management_access()?;
         let installation = self.owner.mutation_gate().try_installation()?;

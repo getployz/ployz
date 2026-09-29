@@ -123,7 +123,11 @@ async fn held_setup_rpcs_keep_the_mutation_and_read_deadlines() {
     let (mut client, machine, calls, server) = starting_machine().await;
     let started = Instant::now();
     let error = client
-        .call_unretried::<op::Initialize>(initialize_request(&machine), None)
+        .call_unretried::<op::Initialize>(
+            initialize_request(&machine),
+            None,
+            crate::cluster::SETUP_MUTATION_REPLY_TIMEOUT,
+        )
         .await
         .unwrap_err();
     assert_eq!(Instant::now() - started, Duration::from_secs(5));

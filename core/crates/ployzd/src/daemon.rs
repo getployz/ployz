@@ -477,7 +477,7 @@ impl Daemon {
         // it the same grace, then release the data directory so the next daemon on
         // it can claim it; work still running keeps the record until process exit
         // rather than failing halfway through.
-        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().lock_owned()).await {
+        match tokio::time::timeout(SERVER_DRAIN, self.local.admission_lock().write_owned()).await {
             Ok(_admission) => {
                 if let Err(error) = self.local.close().await {
                     errors.push(error.to_string());

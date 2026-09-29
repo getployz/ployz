@@ -181,7 +181,7 @@ async fn attempt(
     let policy = runner.policy.clone();
     // A Build takes only its build slot and installation exclusion. It never
     // holds the Machine's mutation lock, so deploys on this Machine proceed.
-    let installation = match local.admit_build() {
+    let installation = match local.admit_installation() {
         Ok(installation) => installation,
         Err(error) => return failed(Stage::Admission, error.to_string()).with_work(work),
     };

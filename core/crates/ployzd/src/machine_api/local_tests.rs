@@ -38,6 +38,31 @@ fn missing_ingress_config_names_its_path_in_details() {
 }
 
 #[tokio::test]
+async fn image_ingest_answers_while_admitted_work_runs() {
+    let data_dir =
+        std::env::temp_dir().join(format!("ployzd-ingest-admission-{}", MachineId::random()));
+    let store = RecordOwner::spawn(LocalMachineStore::open(&data_dir).unwrap()).unwrap();
+    let local = MachineService::with_cluster(store, None).local();
+    let lock = local.owner().admission_lock();
+    // A running image transfer, and exclusive work queued behind it (a Deploy's
+    // container change) that would hold back any new admission.
+    let _transfer = Arc::clone(&lock).read_owned().await;
+    let queued = Arc::clone(&lock).write_owned();
+    tokio::pin!(queued);
+    assert!(futures_util::poll!(&mut queued).is_pending());
+
+    // Ingest still answers (this Machine is not participating, so it refuses).
+    let opened = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        local.ensure_image_ingest(crate::docker::ImageIngest::new(None, None)),
+    )
+    .await
+    .expect("image ingest waited for its turn in Machine admission");
+    assert!(opened.is_err());
+    std::fs::remove_dir_all(data_dir).ok();
+}
+
+#[tokio::test]
 async fn upgrade_and_machine_mutations_refuse_each_other_at_the_rpc_boundary() {
     let data_dir = std::env::temp_dir().join(format!(
         "ployzd-upgrade-rpc-admission-{}",

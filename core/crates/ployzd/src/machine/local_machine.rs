@@ -17,7 +17,6 @@ use ployz_core::{
     synthesize_membership,
 };
 use thiserror::Error;
-use tokio::sync::OwnedMutexGuard;
 
 use super::{
     LocalMachineRecord, LocalMachineStore, RecordOwner, RecordOwnerStopped, StoreError,
@@ -127,11 +126,6 @@ pub enum Error {
     Upgrade(#[from] crate::installer::upgrade::Error),
 }
 
-pub(crate) struct MutationAdmission {
-    _local: OwnedMutexGuard<()>,
-    _installation: crate::mutation::MutationGuard,
-}
-
 impl LocalMachine {
     /// A Local Machine over its record owner, with no Cluster or Docker collaborators.
     #[must_use]
@@ -192,32 +186,35 @@ impl LocalMachine {
         Ok(())
     }
 
-    pub(crate) async fn admit_mutation(&self) -> Result<MutationAdmission, Error> {
-        let local = self.owner.admission_lock().lock_owned().await;
-        self.require_management_access()?;
-        let installation = self.owner.mutation_gate().try_mutation()?;
-        Ok(MutationAdmission {
-            _local: local,
-            _installation: installation,
-        })
-    }
-
-    /// Admit a Build under installation exclusion only. A Build takes a build
-    /// slot, never the owner admission lock, so it never blocks deploys or other
-    /// Machine mutations on this Machine.
-    pub(crate) fn admit_build(&self) -> Result<crate::mutation::MutationGuard, Error> {
+    /// Admit work under installation exclusion only, taking no turn in Machine
+    /// admission. Builds and image ingest use it alone; admitted work adds its turn.
+    pub(crate) fn admit_installation(&self) -> Result<crate::mutation::MutationGuard, Error> {
         self.require_management_access()?;
         Ok(self.owner.mutation_gate().try_mutation()?)
     }
 
+    /// Run `work` alone: no other admitted work runs on this Machine meanwhile.
     async fn finish_mutation<T, F>(&self, work: F) -> Result<T, Error>
     where
         T: Send + 'static,
         F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
     {
-        let admission = self.admit_mutation().await?;
+        let exclusive = self.owner.admission_lock().write_owned().await;
+        self.finish_admitted(exclusive, work).await
+    }
+
+    /// Run `work` holding `turn`, an exclusive or shared admission guard. Admitted
+    /// work is detached from its RPC: a caller that stops waiting does not abandon it
+    /// halfway.
+    async fn finish_admitted<T, F, G>(&self, turn: G, work: F) -> Result<T, Error>
+    where
+        T: Send + 'static,
+        F: std::future::Future<Output = Result<T, Error>> + Send + 'static,
+        G: Send + 'static,
+    {
+        let installation = self.admit_installation()?;
         tokio::spawn(async move {
-            let _admission = admission;
+            let _admission = (turn, installation);
             work.await
         })
         .await?

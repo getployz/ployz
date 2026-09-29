@@ -224,6 +224,7 @@ impl Session {
                 .call_unretried::<op::SetManagementClient>(
                     ployz_core::SetManagementClientRequest::Clear { label },
                     None,
+                    crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
                 )
                 .await
                 .map(|_| ())
@@ -267,7 +268,11 @@ impl Session {
         let client = self.client()?;
         self.until_closed(async {
             client
-                .call_unretried::<op::MintBuildGrant>(request, None)
+                .call_unretried::<op::MintBuildGrant>(
+                    request,
+                    None,
+                    crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT,
+                )
                 .await
                 .map_err(RpcError::from)
         })
