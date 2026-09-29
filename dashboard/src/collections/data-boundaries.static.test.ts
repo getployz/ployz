@@ -90,6 +90,7 @@ const ON_DEMAND_READS = {
 /** Hook files outside data files that await the server without making UI wait on it. */
 const HOOK_FILES_NOT_COMMANDS = {
   "modules/environment-design/environment-document-edit.ts": "the editor owns the optimistic save queue; edits apply before it saves",
+  "modules/config-store/store-write.ts": "the Store writer owns the per-Environment optimistic queue; edits show before they save, and UI awaiting a commit is listed itself",
 };
 
 /** UI that waits for the server, and why. Everything else applies writes optimistically. */

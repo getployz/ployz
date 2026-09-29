@@ -21,11 +21,15 @@ export const collectionReadInput = Schema.Struct({
 export type CollectionReadInput = typeof collectionReadInput.Type;
 export type CollectionName = CollectionReadInput["table"];
 
+/** The Config Store's table families: each refreshes the Store views its tables back (`store-view.queries.ts`). */
+export const storeViewNames = ["store_project", "store_environment", "store_deployment"] as const;
+export type StoreViewName = (typeof storeViewNames)[number];
+
 /**
  * What a change stream event names: an Org Store collection, `organization` for the organization state read,
- * or `environment_change_state` for the change-state projection.
+ * `environment_change_state` for the change-state projection, or a Config Store table family.
  */
-export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "environment_change_state"]);
+export const changeNameSchema = Schema.Literals([...collectionNames, "organization", "environment_change_state", ...storeViewNames]);
 export type ChangeName = typeof changeNameSchema.Type;
 
 /** A collection read. `full` replaces every row; otherwise drop `deleted`, then upsert `rows`. `cursor` is the next `since`. */

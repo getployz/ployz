@@ -12,6 +12,7 @@
     },
     "./package.json": "./package.json",
     "./index.d.ts": "./index.d.ts",
+    "./catalog.json": "./generated/catalog.json",
     "./config": {
       "types": "./config.d.ts",
       "default": "./config.mjs"
