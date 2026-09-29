@@ -16,9 +16,32 @@ export type StoreCall = { operation: "read"; query: ConfigQuery } | { operation:
 /** The view a query answers with: each query kind has the view of the same name. */
 export type StoreViewOf<Q extends ConfigQuery> = Extract<ConfigView, { view: Q["query"] }>;
 
+/** Reads one view in the calling Organization. */
+export type StoreRead = <Q extends ConfigQuery>(query: Q) => Promise<StoreViewOf<Q>>;
 
-/** The Store decodes and validates queries and commands itself, refusing anything else as `invalid_argument`. */
-export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: Schema.Json });
-export const storeWriteInput = Schema.Struct({ organizationSlug: Schema.String, command: Schema.Json });
+/** What a call answers with: a read its query's view, a write what it wrote. */
+export type StoreAnswer<C extends StoreCall> = C extends { operation: "read"; query: infer Q extends ConfigQuery } ? StoreViewOf<Q> : ConfigWritten;
+
+/**
+ * A query or command from outside Cloud, checked once where it enters: an object naming its kind. The Store decodes
+ * and validates the rest itself, refusing anything else as `invalid_argument`.
+ */
+const envelope = <T>(kind: "query" | "command") => {
+  const named = Schema.is(Schema.Struct({ [kind]: Schema.String }));
+  return Schema.declare<T>((value): value is T => named(value));
+};
+export const StoreQuery = envelope<ConfigQuery>("query");
+export const StoreCommand = envelope<ConfigCommand>("command");
+
+export const storeReadInput = Schema.Struct({ organizationSlug: Schema.String, query: StoreQuery });
+export const storeWriteInput = Schema.Struct({ organizationSlug: Schema.String, command: StoreCommand });
+
+/** An Environment as calls name it: either part left out means the default. */
+export const EnvironmentRef = Schema.Struct({
+  project: Schema.optional(Schema.NullOr(Schema.String)),
+  environment: Schema.optional(Schema.NullOr(Schema.String)),
+});
+export const environmentOf = (ref: typeof EnvironmentRef.Type | undefined) =>
+  ({ project: ref?.project ?? null, environment: ref?.environment ?? null });
 
 export type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten };

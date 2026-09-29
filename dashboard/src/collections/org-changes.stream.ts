@@ -27,6 +27,7 @@ const refetches = {
   store_environment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_environment"),
   store_deployment: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_deployment"),
   store_organization: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_organization"),
+  store_pull_request: (organizationSlug: string, scope: CollectionScope) => refetchStoreViews(organizationSlug, scope, "store_pull_request"),
 } satisfies Record<ChangeName, Refetch>;
 
 export function applyOrganizationChanges(names: readonly ChangeName[], organizationSlug: string, scope: CollectionScope) {

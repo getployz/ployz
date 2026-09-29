@@ -1,4 +1,3 @@
-import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
@@ -7,29 +6,25 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import * as tar from "tar";
-import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { organizationBillingState } from "#/modules/billing/tables";
-import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
+import type { PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember, cloudStore } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember } from "#/modules/config-store/config-store.server";
+import { cloudStore } from "#/modules/config-store/store-sdk.server";
+import { storeTestCloud } from "#/test/store-cloud";
 import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { resolveCaller } from "#/modules/identity/caller.server";
-import { InngestClient } from "#/modules/inngest/client";
-import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
-import { makeSecretEncryption, SecretEncryption } from "#/utils/encrypted-secret.server";
 import { Auth, AuthLive } from "#/server/auth.server";
-import { GithubApi } from "#/modules/github/github-observation.api";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
-import { AppConfig } from "#/server/config.server";
-import { Database, DatabaseLive } from "#/server/database.server";
+import { Database } from "#/server/database.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { encodePublicError, NotFound, statusForPublicError } from "#/server/public-error";
-import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
 
@@ -51,26 +46,13 @@ const cloudLayer = Effect.fn(function* (
   overrides: { readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
   inngest = new Inngest({ id: "config-store-test" }),
 ) {
-  const cloud = yield* postgresTestDatabase;
-  const env = {
-    ...testConfigEnvironment(),
-    NODE_ENV: "test",
-    DATABASE_URL: cloud.url.href,
+  const services = yield* storeTestCloud({
+    github: github.service,
+    inngest,
     // No Hosted DNS answers unless a test starts one.
-    PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/",
-  };
-  const provider = ConfigProvider.fromEnv({ env });
-  const configLayer = AppConfig.layer.pipe(Layer.provide(ConfigProvider.layer(provider)));
-  const services = Layer.mergeAll(
-    configLayer,
-    DatabaseLive.pipe(Layer.provide(configLayer)),
-    Layer.succeed(Polar, overrides.polar ?? { mode: "self_hosted" }),
-    Layer.succeed(InngestClient, inngest),
-    Layer.succeed(GithubApi, github.service),
-    Layer.succeed(SecretEncryption, makeSecretEncryption("config-store-test-encryption-secret")),
-    // No Cluster is paired: domains read as unobserved.
-    Layer.succeed(OrganizationRuntime, { cancel: () => Effect.void, open: () => Effect.succeed({ status: "no_connection" as const }) }),
-  );
+    env: { PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/" },
+    polar: overrides.polar ?? { mode: "self_hosted" },
+  });
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
 });
 
@@ -288,10 +270,11 @@ it.live(
         };
         expect(sent).toEqual([event, event]);
 
+        // Inngest down: the admission stands and says so; the sweep, or Deploy now, hands it over later.
         down = true;
         const stranded = yield* request("write", alice, { ...admit, id: "00000000-0000-4000-8000-000000000102" });
-        assert.strictEqual(stranded.status, 503);
-        assert.strictEqual(stranded.json.error?.code, "unavailable");
+        assert.strictEqual(stranded.status, 200);
+        assert.deepInclude(stranded.json, { written: "deployment" });
 
         // Deploy now hands the stranded admission to the worker again, unkeyed; a refused start sends nothing.
         down = false;
