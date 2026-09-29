@@ -3,7 +3,7 @@
 //! them with `all`); one Service lists every Setting and its `values` object; one
 //! Setting lists itself.
 
-use ployz_core::RpcError;
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -82,12 +82,14 @@ pub(crate) fn environment(
     let whole = path.is_none() && !query.all;
     let mut settings = Vec::new();
     for service in services {
+        let name = ServiceName::parse(service.slug.as_str())
+            .map_err(|_| crate::error::corrupt("Service name"))?;
         for setting in ServiceSetting::ALL {
             let value = setting.value(&service.config);
             let default = setting.default();
             if only.is_none_or(|only| only == setting) && !(whole && value == default) {
                 settings.push(SettingRow {
-                    path: SettingPath::of(&service.slug, setting)?,
+                    path: SettingPath::of(&name, setting),
                     value,
                     default,
                     apply: setting.apply(),

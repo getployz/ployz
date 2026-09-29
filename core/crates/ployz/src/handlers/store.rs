@@ -89,7 +89,8 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     let mut next = vec!["ployz".to_owned()];
     next.extend(words.iter().map(|word| (*word).to_owned()));
     for flag in ["project", "env"] {
-        if let Some(value) = matches.get_one::<String>(flag) {
+        // Not every command takes both flags (`env new` has no `--env`).
+        if let Ok(Some(value)) = matches.try_get_one::<String>(flag) {
             next.extend([format!("--{flag}"), value.clone()]);
         }
     }
@@ -106,17 +107,21 @@ pub(crate) fn with_refresh_hint(mut error: RpcError, matches: &ArgMatches, read:
     error
 }
 
-/// A Store error, with the next step only the command line can name: an ambiguous
-/// Project is fixed by rerunning this command with `--project`.
-pub(crate) fn failed(mut error: RpcError) -> Error {
-    if error.code == RpcErrorCode::Ambiguous
-        && let Some(details) = error.details.as_object_mut()
-        && details.contains_key("projects")
-    {
-        let mut next = vec!["ployz".to_owned()];
-        next.extend(std::env::args().skip(1));
-        next.extend(["--project".to_owned(), "PROJECT".to_owned()]);
-        details.insert("next".into(), json!(shell_words::join(next)));
+/// Turn a Store error into this command's failure, adding the next step only the
+/// command line can name: an ambiguous Project is fixed by rerunning `words` with
+/// `--project`. `words` are the command and its accepted arguments, never raw input.
+pub(crate) fn failed<'m>(
+    matches: &'m ArgMatches,
+    words: &'m [&'m str],
+) -> impl FnOnce(RpcError) -> Error + 'm {
+    move |mut error| {
+        if error.code == RpcErrorCode::Ambiguous
+            && let Some(details) = error.details.as_object_mut()
+            && details.contains_key("projects")
+        {
+            let rerun = [words, &["--project", "PROJECT"]].concat();
+            details.insert("next".into(), json!(next(matches, &rerun)));
+        }
+        error.into()
     }
-    error.into()
 }

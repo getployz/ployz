@@ -82,7 +82,14 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             .transpose()?,
         all: matches.get_flag("all"),
     };
-    let view = store.environment(&actor, &query).map_err(failed)?;
+    let path = query.path.as_ref().map(ToString::to_string);
+    let words = [Some("get"), path.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let view = store
+        .environment(&actor, &query)
+        .map_err(failed(matches, &words))?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -169,10 +176,12 @@ fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
         expect: expected(matches)?,
         changes,
     };
+    let words = rerun(&edit.changes);
+    let words = words.iter().map(String::as_str).collect::<Vec<_>>();
     let (store, actor) = store()?;
     let edited = store
         .edit(&actor, &edit)
-        .map_err(|error| failed(with_refresh_hint(error, matches, "get")))?;
+        .map_err(|error| failed(matches, &words)(with_refresh_hint(error, matches, "get")))?;
     let hint = (!edited.staged.is_empty()).then(|| next(matches, &["diff"]));
     crate::output::finish(&Next::new(&edited, hint), || {
         let where_ = format!("{}/{}", edited.environment.project, edited.environment.name);
@@ -187,6 +196,25 @@ fn edit(matches: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
             say!("Applied {} in {where_}.", join(&edited.immediate));
         }
     })
+}
+
+/// The `set` or `unset` that makes `changes`, with every value left as a placeholder.
+fn rerun(changes: &[Change]) -> Vec<String> {
+    let verb = match changes.first() {
+        Some(Change::Unset { .. }) => "unset",
+        Some(Change::Set { .. } | Change::Patch { .. }) | None => "set",
+    };
+    let mut words = vec![verb.to_owned()];
+    for change in changes {
+        match change {
+            Change::Set { path, .. } => words.push(format!("{path}=VALUE")),
+            Change::Unset { path } => words.push(path.to_string()),
+            Change::Patch { path, .. } => {
+                words.extend([path.to_string(), "--patch".to_owned(), "JSON".to_owned()]);
+            }
+        }
+    }
+    words
 }
 
 fn join(paths: &[SettingPath]) -> String {

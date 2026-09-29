@@ -390,7 +390,31 @@ fn an_ambiguous_project_names_the_rerun() {
         error.get("details"),
         Some(&json!({
             "projects": ["blog", "shop"],
-            "next": "ployz env new staging --json --project PROJECT",
+            "next": "ployz env new staging --project PROJECT",
         }))
+    );
+
+    // The hint is built from accepted words, so rejected values and raw `--` stay out.
+    let next = |args: &[&str]| {
+        let home = tempfile::tempdir().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .arg("--json")
+            .args(args)
+            .env("HOME", home.path())
+            .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
+            .env_remove("PLOYZ_PROJECT")
+            .env_remove("PLOYZ_ENV")
+            .output()
+            .unwrap();
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+        json.pointer("/error/details/next").cloned().unwrap()
+    };
+    assert_eq!(
+        next(&["set", "--env", "production", "web.replicas=SECRET-CANARY"]),
+        json!("ployz set 'web.replicas=VALUE' --project PROJECT --env production")
+    );
+    assert_eq!(
+        next(&["get", "--", "web"]),
+        json!("ployz get web --project PROJECT")
     );
 }

@@ -66,12 +66,7 @@ fn insert_service(
     create: &CreateService,
 ) -> Result<ServiceCreated, RpcError> {
     let mut environment = scope::lock(tx, who, &create.environment)?;
-    if environment
-        .working
-        .services
-        .iter()
-        .any(|service| service.slug == create.name.as_str())
-    {
+    if environment.service(&create.name).is_ok() {
         return Err(error::conflict(
             format!(
                 "Environment {} already has a Service named {}",
@@ -130,8 +125,8 @@ fn insert_service(
         environment: environment.summary,
         staged: ServiceSetting::ALL
             .into_iter()
-            .map(|setting| SettingPath::of(create.name.as_str(), setting))
-            .collect::<Result<_, _>>()?,
+            .map(|setting| SettingPath::of(&create.name, setting))
+            .collect(),
         immediate: Vec::new(),
     })
 }
