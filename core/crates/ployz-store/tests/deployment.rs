@@ -967,7 +967,10 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let mut newer = upload.clone();
     newer.digest = "e".repeat(64);
     with(3, Some(newer)).unwrap();
-    assert_eq!(retry(&store, &who, 4, 1).unwrap().upload, Some(upload.clone()));
+    assert_eq!(
+        retry(&store, &who, 4, 1).unwrap().upload,
+        Some(upload.clone())
+    );
     // Another Environment of the Project without its own receipt borrows this one;
     // preparation reuses it only if its fingerprint matches.
     let staging = EnvironmentRef {
