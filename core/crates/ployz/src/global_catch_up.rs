@@ -223,16 +223,19 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
+pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> String {
     let mut message = format!(
-        "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
         error.cause
     );
     if !error.unresolved.is_empty() {
         message.push_str("\nGlobals requiring attention:");
         for identity in error.unresolved {
             if identity == QualifiedService::system_ingress() {
-                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
+                message.push_str(&format!(
+                    "\n- ployz-system/ingress: run `ployz server set {} --accepts-ingress=true`.",
+                    server.id
+                ));
             } else {
                 message.push_str(&format!(
                     "\n- {identity}: redeploy Namespace Service `{identity}`."

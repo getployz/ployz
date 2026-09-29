@@ -9,7 +9,7 @@ use ployz_core::{
 };
 use tokio::time::Instant;
 
-use crate::{cluster::Client, connect::ConnectError};
+use crate::{cluster::Client, connect::ConnectError, deploy::Outcome, ingress::IngressImage};
 
 use serde_json::json;
 
@@ -36,6 +36,9 @@ trait UpgradeRequests {
         target: &MachineTarget,
         wait: Duration,
     ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>>;
+
+    /// Deploy the Ingress Proxy with `image` onto the Servers holding the ingress role.
+    async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error>;
 }
 
 impl UpgradeRequests for Client {
@@ -63,6 +66,10 @@ impl UpgradeRequests for Client {
         )
         .await
     }
+
+    async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
+        crate::ingress::follow_roles(self, image).await
+    }
 }
 
 pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
@@ -72,60 +79,102 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
         .cloned()
         .ok_or_else(|| Error::usage("upgrade version is required"))?;
     let selectors = string_values(matches, "server");
+    let image = matches.get_one::<String>("ingress-image");
+    let version = release.to_string();
+    let mut args = vec!["server", "upgrade", version.as_str()];
+    args.extend(selectors.iter().map(String::as_str));
+    args.extend(
+        image
+            .iter()
+            .flat_map(|image| ["--ingress-image", image.as_str()]),
+    );
+    let rerun = super::rerun(matches, &args);
+    let ingress = IngressImage::given_or(image.cloned(), IngressImage::Latest);
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
-            let mut attempts = Vec::new();
-            for (index, machine) in machines.iter().enumerate() {
-                let attempt_id = MachineUpgradeAttemptId::random();
-                let mut seen = None;
-                let stopped =
-                    match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
-                        Err(error) => {
-                            // An accepted attempt is committed evidence: keep it in the result.
-                            attempts.extend(seen);
-                            Some(error)
-                        }
-                        Ok(attempt) => {
-                            print_attempt(machine, &attempt);
-                            let stopped = match &attempt.outcome {
-                                MachineUpgradeOutcome::Succeeded { .. } => None,
-                                MachineUpgradeOutcome::Failed { error, .. } => {
-                                    Some(Error::coded(RpcErrorCode::Internal, error.clone()))
-                                }
-                                MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
-                                    RpcErrorCode::Internal,
-                                    format!(
-                                        "Server {} upgrade was interrupted; {}",
-                                        machine.name,
-                                        journal_hint(attempt_id)
-                                    ),
-                                )),
-                                MachineUpgradeOutcome::Accepted
-                                | MachineUpgradeOutcome::Running { .. } => {
-                                    unreachable!("run_one returns only terminal evidence")
-                                }
-                            };
-                            attempts.push(attempt);
-                            stopped
-                        }
-                    };
-                if let Some(error) = stopped {
-                    let unattempted = machines.get(index + 1..).unwrap_or_default();
-                    print_unattempted(unattempted, machine);
-                    // A recorded attempt is a result: print it, then exit partial.
-                    if !attempts.is_empty() {
-                        output::emit(&json!({
-                            "attempts": attempts,
-                            "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
-                        }))?;
-                    }
-                    return Err(error);
-                }
+            let (result, outcome) = run_all(client, &machines, release, ingress, rerun).await;
+            match result {
+                Some(result) => output::emit_committed(result, outcome),
+                None => outcome,
             }
-            output::emit(&json!({ "attempts": attempts, "unattempted": [] }))
         })
     })
+}
+
+/// Upgrade each Server's daemon in order, stopping at the first failure; once all succeed,
+/// move the Ingress Proxy when any of them holds the ingress role. The result is `None`
+/// when nothing was committed.
+async fn run_all(
+    client: &mut impl UpgradeRequests,
+    machines: &[Machine],
+    release: MachineRelease,
+    ingress: IngressImage,
+    rerun: String,
+) -> (Option<serde_json::Value>, Result<(), Error>) {
+    let mut attempts = Vec::new();
+    for (index, machine) in machines.iter().enumerate() {
+        let attempt_id = MachineUpgradeAttemptId::random();
+        let mut seen = None;
+        let stopped = match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
+            Err(error) => {
+                // An accepted attempt is committed evidence: keep it in the result.
+                attempts.extend(seen);
+                error
+            }
+            Ok(attempt) => {
+                print_attempt(machine, &attempt);
+                let stopped = match &attempt.outcome {
+                    MachineUpgradeOutcome::Succeeded { .. } => None,
+                    MachineUpgradeOutcome::Failed { error, .. } => {
+                        Some(Error::coded(RpcErrorCode::Internal, error.clone()))
+                    }
+                    MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
+                        RpcErrorCode::Internal,
+                        format!(
+                            "Server {} upgrade was interrupted; {}",
+                            machine.name,
+                            journal_hint(attempt_id)
+                        ),
+                    )),
+                    MachineUpgradeOutcome::Accepted | MachineUpgradeOutcome::Running { .. } => {
+                        unreachable!("run_one returns only terminal evidence")
+                    }
+                };
+                attempts.push(attempt);
+                match stopped {
+                    Some(error) => error,
+                    None => continue,
+                }
+            }
+        };
+        let unattempted = machines.get(index + 1..).unwrap_or_default();
+        print_unattempted(unattempted, machine);
+        // A recorded attempt is a result: print it, then exit partial.
+        let result = (!attempts.is_empty()).then(|| {
+            json!({
+                "attempts": attempts,
+                "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
+            })
+        });
+        return (result, Err(stopped));
+    }
+    // ponytail: the Ingress Proxy is one Cluster-wide Global, so it moves once, after every
+    // selected daemon, and also on ingress Servers that were not selected.
+    let moved = if machines.iter().any(|machine| machine.accepts_ingress) {
+        client.move_ingress(ingress).await
+    } else {
+        Ok(None)
+    };
+    let result = json!({
+        "attempts": attempts,
+        "unattempted": [],
+        "ingress": moved.as_ref().ok().and_then(Option::as_ref),
+    });
+    let outcome = moved
+        .map(drop)
+        .map_err(|error| super::ingress_incomplete("Servers upgraded", &error, rerun));
+    (Some(result), outcome)
 }
 
 async fn selected_machines(
@@ -332,6 +381,128 @@ mod tests {
         ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
             panic!("an unaccepted request is not inspected")
         }
+
+        async fn move_ingress(&mut self, _image: IngressImage) -> Result<Option<Outcome>, Error> {
+            panic!("a single-Server run does not move the Ingress Proxy")
+        }
+    }
+
+    /// Answers each upgrade request with a terminal outcome, in order, and records Ingress moves.
+    struct Sequence {
+        outcomes: std::collections::VecDeque<MachineUpgradeOutcome>,
+        ingress: Option<Error>,
+        moved: Vec<IngressImage>,
+    }
+
+    impl UpgradeRequests for Sequence {
+        async fn request_upgrade(
+            &mut self,
+            request: RequestMachineUpgradeRequest,
+            _target: &MachineTarget,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            Ok(MachineUpgradeAttempt {
+                attempt_id: request.attempt_id,
+                target: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+                outcome: self.outcomes.pop_front().expect("one outcome per request"),
+            })
+        }
+
+        async fn inspect_upgrade(
+            &mut self,
+            _request: InspectMachineUpgradeRequest,
+            _target: &MachineTarget,
+            _wait: Duration,
+        ) -> Result<MachineUpgradeAttempt, crate::setup_retry::Error<ConnectError>> {
+            panic!("terminal answers are not inspected")
+        }
+
+        async fn move_ingress(&mut self, image: IngressImage) -> Result<Option<Outcome>, Error> {
+            self.moved.push(image);
+            self.ingress.take().map_or(Ok(None), Err)
+        }
+    }
+
+    fn succeeded() -> MachineUpgradeOutcome {
+        MachineUpgradeOutcome::Succeeded {
+            version: ployz_core::MachineVersion::parse("1.2.3").unwrap(),
+        }
+    }
+
+    async fn run_sequence(
+        machines: &[Machine],
+        outcomes: Vec<MachineUpgradeOutcome>,
+        ingress: Option<Error>,
+    ) -> (Option<Value>, Result<(), Error>, Vec<IngressImage>) {
+        let mut client = Sequence {
+            outcomes: outcomes.into(),
+            ingress,
+            moved: Vec::new(),
+        };
+        let (result, outcome) = run_all(
+            &mut client,
+            machines,
+            MachineRelease::parse("1.2.3").unwrap(),
+            IngressImage::Latest,
+            "ployz server upgrade 1.2.3 a b".into(),
+        )
+        .await;
+        (result, outcome, client.moved)
+    }
+
+    #[tokio::test]
+    async fn a_failed_daemon_upgrade_stops_before_the_ingress_proxy_moves() {
+        let machines = [machine('a', 1), machine('b', 2)];
+        let failed = MachineUpgradeOutcome::Failed {
+            stage: ployz_core::MachineUpgradeStage::Acquiring,
+            error: "install failed".into(),
+        };
+        let (result, outcome, moved) = run_sequence(&machines, vec![failed], None).await;
+
+        assert!(outcome.unwrap_err().to_string().contains("install failed"));
+        let result = result.unwrap();
+        assert_eq!(result["attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(result["unattempted"], json!([machines[1].id]));
+        assert!(moved.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_ingress_move_after_upgraded_daemons_is_partial_with_the_rerun() {
+        let machines = [machine('a', 1), machine('b', 2)];
+        let (result, outcome, moved) = run_sequence(
+            &machines,
+            vec![succeeded(), succeeded()],
+            Some(Error::unavailable("caddy image pull failed")),
+        )
+        .await;
+
+        let error = outcome.unwrap_err().report();
+        assert!(
+            error.message.contains("Servers upgraded"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("caddy image pull failed"),
+            "{}",
+            error.message
+        );
+        assert_eq!(error.details["next"], "ployz server upgrade 1.2.3 a b");
+        let result = result.unwrap();
+        assert_eq!(result["attempts"].as_array().unwrap().len(), 2);
+        assert_eq!(result["ingress"], Value::Null);
+        assert_eq!(moved, [IngressImage::Latest]);
+    }
+
+    #[tokio::test]
+    async fn servers_without_the_ingress_role_leave_the_proxy_alone() {
+        let mut builder = machine('a', 1);
+        builder.accepts_ingress = false;
+        let (result, outcome, moved) = run_sequence(&[builder], vec![succeeded()], None).await;
+
+        outcome.unwrap();
+        assert_eq!(result.unwrap()["attempts"].as_array().unwrap().len(), 1);
+        assert!(moved.is_empty());
     }
 
     #[tokio::test]

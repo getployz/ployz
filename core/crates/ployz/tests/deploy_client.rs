@@ -51,41 +51,6 @@ async fn exec_honors_remote_exit_while_terminal_stdin_remains_open() {
 }
 
 #[tokio::test]
-async fn ingress_deploy_builds_the_caddy_spec() {
-    let service = DeployService::new(machine('a', "one"));
-    let created = service.created_specs();
-    let (address, server) = listening(service).await;
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
-        .args([
-            "--connect",
-            &format!("tcp://{address}"),
-            "ingress",
-            "deploy",
-            "--image",
-            "caddy:test",
-            "--skip-health",
-        ])
-        .output()
-        .await
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let specs = created.lock().unwrap();
-    let spec = specs.first().unwrap();
-    assert_eq!(spec.container.image, "caddy:test");
-    assert_eq!(
-        spec.container.command,
-        ["caddy", "run", "-c", "/config/caddy/Caddyfile"]
-    );
-    assert_eq!(spec.ports.len(), 3);
-    server.abort();
-}
-
-#[tokio::test]
 async fn deploy_creates_containers_owned_by_the_intent_namespace() {
     let service = DeployService::new(machine('a', "one"));
     let created = service.created_namespaces();

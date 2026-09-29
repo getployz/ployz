@@ -16,7 +16,6 @@ pub(crate) mod context;
 mod data_loss;
 pub(crate) mod deploy;
 pub(crate) mod env;
-pub(crate) mod ingress;
 pub(crate) mod login;
 mod operator;
 pub(crate) mod project;
@@ -264,7 +263,6 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("env", rest) => env::handler(rest),
         ("explain", "") => Some((catalog::explain, Json::Supported)),
         ("get", "") => Some((config::get, Json::Supported)),
-        ("ingress", rest) => ingress::handler(rest),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
         ("org", rest) => account::org_handler(rest),
@@ -319,7 +317,11 @@ mod tests {
                 "staging",
             ])
             .unwrap();
-        let recovery = recovery_command(leaf_matches(&matches), "staging", &["ingress", "deploy"]);
+        let recovery = recovery_command(
+            leaf_matches(&matches),
+            "staging",
+            &["server", "set", "edge", "--accepts-ingress=true"],
+        );
         let args = shell_words::split(&recovery).unwrap();
         let parsed = command().try_get_matches_from(args).unwrap();
         let leaf = leaf_matches(&parsed);
@@ -487,24 +489,6 @@ mod tests {
                 ])
                 .is_err()
         );
-    }
-
-    #[test]
-    fn ingress_deploy_rejects_unsupported_constraints_before_connecting() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "ingress",
-                "deploy",
-                "--constraint",
-                "node.hostname==edge",
-            ])
-            .unwrap();
-        let error = dispatch(&matches, &mut command).unwrap_err().to_string();
-        assert!(error.contains("invalid placement constraint"), "{error}");
-        assert!(error.contains("node.hostname"), "{error}");
     }
 
     #[test]
