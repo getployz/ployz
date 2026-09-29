@@ -1,21 +1,17 @@
 import "@tanstack/react-start/server-only";
-import { and, eq } from "drizzle-orm";
 import { Effect, Exit, Schema, Scope } from "effect";
 import type { ConfigQuery, LogFilter } from "@ployz/sdk";
 import { authorizeRuntimeOrganization } from "./authorize-runtime-organization.server";
 import { OrganizationRuntime } from "./organization-runtime.server";
 import { backfillThenFollow } from "./container-log-events.server";
-import { Database } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
-import { environment } from "#/modules/project/tables";
-import { environmentDeployment } from "#/modules/deployments/tables";
 import { organizationSlugSchema } from "#/modules/organization/tables";
 import { readStore } from "#/modules/config-store/config-store.server";
 
 export const logSearchSchema = Schema.Struct({
   organizationSlug: organizationSlugSchema,
   environmentSlug: Schema.optional(Schema.String),
-  /** A Config Store Environment is named within its Project. */
+  /** An Environment is named within its Project. */
   projectSlug: Schema.optional(Schema.String),
   deploymentId: Schema.optional(Schema.String.check(Schema.isUUID())),
   serviceId: Schema.optional(Schema.String.check(Schema.isUUID())),
@@ -23,36 +19,17 @@ export const logSearchSchema = Schema.Struct({
 });
 export type LogSearch = typeof logSearchSchema.Type;
 
-export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* (organizationId: string, search: LogSearch) {
-  const { drizzle } = yield* Database;
-  let namespace = search.environmentSlug;
-  if (search.deploymentId) {
-    const [row] = yield* drizzle.select({ namespace: environment.namespace })
-      .from(environmentDeployment).innerJoin(environment, eq(environment.id, environmentDeployment.environmentId))
-      .where(and(eq(environmentDeployment.id, search.deploymentId), eq(environmentDeployment.organizationId, organizationId))).limit(1);
-    if (!row) return yield* new NotFound({ message: "Deployment was not found." });
-    namespace = row.namespace;
-
-  } else {
-    if (!namespace) return yield* new Validation({ message: "An environment is required." });
-    const [row] = yield* drizzle.select({ id: environment.id }).from(environment)
-      .where(and(eq(environment.namespace, namespace), eq(environment.organizationId, organizationId))).limit(1);
-    if (!row) return yield* new NotFound({ message: "Environment was not found." });
-  }
-  return { namespace, serviceId: search.serviceId, deploymentId: search.deploymentId } satisfies LogFilter;
-});
-
 /**
- * A Config Store Deployment's logs (its Namespace, then the containers labelled with its ID), or a Config Store
- * Environment's (its Namespace). The Store answers for the Organization only, so another's stays not found.
+ * Whose logs: a Deployment's (its Namespace, then the containers labelled with its ID), or an Environment's (its
+ * Namespace). The Store answers for the Organization only, so another's stays not found.
  */
-// TODO(#1275): the only filter, once the Store is the only backend.
-const storeFilter = Effect.fn("Runtime.storeFilter")(function* (organizationId: string, search: LogSearch, missing: NotFound) {
+export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* (organizationId: string, search: LogSearch) {
   const { deploymentId, projectSlug, environmentSlug } = search;
+  const missing = new NotFound({ message: deploymentId ? "Deployment was not found." : "Environment was not found." });
   const query: ConfigQuery | null = deploymentId ? { query: "deployment", id: deploymentId }
     : projectSlug && environmentSlug ? { query: "namespace", environment: { project: projectSlug, environment: environmentSlug } }
     : null;
-  if (query === null) return yield* missing;
+  if (query === null) return yield* new Validation({ message: "An environment is required." });
   const view = yield* readStore(organizationId, query).pipe(Effect.mapError(() => missing));
   if (view.view !== "deployment" && view.view !== "namespace") return yield* missing;
   return { namespace: view.namespace, serviceId: search.serviceId, deploymentId } satisfies LogFilter;
@@ -61,9 +38,7 @@ const storeFilter = Effect.fn("Runtime.storeFilter")(function* (organizationId: 
 /** The response owns this scope until its consumer disconnects. */
 export const openContainerLogs = Effect.fn("Runtime.openContainerLogs")(function* (request: Request, search: LogSearch) {
   const { organizationId } = yield* authorizeRuntimeOrganization({ headers: request.headers, organizationSlug: search.organizationSlug });
-  const filter = yield* resolveLogFilter(organizationId, search).pipe(
-    Effect.catchTag("NotFound", (missing) => storeFilter(organizationId, search, missing)),
-  );
+  const filter = yield* resolveLogFilter(organizationId, search);
   const scope = yield* Scope.make();
   const close = Scope.close(scope, Exit.void);
   const runtime = yield* OrganizationRuntime;

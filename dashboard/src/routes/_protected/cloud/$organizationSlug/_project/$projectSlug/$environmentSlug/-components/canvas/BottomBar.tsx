@@ -3,29 +3,17 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
-import { GitPullRequestIcon, MoreVerticalIcon } from "lucide-react";
+import { MoreVerticalIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
-import { useDeploymentAttempt, useEnvironmentDeployments } from "#/modules/deployments/deployment.collection";
-import { activeStep, deploymentStatusLabel } from "#/modules/deployments/deployment-view";
-import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
-import { listNames, plural } from "#/modules/branches/branch-plan";
-import { rowLineage } from "#/modules/branches/branch-review";
-import { useLineageNames } from "#/modules/branches/use-lineage-names";
-import { useEnvironmentDocuments } from "#/modules/environment-design/environment-document.collection";
-import { useWaitingSaves } from "#/modules/pr-environments/conditional-save.collection";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
-import { LandedNote, LandedRest, useLandedNotes } from "../branch-review/landed-notes";
-import { GoesLiveChanges, GoesLiveSheet } from "../branch-review/SaveSheet";
-import { goLive } from "#/modules/pr-environments/pr-check";
-import type { CanvasEnvironmentChangeGroup } from "#/modules/environment-design/canvas-environment-change-state";
+import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { plural } from "#/lib/plural";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
-import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_INDEX_ROUTE_TO } from "../environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 
@@ -36,68 +24,51 @@ import { EnvironmentChangesReview } from "./EnvironmentChangesReview";
 export const BottomBarSlot = createContext<HTMLElement | null>(null);
 
 type BottomBarProps = {
-  environmentId: string;
-  groups: CanvasEnvironmentChangeGroup[];
+  groups: ChangeGroup[];
   totalChanges: number;
-  canDeploy: boolean;
-  commitMessage: string;
-  canSaveWithoutDeploying: boolean;
-  /** None when Deploys carry no message (the Config Store's). */
-  onCommitMessageChange?: (value: string) => void;
+  canPublish: boolean;
   onDeploy: () => void;
-  onSaveWithoutDeploying: () => void;
+  onPublish: () => void;
   onDiscardAll: () => Promise<boolean>;
-  onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
-  onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
-  /** Over the Config Store: its in-flight Deployments, newest first, whoever admitted them. Null reads the legacy attempts. */
-  storeActive?: DeploymentSummary[] | null;
-  /** Over the Config Store: Details' notes from merged pull requests. None reads the legacy ones. */
-  storeNotes?: Pick<ReviewProps, "noteFor" | "after"> | null;
+  onDiscardNode: (group: ChangeGroup) => void;
+  onDiscardRow: (group: ChangeGroup, path: string) => void;
+  /** The Environment's in-flight Deployments, newest first, whoever admitted them. */
+  active: DeploymentSummary[];
+  /** Details' notes from merged pull requests. */
+  notes: Pick<ReviewProps, "noteFor" | "after">;
 };
 
 type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 
 /**
  * The bottom bar holds this Environment's own changes and nothing else, in one row like Railway's: changes to deploy
- * ("Apply 3 changes · Details · Deploy · ⋮"), else a running or queued attempt whose page isn't open, else changes that
- * go live here with a pull request. What moves between Environments, Save and Update, is the Branch button's, at the
- * canvas's top right; it lands in a bottom bar as changes to deploy.
+ * ("Apply 3 changes · Details · Deploy · ⋮"), else a running or queued Deployment whose page isn't open. What moves
+ * between Environments, Save and Update, is the Branch button's, at the canvas's top right; it lands in a bottom bar as
+ * changes to deploy.
  */
 export function BottomBar({
-  environmentId,
   groups,
   totalChanges,
-  canDeploy,
-  commitMessage,
-  canSaveWithoutDeploying,
-  onCommitMessageChange,
+  canPublish,
   onDeploy,
-  onSaveWithoutDeploying,
+  onPublish,
   onDiscardAll,
   onDiscardNode,
   onDiscardRow,
-  storeActive = null,
-  storeNotes = null,
+  active: newestFirst,
+  notes,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
-  // Newest first: the oldest active attempt holds, or is next for, the Environment execution slot.
-  const legacyActive = useEnvironmentDeployments(params.organizationSlug, environmentId)
-    .filter(({ deployment }) => isActiveDeployment(deployment.status)).map(({ deployment }) => deployment).reverse();
-  const active = storeActive ? [...storeActive].reverse() : legacyActive;
-  const hasChanges = totalChanges > 0 || canSaveWithoutDeploying;
-  const deployable = hasChanges && canDeploy && totalChanges > 0;
+  // Oldest first: the oldest holds, or is next for, the Environment's one run.
+  const active = [...newestFirst].reverse();
+  const hasChanges = totalChanges > 0 || canPublish;
+  const deployable = totalChanges > 0;
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
-  const shownStore = storeActive?.find((deployment) => deployment.id === shown?.id);
-  // Saved to go live with a pull request, not changes to deploy here: the bar's last state.
-  const waiting = useWaitingSaves(params.organizationSlug, environmentId);
-  const landed = useLandedNotes(environmentId, groups);
-  const lineageName = useLineageNames(params.organizationSlug);
 
   function deploy() {
     setOpen(false);
@@ -146,7 +117,7 @@ export function BottomBar({
   });
 
   const row = hasChanges ? (
-    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Unpublished changes"} detail={null}>
+    <Row staged title={totalChanges > 0 ? `Apply ${plural(totalChanges, "change")}` : "Changes to publish"} detail={null}>
       <Button ref={triggerRef} variant="outline" aria-expanded={open} onClick={openReview}>Details</Button>
       {/* Deploying behind a running or queued attempt queues. */}
       <Tooltip>
@@ -166,33 +137,16 @@ export function BottomBar({
         </DropdownMenuContent>
       </DropdownMenu>
     </Row>
-  ) : shownStore ? <StoreAttemptState deployment={shownStore} />
-    : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.id} />
-    : waiting.length && !storeNotes ? <WaitingState saves={waiting} /> : null;
+  ) : shown ? <AttemptState deployment={shown} /> : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
-  const legacyNotes = {
-    noteFor: (group: CanvasEnvironmentChangeGroup, path: string) => {
-      const note = landed.notes.find((candidate) => candidate.nodeId === group.nodeId && candidate.path === path);
-      return note ? <LandedNote note={note} /> : null;
-    },
-    after: (
-      <>
-        <LandedRest notes={landed.rest} />
-        {/* Saved to go live with pull requests: read-only here, never changes to deploy. */}
-        {waiting.length ? <GoesLiveChanges title={waitingTitle(waiting)} saves={waiting}
-          nameOf={(lineage, prEnvironmentId) => lineageName(lineage, prEnvironmentId ?? undefined)} /> : null}
-      </>
-    ),
-  };
-
   const reviewProps = {
-    groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
-    onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
-    onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
+    groups, totalChanges, canDeploy: deployable, canPublish,
+    onClose: () => setOpen(false), onDeploy: deploy,
+    onPublish: () => { setOpen(false); onPublish(); },
     onDiscardAll: () => void discardAll(), discarding,
     onDiscardNode, onDiscardRow,
-    ...storeNotes ?? legacyNotes,
+    ...notes,
   };
   return (
     <>
@@ -202,60 +156,8 @@ export function BottomBar({
   );
 }
 
-/** "3 changes go live with PR #142". */
-const waitingTitle = (saves: ConditionalSaveRow[]) =>
-  `${goLive(saves.reduce((n, save) => n + save.rows.length, 0))} with ${listNames(saves.map((save) => `PR #${save.prNumber}`))}`;
-
-/** A Destination's quiet row: changes saved on PR Environments, which go live with their pull requests. Not changes to deploy. */
-function WaitingState({ saves }: { saves: ConditionalSaveRow[] }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const lineageName = useLineageNames(params.organizationSlug);
-  const documents = useEnvironmentDocuments(params.organizationSlug);
-  const [details, setDetails] = useState(false);
-  const nameOf = (lineage: string, prEnvironmentId: string | null) => lineageName(lineage, prEnvironmentId ?? undefined);
-  const title = waitingTitle(saves);
-  const nodes = [...new Set(saves.flatMap((save) => save.rows.map(({ row }) => nameOf(rowLineage(row), save.prEnvironmentId))))];
-  const prEnvironments = documents.filter((document) => saves.some((save) => save.prEnvironmentId === document.id));
-  return (
-    <Row icon={<GitPullRequestIcon className="size-4 text-muted-foreground" />} title={title} detail={nodes.join(", ")}>
-      <Button variant="outline" onClick={() => setDetails(true)}>Details</Button>
-      {details ? (
-        <GoesLiveSheet title={title} saves={saves} nameOf={nameOf} onClose={() => setDetails(false)}
-          actions={prEnvironments.map((document) => (
-            <Link key={document.id} to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: document.namespace }}
-              className={buttonVariants({ variant: "outline" })}>Open {document.name}</Link>
-          ))} />
-      ) : null}
-    </Row>
-  );
-}
-
-/**
- * A running or queued attempt: its status and message, where it is, and Logs to open its Deployment Page. Read like the
- * page reads it (with its build tail), so both name the same status.
- */
-function AttemptState({ environmentId, deploymentId }: { environmentId: string; deploymentId: string }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { attempt } = useDeploymentAttempt(params.organizationSlug, environmentId, deploymentId, { buildLog: true });
-  if (!attempt) return null;
-  const { deployment, nodes, view } = attempt;
-  const step = activeStep(deployment.runtimeProgress, nodes, view);
-  return (
-    <Row icon={<DeploymentStatusIcon status={view.status} />} title={`${deploymentStatusLabel(view)} · ${deployment.message ?? "Deployment"}`} detail={step?.text ?? null}>
-      <Link
-        to={DEPLOYMENT_PAGE_ROUTE_TO}
-        params={{ ...params, deploymentId: deployment.id }}
-        search={step?.nodeId ? { service: step.nodeId } : {}}
-        className={buttonVariants({ variant: "outline" })}
-      >
-        Logs
-      </Link>
-    </Row>
-  );
-}
-
-/** An in-flight Store Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
-function StoreAttemptState({ deployment }: { deployment: DeploymentSummary }) {
+/** An in-flight Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
+function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const detail = deployment.upload ? `${targetsLabel(deployment)} · ${uploadLabel(deployment.upload)}` : targetsLabel(deployment);
   return (

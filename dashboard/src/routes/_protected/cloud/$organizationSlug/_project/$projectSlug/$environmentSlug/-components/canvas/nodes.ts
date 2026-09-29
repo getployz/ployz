@@ -1,14 +1,6 @@
 import { Position, type Edge } from "@xyflow/react";
 import type { VolumeListing } from "@ployz/sdk";
-import type { LiveNode } from "#/modules/branches/use-live-nodes";
-import type { VolumeResourceRecord } from "#/modules/environment-design/resources";
-import type { EnvironmentServiceVolumeAttachment } from "#/modules/environment-design/service-volume-attachments";
-import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
-import {
-  getCanvasPositionCollectionKey,
-} from "#/modules/services/services.collection";
-import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
-import { extractDisplayRefs } from "#/modules/environment-design/variable-template";
+import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
 import type {
@@ -18,10 +10,6 @@ import type {
   StoreCanvas,
   StoreLiveNode,
   CanvasStoreLiveNode,
-  CanvasLiveNode,
-  CanvasResourceNode,
-  CanvasServiceNode,
-  CanvasVolumeNode,
 } from "./types";
 
 const CANVAS_NODE_HANDLES = [
@@ -37,10 +25,10 @@ const CANVAS_NODE_HANDLES = [
     x: SERVICE_NODE_WIDTH / 2,
     y: SERVICE_NODE_HEIGHT,
   },
-] satisfies NonNullable<CanvasServiceNode["handles"]>;
+] satisfies NonNullable<CanvasStoreServiceNode["handles"]>;
 
 function getCanvasPosition(
-  position: ServiceCanvasPositionRecord | null | undefined,
+  position: CanvasPosition | null | undefined,
 ) {
   return {
     x: position?.x ?? 0,
@@ -49,93 +37,14 @@ function getCanvasPosition(
 }
 
 function getPositionByCanvasResource(
-  positions: ServiceCanvasPositionRecord[],
+  positions: CanvasPosition[],
 ) {
   return new Map(
     positions.map((position) => [
-      getCanvasPositionCollectionKey(position),
+      canvasPositionKey(position),
       position,
     ]),
   );
-}
-
-function toServiceNode(
-  service: EnvironmentServiceViewRecord,
-  position: ServiceCanvasPositionRecord | null | undefined,
-): CanvasServiceNode {
-  return {
-    id: service.service.id,
-    type: "service",
-    position: getCanvasPosition(position),
-    width: SERVICE_NODE_WIDTH,
-    height: SERVICE_NODE_HEIGHT,
-    handles: CANVAS_NODE_HANDLES,
-    draggable: true,
-    data: {
-      resourceType: "service",
-      resourceId: service.service.id,
-      serviceId: service.service.id,
-      environmentId: service.service.environmentId,
-    },
-  };
-}
-
-function toVolumeNode(
-  resource: VolumeResourceRecord,
-  position: ServiceCanvasPositionRecord | null | undefined,
-): CanvasVolumeNode {
-  return {
-    id: resource.resource.id,
-    type: "volume",
-    position: getCanvasPosition(position),
-    width: SERVICE_NODE_WIDTH,
-    height: SERVICE_NODE_HEIGHT,
-    handles: CANVAS_NODE_HANDLES,
-    draggable: true,
-    data: {
-      resourceType: "volume",
-      resourceId: resource.resource.id,
-      environmentId: resource.resource.environmentId,
-    },
-  };
-}
-
-export function buildNodes(
-  services: EnvironmentServiceViewRecord[],
-  canvasPositions: ServiceCanvasPositionRecord[],
-  selectedNodeId: string | null,
-  volumeResources: VolumeResourceRecord[] = [],
-): CanvasResourceNode[] {
-  const positionByResource = getPositionByCanvasResource(canvasPositions);
-  const serviceNodes = services.map((service) => {
-    return {
-      ...toServiceNode(
-        service,
-        positionByResource.get(
-          getCanvasPositionCollectionKey({
-            resourceType: "service",
-            resourceId: service.service.id,
-          }),
-        ),
-      ),
-      selected: service.service.id === selectedNodeId,
-    };
-  });
-
-  const volumeNodes = volumeResources.map((resource) => ({
-    ...toVolumeNode(
-      resource,
-      positionByResource.get(
-        getCanvasPositionCollectionKey({
-          resourceType: "volume",
-          resourceId: resource.resource.id,
-        }),
-      ),
-    ),
-    selected: resource.resource.id === selectedNodeId,
-  }));
-
-  return [...serviceNodes, ...volumeNodes];
 }
 
 /**
@@ -145,14 +54,14 @@ export function buildNodes(
  */
 export function buildStoreNodes(
   store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] },
-  canvasPositions: ServiceCanvasPositionRecord[],
+  canvasPositions: CanvasPosition[],
   selectedNodeId: string | null,
   environmentId: string,
 ): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...SERVICE_NODE_SIZE }));
   const place = (resourceType: CanvasResourceType, resourceId: string, near = { x: 0, y: 0 }) => {
-    const stored = positionByResource.get(getCanvasPositionCollectionKey({ resourceType, resourceId }));
+    const stored = positionByResource.get(canvasPositionKey({ resourceType, resourceId }));
     if (stored) return getCanvasPosition(stored);
     const position = findPlacement(near, SERVICE_NODE_SIZE, occupied);
     occupied.push({ ...position, ...SERVICE_NODE_SIZE });
@@ -195,7 +104,7 @@ export function buildStoreNodes(
   ];
 }
 
-/** A link from each Config Store Volume into every Service that mounts it, as legacy mounts drew them. */
+/** A link from each Volume into every Service that mounts it, and dashed ones from Live Nodes into their users. */
 export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] }): Edge[] {
   const serviceIdByName = new Map(store.services.map(({ service }) => [service.name, service.id]));
   return [...store.volumes.flatMap((volume) => volume.mounts.flatMap((mount) => {
@@ -208,100 +117,7 @@ export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes">
   })))];
 }
 
-export function buildEdges(
-  volumeResources: VolumeResourceRecord[] = [],
-  volumeAttachments: EnvironmentServiceVolumeAttachment[] = [],
-  services: EnvironmentServiceViewRecord[] = [],
-): Edge[] {
-  const serviceIdBySlug = new Map(
-    services.map((service) => [service.service.slug, service.service.id]),
-  );
-  const referencePairs = new Set<string>();
-  const referenceEdges: Edge[] = [];
-  for (const service of services) {
-    const consumerServiceId = service.service.id;
-    for (const variable of service.variables) {
-      if (variable.value.type !== "plain") {
-        continue;
-      }
-      for (const ref of extractDisplayRefs(variable.value.value)) {
-        if (ref.ownerSlug == null) {
-          continue;
-        }
-        const producerId = serviceIdBySlug.get(ref.ownerSlug);
-        if (!producerId || producerId === consumerServiceId) {
-          continue;
-        }
-        const pairKey = `${producerId}:${consumerServiceId}`;
-        if (referencePairs.has(pairKey)) {
-          continue;
-        }
-        referencePairs.add(pairKey);
-        // Producer renders below its consumer: the producer's top (exit) flows
-        // into the consumer's bottom (entry), arrow pointing at the consumer —
-        // data flows from the referenced producer into the service.
-        referenceEdges.push({
-          id: `reference:${pairKey}`,
-          source: producerId,
-          target: consumerServiceId,
-        });
-      }
-    }
-  }
-
-  // Mount edges connect a volume node to each consuming service. Only authored
-  // volumes render edges.
-  const activeVolumeIds = new Set(
-    volumeResources.flatMap((volume) =>
-      volume.isAuthored ? [volume.resource.id] : [],
-    ),
-  );
-  // Volumes render below their service: the volume's top (exit) flows into the
-  // service's bottom (entry), arrow pointing into the consuming service.
-  const volumeEdges = volumeAttachments.flatMap((attachment) =>
-    activeVolumeIds.has(attachment.volumeResourceId)
-      ? [{
-          id: `mount:${attachment.volumeResourceId}:${attachment.serviceId}`,
-          source: attachment.volumeResourceId,
-          target: attachment.serviceId,
-        }]
-      : [],
-  );
-
-  return [...referenceEdges, ...volumeEdges];
-}
-
 /** Links into Live Nodes are dashed; every other link is solid. */
 export const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
 
 export const liveNodeId = (lineageId: string) => `live:${lineageId}`;
-
-/** A Branch's Live Nodes, each where it sits on its owner's canvas. */
-export function buildLiveNodes(
-  liveNodes: LiveNode[],
-  canvasPositions: ServiceCanvasPositionRecord[],
-): CanvasLiveNode[] {
-  const positionByResource = getPositionByCanvasResource(canvasPositions);
-  return liveNodes.map((liveNode) => ({
-    id: liveNodeId(liveNode.lineageId),
-    type: "live",
-    position: getCanvasPosition(liveNode.owner
-      ? positionByResource.get(getCanvasPositionCollectionKey({ resourceType: "service", resourceId: liveNode.owner.node.nodeId }))
-      : null),
-    width: SERVICE_NODE_WIDTH,
-    height: SERVICE_NODE_HEIGHT,
-    handles: CANVAS_NODE_HANDLES,
-    draggable: false,
-    data: { liveNode },
-  }));
-}
-
-/** Dashed links from each Live Node into the services here that use it. */
-export function buildLiveEdges(liveNodes: LiveNode[]): Edge[] {
-  return liveNodes.flatMap((liveNode) => liveNode.usedBy.map((serviceId) => ({
-    id: `${liveNodeId(liveNode.lineageId)}:${serviceId}`,
-    source: liveNodeId(liveNode.lineageId),
-    target: serviceId,
-    style: LIVE_EDGE_STYLE,
-  })));
-}

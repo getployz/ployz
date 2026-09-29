@@ -7,12 +7,12 @@ import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/component
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { branchSetupCommands, ownLineages, type BranchPlan } from "#/modules/branches/branch-plan";
+import { branchSetupCommands, ownLineages, type BranchPlan } from "#/modules/config-store/branch-picks";
 import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
 import { planOf } from "#/modules/config-store/store-branches";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import type { SetupCommand } from "#/modules/project/tables";
+import type { SetupCommand } from "#/modules/config-store/branch-picks";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { PickingViewProvider, usePickingView, type PickingView } from "./branch-picking";

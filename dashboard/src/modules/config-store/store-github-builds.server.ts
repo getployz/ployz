@@ -177,16 +177,11 @@ export const storeGithubBuildOpen = Effect.fn("StoreGithub.open")(function* (tar
   return (yield* storeCall(() => store.githubBuild(target.build))).status === "building";
 });
 
-/** A Store GitHub build's id names its Deployment and Service; legacy Image Builds are UUIDs. */
-export const isStoreGithubBuild = (id: string) => id.includes(".");
-
 const bearer = (request: Request) => /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "")?.[1] ?? null;
 
 /** The runner's verified OIDC claims; the Store checks them against the build's repository, workflow and run. */
 const runnerClaims = Effect.fn("StoreGithub.claims")(function* (request: Request) {
   const config = yield* AppConfig;
-  // TODO(#1275): dark in production until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const token = bearer(request);
   if (!token) return yield* new Unauthorized();
   const claims = yield* verifyGithubOidcToken(token, config.app.url.origin).pipe(Effect.mapError(() => new Unauthorized()));

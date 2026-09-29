@@ -1,36 +1,31 @@
 import type { ReactNode } from "react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "#/components/ui/dialog";
 import { Button } from "#/components/ui/button";
-import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
-import type {
-  CanvasEnvironmentChangeGroup,
-} from "#/modules/environment-design/canvas-environment-change-state";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { ApplyChangeGroupCard } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeGroupCard";
 
 export type EnvironmentChangesReviewProps = {
-  groups: CanvasEnvironmentChangeGroup[];
+  groups: ChangeGroup[];
   totalChanges: number;
   canDeploy: boolean;
-  commitMessage: string;
-  canSave: boolean;
-  onSave: () => void;
+  /** Working State differs from Saved State: Publish saves it without deploying. */
+  canPublish: boolean;
+  onPublish: () => void;
   onDiscardAll: () => void;
   discarding: boolean;
   onClose: () => void;
-  /** None when Deploys carry no message. */
-  onCommitMessageChange?: (value: string) => void;
   onDeploy: () => void;
-  onDiscardNode: (group: CanvasEnvironmentChangeGroup) => void;
-  onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
+  onDiscardNode: (group: ChangeGroup) => void;
+  onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** A merged pull request's note beside a change: its tag, or its value with Use. */
-  noteFor?: (group: CanvasEnvironmentChangeGroup, path: string) => ReactNode;
+  noteFor?: (group: ChangeGroup, path: string) => ReactNode;
   /** Read-only lists after the changes: merged pull requests' settings no change shows, and changes waiting for pull requests. */
   after?: ReactNode;
 };
 
 export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
-  const { canSave, totalChanges, onClose, after } = props;
-  const staged = canSave || totalChanges > 0;
+  const { canPublish, totalChanges, onClose, after } = props;
+  const staged = canPublish || totalChanges > 0;
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
       <DialogContent padding="none" className="flex max-h-[85dvh] flex-col overflow-hidden sm:max-w-3xl">
@@ -38,7 +33,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
         <div>
           <DialogTitle>Environment changes</DialogTitle>
           <DialogDescription className="mt-2">
-            {canSave ? "Unpublished configuration" : totalChanges > 0 ? "Configuration saved · not yet deployed" : "Nothing staged here"}
+            {canPublish ? "Not yet published" : totalChanges > 0 ? "Published · not yet deployed" : "Nothing staged here"}
           </DialogDescription>
         </div>
       </div>
@@ -48,18 +43,16 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   );
 }
 
-/** The staged-changes review itself: commit message, the changes, Discard, Save and Deploy. */
+/** The staged-changes review itself: the changes, Discard, Publish and Deploy. */
 function StagedChanges({
   groups,
   totalChanges,
   canDeploy,
-  commitMessage,
-  canSave,
-  onSave,
+  canPublish,
+  onPublish,
   onDiscardAll,
   discarding,
   onClose,
-  onCommitMessageChange,
   onDeploy,
   onDiscardNode,
   onDiscardRow,
@@ -68,18 +61,6 @@ function StagedChanges({
 }: EnvironmentChangesReviewProps) {
   return (
     <>
-      {onCommitMessageChange ? (
-        <div className="shrink-0 border-b px-6 py-3">
-          <InputGroup>
-            <InputGroupInput
-              aria-label="Commit message"
-              placeholder="Commit message (optional)"
-              value={commitMessage}
-              onChange={(event) => onCommitMessageChange(event.target.value)}
-            />
-          </InputGroup>
-        </div>
-      ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <div className="flex flex-col gap-3">
             {groups.map((group) => (
@@ -100,7 +81,7 @@ function StagedChanges({
 
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
         {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" disabled={discarding} onClick={onDiscardAll}>Discard all changes</Button> : null}
-        <Button variant="outline" disabled={!canSave} onClick={onSave}>Save without deploying</Button>
+        <Button variant="outline" disabled={!canPublish} onClick={onPublish}>Publish</Button>
         {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}
       </div>
     </>

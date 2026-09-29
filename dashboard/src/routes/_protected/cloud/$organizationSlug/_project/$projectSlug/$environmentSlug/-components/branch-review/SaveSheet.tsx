@@ -1,26 +1,16 @@
 import { useState, type ReactNode } from "react";
-import { useParams } from "@tanstack/react-router";
-import { toast } from "sonner";
 import type { BranchChoice, BranchOption } from "@ployz/sdk/config";
-import { ExternalLinkIcon, GitBranchIcon, GitPullRequestIcon, InfoIcon, TriangleAlertIcon, Undo2Icon, XIcon } from "lucide-react";
+import { GitBranchIcon, InfoIcon, TriangleAlertIcon, Undo2Icon, XIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "#/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
-import { useSaveBranch } from "#/modules/branches/branch-commands";
-import { listNames, plural } from "#/modules/branches/branch-plan";
-import { presentRow, type ChangeRow, type PresentedRow } from "#/modules/branches/branch-review";
-import type { BranchReviewView, PullRequest } from "#/modules/branches/use-branch-review";
-import { useConditionalSave } from "#/modules/pr-environments/conditional-save-commands";
-import { githubAppRepository } from "#/modules/pr-environments/repositories";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
-import { useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
-import { useWorkspace } from "#/modules/environment-design/workspace.queries";
+import { plural } from "#/lib/plural";
+import type { PresentedRow } from "#/modules/config-store/store-branches";
 import { cn } from "#/lib/utils";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 type RowPick = { ticked: boolean; option?: BranchOption; value: string };
 /**
@@ -31,13 +21,6 @@ type SheetRow = { key: string; node: boolean; conflict: boolean; choice?: Branch
 /** One row of a sheet. Without `pick` it's read-only. */
 type Entry = { row: SheetRow; presented: PresentedRow; choice?: BranchChoice | undefined; pick?: RowPick };
 type Picks = ReturnType<typeof useRowPicks>;
-
-/** A Cloud document row as a sheet row. */
-const sheetRow = (row: ChangeRow): SheetRow => ({
-  key: row.key, node: row.key.endsWith(":node"), conflict: row.role === "move" && row.conflict, choice: row.role === "move" ? row.choice : undefined,
-});
-const sheetEntries = (rows: ChangeRow[], nameOf: (lineage: string) => string) =>
-  rows.map((row) => ({ row: sheetRow(row), presented: presentRow(row, nameOf) }));
 
 /**
  * A tick per row and a value choice per variable, starting from core's defaults. `sent` is what the server takes: the
@@ -57,97 +40,6 @@ export function useRowPicks(rows: Array<{ row: SheetRow; presented: PresentedRow
     missing: ticked.find(({ pick }) => pick.option === "new" && !pick.value),
     sent: ticked.map(({ row, pick }) => ({ key: row.key, option: pick.option, value: pick.option === "new" ? pick.value : "" })),
   };
-}
-
-/**
- * Save: what a Branch puts in its Parent. Nothing deploys: the Parent gets them as its changes to deploy. Unless the
- * Branch is kept or is the Default Environment, it's deleted after saving by default.
- */
-export function SaveSheet({ review, branchId, onClose }: { review: BranchReviewView; branchId: string; onClose: () => void }) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const name = useEnvironmentDocument(params.organizationSlug, branchId)?.name ?? params.environmentSlug;
-  const destination = review.parent;
-  const isDefault = useWorkspace(params.organizationSlug).projects.some((project) => project.defaultEnvironmentId === branchId);
-  const save = useSaveBranch({ organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, branchName: name, destination });
-  const rows = useRowPicks(sheetEntries(review.save, review.nameOf));
-  const [deleteAfter, setDeleteAfter] = useState(true);
-  const deletable = !review.kept && !isDefault;
-  return (
-    <Sheet title={`${plural(rows.picks.length, "change")} for ${destination.name}`} entries={rows.picks} picks={rows} destination={destination.name}
-      info={saveInfo(rows, destination.name) ?? `Nothing deploys yet. ${destination.name} gets ${plural(rows.ticked.length, "change")} to deploy.`}
-      actions={<SaveButton picks={rows} destination={destination.name} pending={save.isPending}
-        onClick={() => save.mutate({ branchEnvironmentId: branchId, review: review.saveReview, thenDelete: deletable && deleteAfter, picks: rows.sent })} />}
-      error={save.isError ? save.error.message : null} onClose={onClose}>
-      {deletable ? <SwitchField id="save-then-delete" label={`Delete ${name} after saving`} checked={deleteAfter} onChange={setDeleteAfter} /> : null}
-    </Sheet>
-  );
-}
-
-/**
- * Save on a PR Environment, into one of its Destinations: the changes go live with the pull request, and it can shut down
- * after saving (off by default).
- */
-export function PrSaveSheet({ review, branchId, landing, pullRequest, onClose }: {
-  review: BranchReviewView; branchId: string; landing: BranchReviewView["goesTo"][number]; pullRequest: PullRequest; onClose: () => void;
-}) {
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const document = useEnvironmentDocument(params.organizationSlug, branchId);
-  const name = document?.name ?? params.environmentSlug;
-  const destination = landing.destination.name;
-  const { save } = useConditionalSave({ organizationSlug: params.organizationSlug, prEnvironmentId: branchId, destinationEnvironmentId: landing.destination.id });
-  const [shutDownAfter, setShutDownAfter] = useState(false);
-  const rows = useRowPicks(sheetEntries(landing.rows, review.nameOf));
-  const repository = document?.intent.services.map(({ config }) => githubAppRepository(config))
-    .find((candidate) => candidate?.repositoryId === pullRequest.repositoryId)?.repository;
-  return (
-    <Sheet title={`${plural(rows.picks.length, "change")} for ${destination}`} subtitle={<PullRequestLink pr={pullRequest} repository={repository} />}
-      entries={rows.picks} picks={rows} destination={destination}
-      info={saveInfo(rows, destination) ?? redeployLine(rows.ticked.map(({ presented }) => presented), [pullRequest.number])}
-      actions={<SaveButton picks={rows} destination={destination} pending={save.isPending}
-        // Awaited, not a per-call callback: saving turns the row to saved, which closes this sheet.
-        // A failed save shows in the sheet through save.isError, so the rejection needs no handler here.
-        onClick={() => void save.mutateAsync({ review: landing.review, picks: rows.sent, shutDown: shutDownAfter }).then((saved) => {
-          toast.success(`Goes live when PR #${pullRequest.number} merges`, saved.shutDown ? { description: `Shutting down ${name}` } : undefined);
-          if (shutDownAfter && !saved.shutDown) toast.warning(`${name} is still running`, { description: "It couldn't shut down. Shut it down from the panel's ⋮." });
-          onClose();
-        }, () => {})} />}
-      error={save.isError ? save.error.message : null} onClose={onClose}>
-      <SwitchField id="save-then-shut-down" label={`Shut down ${name} now`} description="Starts again on the next push"
-        checked={shutDownAfter} onChange={setShutDownAfter} />
-    </Sheet>
-  );
-}
-
-/** What goes live with pull requests, read-only, as the Save sheet showed it. `actions` sit beside the consequence line. */
-export function GoesLiveSheet({ title, saves, nameOf, actions, onClose }: {
-  title: string;
-  saves: Saves;
-  /** A lineage's name, as the save's PR Environment calls it. */
-  nameOf: (lineage: string, prEnvironmentId: string | null) => string;
-  actions?: ReactNode;
-  onClose: () => void;
-}) {
-  const entries = savedEntries(saves, nameOf);
-  return (
-    <Sheet title={title} entries={entries} info={redeployLine(entries.map(({ presented }) => presented), [...new Set(saves.map((save) => save.prNumber))])}
-      actions={actions} onClose={onClose} />
-  );
-}
-
-type Saves = ReadonlyArray<Pick<ConditionalSaveRow, "prNumber" | "prEnvironmentId" | "rows">>;
-
-function savedEntries(saves: Saves, nameOf: (lineage: string, prEnvironmentId: string | null) => string) {
-  return saves.flatMap((save) => save.rows.map(({ row }): Entry => ({ row: sheetRow(row), presented: presentRow(row, (lineage) => nameOf(lineage, save.prEnvironmentId)) })));
-}
-
-/** What goes live with pull requests, read-only and neutral, as a section of another sheet. */
-export function GoesLiveChanges({ title, saves, nameOf }: { title: string; saves: Saves; nameOf: (lineage: string, prEnvironmentId: string | null) => string }) {
-  return (
-    <section aria-label={title} className="flex flex-col gap-3">
-      <h3 className="font-medium">{title}</h3>
-      <ServiceSections entries={savedEntries(saves, nameOf)} />
-    </section>
-  );
 }
 
 /** The sheet: a service per section, a consequence line and its actions. Without `picks` it's read-only. */
@@ -287,22 +179,4 @@ function LeaveOut({ entry: { row, pick, presented }, picks }: { entry: Entry; pi
       {ticked ? <XIcon /> : <Undo2Icon />}
     </Button>
   );
-}
-
-/** "PR #142 · Add discount codes ↗", to GitHub, where it merges. */
-function PullRequestLink({ pr, repository }: { pr: PullRequest; repository: string | undefined }) {
-  const label = <><GitPullRequestIcon className="size-3.5" />PR #{pr.number} · {pr.title}</>;
-  return (
-    <DialogDescription className="flex items-center gap-1.5">
-      {repository ? <a href={`https://github.com/${repository}/pull/${pr.number}`} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 hover:text-foreground">
-        {label}<ExternalLinkIcon className="size-3.5" />
-      </a> : label}
-    </DialogDescription>
-  );
-}
-
-/** "web and worker redeploy when PR #142 merges". */
-function redeployLine(rows: PresentedRow[], prNumbers: number[]) {
-  const nodes = [...new Set(rows.map((row) => row.node))];
-  return `${listNames(nodes)} redeploy${nodes.length === 1 ? "s" : ""} when ${listNames(prNumbers.map((n) => `PR #${n}`))} merge${prNumbers.length === 1 ? "s" : ""}`;
 }

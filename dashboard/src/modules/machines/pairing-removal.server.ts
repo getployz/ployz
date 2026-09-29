@@ -1,22 +1,16 @@
 import "@tanstack/react-start/server-only";
-
 import { createHash } from "node:crypto";
-import type { Connection, MachineId } from "@ployz/sdk";
+import type { MachineId } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import {
-  enrollmentAllocation,
-  machineEnrollmentToken,
-  organizationMachine,
-} from "#/modules/machines/tables";
+import { enrollmentAllocation, machineEnrollmentToken, organizationMachine } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
-
 import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
 
 type Pairing = typeof organizationPairing.$inferSelect;
@@ -169,23 +163,5 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         status: endpoint.status === "confirmed" ? "confirmed" as const : "unconfirmed" as const,
       })) };
     }));
-  },
-);
-
-/** Only the explicitly admitted destructive teardown can use retained old credentials. */
-export const loadTeardownConnections = Effect.fn("PairingRemoval.teardownConnections")(
-  function* (organizationId: string) {
-    const { drizzle } = yield* Database;
-    const [pairing] = yield* drizzle.select().from(organizationPairing)
-      .where(eq(organizationPairing.organizationId, organizationId));
-    const connections: Connection[] = [];
-    const endpoints = yield* decodeEndpoints(pairing?.removalEndpoints ?? []);
-    for (const endpoint of endpoints) {
-      if (endpoint.status === "pending") connections.push({
-        machine_id: endpoint.machineId,
-        management: yield* decrypt(endpoint.encryptedExpected),
-      });
-    }
-    return connections;
   },
 );

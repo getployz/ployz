@@ -7,10 +7,10 @@ import { Checkbox } from "#/components/ui/checkbox";
 import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import { getSealedVariableCollisionMessage } from "#/modules/environment-design/variable-raw-editor";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 import type { VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {

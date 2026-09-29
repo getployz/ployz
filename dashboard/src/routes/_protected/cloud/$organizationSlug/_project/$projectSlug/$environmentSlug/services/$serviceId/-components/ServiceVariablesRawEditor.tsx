@@ -7,8 +7,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import type { VariableRecord } from "#/modules/variables/variables";
 import {
   diffVariables,
   findSealedVariableNameCollisions,
@@ -24,7 +24,7 @@ import {
   serializeVariablesToEnv,
   serializeVariablesToJson,
   type ParsedEntry,
-} from "#/modules/environment-design/variable-raw-editor";
+} from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditorAlerts } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorAlerts";
 import { ServiceVariablesRawEditorFooter } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorFooter";
 import { ServiceVariablesRawEditorTabs } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTabs";

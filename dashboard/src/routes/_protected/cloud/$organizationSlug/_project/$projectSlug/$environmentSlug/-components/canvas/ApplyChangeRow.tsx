@@ -4,7 +4,7 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
-import type { DiffRow } from "#/modules/services/service-deployment-diff/fields";
+import type { ChangeRow } from "#/modules/config-store/store-deployments";
 import {
   getKindBadgeVariant,
   getKindIcon,
@@ -21,7 +21,7 @@ export function ApplyChangeRow({
   note,
   onDiscard,
 }: {
-  row: Pick<DiffRow, "kind" | "label" | "currentValue" | "newValue">;
+  row: Pick<ChangeRow, "kind" | "label" | "currentValue" | "newValue">;
   tone: ApplyChangeTone;
   showCurrentValue: boolean;
   showNewValue: boolean;

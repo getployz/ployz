@@ -1,6 +1,7 @@
 import { FieldDescription, FieldLegend, FieldSet } from "#/components/ui/field";
-import type { SetupCommand } from "#/modules/project/tables";
-import { listNames, type BranchPlan } from "#/modules/branches/branch-plan";
+import type { SetupCommand } from "#/modules/config-store/branch-picks";
+import { listNames } from "#/lib/plural";
+import { type BranchPlan } from "#/modules/config-store/branch-picks";
 import { SetupCommandsField } from "./SetupCommandsField";
 
 /** Setup Commands, only while the Branch gets New, empty data: they run once in its own services, to seed it. */

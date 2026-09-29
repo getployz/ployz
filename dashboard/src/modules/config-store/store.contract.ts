@@ -1,10 +1,6 @@
 import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
 import { Schema } from "effect";
 
-// TODO(#1275): the Config Store is dark in production until the cutover; production keeps the old backend.
-/** Whether this build reads and writes authored state through the Config Store. */
-export const storeEnabled = !import.meta.env.PROD;
-
 /** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
 export type StoreRefusal = { code: string; message: string; details: JsonValue };
 

@@ -10,13 +10,8 @@ import type { Actor } from "#/modules/identity/actor";
 import { pairingEnrollmentStatus, type OrganizationEnrollmentRow } from "#/modules/machines/enrollment";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import type { ClusterDomainRow } from "#/modules/cluster-domain/cluster-domain";
-import type { BuildOrderRow } from "#/modules/deployments/build-order";
-import type { ConditionalSaveRow } from "#/modules/pr-environments/tables";
-import { loadBranchRows } from "#/modules/pr-environments/pr-environment.repository.server";
-import { deploymentRowColumns, orgStoreDeploymentSlice } from "#/modules/deployments/deployment-row.server";
 import { readChangeWindow, type OrganizationChangeLogFailure } from "#/modules/organization/change-log.server";
-import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
-import { withoutRowFingerprints, withoutSealedCiphertext } from "#/modules/environment-design/saved-intent";
+import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { Database } from "#/server/database.server";
 
 export class CollectionReadFailure extends Data.TaggedError("CollectionReadFailure")<{
@@ -51,51 +46,9 @@ export const readCollection = Effect.fn("Collections.read")(function* (
       keys && inArray(sql.join(keyColumns.map((column) => sql`${table}.${sql.identifier(column)}`), sql` || ':' || `), keys),
     );
     switch (data.table) {
-      case "environment_summary":
-        return yield* database.drizzle.select({
-          id: tables.environment.id, projectId: tables.environment.projectId, organizationId: tables.environment.organizationId,
-          name: tables.environment.name, namespace: tables.environment.namespace, createdAt: tables.environment.createdAt,
-        }).from(tables.environment).where(scoped(tables.environment));
-      case "project":
-        return yield* database.drizzle.select().from(tables.project).where(scoped(tables.project));
-      case "environment":
-        return yield* database.drizzle.select().from(tables.environment).where(scoped(tables.environment));
-      // A base is core's redacted configuration; stripping again keeps sealed ciphertext on the server regardless.
-      case "environment_branch":
-        return yield* loadBranchRows(scoped(tables.environmentBranch));
-      case "pr_environment_plan":
-        return yield* database.drizzle.select().from(tables.prEnvironmentPlan).where(scoped(tables.prEnvironmentPlan));
-      // Sealed picks and the landing copy stay on the server; saved rows go without secret fingerprints.
-      case "conditional_save": {
-        const save = tables.conditionalSave;
-        const rows: ConditionalSaveRow[] = (yield* database.drizzle.select({
-          id: save.id, organizationId: save.organizationId, projectId: save.projectId, prEnvironmentId: save.prEnvironmentId,
-          repositoryId: save.repositoryId, prNumber: save.prNumber, destinationEnvironmentId: save.destinationEnvironmentId,
-          rows: save.rows, workingRevision: save.workingRevision, targetBranch: save.targetBranch,
-          savedAt: save.savedAt, state: save.state, landedSavedStateId: save.landedSavedStateId,
-        }).from(save).where(scoped(save)))
-          .map((save) => ({ ...save, rows: save.rows.map((held) => ({ ...held, row: withoutRowFingerprints(held.row) })) }));
-        return rows;
-      }
-      case "service":
-        return yield* database.drizzle.select().from(tables.service).where(scoped(tables.service));
-      case "resource_lineage":
-        return yield* database.drizzle.select().from(tables.resourceLineage).where(scoped(tables.resourceLineage));
-      case "environment_resource":
-        return yield* database.drizzle.select().from(tables.environmentResource)
-          .where(scoped(tables.environmentResource));
       case "environment_canvas_node_position":
         return yield* database.drizzle.select().from(tables.environmentCanvasNodePosition)
           .where(scoped(tables.environmentCanvasNodePosition));
-      // ponytail: an attempt that leaves the slice mid-session (a newer one landed) stays in this browser until the
-      // next full read: a delta read of its key returns no row and no delete. Bounded by what one session does.
-      case "environment_deployment":
-        return yield* database.drizzle.select(deploymentRowColumns).from(tables.environmentDeployment)
-          .where(and(scoped(tables.environmentDeployment), orgStoreDeploymentSlice(organization.id)));
-      // Sealed variable ciphertext stays on the server; deploy resolution reads the full rows.
-      case "environment_node_introduction":
-        return (yield* database.drizzle.select().from(tables.environmentNodeIntroduction)
-          .where(scoped(tables.environmentNodeIntroduction))).map((row) => ({ ...row, config: withoutSealedCiphertext(row.config) }));
       case "organization_enrollment": {
         // The pairing row holds the encrypted pairing secret; expose only the derived status.
         const pairings = yield* database.drizzle.select({
@@ -111,13 +64,6 @@ export const readCollection = Effect.fn("Collections.read")(function* (
           id: domain.organizationId, name: domain.name, recordsSyncedAt: domain.recordsSyncedAt, traffic: domain.traffic,
           certificateNotAfter: domain.certificateNotAfter, checkedAt: domain.checkedAt,
         }).from(domain).where(scoped(domain));
-        return rows;
-      }
-      case "organization_build_order": {
-        // Always one row: an Organization that never chose has none saved, and the default applies.
-        const [saved] = yield* database.drizzle.select({ buildOrder: tables.organizationBuildOrder.buildOrder })
-          .from(tables.organizationBuildOrder).where(scoped(tables.organizationBuildOrder));
-        const rows: BuildOrderRow[] = [{ id: organization.id, buildOrder: saved?.buildOrder ?? null }];
         return rows;
       }
     }

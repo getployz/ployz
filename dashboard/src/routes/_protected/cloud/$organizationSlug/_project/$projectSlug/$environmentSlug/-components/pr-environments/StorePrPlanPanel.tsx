@@ -8,11 +8,11 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, 
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Switch } from "#/components/ui/switch";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
-import { ownLineages } from "#/modules/branches/branch-plan";
+import { useMissingStorePrGrant } from "#/modules/config-store/store-pr-grants.queries";
+import { ownLineages } from "#/modules/config-store/branch-picks";
 import { planOf } from "#/modules/config-store/store-branches";
 import { branchPlanQuery, environmentSettingsQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { useMissingStorePrGrant } from "#/modules/pr-environments/plan.queries";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_PR_PLAN_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { PickingViewProvider, usePickingView, type PickingView } from "../new-branch/branch-picking";

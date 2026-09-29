@@ -1,6 +1,6 @@
 import { LockIcon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { cn } from "#/lib/utils";
 
 /**

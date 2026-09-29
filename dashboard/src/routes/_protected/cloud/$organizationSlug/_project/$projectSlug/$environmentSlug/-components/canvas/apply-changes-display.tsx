@@ -6,11 +6,10 @@ import {
   Trash2Icon,
 } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import type { ServiceDeploymentDiffKind } from "#/modules/services/service-deployment-diff/fields";
-import type { ServiceRecord } from "#/modules/environment-design/services";
-import type { CanvasNodeDiffGroup } from "#/modules/environment-design/canvas-node-diff";
+import type { ChangeKind } from "@ployz/sdk";
+import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 
-export function getKindIcon(kind: ServiceDeploymentDiffKind) {
+export function getKindIcon(kind: ChangeKind) {
   if (kind === "add") {
     return <PlusIcon />;
   }
@@ -22,7 +21,7 @@ export function getKindIcon(kind: ServiceDeploymentDiffKind) {
   return <PencilIcon />;
 }
 
-export function getKindBadgeVariant(kind: ServiceDeploymentDiffKind) {
+export function getKindBadgeVariant(kind: ChangeKind) {
   if (kind === "add") {
     return "success" as const;
   }
@@ -34,7 +33,7 @@ export function getKindBadgeVariant(kind: ServiceDeploymentDiffKind) {
   return "changed" as const;
 }
 
-export function getKindTextClassName(kind: ServiceDeploymentDiffKind) {
+export function getKindTextClassName(kind: ChangeKind) {
   if (kind === "add") {
     return "text-success";
   }
@@ -46,7 +45,7 @@ export function getKindTextClassName(kind: ServiceDeploymentDiffKind) {
   return "text-changed-deep";
 }
 
-function getServiceIcon(type: ServiceRecord["source"]["type"]) {
+function getServiceIcon(type: NonNullable<ChangeGroup["serviceSourceType"]>) {
   switch (type) {
     case "empty":
       return <PencilIcon />;
@@ -57,7 +56,7 @@ function getServiceIcon(type: ServiceRecord["source"]["type"]) {
   }
 }
 
-export function getCanvasNodeIcon(group: CanvasNodeDiffGroup) {
+export function getCanvasNodeIcon(group: ChangeGroup) {
   if (group.nodeType === "service") {
     return getServiceIcon(
       group.serviceSourceType ?? "empty",
@@ -67,7 +66,7 @@ export function getCanvasNodeIcon(group: CanvasNodeDiffGroup) {
   return <HardDriveIcon />;
 }
 
-export function getServiceChangeAction(kind: ServiceDeploymentDiffKind) {
+export function getServiceChangeAction(kind: ChangeKind) {
   if (kind === "add") {
     return "will be added";
   }

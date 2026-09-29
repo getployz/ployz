@@ -16,7 +16,6 @@ import { DatabaseLive } from "#/server/database.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { postgresTestDatabase } from "#/test/postgres";
-import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
 const configFile = fileURLToPath(new URL("../../vite.config.ts", import.meta.url));
 const BoundaryResult = Schema.Union([
@@ -89,14 +88,6 @@ it(
           const result = await database.query<{ id: string; slug: string }>("select id, slug from organization");
           const organization = result.rows[0];
           if (!organization) throw new Error("Signup did not create an organization.");
-          const project = await database.query<{ id: string }>(
-            "insert into project (organization_id, name, slug) values ($1, $2, $3) returning id",
-            [organization.id, "SSR project", "ssr-project"],
-          );
-          await database.query(
-            "insert into environment (organization_id, project_id, name, namespace, intent) values ($1, $2, $3, $4, $5)",
-            [organization.id, project.rows[0]?.id, "SSR production", "ssr-production", emptyEnvironmentIntent("ssr-production")],
-          );
           return organization;
         } finally {
           await database.end();
@@ -226,8 +217,8 @@ it(
             });
             expect(page.status).toBe(200);
             const html = await page.text();
-            expect(html).toContain("SSR project");
-            expect(html).toContain("SSR production");
+            expect(html).toContain("ssr-project");
+            expect(html).toContain("ssr-production");
             expect(html).toContain('aria-label="Dashboard navigation"');
             expect(html).toContain("dehydratedDbClient");
             expect(html).not.toContain("Switched to client rendering");

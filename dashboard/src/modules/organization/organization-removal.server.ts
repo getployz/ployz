@@ -1,16 +1,18 @@
 import "@tanstack/react-start/server-only";
-import { eq } from "drizzle-orm";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
 import { callStore } from "#/modules/config-store/config-store.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
-import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
+import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
-import { AppConfig } from "#/server/config.server";
 import { NotFound } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { project } from "#/modules/project/tables";
-import { dropOrganizationRows } from "#/modules/runtime/teardown-activities.server";
+import { eq } from "drizzle-orm";
+import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
+import { machineEnrollmentToken } from "#/modules/machines/tables";
+import { PloyzProviderError } from "#/modules/runtime/ployz.server";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { organization } from "./tables";
 import { Database } from "#/server/database.server";
 
 /**
@@ -26,17 +28,6 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
       code: "invalid_argument",
       message: `This credential acts in Organization ${current}, not ${slug}. No changes made.`,
       details: { next: `ployz org use ${slug}` },
-    });
-  }
-  const { drizzle } = yield* Database;
-  // TODO(#1275): the dashboard's own Projects go with its authoring tables.
-  const [dashboardProject] = yield* drizzle.select({ slug: project.slug }).from(project)
-    .where(eq(project.organizationId, id)).limit(1);
-  if (dashboardProject !== undefined) {
-    return refused({
-      code: "conflict",
-      message: `Project ${dashboardProject.slug} was made in the dashboard: delete it there first. No changes made.`,
-      details: { project: dashboardProject.slug },
     });
   }
   const forgotten = yield* callStore(id, caller.userId, { operation: "write", command: { command: "remove_organization" } });
@@ -60,10 +51,21 @@ const refused = (refusal: StoreRefusal): StoreResult<OrganizationRemoval> => ({ 
 
 /** The dashboard's Delete organization: the same removal, by a member of the Organization named by `organizationSlug`. */
 export const removeOrganizationAsMember = Effect.fn("Organization.removeAsMember")(function* (actor: Actor, organizationSlug: string) {
-  const config = yield* AppConfig;
-  // TODO(#1275): dark in production until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
   return yield* removeOrganization({ userId: actor.userId, organization }, organizationSlug);
+});
+
+/** Cloud's own rows of an Organization whose pairing is gone; returns its Cluster Domain, if any, to release. */
+const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [pending] = yield* drizzle.select({ organizationId: organizationPairing.organizationId })
+    .from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+  if (pending) return yield* new PloyzProviderError({
+    operation: "drop Organization rows", cause: "Endpoint revocation is unconfirmed; the removal attempt must be retained.",
+  });
+  const [domain] = yield* drizzle.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, organizationId));
+  yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+  yield* drizzle.delete(organization).where(eq(organization.id, organizationId));
+  return domain ?? null;
 });

@@ -14,7 +14,6 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError } from "#/modules/config-store/store-volumes";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
-import type { VolumeResourceRouteParams } from "./useVolumeDrawerState";
 
 type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volume: VolumeListing };
 
@@ -22,6 +21,8 @@ type StoreVolume = { organizationSlug: string; environment: EnvironmentRef; volu
  * A Volume in the Config Store: where Services mount it, and its removal. Mount edits and removal are staged like any
  * other change; the data goes only with a Deploy that removes a deployed Volume, which asks first.
  */
+type VolumeResourceRouteParams = { organizationSlug: string; projectSlug: string; environmentSlug: string; resourceId: string };
+
 export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParams }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationSlug } = params;

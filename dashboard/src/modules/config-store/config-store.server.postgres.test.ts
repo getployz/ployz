@@ -48,13 +48,13 @@ const github = fakeGithubApi({
 
 /** Cloud with the Config Store in its database. */
 const cloudLayer = Effect.fn(function* (
-  overrides: { readonly NODE_ENV?: string; readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
+  overrides: { readonly polar?: PolarService; readonly hostedDnsUrl?: string } = {},
   inngest = new Inngest({ id: "config-store-test" }),
 ) {
   const cloud = yield* postgresTestDatabase;
   const env = {
     ...testConfigEnvironment(),
-    NODE_ENV: overrides.NODE_ENV ?? "test",
+    NODE_ENV: "test",
     DATABASE_URL: cloud.url.href,
     // No Hosted DNS answers unless a test starts one.
     PLOYZ_HOSTED_DNS_URL: overrides.hostedDnsUrl ?? "http://127.0.0.1:9/",
@@ -304,21 +304,6 @@ it.live(
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
         assert.strictEqual(sent.length, 3);
-      }).pipe(Effect.provide(layer));
-    }),
-  60_000,
-);
-
-it.live(
-  "the Config Store stays dark in production",
-  () =>
-    Effect.gen(function* () {
-      const layer = yield* cloudLayer({ NODE_ENV: "production" });
-      yield* Effect.gen(function* () {
-        // Not found before any credential is looked at.
-        assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
-        const dashboard = yield* Effect.exit(callStoreAsMember({ userId: "anyone" }, "ada", { operation: "read", query: get(null) }));
-        assert.isTrue(Exit.isFailure(dashboard) && Cause.squash(dashboard.cause) instanceof NotFound);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

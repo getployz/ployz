@@ -11,7 +11,7 @@ import { asRecord, asString } from "#/lib/json";
 import {
   strictParseOptions,
   type StringSchema,
-} from "#/modules/environment-design/schema";
+} from "#/lib/schema";
 
 function getFirstFieldError<T>(errors: readonly T[]) {
   for (const error of errors) {

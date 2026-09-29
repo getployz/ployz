@@ -1,21 +1,18 @@
-import { runtimeServiceIdentity, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 
 /**
- * Each Service with a container on some Server, joined to its Cloud Service; `cloud` is null for a Service
- * this Organization's Cloud did not deploy. Hook containers are one-off jobs and do not count.
+ * Each Service with a container on some Server, named as the Engine names it: `namespace/name`. Hook containers are
+ * one-off jobs and do not count.
  */
-export function servicesOnServers<S extends { name: string; privateDns: string; environmentSlug: string }>(
-  runtime: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[],
-  cloud: readonly S[],
-) {
-  const byIdentity = new Map(cloud.map((service) => [runtimeServiceIdentity(service), service]));
+export function servicesOnServers(runtime: readonly Pick<RuntimeServiceRecord, "identity" | "containers">[]) {
   return runtime.flatMap(({ identity, containers }) => {
     if (containers.length === 0) return [];
-    const match = byIdentity.get(identity) ?? null;
+    const slash = identity.indexOf("/");
     return [{
       identity,
-      name: match?.name ?? identity,
-      cloud: match,
+      name: slash < 0 ? identity : identity.slice(slash + 1),
+      /** The Namespace it runs in; null when the Engine names none. */
+      namespace: slash < 0 ? null : identity.slice(0, slash),
       machineIds: new Set(containers.map((container) => container.machineId)),
     }];
   });

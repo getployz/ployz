@@ -13,9 +13,11 @@ import type { GithubPullRequestReceivedEventData } from "#/modules/github/github
 import { listGithubInstallationOrganizationIds } from "#/modules/github/github.repository";
 import type { ConfigDeploymentAdmittedEventData, ConfigPrCheckRequestedEventData } from "#/modules/inngest/events";
 import { organization } from "#/modules/organization/tables";
-import { PR_CHECK_NAME } from "#/modules/pr-environments/pr-check";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
+
+/** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
+const PR_CHECK_NAME = "Ployz · ready to merge";
 
 const storeCall = <A>(call: () => Promise<A>) =>
   storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));

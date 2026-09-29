@@ -7,7 +7,7 @@ import {
 } from "#/modules/billing/billing.server";
 import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import { Uuid } from "#/modules/environment-design/schema";
+import { Uuid } from "#/lib/schema";
 import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
@@ -23,7 +23,6 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
-import { AppConfig } from "#/server/config.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
 const NewToken = Schema.Struct({
@@ -42,9 +41,6 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
  * GitHub connections, billing). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
-  const config = yield* AppConfig;
-  // TODO(#1275): dark until the Config Store cutover.
-  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const caller = yield* resolveCaller(request.headers);
   const path = new URL(request.url).pathname.replace(/^\/api\/cli\//, "");
   const [noun, id, ...rest] = path.split("/");

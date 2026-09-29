@@ -16,7 +16,7 @@ import {
   useAppForm,
   validateOnChangeOrBlur,
 } from "#/form";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
 
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */

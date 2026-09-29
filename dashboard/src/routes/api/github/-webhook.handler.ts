@@ -6,8 +6,6 @@ import {
   decodeGithubPullRequestPayload,
   decodeGithubPushPayload,
 } from "#/modules/github/github-webhook-contracts";
-import { rejectMalformedGithubDelivery } from "#/modules/github/github-ingestion.repository";
-import type { GithubMalformedDeliveryInput } from "#/modules/github/github-ingestion.repository.types";
 import { verifyWebhookSignature } from "#/modules/github/github.server";
 import { GITHUB_BUILD_WORKFLOW_FILE } from "#/modules/github/github-build-workflow";
 import {
@@ -19,7 +17,6 @@ import {
   createGithubPushReceivedEvent,
 } from "#/modules/inngest/events";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { publicErrorResponse } from "#/server/public-error";
 import { AppConfig } from "#/server/config.server";
 
 const workflowRunPayloadSchema = Schema.Struct({
@@ -34,25 +31,10 @@ class GithubWebhookReadError extends Data.TaggedError(
   "GithubWebhookReadError",
 )<{ readonly cause: unknown }> {}
 
-function rejectDelivery(input: GithubMalformedDeliveryInput) {
-  return rejectMalformedGithubDelivery(input).pipe(
-    Effect.as(new Response("Rejected webhook", { status: 422 })),
-    Effect.catch((cause) => {
-      console.error("[github:webhook] failed to persist rejected delivery", {
-        deliveryId: input.deliveryId,
-        eventKind: input.eventKind,
-        rejection: input.rejection,
-      });
-      const conflict =
-        "code" in cause &&
-        cause.code === "delivery_conflict" &&
-        "retriable" in cause &&
-        cause.retriable === false;
-      return Effect.succeed(
-        publicErrorResponse(cause, { status: conflict ? 409 : 503 }),
-      );
-    }),
-  );
+/** A push, check suite or pull request GitHub sent that Ployz can't read: GitHub keeps it as failed, so it shows there. */
+function rejectDelivery(input: { deliveryId: string; eventKind: string; rejection: "malformed" | "unsupported_action" }) {
+  console.warn("[github:webhook] rejected delivery", input);
+  return Effect.succeed(new Response("Rejected webhook", { status: 422 }));
 }
 
 export const handleGithubWebhookRequest = Effect.fn(

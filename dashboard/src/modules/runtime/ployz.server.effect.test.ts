@@ -329,32 +329,6 @@ it.effect("distinguishes rejected preparation input from a disconnected preparat
   }
 }));
 
-it.effect("retains sanitized terminal diagnosis alongside builder output", () => Effect.gen(function* () {
-  const { preparationProgressCollector } = yield* Effect.promise(() => import("#/modules/deployments/preparation-progress"));
-  const progress = preparationProgressCollector();
-  const output: ReturnType<typeof progress.event>["output"] = [];
-  const layer = makePloyzLayer({ connect: async () => asTestDouble<Client>()({
-    prepare: () => {
-      const finished = Promise.reject({ details: { preparation: {
-        kind: "failed", stage: "Building", message: `${"prior context ".repeat(300)}executor exited with code 42; password=hidden; ployz1:capability; deployment-private-value`,
-      } } });
-      void finished.catch(() => undefined);
-      return { abort: () => undefined, finished, async *[Symbol.asyncIterator]() {
-        yield { Build: { Output: Array.from(Buffer.alloc(1024, 65)) } };
-      } };
-    },
-    close: async () => undefined,
-  }) });
-  const failure = yield* Effect.scoped(Effect.gen(function* () {
-    const session = yield* (yield* Ployz).connect(options);
-    return yield* session.prepare({ deployment: { namespace: "test", snapshots: [asTestDouble<Parameters<Client["prepare"]>[0]["deployment"]["snapshots"][number]>()({ resolvedEnv: { SECRET: "deployment-private-value" } })] }, sources: {} }, async (event) => { output.push(...progress.event(event).output); }, new AbortController().signal);
-  })).pipe(Effect.provide(layer), Effect.flip);
-  assert.deepEqual(output, [{ build: 0, step: "build-output", stderr: false, text: "A".repeat(1024) }]);
-  assert.instanceOf(failure, PloyzPreparationError);
-  assert.include(failure.message, "executor exited with code 42");
-  for (const secret of ["hidden", "ployz1:capability", "deployment-private-value"]) assert.notInclude(failure.message, secret);
-}));
-
 it("retains progress persistence failures and waits for the remote cleanup result", async () => {
   for (const confirmed of [true, false]) {
     const storageError = new Error("private SQL parameters");

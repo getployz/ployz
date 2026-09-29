@@ -1,12 +1,5 @@
 import { DateTime, Option, Schema, SchemaGetter } from "effect";
-import {
-  GITHUB_CHECK_SUITE_ACTIONS,
-  GITHUB_CHECK_SUITE_CONCLUSIONS,
-  GITHUB_CHECK_SUITE_STATUSES,
-  type GithubCheckSuiteAction,
-  type GithubCheckSuiteConclusion,
-  type GithubCheckSuiteStatus,
-} from "#/modules/github/github-check-suite-vocabulary";
+import { GITHUB_CHECK_SUITE_ACTIONS, GITHUB_CHECK_SUITE_CONCLUSIONS, GITHUB_CHECK_SUITE_STATUSES, type GithubCheckSuiteAction, type GithubCheckSuiteConclusion, type GithubCheckSuiteStatus } from "#/modules/github/github-check-suite-vocabulary";
 
 export {
   GITHUB_CHECK_SUITE_ACTIONS,
@@ -175,12 +168,6 @@ export const githubRepositoryFullNameSchema = Schema.String.check(
   }),
 );
 
-export const githubServiceCandidateSchema = Schema.Struct({
-  environmentId: nonEmptyStringSchema,
-  serviceId: nonEmptyStringSchema,
-  watchPaths: Schema.Array(Schema.String),
-});
-
 export const githubPushWebhookSchema = Schema.Struct({
   kind: Schema.Literal("push"),
   installationId: githubIdSchema,
@@ -284,49 +271,6 @@ export const githubPullRequestReceivedEventDataSchema = Schema.Struct({
   ),
 );
 
-export const githubEnvironmentTriggerSelectionSchema = Schema.Union([
-  Schema.Struct({
-    mode: Schema.Literal("paths"),
-    reason: Schema.Literal("changed_paths"),
-  }),
-  Schema.Struct({
-    mode: Schema.Literal("all_services"),
-    reason: Schema.Literals([
-      "first_observation",
-      "force_rebaseline",
-      "non_ancestor_rebaseline",
-      "changed_paths_incomplete_rebaseline",
-    ]),
-  }),
-]);
-
-export const githubEnvironmentTriggerPersistedEventDataSchema = Schema.Struct({
-  triggerId: nonEmptyStringSchema,
-  triggerRevision: positiveSafeIntegerSchema,
-  installationId: githubIdSchema,
-  repositoryId: githubIdSchema,
-  ref: githubSafeBranchRefSchema,
-  headSha: githubExactShaSchema,
-  environmentId: nonEmptyStringSchema,
-  serviceIds: Schema.Array(nonEmptyStringSchema),
-  selection: githubEnvironmentTriggerSelectionSchema,
-  sourceDeliveryId: nonEmptyStringSchema,
-  sourceReceiptSequence: positiveSafeIntegerSchema,
-});
-
-export const githubCheckSuiteTransitionEventDataSchema = Schema.Struct({
-  installationId: githubIdSchema,
-  repositoryId: githubIdSchema,
-  headSha: githubExactShaSchema,
-  checkSuiteId: githubIdSchema,
-  status: githubCheckSuiteStatusSchema,
-  conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
-  sourceUpdatedAt: githubTimestampSchema,
-  transitionRevision: positiveSafeIntegerSchema,
-  sourceDeliveryId: nonEmptyStringSchema,
-  sourceReceiptSequence: positiveSafeIntegerSchema,
-});
-
 export const githubResolvedRepositorySchema = Schema.Struct({
   id: githubIdSchema,
   fullName: githubRepositoryFullNameSchema,
@@ -356,32 +300,6 @@ export const githubCheckSuiteObservationSchema = Schema.Struct({
   conclusion: Schema.NullOr(githubCheckSuiteConclusionSchema),
   updatedAt: githubTimestampSchema,
 });
-export const githubBranchCursorSchema = Schema.Union([
-  Schema.Struct({
-    state: Schema.Literal("active"),
-    headSha: githubExactShaSchema,
-    evaluationReason: Schema.Literals([
-      "first_observation",
-      "changed_paths",
-      "rebaseline_all_services",
-    ]),
-    evaluationRevision: positiveSafeIntegerSchema,
-    lastDeliveryId: nonEmptyStringSchema,
-    lastReceiptSequence: positiveSafeIntegerSchema,
-  }),
-  Schema.Struct({
-    state: Schema.Literal("deleted"),
-    evaluationReason: Schema.Literal("branch_deleted"),
-    evaluationRevision: positiveSafeIntegerSchema,
-    lastDeliveryId: nonEmptyStringSchema,
-    lastReceiptSequence: positiveSafeIntegerSchema,
-  }),
-]);
-export const githubEnvironmentTriggerInputSchema = Schema.Struct({
-  environmentId: nonEmptyStringSchema,
-  serviceIds: Schema.Array(nonEmptyStringSchema).check(Schema.isMinLength(1)),
-  selection: githubEnvironmentTriggerSelectionSchema,
-});
 
 export const isValidGithubId: <Input>(input: Input) => input is Input & number =
   Schema.is(githubIdSchema);
@@ -398,32 +316,8 @@ export function isValidGithubExactSha<Input>(
   return Option.isSome(Schema.decodeUnknownOption(githubExactShaSchema)(input));
 }
 
-// The struct guards below reject excess properties, which `Schema.is` cannot
-// express (it takes no parse options), so they stay on decodeUnknownOption.
-export function isValidGithubServiceCandidate<Input>(
-  input: Input,
-): input is Input & typeof githubServiceCandidateSchema.Type {
-  return Option.isSome(
-    Schema.decodeUnknownOption(githubServiceCandidateSchema)(input, {
-      onExcessProperty: "error",
-    }),
-  );
-}
-
-export function isValidGithubEnvironmentTriggerSelection<Input>(
-  input: Input,
-): input is Input & typeof githubEnvironmentTriggerSelectionSchema.Type {
-  return Option.isSome(
-    Schema.decodeUnknownOption(githubEnvironmentTriggerSelectionSchema)(
-      input,
-      { onExcessProperty: "error" },
-    ),
-  );
-}
-
 export type GithubId = typeof githubIdSchema.Type;
 export type GithubCompareStatus = typeof githubCompareStatusSchema.Type;
-export type GithubServiceCandidate = typeof githubServiceCandidateSchema.Type;
 export type GithubPushWebhook = typeof githubPushWebhookSchema.Type;
 export type GithubCheckSuiteWebhook = typeof githubCheckSuiteWebhookSchema.Type;
 export type GithubPullRequestAction = typeof githubPullRequestActionSchema.Type;
@@ -440,10 +334,6 @@ export type GithubCheckSuiteReceivedEventInput =
   typeof githubCheckSuiteReceivedEventInputSchema.Type;
 export type GithubCheckSuiteReceivedEventData =
   typeof githubCheckSuiteReceivedEventDataSchema.Type;
-export type GithubEnvironmentTriggerPersistedEventData =
-  typeof githubEnvironmentTriggerPersistedEventDataSchema.Type;
-export type GithubCheckSuiteTransitionEventData =
-  typeof githubCheckSuiteTransitionEventDataSchema.Type;
 export type GithubResolvedRepository =
   typeof githubResolvedRepositorySchema.Type;
 export type GithubBranchHeadObservation =
@@ -452,8 +342,3 @@ export type GithubCompareObservation =
   typeof githubCompareObservationSchema.Type;
 export type GithubCheckSuiteObservation =
   typeof githubCheckSuiteObservationSchema.Type;
-export type GithubBranchCursor = typeof githubBranchCursorSchema.Type;
-export type GithubEnvironmentTriggerSelection =
-  typeof githubEnvironmentTriggerSelectionSchema.Type;
-export type GithubEnvironmentTriggerInput =
-  typeof githubEnvironmentTriggerInputSchema.Type;

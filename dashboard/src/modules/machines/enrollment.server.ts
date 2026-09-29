@@ -1,5 +1,7 @@
 import "@tanstack/react-start/server-only";
 import crypto from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import type { EncryptedSecretValue } from "#/db/tables";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
@@ -33,8 +35,6 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
-import { commitFirstConnectAdmission } from "#/modules/deployments/first-connect.server";
-import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
@@ -488,27 +488,38 @@ export const completeMachineEnrollment = Effect.fn(
       yield* recordJoined(input.token, machineId);
       return { machineId };
     }
-    const deployments = yield* database.transaction(
-      commitFirstConnectAdmission({
-        organizationId: token.organizationId,
-        machineId,
-        encryptedPairingSecret: row.encryptedPairingSecret,
-      }),
-    );
+    yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );
-    yield* Effect.forEach(
-      deployments,
-      (deployment) => dispatchEnvironmentDeployment(deployment),
-      { discard: true },
-    );
     yield* recordJoined(input.token, machineId);
     return { machineId };
   },
 );
+
+/** Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current. */
+const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
+  organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue,
+) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select({
+    encryptedPairingSecret: schemaOrganizationPairing.encryptedPairingSecret,
+    founderMachineId: schemaOrganizationPairing.founderMachineId,
+    removalStartedAt: schemaOrganizationPairing.removalStartedAt,
+  }).from(schemaOrganizationPairing).where(eq(schemaOrganizationPairing.organizationId, organizationId)).for("update").limit(1);
+  if (!pairing || pairing.removalStartedAt !== null || !isDeepStrictEqual(pairing.encryptedPairingSecret, encryptedPairingSecret)) {
+    return yield* new Conflict({ message: "The founding attempt is no longer current." });
+  }
+  if (pairing.founderMachineId !== null && pairing.founderMachineId !== machineId) {
+    return yield* new Conflict({ message: "The Organization is already ready on another Machine." });
+  }
+  if (pairing.founderMachineId === null) {
+    yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: new Date() })
+      .where(eq(schemaOrganizationPairing.organizationId, organizationId));
+  }
+});
 
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(
   function* (organizationId: string) {
