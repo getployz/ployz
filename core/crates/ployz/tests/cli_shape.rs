@@ -104,6 +104,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "token new",
             "token rm",
             "unset",
+            "up",
             "volume",
             "volume add",
             "volume inspect",

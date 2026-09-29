@@ -274,7 +274,8 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
             volumes,
         )
         .map_err(|error| failed(matches, &words)(deploy::accepting(error, matches, &again)))?;
-    let (view, ran, _) = deploy::execute(matches, &store, &admitted, None, events, &words)?;
+    let deploy::Shipped { view, ran, .. } =
+        deploy::execute(matches, &store, &admitted, None, events, &words)?;
     if view.deployment.status != DeploymentStatus::Applied {
         // Not removed yet: queued, failed, cancelled, or its outcome is unknown. This
         // same command finishes it once the removal applied, or queues it again.
