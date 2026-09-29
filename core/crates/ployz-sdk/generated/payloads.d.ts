@@ -1745,7 +1745,12 @@ export type Namespace = string;
 
 export type NamespaceQuery = { environment: EnvironmentRef, };
 
-export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace, };
+export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace,
+/**
+ * Each Service's runtime name (its Private DNS name), by the name it has now:
+ * a renamed Service's containers keep the name it was created with.
+ */
+services: { [key in ServiceName]: ServiceName }, };
 
 export type NodeChange = {
 /**
