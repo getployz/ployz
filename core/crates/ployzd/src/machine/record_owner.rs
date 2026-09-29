@@ -61,7 +61,7 @@ pub struct RecordOwner {
 struct Shared {
     data_dir: std::path::PathBuf,
     run_dir: std::path::PathBuf,
-    admission_lock: Arc<tokio::sync::Mutex<()>>,
+    admission_lock: Arc<tokio::sync::RwLock<()>>,
     mutation_gate: MutationGate,
     thread: Mutex<Option<thread::JoinHandle<()>>>,
     /// Live handles. Counted explicitly so exactly one drop observes being last.
@@ -234,9 +234,10 @@ impl RecordOwner {
         &self.shared.run_dir
     }
 
-    /// Serializes local mutations. See the lock-order note on [`LocalMachineStore`].
+    /// Orders local mutations: exclusive for changes, shared for image transfers. See
+    /// the lock-order note on [`LocalMachineStore`].
     #[must_use]
-    pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::Mutex<()>> {
+    pub(crate) fn admission_lock(&self) -> Arc<tokio::sync::RwLock<()>> {
         Arc::clone(&self.shared.admission_lock)
     }
 

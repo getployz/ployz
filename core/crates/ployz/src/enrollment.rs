@@ -46,7 +46,7 @@ pub async fn publish_enrollment(
     request.assigned_subnet = Some(assignment.machine.subnet);
     request.runtime.clone_from(&assignment.machine.runtime);
     entry
-        .call_unretried::<op::Register>(request, None)
+        .call_unretried::<op::Register>(request, None, crate::cluster::LIVE_MUTATION_REPLY_TIMEOUT)
         .await
         .map_err(|error| {
             if let ConnectError::Remote(error) = error {

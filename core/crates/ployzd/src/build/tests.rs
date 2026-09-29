@@ -752,7 +752,7 @@ async fn terminal_failures_preserve_completed_images_and_uncertain_targets() {
 async fn queued_disconnect_cancellation_expiry_and_full_queue_never_upload() {
     let fixture = Fixture::with_policy(|policy| {
         policy.queue_capacity = 1;
-        policy.queue_timeout = Duration::from_millis(200);
+        policy.queue_timeout = Some(Duration::from_millis(200));
     })
     .await;
     let (active, mut response) = fixture.request(Output::Load).await;

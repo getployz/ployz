@@ -158,7 +158,10 @@ impl Runner {
                 Ok(Entry::Waiting(Waiting {
                     _capacity: capacity,
                     admission,
-                    expires: Instant::now() + self.policy.queue_timeout,
+                    expires: self
+                        .policy
+                        .queue_timeout
+                        .map(|timeout| Instant::now() + timeout),
                 }))
             }
         }
@@ -170,7 +173,9 @@ impl Runner {
     {
         tokio::select! {
             biased;
-            () = tokio::time::sleep_until(waiting.expires) => Err(QueueError::Expired),
+            // select! still builds a disabled branch's future, so it needs some instant.
+            () = tokio::time::sleep_until(waiting.expires.unwrap_or_else(Instant::now)),
+                if waiting.expires.is_some() => Err(QueueError::Expired),
             result = waiting.admission => result.map(|permit| self.slot(permit)).map_err(|_| QueueError::Stopping),
         }
     }
@@ -202,7 +207,8 @@ pub(super) enum Entry<F> {
 pub(super) struct Waiting<F> {
     _capacity: OwnedSemaphorePermit,
     admission: Pin<Box<F>>,
-    expires: Instant,
+    /// `None` waits until admitted, cancelled, or disconnected.
+    expires: Option<Instant>,
 }
 
 #[cfg(test)]
@@ -277,6 +283,17 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn by_default_a_waiter_waits_for_its_turn_however_long_it_takes() {
+        let runner = Runner::new(HostPolicy::default(), CancellationToken::new()).unwrap();
+        let owner = active(&runner);
+        let mut queued = Box::pin(waiting(&runner));
+        tokio::time::advance(Duration::from_secs(2 * 86_400)).await;
+        assert!(poll!(&mut queued).is_pending(), "a default waiter expired");
+        drop(owner);
+        assert!(matches!(poll!(&mut queued), Poll::Ready(Ok(_))));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn enrolled_waiter_cannot_be_overtaken_before_it_is_polled() {
         let runner = Runner::new(HostPolicy::default(), CancellationToken::new()).unwrap();
         let owner = active(&runner);
@@ -290,7 +307,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn fifo_bounds_expiry_and_cancelled_waiters_release_capacity() {
-        let runner = Runner::new(HostPolicy::default(), CancellationToken::new()).unwrap();
+        let policy = HostPolicy {
+            queue_capacity: 8,
+            queue_timeout: Some(Duration::from_secs(600)),
+            ..HostPolicy::default()
+        };
+        let runner = Runner::new(policy, CancellationToken::new()).unwrap();
         let owner = active(&runner);
         let mut entries = (0..8).map(|_| waiting(&runner)).collect::<Vec<_>>();
         assert!(matches!(runner.enter(), Err(QueueError::Full)));

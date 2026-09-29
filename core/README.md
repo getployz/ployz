@@ -94,14 +94,15 @@ Railpack build command is passed as `RAILPACK_BUILD_CMD`. Values travel as
 private secret mounts. Docker ignore patterns and Railpack's configured
 exclusions apply before source transfer. Recipes can still print or embed values.
 
-Builds use one active slot per Machine and a FIFO of eight waiting attempts.
-Source and secrets stay on the client until admission. Configure the daemon
+Builds run in the Machine's build slots, one per unit of build concurrency, with a
+FIFO of 100 waiting attempts. Source and secrets stay on the client until admission,
+so waiting has no deadline by default. Configure the daemon
 environment and restart it:
 
 | Setting | Default | Accepted values |
 | --- | --- | --- |
-| `PLOYZ_BUILD_QUEUE_CAPACITY` | `8` | `0`–`1024` waiting attempts |
-| `PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS` | `600` | `1`–`86400` seconds |
+| `PLOYZ_BUILD_QUEUE_CAPACITY` | `100` | `0`–`1024` waiting attempts |
+| `PLOYZ_BUILD_QUEUE_TIMEOUT_SECONDS` | none | `1`–`86400` seconds |
 | `PLOYZ_BUILD_ACTIVE_TIMEOUT_SECONDS` | `1800` | `1`–`86400` seconds |
 
 The active budget includes upload, preparation, execution, import and cleanup.

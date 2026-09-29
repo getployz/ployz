@@ -46,6 +46,12 @@ mod container_observations;
 pub(crate) use container_observations::ContainerObservationCondition;
 
 const STORAGE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(3);
+/// Reply timeout for setup mutations: setup reads the outcome back after a lost
+/// reply, so it gives up fast.
+pub(crate) const SETUP_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Reply timeout for mutations on a live Machine, which may be mid-Deploy and
+/// answer only once that work lets it through.
+pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct Client {
@@ -207,14 +213,16 @@ impl Client {
         .await
     }
 
-    /// Setup mutations must not be replayed after a lost response.
+    /// Mutations that must not be replayed after a lost response. `reply_timeout` is
+    /// [`SETUP_MUTATION_REPLY_TIMEOUT`] or [`LIVE_MUTATION_REPLY_TIMEOUT`].
     pub(crate) async fn call_unretried<T: Rpc>(
         &self,
         request: T::Request,
         target: Option<&MachineTarget>,
+        reply_timeout: Duration,
     ) -> Result<T::Response, ConnectError> {
         tokio::time::timeout(
-            Duration::from_secs(5),
+            reply_timeout,
             self.call_once::<T>(T::into_request(request).encode()?, target),
         )
         .await
