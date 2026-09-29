@@ -69,7 +69,7 @@ async fn machine_add_retries_target_readiness_and_reports_failure() {
     assert!(!failed.status.success());
     assert_eq!(entry.target_inspect_attempts(), 2);
     assert_eq!(entry.ensure_attempts(), 0);
-    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Machine joiner"));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
     target.join_request();
 }
@@ -97,7 +97,7 @@ async fn machine_add_retries_catch_up_and_reports_failure() {
     let (failed, entry, target) = machine_add(Fault::Healthy, Fault::Permanent).await;
     assert!(!failed.status.success());
     assert_eq!(entry.ensure_attempts(), 2);
-    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Machine joiner"));
+    assert!(String::from_utf8_lossy(&failed.stdout).contains("Added Server joiner"));
     assert_joined_with_incomplete_catch_up(&failed);
     target.join_request();
 }

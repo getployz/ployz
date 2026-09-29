@@ -44,14 +44,6 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "ingress deploy",
             "login",
             "logout",
-            "machine",
-            "machine build-cache-clear",
-            "machine inspect",
-            "machine logs",
-            "machine ls",
-            "machine rm",
-            "machine update",
-            "machine upgrade",
             "org",
             "org ls",
             "org use",
@@ -59,6 +51,13 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "project new",
             "server",
             "server add",
+            "server build-cache-clear",
+            "server inspect",
+            "server logs",
+            "server ls",
+            "server rm",
+            "server set",
+            "server upgrade",
             "service",
             "service add",
             "service exec",
@@ -107,7 +106,7 @@ fn json_is_one_global_switch_and_no_command_keeps_an_output_format() {
     assert_no_output(&command, "ployz");
 
     let matches = command
-        .try_get_matches_from(["ployz", "--json", "machine", "ls"])
+        .try_get_matches_from(["ployz", "--json", "server", "ls"])
         .unwrap();
     assert!(matches.get_flag("json"));
 }
@@ -191,23 +190,21 @@ fn native_completion_is_generated_for_every_supported_shell() {
 }
 
 #[test]
-fn machine_upgrade_requires_explicit_targets() {
+fn server_upgrade_requires_explicit_targets_in_order() {
     let command = ployz::cli::command();
     let request = command
         .clone()
         .try_get_matches_from([
             "ployz",
-            "machine",
+            "server",
             "upgrade",
             "1.2.3-beta.4",
-            "--machine",
             "edge-a",
-            "--machine",
             "0123456789abcdef0123456789abcdef",
         ])
         .unwrap();
     let upgrade = request
-        .subcommand_matches("machine")
+        .subcommand_matches("server")
         .unwrap()
         .subcommand_matches("upgrade")
         .unwrap();
@@ -220,7 +217,7 @@ fn machine_upgrade_requires_explicit_targets() {
     );
     assert_eq!(
         upgrade
-            .get_many::<String>("machine")
+            .get_many::<String>("server")
             .unwrap()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -228,20 +225,7 @@ fn machine_upgrade_requires_explicit_targets() {
     );
     assert!(
         command
-            .clone()
-            .try_get_matches_from(["ployz", "machine", "upgrade", "stable"])
-            .is_err()
-    );
-    assert!(
-        command
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "upgrade",
-                "nightly",
-                "--machine",
-                "edge-a"
-            ])
+            .try_get_matches_from(["ployz", "server", "upgrade", "stable"])
             .is_err()
     );
 }
@@ -321,14 +305,14 @@ fn json_without_a_command_is_the_version_or_an_error() {
 
 #[test]
 fn json_with_a_missing_subcommand_is_a_usage_error_not_help() {
-    let (code, json, _) = run_json(&["machine", "--json"]);
+    let (code, json, _) = run_json(&["server", "--json"]);
     assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "invalid_argument",
         "{json}"
     );
-    assert_eq!(message(&json), "ployz machine requires a subcommand");
+    assert_eq!(message(&json), "ployz server requires a subcommand");
 }
 
 #[test]
@@ -424,7 +408,7 @@ fn compose_workflows_and_inputs_are_not_accepted() {
 #[test]
 fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rejected() {
     for path in [
-        vec!["machine", "update", "node"],
+        vec!["server", "set", "node"],
         vec!["server", "add", "--standalone"],
         vec!["server", "add", "root@node"],
         vec!["server", "add", "--token", "pmet_test"],
@@ -454,7 +438,7 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
         removal.extend(["--label-rm", "retired"]);
         assert_eq!(
             ployz::cli::command().try_get_matches_from(removal).is_ok(),
-            args.get(2) == Some(&"update")
+            args.get(2) == Some(&"set")
         );
         for invalid in [
             "--no-ingress",

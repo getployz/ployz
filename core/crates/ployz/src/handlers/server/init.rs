@@ -78,7 +78,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             .call_repeatable::<op::Inspect>(InspectRequest::default(), None)
             .await?;
         if details.phase != LocalMachinePhase::Uninitialized {
-            helpers::confirm(yes, "Reset the Machine before initialising a new Cluster?")?;
+            helpers::confirm(yes, "Reset the Server before initialising a new Cluster?")?;
             helpers::reset(&mut target).await?;
             target = helpers::reconnect_direct(matches, &connection).await?;
             token = target
@@ -114,26 +114,26 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     if let Some(current_context) = config.current_context() {
         say!("Switched context to '{current_context}'");
     }
-    say!("Initialised Machine {} ({})", machine.name, machine.id);
+    say!("Initialised Server {} ({})", machine.name, machine.id);
     let ingress_recovery =
         super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
     let inspect_recovery = super::super::recovery_command(
         matches,
         &context_name,
-        &["machine", "inspect", machine.name.as_str()],
+        &["server", "inspect", machine.name.as_str()],
     );
     let ingress = runtime.block_on(async {
         let mut ready =
-            helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
-                .await.map_err(|error| error.reworded(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
+            helpers::wait_direct_participating(matches, &connection, "initial Server did not become ready")
+                .await.map_err(|error| error.reworded(format!("Server initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if machine.accepts_ingress {
             let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| {
                 let error = Error::from(error);
-                error.reworded(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}"))
+                error.reworded(format!("Server initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}"))
             })?;
             let outcome = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
-                error.reworded(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
+                error.reworded(format!("Server initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
             })?;
             return Ok(Some(outcome));
         }
@@ -141,7 +141,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     });
     // The Machine and its context are committed: print them before a follow-up failure.
     let result = json!({
-        "machine": machine,
+        "server": machine,
         "context": context_name,
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
     });
@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn init_timeout_surfaces_the_docker_network_recovery() {
-        let message = helpers::readiness_timeout_message("initial Machine did not become ready");
+        let message = helpers::readiness_timeout_message("initial Server did not become ready");
 
-        assert!(message.contains("initial Machine did not become ready"));
+        assert!(message.contains("initial Server did not become ready"));
         assert!(message.contains(DOCKER_NETWORK_CONFLICT_RECOVERY));
     }
 }

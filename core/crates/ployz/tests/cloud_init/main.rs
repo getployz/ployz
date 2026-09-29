@@ -193,7 +193,7 @@ async fn cloud_init_initialize_participates() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
         "{stdout}"
     );
 
@@ -461,7 +461,7 @@ async fn cloud_init_retries_not_yet_then_initializes() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains(&format!("Initialised Machine founder ({machine_id})")),
+        stdout.contains(&format!("Initialised Server founder ({machine_id})")),
         "{stdout}"
     );
 

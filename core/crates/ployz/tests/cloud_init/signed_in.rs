@@ -87,7 +87,7 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
     );
     let result = stdout_json(&output);
     assert_eq!(result.pointer("/founded"), Some(&json!(true)));
-    assert_eq!(result.pointer("/machine/id"), Some(&json!(founder.id)));
+    assert_eq!(result.pointer("/server/id"), Some(&json!(founder.id)));
     assert_eq!(daemon.initialize_request().name.as_str(), "founder");
     assert_eq!(
         enroll.cli_calls(),

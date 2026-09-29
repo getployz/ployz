@@ -40,7 +40,7 @@ pub(in crate::handlers) fn machine_name(
     match requested {
         Some(name) => Ok(name),
         None if token.runtime.hostname.is_empty() => Err(Error::usage(
-            "Machine name is required because the remote hostname is empty",
+            "Server name is required because the remote hostname is empty",
         )),
         None => Ok(MachineName::parse(
             token.runtime.hostname.to_ascii_lowercase(),
@@ -106,7 +106,7 @@ pub(super) async fn wait_direct_participating(
                 .await?;
             if details.phase != LocalMachinePhase::Participating {
                 return Err(ConnectError::Attempt(
-                    format!("Machine phase is {}", details.phase.as_str().escape_debug()).into(),
+                    format!("Server phase is {}", details.phase.as_str().escape_debug()).into(),
                 ));
             }
             Ok(client)
@@ -157,15 +157,15 @@ pub(in crate::handlers) async fn initialize(
             .await?;
             if details.id != identity.id || details.public_key != identity.public_key {
                 return Err(Error::conflict(
-                    "Initialization outcome belongs to a different Machine identity; inspect the Machine before retrying; do not reset it",
+                    "Initialization outcome belongs to a different Server identity; inspect the Server before retrying; do not reset it",
                 ));
             }
             let machine = details
                 .machine
-                .expect("observed predicate verified the initialized Machine");
+                .expect("observed predicate verified the initialized Server");
             if !initial_policy.matches(&machine) {
                 return Err(Error::conflict(
-                    "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+                    "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
                 ));
             }
             Ok(ployz_core::Initialized { machine })
@@ -231,7 +231,7 @@ pub(in crate::handlers) async fn join(
                 .is_some_and(|machine| initial_policy.matches(machine))
             {
                 return Err(Error::conflict(
-                    "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+                    "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
                 ));
             }
             Ok(())
@@ -251,9 +251,9 @@ async fn observe_mutation(
         ConnectError::is_setup_retryable,
         async |client| {
             let details = client.call_repeatable::<op::Inspect>(InspectRequest::default(), None).await?;
-            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Machine phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
+            if observed(&details) { Ok(details) } else { Err(ConnectError::Attempt(format!("Server phase is {}; expected {operation} outcome not yet observed", details.phase.as_str().escape_debug()).into())) }
         },
-    ).await.map_err(|error| Error::unavailable(format!("{operation} may have completed: {original}; could not confirm the resulting Machine state: {error}; inspect the Machine before retrying; do not reset it")))
+    ).await.map_err(|error| Error::unavailable(format!("{operation} may have completed: {original}; could not confirm the resulting Server state: {error}; inspect the Server before retrying; do not reset it")))
 }
 
 pub(in crate::handlers) fn readiness_timeout_message(message: &str) -> String {
@@ -331,15 +331,15 @@ mod tests {
         let token = token_with_hostname("");
         assert_eq!(
             machine_name(None, &token).unwrap_err().to_string(),
-            "Machine name is required because the remote hostname is empty"
+            "Server name is required because the remote hostname is empty"
         );
     }
 
     #[test]
     fn readiness_timeout_names_the_start_delay_and_docker_network_recovery() {
-        let message = readiness_timeout_message("initial Machine did not become ready");
+        let message = readiness_timeout_message("initial Server did not become ready");
         assert!(
-            message.contains("initial Machine did not become ready"),
+            message.contains("initial Server did not become ready"),
             "{message}"
         );
         assert!(message.contains("journalctl -u ployz"), "{message}");
