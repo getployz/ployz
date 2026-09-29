@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { parseServiceConfig } from "@ployz/sdk/config";
+import { lowerDeployment, parseServiceConfig } from "@ployz/sdk/config";
 import * as schema from "#/db/schema";
 import { compileSavedEnvironmentIntent, type SavedEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 import { admitEnvironmentDeployment } from "#/modules/deployments/admission.server";
@@ -99,7 +99,7 @@ describe("branchAdmission", () => {
       Effect.provideService(SecretEncryption, encryption),
     );
     const input = await harness.runEffect(compiled as Effect.Effect<ReturnType<typeof compileSdkPreparationInput>, unknown, Database>);
-    return { row, env: input.snapshots.find((snapshot) => snapshot.serviceId === branchWeb)?.resolvedEnv, dependencies: input.dependencies };
+    return { row, env: input.snapshots.find((snapshot) => snapshot.serviceId === branchWeb)?.resolvedEnv, dependencies: lowerDeployment(input).dependencies };
   }
 
   beforeEach(async () => {
