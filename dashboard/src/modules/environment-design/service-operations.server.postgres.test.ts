@@ -215,6 +215,7 @@ const hostedPolar: PolarService = {
   productId: "pro",
   listActiveSubscriptions: () => Effect.die("Custom domains read the cached billing row."),
   createCheckout: () => Effect.die("unused"),
+  createCustomerPortal: () => Effect.die("unused"),
 };
 
 it.live(

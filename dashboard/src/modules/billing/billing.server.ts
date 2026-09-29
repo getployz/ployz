@@ -164,3 +164,16 @@ export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
     });
   },
 );
+
+/** The paying user's Polar portal, as the billing page's "Manage billing" opens it. */
+export const createCustomerPortal = Effect.fn("Billing.createPortal")(
+  function* (actor: Actor, input: { readonly organizationSlug: string }) {
+    const polar = yield* requireHostedPolar();
+    yield* getAuthorizedBillingScope(actor, input.organizationSlug);
+    const config = yield* AppConfig;
+    return yield* polar.createCustomerPortal({
+      externalCustomerId: actor.userId,
+      returnUrl: new URL("/cloud", config.app.url).href,
+    });
+  },
+);

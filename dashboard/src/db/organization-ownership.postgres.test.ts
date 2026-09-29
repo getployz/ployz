@@ -20,6 +20,7 @@ const notOrganizationOwned = {
   account: "Belongs to a user.",
   verification: "Belongs to a user.",
   device_code: "Belongs to the user who claims it; a CLI sign-in picks its Organization later.",
+  organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
   session: "Belongs to a user; its active Organization doesn't make it organization-owned.",
   github_installation: "Belongs to a user.",
   github_repository_cache: "Belongs to a user.",
