@@ -1,6 +1,5 @@
 //! Cluster-side Namespaces named on the command line.
 
-use clap::ArgMatches;
 use ployz_core::{Namespace, ValueError};
 use thiserror::Error;
 
@@ -24,20 +23,6 @@ pub fn refuse_reserved(name: &Namespace) -> Result<(), NamespaceError> {
     } else {
         Ok(())
     }
-}
-
-/// The user Namespace named by `--namespace`, if the command has one.
-///
-/// # Errors
-///
-/// Returns when the name is invalid or reserved.
-pub(crate) fn explicit(matches: &ArgMatches) -> Result<Option<Namespace>, NamespaceError> {
-    let Ok(Some(value)) = matches.try_get_one::<String>("namespace") else {
-        return Ok(None);
-    };
-    let name = Namespace::parse(value)?;
-    refuse_reserved(&name)?;
-    Ok(Some(name))
 }
 
 #[cfg(test)]

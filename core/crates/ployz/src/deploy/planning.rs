@@ -103,13 +103,6 @@ impl DeployPlan {
         self.preview.warnings.splice(0..0, warnings);
     }
 
-    pub(super) fn empty(namespace: Namespace, warnings: Vec<DeployWarning>) -> Self {
-        Self {
-            operations: Vec::new(),
-            preview: DeployPreview::new(Vec::new(), warnings, namespace),
-        }
-    }
-
     #[cfg(test)]
     pub(super) fn for_execution_test(
         operations: Vec<DeployOperation>,

@@ -6,13 +6,11 @@
 
 use std::collections::BTreeSet;
 use std::net::IpAddr;
-use std::num::NonZeroU32;
 use std::time::SystemTime;
 
 use ployz_core::{
     DataLossConfirmation, MachineFailure, MachineId, MachineObservation, Namespace,
-    ObservedDataLoss, PortPublication, RequestedServiceSpec, RpcError, RpcErrorCode, ServiceMode,
-    ServiceSelector, UnconfirmedDataLoss, select_service,
+    ObservedDataLoss, PortPublication, RpcError, RpcErrorCode, UnconfirmedDataLoss,
 };
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -21,7 +19,6 @@ use crate::{
     build::BuiltService,
     connect::{Client, ConnectError},
     dns::{IngressDnsWarning, resolve_ingress_dns_warnings_for_ports},
-    failure::Failure,
     image::PushError,
 };
 
@@ -330,31 +327,6 @@ pub(crate) async fn plan_namespace(
     preview_gathered(snapshot, warnings, intent).await
 }
 
-pub(super) async fn plan_scale(
-    client: &mut Client,
-    selector: &ServiceSelector,
-    replicas: NonZeroU32,
-    options: PlanOptions,
-) -> Result<DeployPlan, Failure> {
-    let machines = client.machines().await?;
-    let (snapshot, warnings) = gather_snapshot(client, machines).await?;
-    let choice = choose_scale_spec(&snapshot, selector, replicas)?;
-    let Some(requested) = choice.requested else {
-        return Ok(DeployPlan::empty(choice.namespace, warnings));
-    };
-    let intent = DeployIntent::apply_one(choice.namespace, requested, options);
-    let (snapshot, warnings) = if intent
-        .target
-        .iter()
-        .any(|spec| spec.volume_graph().has_mounted_provisioned_volume())
-    {
-        gather_deploy_snapshot(client, snapshot.machines, &intent).await?
-    } else {
-        (snapshot, warnings)
-    };
-    Ok(preview_gathered(snapshot, warnings, &intent).await?)
-}
-
 async fn preview_gathered(
     snapshot: DeploySnapshot,
     mut warnings: Vec<DeployWarning>,
@@ -375,44 +347,6 @@ pub(crate) fn plan_options(force_recreate: bool, skip_health_monitor: bool) -> P
             .map_or(0, |duration| duration.as_nanos() as u64),
         ..PlanOptions::default()
     }
-}
-
-#[derive(Debug)]
-struct ScaleSpec {
-    namespace: Namespace,
-    requested: Option<RequestedServiceSpec>,
-}
-
-fn choose_scale_spec(
-    snapshot: &DeploySnapshot,
-    selector: &ServiceSelector,
-    replicas: NonZeroU32,
-) -> Result<ScaleSpec, Failure> {
-    let services = ployz_core::derive_services(snapshot.containers.iter().cloned());
-    let service = select_service(&services, selector)?;
-    let observed_container = service
-        .containers
-        .first()
-        .ok_or_else(|| Failure::usage("cannot scale a service without regular containers"))?
-        .as_observation();
-    match observed_container.resolved_spec.mode {
-        ServiceMode::Replicated { .. } => {}
-        ServiceMode::Global => return Err(Failure::usage("global services cannot be scaled")),
-    }
-    let namespace = service.identity.namespace.clone();
-    if usize::try_from(replicas.get()) == Ok(service.containers.len()) {
-        return Ok(ScaleSpec {
-            namespace,
-            requested: None,
-        });
-    }
-    // TODO: mixed historical specs use one observed regular container; there is no chooser.
-    let mut requested = observed_container.resolved_spec.to_requested();
-    requested.mode = ServiceMode::Replicated { replicas };
-    Ok(ScaleSpec {
-        namespace,
-        requested: Some(requested),
-    })
 }
 
 async fn gather_snapshot(

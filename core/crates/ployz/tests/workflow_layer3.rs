@@ -52,13 +52,18 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
     );
     wait_for_services(&mut client, &["scaled-workflow"], 1).await;
     // An unchanged Deploy Intent plans nothing, so its Containers stay.
-    let unchanged = session.preview(scaled).await.unwrap();
+    let unchanged = session.preview(scaled.clone()).await.unwrap();
     assert!(unchanged.noop(), "{:?}", unchanged.preview());
     unchanged.close();
-    assert_success(ployz(
-        address,
-        ["service", "scale", "--yes", "scaled-workflow", "2"],
-    ));
+    let mut two = scaled;
+    two.target.first_mut().unwrap().mode = ployz_core::ServiceMode::Replicated {
+        replicas: std::num::NonZeroU32::new(2).unwrap(),
+    };
+    let outcome = session.run(two, None).await.unwrap();
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
 
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 2).await;
     let scaled = observed_service(&initial_run, "scaled-workflow");

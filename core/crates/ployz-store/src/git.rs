@@ -23,7 +23,7 @@ use crate::id::ServiceId;
 use crate::scope::EnvironmentRef;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
-use crate::{Actor, ServiceCreated, Trusted};
+use crate::{Actor, ServiceStaged, Trusted};
 
 /// A repository Cloud checked the Organization may read, and the branches it saw.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -80,7 +80,7 @@ pub(crate) fn create_git_service(
     who: &Actor,
     create: &CreateGitService,
     trusted: &Trusted,
-) -> Result<ServiceCreated, RpcError> {
+) -> Result<ServiceStaged, RpcError> {
     let command = Command::CreateGitService(create.clone());
     replayable(tx, who, &command, |tx| {
         let found = authorized(trusted, &create.repository)?;

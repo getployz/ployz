@@ -24,8 +24,8 @@ pub use project::{
 pub(crate) use project::{create_environment, create_project};
 pub use review::{Discard, Discarded, Publish, Published};
 pub(crate) use review::{discard, publish};
-pub use service::{CreateService, ServiceCreated, ServiceSummary};
-pub(crate) use service::{create_service, insert_service};
+pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
+pub(crate) use service::{create_service, insert_service, remove_service, rename_service, summary};
 
 use crate::error;
 use crate::storage::Tx;
@@ -40,10 +40,14 @@ pub enum Command {
     CreateProject(CreateProject),
     /// Create an empty Environment.
     CreateEnvironment(CreateEnvironment),
-    /// Create an image Service.
+    /// Create an image Service, or an empty one.
     CreateService(CreateService),
     /// Create a Service that builds a GitHub repository.
     CreateGitService(CreateGitService),
+    /// Rename a Service, keeping its Private DNS name.
+    RenameService(RenameService),
+    /// Remove a Service from Working State; a Deploy removes it.
+    RemoveService(RemoveService),
     /// Set and unset Settings in one Environment.
     Edit(Edit),
     /// Save Working State as the next Saved revision.
@@ -65,7 +69,11 @@ impl Command {
             Self::CreateService(create) => vec![create.id.as_str()],
             Self::Admit(admit) => vec![admit.id.as_str()],
             Self::CreateGitService(create) => vec![create.id.as_str()],
-            Self::Edit(_) | Self::Publish(_) | Self::Discard(_) => Vec::new(),
+            Self::Edit(_)
+            | Self::RenameService(_)
+            | Self::RemoveService(_)
+            | Self::Publish(_)
+            | Self::Discard(_) => Vec::new(),
         }
     }
 }
@@ -80,7 +88,11 @@ pub enum Written {
     /// An Environment was created.
     Environment(EnvironmentCreated),
     /// A Service was created.
-    Service(ServiceCreated),
+    Service(ServiceStaged),
+    /// A Service was renamed.
+    ServiceRenamed(ServiceStaged),
+    /// A Service was removed from Working State.
+    ServiceRemoved(ServiceStaged),
     /// Settings were edited.
     Edited(Edited),
     /// Working State was published.
@@ -105,6 +117,12 @@ pub(crate) fn run(
         Command::CreateService(create) => create_service(tx, who, create).map(Written::Service),
         Command::CreateGitService(create) => {
             crate::git::create_git_service(tx, who, create, trusted).map(Written::Service)
+        }
+        Command::RenameService(rename) => {
+            rename_service(tx, who, rename).map(Written::ServiceRenamed)
+        }
+        Command::RemoveService(remove) => {
+            remove_service(tx, who, remove).map(Written::ServiceRemoved)
         }
         Command::Edit(edit) => self::edit(tx, who, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),

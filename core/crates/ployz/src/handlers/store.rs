@@ -8,8 +8,8 @@ use ployz_store::{
     CreateService, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited,
     EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId,
-    PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query, ServiceCreated,
-    Trusted,
+    PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query, RemoveService,
+    RenameService, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery, ServicesView, Trusted,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -97,7 +97,7 @@ impl Store {
     pub(crate) fn create_service(
         &self,
         create: &CreateService,
-    ) -> Result<ServiceCreated, StoreCallError> {
+    ) -> Result<ServiceStaged, StoreCallError> {
         let request = Command::CreateService(create.clone());
         self.call("write", &request, |store, who| {
             store.create_service(who, create)
@@ -109,11 +109,41 @@ impl Store {
     pub(crate) fn create_git_service(
         &self,
         create: &CreateGitService,
-    ) -> Result<ServiceCreated, StoreCallError> {
+    ) -> Result<ServiceStaged, StoreCallError> {
         let request = Command::CreateGitService(create.clone());
         self.call("write", &request, |store, who| {
             store.create_git_service(who, create, &Trusted::default())
         })
+    }
+
+    pub(crate) fn rename_service(
+        &self,
+        rename: &RenameService,
+    ) -> Result<ServiceStaged, StoreCallError> {
+        let request = Command::RenameService(rename.clone());
+        self.call("write", &request, |store, who| {
+            store.rename_service(who, rename)
+        })
+    }
+
+    pub(crate) fn remove_service(
+        &self,
+        remove: &RemoveService,
+    ) -> Result<ServiceStaged, StoreCallError> {
+        let request = Command::RemoveService(remove.clone());
+        self.call("write", &request, |store, who| {
+            store.remove_service(who, remove)
+        })
+    }
+
+    pub(crate) fn services(&self, query: &ServicesQuery) -> Result<ServicesView, StoreCallError> {
+        let request = Query::Services(query.clone());
+        self.call("read", &request, |store, who| store.services(who, query))
+    }
+
+    pub(crate) fn service(&self, query: &ServiceQuery) -> Result<ServiceView, StoreCallError> {
+        let request = Query::Service(query.clone());
+        self.call("read", &request, |store, who| store.service(who, query))
     }
 
     pub(crate) fn diff(&self, query: &DiffQuery) -> Result<DiffView, StoreCallError> {

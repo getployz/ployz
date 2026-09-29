@@ -1,6 +1,4 @@
 //! Session-level preview/confirm/run behaviour against a fake Machine.
-#[path = "deploy_client/removal.rs"]
-mod removal;
 #[path = "deploy_client/support.rs"]
 mod support;
 use support::*;
@@ -245,7 +243,7 @@ async fn deploy_cancellation_aborts_an_in_flight_observation_wait() {
 
 #[tokio::test]
 async fn service_lifecycle_commands_wait_for_their_successful_service_containers() {
-    for (action, dropped) in [("start", false), ("stop", true), ("rm", true)] {
+    for (action, dropped) in [("start", false), ("stop", true)] {
         let machine = machine('a', "one");
         let mut service = DeployService::new(machine.clone()).with_observation_barrier();
         if dropped {
@@ -263,13 +261,8 @@ async fn service_lifecycle_commands_wait_for_their_successful_service_containers
         let observation_requests = service.observation_requests();
         let (address, server) = listening(service).await;
 
-        let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"));
-        if action == "rm" {
-            command.arg("service").arg(action).arg("--yes");
-        } else {
-            command.arg("service").arg(action);
-        }
-        let output = command
+        let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(["service", action])
             .args(["--connect", &format!("tcp://{address}"), "web", "api"])
             .output()
             .await

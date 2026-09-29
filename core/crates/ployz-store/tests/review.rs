@@ -39,7 +39,7 @@ fn shop() -> (ConfigStore, Actor) {
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
-                    image: image.into(),
+                    image: Some(image.into()),
                 },
             )
             .unwrap();
