@@ -195,7 +195,6 @@ enum CompensationFact {
     StopNewFailed { cause: Cause },
     RestartedOld,
     RestartOldFailed { cause: Cause },
-    RestartNotAttempted,
 }
 
 /// Live progress title plus one row per operation.
@@ -758,10 +757,10 @@ fn compensation_facts(
     compensation: &ReplacementCompensation<ExecutionError>,
 ) -> Vec<CompensationFact> {
     match compensation {
-        ReplacementCompensation::StartFirst { stop_new_container } => {
+        ReplacementCompensation::OldUntouched { stop_new_container } => {
             vec![stop_fact(stop_new_container)]
         }
-        ReplacementCompensation::StopFirst {
+        ReplacementCompensation::OldStopped {
             stop_new_container,
             restart_old_container,
         } => stop_new_container
@@ -787,7 +786,6 @@ fn restart_fact(attempt: &RestartAttempt<ExecutionError>) -> CompensationFact {
         RestartAttempt::Failed { error } => CompensationFact::RestartOldFailed {
             cause: cause_from_error(error),
         },
-        RestartAttempt::NotAttempted => CompensationFact::RestartNotAttempted,
     }
 }
 
@@ -801,7 +799,6 @@ fn compensation_line(fact: &CompensationFact) -> String {
         CompensationFact::RestartOldFailed { cause } => {
             format!("could not restart the old container: {}", cause.english())
         }
-        CompensationFact::RestartNotAttempted => "did not restart the old container".into(),
     }
 }
 

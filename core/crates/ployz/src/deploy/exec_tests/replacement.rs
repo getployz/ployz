@@ -24,7 +24,7 @@ async fn start_first_health_failure_records_stop_success_or_failure_and_never_to
         assert!(matches!(
             outcome,
             DeployOutcome::Failed { failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::StartFirst {
+                compensation: ReplacementCompensation::OldUntouched {
                     stop_new_container,
                 },
                 ..
@@ -55,7 +55,7 @@ async fn replacement_compensation_tolerates_a_missing_new_container() {
         outcome,
         DeployOutcome::Failed {
             failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::StartFirst {
+                compensation: ReplacementCompensation::OldUntouched {
                     stop_new_container: StopAttempt::Stopped,
                 },
                 ..
@@ -129,7 +129,7 @@ async fn stop_first_health_failure_records_both_compensation_attempts() {
         assert!(matches!(
             outcome,
             DeployOutcome::Failed { failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::StopFirst {
+                compensation: ReplacementCompensation::OldStopped {
                     stop_new_container: Some(stop_new_container),
                     restart_old_container:
                         restart @ (RestartAttempt::Restarted | RestartAttempt::Failed { .. }),
@@ -162,9 +162,8 @@ async fn stop_first_does_not_restart_a_previously_stopped_old_container() {
         outcome,
         DeployOutcome::Failed {
             failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::StopFirst {
-                    restart_old_container: RestartAttempt::NotAttempted,
-                    ..
+                compensation: ReplacementCompensation::OldUntouched {
+                    stop_new_container: StopAttempt::Stopped,
                 },
                 ..
             },
@@ -201,7 +200,7 @@ async fn stop_first_stops_and_can_restart_active_old_container_states() {
             outcome,
             DeployOutcome::Failed {
                 failed: FailedOperation::Replacement {
-                    compensation: ReplacementCompensation::StopFirst {
+                    compensation: ReplacementCompensation::OldStopped {
                         restart_old_container: RestartAttempt::Restarted,
                         ..
                     },
@@ -350,7 +349,7 @@ async fn stop_first_create_or_start_failure_restores_the_old_container() {
             outcome,
             DeployOutcome::Failed {
                 failed: FailedOperation::Replacement {
-                    compensation: ReplacementCompensation::StopFirst {
+                    compensation: ReplacementCompensation::OldStopped {
                         stop_new_container: None,
                         restart_old_container: RestartAttempt::Restarted,
                     },
@@ -394,7 +393,7 @@ async fn stop_first_serving_failure_stops_the_new_container_and_reports_an_old_o
         outcome,
         DeployOutcome::Failed {
             failed: FailedOperation::Replacement {
-                compensation: ReplacementCompensation::StopFirst {
+                compensation: ReplacementCompensation::OldStopped {
                     stop_new_container: Some(StopAttempt::Stopped),
                     restart_old_container: RestartAttempt::Failed {
                         error: ExecutionError::Machine {

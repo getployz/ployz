@@ -177,8 +177,8 @@ export function deploymentProgressForEvent(
   if (outcome.type === "failed" && outcome.failed.type === "replacement") {
     const c = outcome.failed.compensation;
     if (c.stop_new_container) compensation.push(c.stop_new_container.type === "stopped" ? "Replacement container stopped" : `Could not stop replacement: ${executionErrorLabel(c.stop_new_container.error)}`);
-    if (c.type === "stop_first") {
-      compensation.push(c.restart_old_container.type === "restarted" ? "Previous container restarted" : c.restart_old_container.type === "not_attempted" ? "Previous container restart not attempted" : `Previous container restart failed: ${executionErrorLabel(c.restart_old_container.error)}`);
+    if (c.type === "old_stopped") {
+      compensation.push(c.restart_old_container.type === "restarted" ? "Previous container restarted" : `Previous container restart failed: ${executionErrorLabel(c.restart_old_container.error)}`);
     }
   }
   return { completed: outcome.completed.length, total: rows.length, rows, outcome: outcome.type, compensation };

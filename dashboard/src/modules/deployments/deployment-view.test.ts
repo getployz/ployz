@@ -59,7 +59,7 @@ describe("deployment view projection", () => {
     const rows = [row(0), row(1, { type: "replace_container", ...replacement }), row(2)] as const;
     const progress = deploymentProgressForEvent({ type: "outcome", outcome: engineOrdered({
       type: "failed", completed: [rows[0].operation], unexecuted: [rows[2].operation],
-      failed: { type: "replacement", operation: replacement, error: { type: "health", container_id: "new-container" as ContainerId, failure: { type: "timed_out" } }, compensation: { type: "stop_first", stop_new_container: { type: "stopped" }, restart_old_container: { type: "failed", error: { type: "machine", action: "StartContainer", error: { code: "unavailable", message: "never-publish", details: { secret: "never-publish" } } } } } },
+      failed: { type: "replacement", operation: replacement, error: { type: "health", container_id: "new-container" as ContainerId, failure: { type: "timed_out" } }, compensation: { type: "old_stopped", stop_new_container: { type: "stopped" }, restart_old_container: { type: "failed", error: { type: "machine", action: "StartContainer", error: { code: "unavailable", message: "never-publish", details: { secret: "never-publish" } } } } } },
     } as const) }, rows, context);
     expect(progress.compensation).toEqual(["Replacement container stopped", "Previous container restart failed: StartContainer: unavailable"]);
     expect(JSON.stringify(progress)).not.toContain("never-publish");

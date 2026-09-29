@@ -278,11 +278,11 @@ async fn assert_replacement_health_compensation(
         assert!(match (order, compensation) {
             (
                 UpdateOrder::StartFirst,
-                ReplacementCompensation::StartFirst { stop_new_container },
+                ReplacementCompensation::OldUntouched { stop_new_container },
             ) => stop_new_container.stopped(),
             (
                 UpdateOrder::StopFirst,
-                ReplacementCompensation::StopFirst {
+                ReplacementCompensation::OldStopped {
                     stop_new_container,
                     restart_old_container,
                 },

@@ -746,7 +746,7 @@ export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>,
  */
 force: boolean, };
 
-export type ReplacementCompensation<E> = { "type": "start_first", stop_new_container: StopAttempt<E>, } | { "type": "stop_first", stop_new_container: StopAttempt<E> | null, restart_old_container: RestartAttempt<E>, };
+export type ReplacementCompensation<E> = { "type": "old_untouched", stop_new_container: StopAttempt<E>, } | { "type": "old_stopped", stop_new_container: StopAttempt<E> | null, restart_old_container: RestartAttempt<E>, };
 
 export type ReplacementOperation = {
 /**
@@ -782,7 +782,7 @@ export type ResolvedVolumeSource = (Extract<VolumeSource, { kind: "ordinary" | "
 
 export type ResolverValue = { "kind": "literal", value: string, } | { "kind": "secret", value: string, } | { "kind": "template", parts: Array<ValuePart>, };
 
-export type RestartAttempt<E> = { "type": "not_attempted" } | { "type": "restarted" } | { "type": "failed", error: E, };
+export type RestartAttempt<E> = { "type": "restarted" } | { "type": "failed", error: E, };
 
 export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count: number | null, };
 
