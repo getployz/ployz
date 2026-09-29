@@ -79,15 +79,7 @@ macro_rules! say_inline {
     }};
 }
 
-/// A warning or diagnostic line: stderr in both modes.
-macro_rules! warning {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), $($arg)*);
-    }};
-}
-
-pub(crate) use {say, say_inline, warning};
+pub(crate) use {say, say_inline};
 
 /// Finish with `value`: printed as the JSON result, or rendered by `human`.
 ///
@@ -132,6 +124,23 @@ pub(crate) fn emit<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
         EMITTED.set(true);
         Ok(())
     }
+}
+
+/// Print a committed `result`, with `follow_up_error` when a step after the commit
+/// failed; that failure then makes the command partial.
+///
+/// # Errors
+///
+/// Returns a serialization or stdout write error, or the follow-up failure.
+pub(crate) fn emit_committed(
+    mut result: serde_json::Value,
+    follow_up: Result<(), Failure>,
+) -> Result<(), Failure> {
+    if let (Err(error), Some(fields)) = (&follow_up, result.as_object_mut()) {
+        fields.insert("follow_up_error".into(), serde_json::json!(error.report()));
+    }
+    emit(&result)?;
+    follow_up
 }
 
 /// Print one line of a streamed JSON result; a no-op without `--json`.
@@ -199,15 +208,26 @@ impl Gaps {
         }
     }
 
+    fn is_complete(&self) -> bool {
+        self.failures.is_empty() && self.omitted.is_empty() && self.unavailable_volumes.is_empty()
+    }
+
     /// `Ok` when every Machine answered; otherwise the partial exit.
     pub(crate) fn outcome(&self) -> Result<(), Failure> {
-        if self.failures.is_empty()
-            && self.omitted.is_empty()
-            && self.unavailable_volumes.is_empty()
-        {
+        if self.is_complete() {
             Ok(())
         } else {
             Err(Failure::partial())
+        }
+    }
+
+    /// A fan-out that found nothing: `not_found` only when every Machine answered,
+    /// otherwise an absent value, since absence is unproven.
+    pub(crate) fn absence<T>(&self, not_found: Failure) -> Result<Option<T>, Failure> {
+        if self.is_complete() {
+            Err(not_found)
+        } else {
+            Ok(None)
         }
     }
 }

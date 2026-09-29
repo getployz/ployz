@@ -102,34 +102,35 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
         Ok::<_, Error>(assigned)
     })?;
+    // The Machine joined: everything after is a follow-up that makes the result partial.
+    let follow_up = (|| {
+        connection = connection.with_machine_id(assigned.id);
+        config.save_connection(&context_name, connection.clone())?;
+        say!("{}", added_machine_line(&assigned));
 
-    connection = connection.with_machine_id(assigned.id);
-    config.save_connection(&context_name, connection.clone())?;
-    say!("{}", added_machine_line(&assigned));
+        runtime.block_on(helpers::wait_direct_participating(
+            matches,
+            &connection,
+            "added Machine did not become ready",
+        ))?;
 
-    runtime.block_on(helpers::wait_direct_participating(
-        matches,
-        &connection,
-        "added Machine did not become ready",
-    ))?;
-
-    let catch_up = runtime.block_on(async {
-        let mut entry = super::super::reconnect_client(matches, options.context()).await?;
-        Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
-    })?;
-    if let Err(error) = catch_up {
-        let recovery =
-            super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
-        return Err(Error::detailed(
-            ployz_core::RpcErrorCode::Internal,
-            format!(
-                "{}\nFor ingress, continue with: {recovery}",
-                crate::global_catch_up::joined_catch_up_error(error)
-            ),
-            json!({ "machine": assigned }),
-        ));
-    }
-    output::emit(&json!({ "machine": assigned }))
+        let catch_up = runtime.block_on(async {
+            let mut entry = super::super::reconnect_client(matches, options.context()).await?;
+            Ok::<_, Error>(crate::global_catch_up::catch_up_globals(&mut entry, &assigned).await)
+        })?;
+        catch_up.map_err(|error| {
+            let recovery =
+                super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
+            Error::coded(
+                error.code(),
+                format!(
+                    "{}\nFor ingress, continue with: {recovery}",
+                    crate::global_catch_up::joined_catch_up_error(error)
+                ),
+            )
+        })
+    })();
+    output::emit_committed(json!({ "machine": assigned }), follow_up)
 }
 
 fn added_machine_line(assigned: &Machine) -> String {

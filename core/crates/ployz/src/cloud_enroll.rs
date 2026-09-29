@@ -282,9 +282,7 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
             }
             Response::NotYet { retry_after } => {
                 if !announced_wait {
-                    crate::output::warning!(
-                        "Another Machine is founding this Organization; waiting..."
-                    );
+                    eprintln!("Another Machine is founding this Organization; waiting...");
                     announced_wait = true;
                 }
                 tokio::time::sleep(retry_after).await;

@@ -1,5 +1,5 @@
-// Human text and warnings go through `crate::output`; tests may print freely.
-#![cfg_attr(not(test), deny(clippy::print_stdout, clippy::print_stderr))]
+// Human text goes through `say!` so `--json` keeps stdout parseable; tests may print.
+#![cfg_attr(not(test), deny(clippy::print_stdout))]
 
 pub mod build;
 mod cancellation;

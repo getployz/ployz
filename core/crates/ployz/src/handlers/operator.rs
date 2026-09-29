@@ -193,10 +193,10 @@ async fn run_proxy(
                     match client.dial_proxy("tcp", &remote).await {
                         Ok(mut upstream) => {
                             if let Err(error) = copy_bidirectional(&mut local, &mut upstream).await {
-                                crate::output::warning!("WARNING: proxy connection to {remote} failed: {error}");
+                                eprintln!("WARNING: proxy connection to {remote} failed: {error}");
                             }
                         }
-                        Err(error) => crate::output::warning!("WARNING: proxy connection to {remote} failed: {error}"),
+                        Err(error) => eprintln!("WARNING: proxy connection to {remote} failed: {error}"),
                     }
                 });
             }

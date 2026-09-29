@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::OsString,
-    io::{self, Write},
+    io,
     path::PathBuf,
     process::{Command, Stdio},
 };
@@ -137,7 +137,6 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
             crate::output::say_inline!(
                 "Storage preparation [zfs/none] (none keeps this Machine currently stateless): "
             );
-            io::stdout().flush().map_err(ProvisionError::StorageInput)?;
             let mut answer = String::new();
             io::stdin()
                 .read_line(&mut answer)

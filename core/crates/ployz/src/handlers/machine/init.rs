@@ -127,22 +127,27 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     let ingress = runtime.block_on(async {
         let mut ready =
             helpers::wait_direct_participating(matches, &connection, "initial Machine did not become ready")
-                .await.map_err(|error| Error::usage(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
+                .await.map_err(|error| error.reworded(format!("Machine initialized; startup incomplete: {error}\nInspect with: {inspect_recovery}")))?;
         if machine.accepts_ingress {
-            let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| Error::usage(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}")))?;
+            let requested = crate::ingress::service_spec(None, Default::default()).await.map_err(|error| {
+                let error = Error::from(error);
+                error.reworded(format!("Machine initialized; ingress image discovery failed: {error}\nContinue with: {ingress_recovery}"))
+            })?;
             let outcome = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
                 let error: Error = error.into();
-                Error::usage(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
+                error.reworded(format!("Machine initialized; ingress deployment incomplete: {error}\nContinue with: {ingress_recovery}"))
             })?;
             return Ok(Some(outcome));
         }
         Ok::<_, Error>(None)
-    })?;
-    output::emit(&json!({
+    });
+    // The Machine and its context are committed: print them before a follow-up failure.
+    let result = json!({
         "machine": machine,
         "context": context_name,
-        "ingress": ingress,
-    }))
+        "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
+    });
+    output::emit_committed(result, ingress.map(drop))
 }
 
 #[cfg(test)]
