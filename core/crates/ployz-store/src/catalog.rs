@@ -16,7 +16,7 @@ pub const CATALOG_VERSION: u32 = 1;
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// A node name: a lowercase DNS label.
-const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+pub(crate) const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
 
 /// A variable name, as stored.
 const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";

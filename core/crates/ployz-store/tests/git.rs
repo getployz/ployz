@@ -11,8 +11,8 @@ use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
     ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
     Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, SettingPath, Trusted, View,
-    Written,
+    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
+    SourceKind, Trusted, View, Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -153,7 +153,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         values(&store, &who),
         json!({
             "repository": "acme/web", "branch": "main", "buildMethod": "railpack",
-            "maxRetries": 10, "replicas": 1, "restartPolicy": "unless-stopped",
+            "maxRetries": 10, "privateDns": "web", "replicas": 1, "restartPolicy": "unless-stopped",
             "autoDeploy": true, "waitForCi": false, "watchPaths": [],
         })
     );
@@ -838,4 +838,53 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
             .code,
         RpcErrorCode::Conflict
     );
+}
+
+fn source(store: &ConfigStore, who: &Actor) -> SourceKind {
+    let query = ServiceQuery {
+        environment: EnvironmentRef::default(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    store.read(who, &query).unwrap().service.source
+}
+
+#[test]
+fn a_source_disconnects_to_empty_and_an_empty_service_connects_a_repository() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+            },
+        )
+        .unwrap();
+    let unset = |path: &str| {
+        edit(vec![Change::Unset {
+            path: SettingPath::parse(path).unwrap(),
+        }])
+    };
+    store.write(&who, &unset("web.image")).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+
+    // Connecting a repository needs Cloud's evidence, then builds its default branch.
+    let connect = edit(vec![set("web.repository", json!("acme/web"))]);
+    let refused = store
+        .write_trusted(&who, &connect, &Trusted::default())
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+    store.write_trusted(&who, &connect, &evidence()).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    assert_eq!(values(&store, &who)["repository"], json!("acme/web"));
+    assert_eq!(values(&store, &who)["branch"], json!("main"));
+
+    store.write(&who, &unset("web.repository")).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+    store
+        .write(&who, &edit(vec![set("web.image", json!("nginx:2"))]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Image);
 }

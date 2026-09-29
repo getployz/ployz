@@ -287,6 +287,7 @@ fn an_agent_creates_and_edits_an_image_service() {
                 "web.maxRetries",
                 "web.memLimit",
                 "web.preDeployCommand",
+                "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
                 "web.startCommand"
@@ -311,10 +312,10 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            10
+            11
         );
         assert_eq!(
-            got.pointer("/settings/7"),
+            got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
         );
         assert_eq!(
@@ -322,6 +323,7 @@ fn an_agent_creates_and_edits_an_image_service() {
             Some(&json!({
                 "image": "nginx:1",
                 "maxRetries": 10,
+                "privateDns": "web",
                 "replicas": 3,
                 "restartPolicy": "unless-stopped",
                 "startCommand": "nginx -g 'daemon off;'",
@@ -331,6 +333,25 @@ fn an_agent_creates_and_edits_an_image_service() {
         ok(store, &["unset", "web.replicas"]);
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+
+        // Healthcheck and Private DNS set and unset like any Setting.
+        let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
+        ok(store, &["set", "web.healthcheck=/up"]);
+        assert_eq!(
+            value("web.healthcheck"),
+            json!({ "path": "/up", "timeoutSeconds": 300 })
+        );
+        ok(store, &["unset", "web.healthcheck"]);
+        assert_eq!(value("web.healthcheck"), Value::Null);
+        ok(store, &["set", "web.privateDns=front"]);
+        assert_eq!(value("web.privateDns"), json!("front"));
+        ok(store, &["unset", "web.privateDns"]);
+        assert_eq!(value("web.privateDns"), json!("web"));
+
+        // Unsetting the image disconnects the source: the Service is empty again.
+        ok(store, &["unset", "web.image"]);
+        let listed = ok(store, &["service", "ls"]);
+        assert_eq!(listed.pointer("/services/0/source"), Some(&json!("empty")));
     }
 }
 
@@ -950,7 +971,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            10
+            11
         );
 
         for patch in [r#"{"memLimit": null}"#, "not json"] {
@@ -1657,6 +1678,15 @@ fn a_repository_service_is_checked_by_cloud() {
         ok(store, &["set", "web.branch=main", "web.rootDir=/apps/web"]);
         let diff = ok(store, &["diff"]);
         assert!(diff.to_string().contains("web.rootDir"), "{diff}");
+
+        // An empty Service connects a repository by setting it; unset disconnects it.
+        ok(store, &["service", "add", "blank"]);
+        ok(store, &["set", "blank.repository=acme/web"]);
+        let got = ok(store, &["get", "blank"]);
+        assert_eq!(got["values"]["branch"], "main", "{got}");
+        ok(store, &["unset", "blank.repository"]);
+        let got = ok(store, &["get", "blank"]);
+        assert_eq!(got["values"].get("repository"), None, "{got}");
     }
 }
 

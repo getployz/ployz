@@ -127,6 +127,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             "web.maxRetries",
             "web.memLimit",
             "web.preDeployCommand",
+            "web.privateDns",
             "web.replicas",
             "web.restartPolicy",
             "web.startCommand"
@@ -143,6 +144,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
             { "path": "web.maxRetries", "value": 10, "default": 10, "apply": "staged" },
             { "path": "web.memLimit", "value": null, "default": null, "apply": "staged" },
             { "path": "web.preDeployCommand", "value": null, "default": null, "apply": "staged" },
+            { "path": "web.privateDns", "value": "web", "default": "web", "apply": "staged" },
             { "path": "web.registryCredential", "value": null, "default": null, "apply": "immediate" },
             { "path": "web.replicas", "value": 1, "default": 1, "apply": "staged" },
             { "path": "web.restartPolicy", "value": "unless-stopped", "default": "unless-stopped", "apply": "staged" },
@@ -151,7 +153,7 @@ fn an_image_service_shows_every_setting_with_its_default() {
     );
     assert_eq!(
         json!(view.values),
-        json!({ "image": "nginx:1", "maxRetries": 10, "replicas": 1, "restartPolicy": "unless-stopped" })
+        json!({ "image": "nginx:1", "maxRetries": 10, "privateDns": "web", "replicas": 1, "restartPolicy": "unless-stopped" })
     );
 }
 
@@ -174,7 +176,7 @@ fn the_whole_environment_shows_only_what_is_set_unless_all() {
         ..EnvironmentQuery::default()
     };
     let all = store.read(&who, &query).unwrap();
-    assert_eq!(all.settings.len(), 10);
+    assert_eq!(all.settings.len(), 11);
     assert_eq!(get(&store, &who, Some("web.cpuLimit")).settings.len(), 1);
 }
 
@@ -469,6 +471,7 @@ fn wrong_paths_and_values_name_the_fix() {
             "maxRetries",
             "memLimit",
             "preDeployCommand",
+            "privateDns",
             "registryCredential",
             "replicas",
             "restartPolicy",
@@ -506,9 +509,7 @@ fn wrong_paths_and_values_name_the_fix() {
         ),
         (set("web.image", json!(7)), RpcErrorCode::InvalidArgument),
         (
-            Change::Unset {
-                path: path("web.image"),
-            },
+            set("web.privateDns", json!("Not a name")),
             RpcErrorCode::InvalidArgument,
         ),
     ];
@@ -665,4 +666,71 @@ fn only_postgres_and_sqlite_urls_open() {
         .err()
         .unwrap();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+}
+
+#[test]
+fn a_healthcheck_sets_by_path_or_object_and_unsets_to_none() {
+    let (store, who) = shop();
+    let write = |change: Change| store.write(&who, &edit(None, vec![change]));
+    write(set("web.healthcheck", json!("/up"))).unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "path": "/up", "timeoutSeconds": 300 })
+    );
+    // An object sets both; a path alone keeps the timeout.
+    write(set(
+        "web.healthcheck",
+        json!({ "path": "/ready", "timeoutSeconds": "30" }),
+    ))
+    .unwrap();
+    write(set("web.healthcheck", json!("/live"))).unwrap();
+    assert_eq!(
+        value(&store, &who, "web.healthcheck"),
+        json!({ "path": "/live", "timeoutSeconds": 30 })
+    );
+    for bad in [
+        json!("up"),
+        json!({ "path": "/x", "timeoutSeconds": 0 }),
+        json!(3),
+    ] {
+        let error = write(set("web.healthcheck", bad.clone())).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument, "{bad}");
+    }
+    write(Change::Unset {
+        path: path("web.healthcheck"),
+    })
+    .unwrap();
+    assert_eq!(value(&store, &who, "web.healthcheck"), Value::Null);
+}
+
+#[test]
+fn private_dns_is_staged_unique_and_unset_to_the_service_name() {
+    let (store, who) = shop();
+    store
+        .write(&who, &create_service("svc-api", "api", "caddy:2"))
+        .unwrap();
+    let write = |change: Change| store.write(&who, &edit(None, vec![change]));
+    let taken = write(set("web.privateDns", json!("api"))).unwrap_err();
+    assert_eq!(taken.code, RpcErrorCode::Conflict);
+    let staged = write(set("web.privateDns", json!("front"))).unwrap();
+    assert_eq!(paths(&staged.staged), ["web.privateDns"]);
+    // Another Service can't take that name either, as a name or its own Private DNS.
+    let taken = write(set("api.privateDns", json!("front"))).unwrap_err();
+    assert_eq!(taken.code, RpcErrorCode::Conflict);
+    store
+        .write(
+            &who,
+            &ployz_store::RenameService {
+                environment: EnvironmentRef::default(),
+                service: ployz_core::ServiceName::parse("web").unwrap(),
+                name: ployz_core::ServiceName::parse("site").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(value(&store, &who, "site.privateDns"), json!("front"));
+    write(Change::Unset {
+        path: path("site.privateDns"),
+    })
+    .unwrap();
+    assert_eq!(value(&store, &who, "site.privateDns"), json!("site"));
 }
