@@ -6,6 +6,7 @@ mod command;
 mod error;
 mod id;
 mod query;
+mod review;
 mod scope;
 mod settings;
 mod storage;
@@ -15,6 +16,7 @@ use ployz_core::RpcError;
 pub use command::*;
 pub use id::*;
 pub use query::*;
+pub use review::{DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use settings::Apply;
 

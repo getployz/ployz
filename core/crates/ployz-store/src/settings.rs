@@ -36,6 +36,15 @@ impl ServiceSetting {
         }
     }
 
+    /// The core config field this Setting writes, as change rows and restores name it.
+    pub(crate) const fn field(self) -> &'static str {
+        match self {
+            Self::Command => "startCommand",
+            Self::Image => "source.image",
+            Self::Replicas => "replicas",
+        }
+    }
+
     pub(crate) const fn apply(self) -> Apply {
         match self {
             Self::Command | Self::Image | Self::Replicas => Apply::Staged,

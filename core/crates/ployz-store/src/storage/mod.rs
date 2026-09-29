@@ -13,10 +13,16 @@ use crate::error;
 
 /// One migration per ticket, applied once, in order. Statements split on `;`, so a
 /// migration never puts `;` inside a string literal.
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "0001_config_store",
-    include_str!("migrations/0001_config_store.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    (
+        "0001_config_store",
+        include_str!("migrations/0001_config_store.sql"),
+    ),
+    (
+        "0002_saved_state",
+        include_str!("migrations/0002_saved_state.sql"),
+    ),
+];
 
 pub(crate) enum Storage {
     Sqlite(sqlite::Sqlite),

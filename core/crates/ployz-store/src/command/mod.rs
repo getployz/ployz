@@ -3,6 +3,7 @@
 
 mod edit;
 mod project;
+mod review;
 mod service;
 
 use ployz_core::RpcError;
@@ -13,6 +14,7 @@ pub use edit::{Change, Edit, Edited};
 pub use project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
 };
+pub use review::{Discard, Discarded, Publish, Published};
 pub use service::{CreateService, ServiceCreated, ServiceSummary};
 
 use crate::Actor;
@@ -27,6 +29,8 @@ pub enum Command {
     CreateEnvironment(CreateEnvironment),
     CreateService(CreateService),
     Edit(Edit),
+    Publish(Publish),
+    Discard(Discard),
 }
 
 /// What a command did.
@@ -37,6 +41,8 @@ pub enum Written {
     Environment(EnvironmentCreated),
     Service(ServiceCreated),
     Edited(Edited),
+    Published(Published),
+    Discarded(Discarded),
 }
 
 pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: Command) -> Result<Written, RpcError> {
@@ -53,6 +59,8 @@ pub(crate) fn run(tx: &mut dyn Tx, who: &Actor, command: Command) -> Result<Writ
             service::create(tx, who, create).map(Written::Service)
         }),
         Command::Edit(edit) => edit::run(tx, who, edit).map(Written::Edited),
+        Command::Publish(publish) => review::publish(tx, who, publish).map(Written::Published),
+        Command::Discard(discard) => review::discard(tx, who, discard).map(Written::Discarded),
     }
 }
 
