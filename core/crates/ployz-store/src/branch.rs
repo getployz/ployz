@@ -316,6 +316,8 @@ pub struct LiveNode {
     /// The nearest Environment the Branch comes from that runs it; none when
     /// nothing does, so what reads it deploys empty.
     pub owner: Option<EnvironmentName>,
+    /// It holds its owner's real data: a Volume, or a Service mounting one.
+    pub data: bool,
 }
 
 /// A Branch after a change.
@@ -1141,7 +1143,6 @@ pub(crate) fn branch_plan(
             .iter()
             .find(|other| other.lineage_id == *lineage)
             .map_or(PlannedRole::LeftOut, |other| role(&other.role));
-            let service = working.services.iter().find(|s| s.lineage_id == *lineage);
             Ok(PlannedNode {
                 name: name_of(working, lineage)
                     .or_else(|| names.get(lineage).cloned())
@@ -1157,8 +1158,7 @@ pub(crate) fn branch_plan(
                     .iter()
                     .find(|ancestor| holds(&ancestor.applied, lineage))
                     .map(|ancestor| ancestor.environment.summary.name.clone()),
-                data: node.node_type == EnvironmentNodeType::Volume
-                    || service.is_some_and(|service| !service.volume_attachments.is_empty()),
+                data: holds_data(working, lineage),
             })
         })
         .collect::<Result<_, RpcError>>()?;
@@ -1258,16 +1258,19 @@ fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, RpcError> {
     let uses = used_live(&branch.working);
     let live = uses
         .keys()
-        .map(|lineage| LiveNode {
-            name: branch
-                .live
-                .get(lineage)
-                .cloned()
-                .unwrap_or_else(|| lineage.clone()),
-            owner: chain
+        .map(|lineage| {
+            let owner = chain
                 .iter()
-                .find(|ancestor| holds(&ancestor.applied, lineage))
-                .map(|ancestor| ancestor.environment.summary.name.clone()),
+                .find(|ancestor| holds(&ancestor.applied, lineage));
+            LiveNode {
+                name: branch
+                    .live
+                    .get(lineage)
+                    .cloned()
+                    .unwrap_or_else(|| lineage.clone()),
+                owner: owner.map(|ancestor| ancestor.environment.summary.name.clone()),
+                data: owner.is_some_and(|ancestor| holds_data(&ancestor.applied, lineage)),
+            }
         })
         .collect();
     let update = if parent.applied.services.is_empty() && parent.applied.volumes.is_empty() {
@@ -1860,6 +1863,18 @@ fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<String> {
                 .find(|volume| volume.resource_lineage_id == lineage)
                 .map(|volume| volume.name.clone())
         })
+}
+
+/// Whether `lineage` in `intent` holds data: a Volume, or a Service mounting one.
+fn holds_data(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
+    intent
+        .volumes
+        .iter()
+        .any(|volume| volume.resource_lineage_id == lineage)
+        || intent
+            .services
+            .iter()
+            .any(|service| service.lineage_id == lineage && !service.volume_attachments.is_empty())
 }
 
 fn holds(intent: &SavedEnvironmentIntent, lineage: &str) -> bool {
