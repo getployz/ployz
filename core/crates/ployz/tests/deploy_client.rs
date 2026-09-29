@@ -1211,7 +1211,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     let refused = deploy(2, Vec::new(), trusted.clone(), None).unwrap_err();
     assert_eq!(refused.code, ployz_core::RpcErrorCode::ConfirmationRequired);
     // The acceptance is bound to the reviewed version.
-    let version = refused.details["version"].as_str().map(str::to_owned);
+    let version = refused.details.get("version").and_then(serde_json::Value::as_str).map(str::to_owned);
     let second = deploy(2, vec![data], trusted, version).unwrap();
     // A same-named Docker Volume that appeared after the review is never deleted.
     held.lock().unwrap().push(on('b'));
