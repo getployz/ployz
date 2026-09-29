@@ -16,6 +16,7 @@ pub(crate) mod context;
 mod data_loss;
 pub(crate) mod deploy;
 pub(crate) mod env;
+pub(crate) mod link;
 pub(crate) mod login;
 mod operator;
 pub(crate) mod project;
@@ -269,6 +270,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("env", rest) => env::handler(rest),
         ("explain", "") => Some((catalog::explain, Json::Supported)),
         ("get", "") => Some((config::get, Json::Supported)),
+        ("link", "") => Some((link::link, Json::Supported)),
         ("login", "") => Some((login::login, Json::Supported)),
         ("logout", "") => Some((login::logout, Json::Supported)),
         ("org", rest) => account::org_handler(rest),
@@ -279,6 +281,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("service", rest) => service::handler(rest),
         ("setup", rest) => setup::handler(rest),
         ("set", "") => Some((config::set, Json::Supported)),
+        ("status", "") => Some((link::status, Json::Supported)),
         ("token", rest) => account::token_handler(rest),
         ("unset", "") => Some((config::unset, Json::Supported)),
         ("volume", rest) => volume::handler(rest),
