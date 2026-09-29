@@ -66,8 +66,8 @@ export function getManagedServiceExports(
     },
     {
       key: "PLOYZ_SERVICE_NAME",
-      description: "The stable service slug.",
-      value: service.slug,
+      description: "The service's stable private DNS name.",
+      value: service.privateDns,
     },
     {
       key: "PLOYZ_ENVIRONMENT_ID",
