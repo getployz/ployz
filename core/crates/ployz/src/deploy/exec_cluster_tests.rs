@@ -175,7 +175,7 @@ async fn assert_target_local_volume(cluster: &Cluster, client: &mut Client, mach
     let containers = wait_for_service(client, &service_id, 1).await;
     remove_all(client, containers).await;
     cluster
-        .machine_shell(1, "docker volume rm ployz-l3-deploy-data")
+        .machine_shell(1, "docker volume rm app_ployz-l3-deploy-data")
         .unwrap();
 }
 

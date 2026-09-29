@@ -29,11 +29,10 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
     .unwrap();
 
     for machine in &machines {
-        let config = wait_config(&mut client, machine, |config| {
-            config.contains("admin API is not reachable")
+        wait_config(&mut client, machine, |config| {
+            config.contains(INGRESS_VERIFY_PATH)
         })
         .await;
-        assert!(config.contains(INGRESS_VERIFY_PATH));
     }
 
     cli(
@@ -43,8 +42,8 @@ async fn caddy_projects_and_loads_cluster_services_on_three_machines() {
             "deploy",
             "--image",
             "caddy:2.10.2",
-            "--machine",
-            machines[0].id.as_str(),
+            "--constraint",
+            &format!("node.id=={}", machines[0].id),
         ],
     );
     let caddy_id = wait_service(&mut client, "ingress", 1).await;
@@ -241,8 +240,8 @@ async fn certificate_material_in_cluster_state_is_served_without_restart() {
             "deploy",
             "--image",
             "caddy:2.10.2",
-            "--machine",
-            second.id.as_str(),
+            "--constraint",
+            &format!("node.id=={}", second.id),
         ],
     );
     wait_config(&mut client, &second, |config| {

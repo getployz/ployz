@@ -297,7 +297,7 @@ fn mount_spec(index: usize, name: &DockerVolumeName) -> ResolvedServiceSpec {
         "container": { "image": "alpine:3.23.3", "command": ["sleep", "60"], "pull_policy": "missing" },
         "volumes": [
             {"reference":"host","source":{"kind":"bind","machine_path":"/tmp/ployz-bind"}},
-            {"reference":"alias","source":{"kind":"ordinary","name":name,"driver":{"name":"local","options":{}}}},
+            {"reference":"alias","source":{"kind":"external","name":name}},
             {"reference":"memory","source":{"kind":"tmpfs","size_bytes":4096}}
         ],
         "mounts": [
