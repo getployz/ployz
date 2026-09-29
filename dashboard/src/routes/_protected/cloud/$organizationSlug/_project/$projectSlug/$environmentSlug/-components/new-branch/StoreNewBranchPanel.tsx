@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { BranchPreset, PlannedNode } from "@ployz/sdk";
-import { getEnvironmentsCollection } from "#/collections/collections";
+import { getEnvironmentSummariesCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
@@ -118,7 +118,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         setup: branchSetupCommands(plan, setupCommands).map((setup) => ({ service: setup.lineageId, command: setup.command })),
         fix,
       }).isPersisted.promise;
-      await reconcileCollection(getEnvironmentsCollection(params.organizationSlug, scope));
+      await reconcileCollection(getEnvironmentSummariesCollection(params.organizationSlug, scope));
       // The writer toasts a refused Deploy; the Branch is made either way.
       if (deployNow) writer.commit({ command: "admit", id: crypto.randomUUID(), environment: branch, services: [], version: null, remove: false, accept_volume_loss: [] });
       await navigate(getDashboardDestination({

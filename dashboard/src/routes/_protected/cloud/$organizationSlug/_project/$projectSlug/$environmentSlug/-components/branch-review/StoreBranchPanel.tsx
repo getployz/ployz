@@ -3,7 +3,7 @@ import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-rou
 import { toast } from "sonner";
 import type { BranchView, EnvironmentRef, MoveView } from "@ployz/sdk";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
-import { getEnvironmentsCollection } from "#/collections/collections";
+import { getEnvironmentSummariesCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { ConfirmDialog } from "#/components/confirm-dialog";
@@ -73,7 +73,10 @@ function BranchPanel({ params, store, branch }: { params: Params; store: Environ
     branch.update.length ? (
       <NewsRow key="update" lead={!removal && !saveView?.rows.length} icon={<ArrowDownIcon />}
         title={`${plural(branch.update.length, "update")} from ${branch.parent}`}
-        detail={update.ok ? nodeNames(update.value) : update.refusal.message}
+        detail={update.ok ? <>
+          {nodeNames(update.value)}
+          {conflicts(update.value) ? <span className="text-warning"> · {conflicts(update.value)} changed in {name} too</span> : null}
+        </> : update.refusal.message}
         action={update.ok ? (
           <Button size="sm" variant={actionVariant(!removal && !saveView?.rows.length)}
             onClick={() => void writer.commit({ command: "move", from: null, into: store, picks: null, version: update.value.version })}>
@@ -128,6 +131,8 @@ function BranchPanel({ params, store, branch }: { params: Params; store: Environ
     </div>
   );
 }
+
+const conflicts = (view: MoveView) => view.rows.filter((row) => row.conflict).length;
 
 /** "web, api": the nodes the rows touch, once each. */
 const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => presentMoveRow(row).node))].join(", ");
@@ -241,7 +246,7 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
     try {
       // Awaited: the page leaves the Branch once it's gone.
       await writer.commit({ command: "remove_environment", environment: store }).isPersisted.promise;
-      await reconcileCollection(getEnvironmentsCollection(params.organizationSlug, scope));
+      await reconcileCollection(getEnvironmentSummariesCollection(params.organizationSlug, scope));
       toast.success(`${name} closed`);
       await leave();
     } catch {
