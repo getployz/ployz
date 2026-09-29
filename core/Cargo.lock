@@ -3379,6 +3379,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ployz-store"
+version = "0.1.2-beta.50"
+dependencies = [
+ "ployz-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "ployz-testkit"
 version = "0.1.2-beta.50"
 dependencies = [
