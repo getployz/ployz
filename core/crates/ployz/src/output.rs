@@ -6,7 +6,7 @@
 //! stderr with it, so stdout stays parseable. `--json` never prompts.
 
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     io::{self, IsTerminal, Write},
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -24,6 +24,18 @@ thread_local! {
     // `EMITTED` is per-execution state. Results are printed on the handler's thread,
     // so thread-local keeps in-process handler tests apart.
     static EMITTED: Cell<bool> = const { Cell::new(false) };
+    /// Set while a command runs as a step of another: its JSON result lands here.
+    static CAPTURED: RefCell<Option<Option<serde_json::Value>>> = const { RefCell::new(None) };
+}
+
+/// Run a command as one step of another: the JSON result it would print is
+/// returned instead, so stdout still carries one object. Human text still shows.
+pub(crate) fn captured<R>(step: impl FnOnce() -> R) -> (R, Option<serde_json::Value>) {
+    let emitted = EMITTED.get();
+    CAPTURED.set(Some(None));
+    let result = step();
+    EMITTED.set(emitted);
+    (result, CAPTURED.take().flatten())
 }
 
 pub(crate) fn set_json(json: bool) {
@@ -105,6 +117,10 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
+    if CAPTURED.with_borrow(Option::is_some) {
+        CAPTURED.set(Some(Some(serde_json::to_value(value)?)));
+        return Ok(());
+    }
     let mut stdout = io::stdout().lock();
     serde_json::to_writer_pretty(&mut stdout, value)?;
     writeln!(stdout)?;
