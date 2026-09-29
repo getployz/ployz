@@ -11,7 +11,7 @@ import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/componen
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
-import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { DNS_LABEL_RULE, isDnsLabel, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
@@ -57,7 +57,7 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 /** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) => {
-    if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/u.test(name)) return "Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
+    if (!isDnsLabel(name)) return DNS_LABEL_RULE;
     const taken = services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
     return taken ? `A service here is already named ${name}.` : undefined;
   }));

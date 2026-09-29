@@ -3,14 +3,14 @@
 import { useEffect, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Trash2Icon } from "lucide-react";
-import type { EnvironmentListing } from "@ployz/sdk";
+import type { DeploymentStatus, EnvironmentListing } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
-import { removalsQuery, requireView, servicesQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { removalsQuery, requireView, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
 import { removing, teardownStep, type AcceptedLoss, type TeardownStep, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
@@ -19,6 +19,12 @@ import { getServiceIcon } from "#/routes/_protected/cloud/$organizationSlug/_pro
 import { DangerRow } from "./danger-row";
 
 type Waiting = Extract<TeardownStep, { done: false }>;
+
+/** How a removal that didn't apply ended, after "Deployment #N". */
+function ended(status: DeploymentStatus) {
+  if (status === "failed") return "failed";
+  return status === "unknown" ? "may not have ended" : `was ${status}`;
+}
 
 /**
  * Deletes a Config Store Environment or Project through the one teardown path: the dialog lists every Service and Volume
@@ -73,8 +79,10 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
       scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }).then(requireView);
     const each = await Promise.all(inScope.map(async (environment) => {
       const ref = { project: target.project, environment: environment.name };
-      const [services, removals] = await Promise.all([read(servicesQuery(ref)), read(removalsQuery(ref))]);
-      return { environment, services: services.services, volumes: removals.volumes };
+      const [services, volumes, removals] = await Promise.all([read(servicesQuery(ref)), read(volumesQuery(ref)), read(removalsQuery(ref))]);
+      // What's authored goes, and what's deployed loses its data: the one the user accepts losing, by name.
+      const names = new Set([...volumes.volumes.map((volume) => volume.name), ...removals.volumes.map((volume) => volume.name)]);
+      return { environment, services: services.services, volumes: [...names], deployed: removals.volumes.map((volume) => volume.name) };
     }));
     // Past one Environment, each thing says where it is.
     const detail = (environment: EnvironmentListing) => target.environment === null ? environment.name : undefined;
@@ -85,9 +93,9 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
       ...each.flatMap(({ environment, services }) => services.map((service): DeletionItem =>
         ({ kind: "service", name: service.name, icon: getServiceIcon({ source: { type: service.source } }), detail: detail(environment) }))),
       ...each.flatMap(({ environment, volumes }) => volumes.map((volume): DeletionItem =>
-        ({ kind: "volume", name: volume.name, detail: detail(environment) }))),
+        ({ kind: "volume", name: volume, detail: detail(environment) }))),
     ];
-    return { items, evidence: Object.fromEntries(each.map(({ environment, volumes }) => [environment.name, volumes.map((volume) => volume.name)])) };
+    return { items, evidence: Object.fromEntries(each.map(({ environment, deployed }) => [environment.name, deployed])) };
   }
 
   async function confirm(accepted: AcceptedLoss) {
@@ -140,7 +148,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
             return [
               <Alert key={environment.id} variant="destructive">
                 <AlertTitle>Deleting {environment.name} didn't finish</AlertTitle>
-                <AlertDescription><span>{deployment} {removal.status === "unknown" ? "may not have ended" : `was ${removal.status}`}. Some of it may still be on your servers.</span></AlertDescription>
+                <AlertDescription><span>{deployment} {ended(removal.status)}. Some of it may still be on your servers.</span></AlertDescription>
                 <AlertAction><Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen(true)}>Try again</Button></AlertAction>
               </Alert>,
             ];

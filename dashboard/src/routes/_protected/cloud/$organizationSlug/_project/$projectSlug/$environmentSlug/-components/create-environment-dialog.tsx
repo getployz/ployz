@@ -23,6 +23,7 @@ import { createEnvironmentServerFn } from "#/modules/environment-design/workspac
 import type { EnvironmentId } from "@ployz/sdk";
 import { storeEnabled } from "#/modules/config-store/store.contract";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
 
 /** Creates an empty root Environment and opens its canvas. */
 export function CreateEnvironmentDialog({
@@ -48,6 +49,7 @@ export function CreateEnvironmentDialog({
       stillHere: () => boolean;
     }) => {
       if (storeEnabled) {
+        if (!isDnsLabel(input.name)) throw new Error(DNS_LABEL_RULE);
         // The Store names it as typed, or says why not in the form.
         // SAFETY: an Environment id is a UUID the caller mints; the Store checks it.
         const id = crypto.randomUUID() as EnvironmentId;
