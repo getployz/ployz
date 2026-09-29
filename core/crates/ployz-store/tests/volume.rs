@@ -34,7 +34,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -45,7 +45,7 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
                 id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
@@ -56,7 +56,7 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     let created = store
-        .create_volume(
+        .write(
             &who,
             &CreateVolume {
                 id: VolumeId::parse(VOLUME).unwrap(),
@@ -75,7 +75,7 @@ fn shop() -> (ConfigStore, Actor) {
 
 fn edit(store: &ConfigStore, who: &Actor, change: Change) -> Result<(), RpcError> {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -91,14 +91,11 @@ fn path(path: &str) -> SettingPath {
 }
 
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<VolumeListing> {
-    store
-        .volumes(who, &VolumesQuery::default())
-        .unwrap()
-        .volumes
+    store.read(who, &VolumesQuery::default()).unwrap().volumes
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    store.diff(who, &DiffQuery::default()).unwrap()
+    store.read(who, &DiffQuery::default()).unwrap()
 }
 
 fn id(n: u8) -> DeploymentId {
@@ -134,7 +131,7 @@ fn admit_at(
     version: Option<String>,
 ) -> Result<(), RpcError> {
     store
-        .admit(
+        .write_trusted(
             who,
             &Admit::Deploy(Deploy {
                 id: id(n),
@@ -217,7 +214,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let (store, who) = shop();
     let get = |at: &str| {
         store
-            .environment(
+            .read(
                 &who,
                 &EnvironmentQuery {
                     environment: EnvironmentRef::default(),
@@ -270,7 +267,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     ] {
         assert_eq!(code(edit(&store, &who, change)), expected);
     }
-    let taken = store.create_volume(
+    let taken = store.write(
         &who,
         &CreateVolume {
             id: VolumeId::parse("00000000-0000-4000-8000-000000000006").unwrap(),
@@ -282,7 +279,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     assert_eq!(code(taken), RpcErrorCode::Conflict);
 
     let volume = store
-        .volume(
+        .read(
             &who,
             &VolumeQuery {
                 environment: EnvironmentRef::default(),
@@ -300,7 +297,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
 fn an_undeployed_volume_is_removed_without_servers() {
     let (store, who) = shop();
     let removed = store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -332,7 +329,14 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
             .contains("vol-00000000-0000-4000-8000-000000000005"),
         "the Deploy Intent mounts the Volume"
     );
-    let view = store.deployment(&who, &id(1)).unwrap();
+    let view = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ToOwned::to_owned(&id(1)),
+            },
+        )
+        .unwrap();
     assert!(
         view.nodes
             .iter()
@@ -354,7 +358,7 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
     // The Volume stays, so the Deploy deletes nothing and needs no evidence.
     assert!(
         store
-            .removals(&who, &RemovalsQuery::default())
+            .read(&who, &RemovalsQuery::default())
             .unwrap()
             .volumes
             .is_empty()
@@ -370,7 +374,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -385,7 +389,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .unwrap();
     assert_eq!(volume.lifecycle, ReviewLifecycleKind::Delete);
     assert_eq!(volume.data, Some(DataEffect::Deleted));
-    let removals = store.removals(&who, &RemovalsQuery::default()).unwrap();
+    let removals = store.read(&who, &RemovalsQuery::default()).unwrap();
     assert_eq!(removals.volumes[0].docker_volume.as_str(), DOCKER_VOLUME);
 
     // Missing, off-target or incomplete evidence fails closed.
@@ -465,7 +469,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     // A deletion that failed keeps the Volume deployed and staged for removal: the
     // Deployment failed, and its Node Outcome says the Volume did.
     assert!(listed(&store, &who)[0].deployed);
-    let failed = store.deployment(&who, &id(2)).unwrap();
+    let failed = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ToOwned::to_owned(&id(2)),
+            },
+        )
+        .unwrap();
     assert_eq!(failed.deployment.status, DeploymentStatus::Failed);
     let data = failed
         .nodes
@@ -478,7 +489,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     run(&store, 3, vec![removal(VolumeRemovalOutcome::Removed)]);
     assert!(listed(&store, &who).is_empty());
     assert!(diff(&store, &who).changes.is_empty());
-    let removed = store.deployment(&who, &id(3)).unwrap();
+    let removed = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ToOwned::to_owned(&id(3)),
+            },
+        )
+        .unwrap();
     assert_eq!(removed.deployment.status, DeploymentStatus::Applied);
     let data = removed
         .nodes
@@ -494,7 +512,7 @@ fn a_removed_volume_no_server_holds_needs_no_acceptance() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -513,7 +531,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -529,7 +547,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
         .unwrap();
     // The retry needs no evidence: it ships the source's frozen, accepted identities.
     store
-        .admit(
+        .write_trusted(
             &who,
             &Admit::Retry(Retry {
                 id: id(3),

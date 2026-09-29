@@ -29,7 +29,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(org());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -51,7 +51,7 @@ fn shop() -> (ConfigStore, Actor) {
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
                     id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
@@ -134,7 +134,14 @@ fn deployed(store: &ConfigStore, who: &Actor, automated: &Automated) -> Vec<(Vec
         .iter()
         .map(|admitted| {
             let summary = &admitted.deployment;
-            let view = store.deployment(who, &summary.id).unwrap();
+            let view = store
+                .read(
+                    who,
+                    &ployz_store::DeploymentQuery {
+                        id: ToOwned::to_owned(&summary.id),
+                    },
+                )
+                .unwrap();
             let sources = store.sources(&summary.id).unwrap();
             let names = summary.services.iter().map(ToString::to_string).collect();
             for source in sources

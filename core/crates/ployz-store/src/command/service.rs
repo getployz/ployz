@@ -272,7 +272,7 @@ mod tests {
         let who = Actor::system(OrganizationId::parse("org").unwrap());
         let uuid = |n: u8| format!("00000000-0000-4000-8000-00000000000{n}");
         store
-            .create_project(
+            .write(
                 &who,
                 &CreateProject {
                     id: ProjectId::parse(uuid(1)).unwrap(),
@@ -282,7 +282,7 @@ mod tests {
             )
             .unwrap();
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
                     id: ServiceLineageId::parse(uuid(3)).unwrap(),
@@ -293,7 +293,7 @@ mod tests {
             )
             .unwrap();
         store
-            .edit(
+            .write(
                 &who,
                 &Edit {
                     environment: EnvironmentRef::default(),

@@ -20,7 +20,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(PROJECT).unwrap(),
@@ -31,7 +31,7 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, name, image) in [(3, "web", "nginx:1"), (4, "api", "caddy:2")] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
                     id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
@@ -48,7 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
 
 fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -63,7 +63,7 @@ fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) {
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    store.diff(who, &DiffQuery::default()).unwrap()
+    store.read(who, &DiffQuery::default()).unwrap()
 }
 
 /// Every Setting value in Working State, by path.
@@ -72,7 +72,7 @@ fn working(store: &ConfigStore, who: &Actor) -> Vec<(String, Value)> {
         all: true,
         ..EnvironmentQuery::default()
     };
-    let view = store.environment(who, &query).unwrap();
+    let view = store.read(who, &query).unwrap();
     view.settings
         .into_iter()
         .map(|row| (row.path.to_string(), row.value))
@@ -87,7 +87,7 @@ fn value(store: &ConfigStore, who: &Actor, path: &str) -> Option<Value> {
 }
 
 fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Published, RpcError> {
-    store.publish(
+    store.write_trusted(
         who,
         &Publish {
             environment: EnvironmentRef::default(),
@@ -104,7 +104,7 @@ fn discard(
     path: Option<&str>,
     version: Option<&str>,
 ) -> Result<Discarded, RpcError> {
-    store.discard(
+    store.write(
         who,
         &Discard {
             environment: EnvironmentRef::default(),

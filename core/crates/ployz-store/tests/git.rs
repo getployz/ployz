@@ -29,7 +29,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -97,20 +97,20 @@ fn values(store: &ConfigStore, who: &Actor) -> Value {
         path: Some(SettingPath::parse("web").unwrap()),
         all: false,
     };
-    json!(store.environment(who, &query).unwrap().values)
+    json!(store.read(who, &query).unwrap().values)
 }
 
 #[test]
 fn a_repository_needs_cloud_evidence() {
     let (store, who) = shop();
     let error = store
-        .create_git_service(&who, &create("acme/web", None), &Trusted::default())
+        .write_trusted(&who, &create("acme/web", None), &Trusted::default())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details["next"], "ployz github connect");
 
     let error = store
-        .create_git_service(&who, &create("acme/secret", None), &evidence())
+        .write_trusted(&who, &create("acme/secret", None), &evidence())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert!(!error.message.contains("secret"), "{error:?}");
@@ -123,7 +123,7 @@ fn a_repository_needs_cloud_evidence() {
     assert!(!error.to_string().contains("not a repo"), "{error}");
 
     let error = store
-        .create_git_service(&who, &create("acme/web", Some("nope-branch")), &evidence())
+        .write_trusted(&who, &create("acme/web", Some("nope-branch")), &evidence())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details["next"], "ployz github ls acme/web");
@@ -141,7 +141,7 @@ fn a_repository_needs_cloud_evidence() {
 fn a_git_service_round_trips_get_edit_publish() {
     let (store, who) = shop();
     let created = store
-        .create_git_service(&who, &create("ACME/Web", None), &evidence())
+        .write_trusted(&who, &create("ACME/Web", None), &evidence())
         .unwrap();
     let staged = created
         .staged
@@ -203,7 +203,7 @@ fn a_git_service_round_trips_get_edit_publish() {
     assert!(edited.staged.is_empty(), "sending get back changes nothing");
 
     // Diff names Settings and shows values as `get` does, never the stored shape.
-    let diff = store.diff(&who, &DiffQuery::default()).unwrap();
+    let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let branch = diff.changes[0]
         .settings
         .iter()
@@ -254,7 +254,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         assert_eq!(error.code, code, "{path}");
     }
 
-    let diff = store.diff(&who, &DiffQuery::default()).unwrap();
+    let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let rows = &diff.changes[0].settings;
     let repository = rows
         .iter()
@@ -262,7 +262,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         .unwrap();
     assert_eq!(repository.after, json!("acme/docs"));
     let published = store
-        .publish(
+        .write_trusted(
             &who,
             &Publish {
                 environment: EnvironmentRef::default(),
@@ -273,13 +273,13 @@ fn a_git_service_round_trips_get_edit_publish() {
         )
         .unwrap();
     assert!(published.saved.0 >= 1);
-    assert!(store.diff(&who, &DiffQuery::default()).unwrap().published);
+    assert!(store.read(&who, &DiffQuery::default()).unwrap().published);
 }
 
 fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
-        .admit(
+        .write_trusted(
             who,
             &Admit::Deploy(Deploy {
                 id: id.clone(),
@@ -315,10 +315,10 @@ fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence 
 fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let (store, who) = shop();
     store
-        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
                 id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
@@ -379,7 +379,14 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
             report(BuildStatus::Building, None, "#1 FROM node\n"),
         )
         .unwrap();
-    let view = store.deployment(&who, &first).unwrap();
+    let view = store
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: ToOwned::to_owned(&first),
+            },
+        )
+        .unwrap();
     assert_eq!(
         json!(view.builds),
         json!([{"service": "web", "commit": a, "status": "building", "message": null}])
@@ -414,7 +421,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         service: ServiceName::parse("web").unwrap(),
     };
     assert_eq!(
-        store.build_log(&stranger, &query).unwrap_err().code,
+        store.read(&stranger, &query).unwrap_err().code,
         RpcErrorCode::NotFound
     );
 
@@ -445,7 +452,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // Retrying it builds the commit it pinned, wherever the branch is now.
     let again = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
             &Admit::Retry(Retry {
                 id: again.clone(),
@@ -489,7 +496,7 @@ fn build_order(store: &ConfigStore, who: &Actor, order: Option<BuildOrder>) -> V
 fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     let (store, who) = shop();
     store
-        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
 
     // Auto: GitHub first, skipped at once where the repository has no build workflow.
@@ -613,7 +620,7 @@ fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport 
 /// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
 fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store
-        .create_git_service(who, &create("acme/web", None), &evidence())
+        .write_trusted(who, &create("acme/web", None), &evidence())
         .unwrap();
     let deployment = admit(store, who, 1, &[]);
     store
@@ -769,7 +776,7 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
         RpcErrorCode::Conflict
     );
     let log = store
-        .build_log(
+        .read(
             &who,
             &BuildLogQuery {
                 deployment: id.deployment.clone(),
@@ -822,7 +829,7 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
 
     // A cancelled Deployment wants no build: a new dispatch is refused.
     store
-        .cancel(
+        .write(
             &who,
             &ployz_store::Cancel {
                 deployment: id.deployment.clone(),

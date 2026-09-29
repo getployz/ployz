@@ -182,7 +182,15 @@ impl ConfigStore {
         let (deployment, runner) = ids(deployment, runner)?;
         // Only a Deployment of this Organization runs here.
         let (store, owned) = (Arc::clone(&self.store), deployment.clone());
-        self.run(move || store.deployment(&who, &owned)).await?;
+        self.run(move || {
+            store.read(
+                &who,
+                &ployz_store::DeploymentQuery {
+                    id: ToOwned::to_owned(&owned),
+                },
+            )
+        })
+        .await?;
         let connections = serde_json::from_value(connections)
             .map_err(|_| invalid_argument("invalid management connections"))?;
         let sources: Sources = sources

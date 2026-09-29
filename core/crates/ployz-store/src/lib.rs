@@ -1,7 +1,8 @@
 //! The Config Store: all authored configuration and its history, behind one
 //! synchronous interface. `read` answers a [`Query`] and `write` applies a
-//! [`Command`], each in one transaction; in-process callers use the typed method
-//! for each, which runs the same code. Storage is its only I/O.
+//! [`Command`], each in one transaction; in-process callers pass the payload itself
+//! for its typed answer. Runners, GitHub builds and automation have methods of
+//! their own. Storage is its only I/O.
 
 mod automation;
 mod branch;
@@ -112,12 +113,13 @@ impl ConfigStore {
         })
     }
 
-    /// Answer `query` from one consistent state.
+    /// Answer `query` — a [`Query`], or one of its payloads for its own view —
+    /// from one consistent state.
     ///
     /// # Errors
     /// Returns an RPC error: `not_found`, `ambiguous` or `invalid_argument` for what the
     /// query names, or a storage error.
-    pub fn read(&self, who: &Actor, query: &Query) -> Result<View, RpcError> {
+    pub fn read<Q: Ask>(&self, who: &Actor, query: &Q) -> Result<Q::View, RpcError> {
         self.read_trusted(who, query, &Trusted::default())
     }
 
@@ -126,21 +128,25 @@ impl ConfigStore {
     ///
     /// # Errors
     /// As [`read`](Self::read).
-    pub fn read_trusted(
+    pub fn read_trusted<Q: Ask>(
         &self,
         who: &Actor,
-        query: &Query,
+        query: &Q,
         trusted: &Trusted,
-    ) -> Result<View, RpcError> {
-        self.storage.read(|tx| query::run(tx, who, query, trusted))
+    ) -> Result<Q::View, RpcError> {
+        let query = query.clone().query();
+        self.storage
+            .read(|tx| query::run(tx, who, &query, trusted))
+            .and_then(Q::view)
     }
 
-    /// Apply `command` in one transaction: all of it, or none.
+    /// Apply `command` — a [`Command`], or one of its payloads for its own result —
+    /// in one transaction: all of it, or none.
     ///
     /// # Errors
     /// Returns an RPC error: `invalid_argument`, `not_found`, `ambiguous` or `conflict`
     /// for what the command asks, or a storage error.
-    pub fn write(&self, who: &Actor, command: &Command) -> Result<Written, RpcError> {
+    pub fn write<C: Tell>(&self, who: &Actor, command: &C) -> Result<C::Written, RpcError> {
         self.write_trusted(who, command, &Trusted::default())
     }
 
@@ -149,346 +155,16 @@ impl ConfigStore {
     ///
     /// # Errors
     /// As [`write`](Self::write).
-    pub fn write_trusted(
+    pub fn write_trusted<C: Tell>(
         &self,
         who: &Actor,
-        command: &Command,
+        command: &C,
         trusted: &Trusted,
-    ) -> Result<Written, RpcError> {
+    ) -> Result<C::Written, RpcError> {
+        let command = command.clone().command();
         self.storage
-            .write(|tx| command::run(tx, who, &self.sealing, command, trusted))
-    }
-
-    /// [`Query::Environment`]: an Environment's Settings.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn environment(
-        &self,
-        who: &Actor,
-        query: &EnvironmentQuery,
-    ) -> Result<EnvironmentView, RpcError> {
-        self.storage.read(|tx| query::environment(tx, who, query))
-    }
-
-    /// [`Command::CreateProject`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn create_project(
-        &self,
-        who: &Actor,
-        create: &CreateProject,
-    ) -> Result<ProjectCreated, RpcError> {
-        self.storage
-            .write(|tx| command::create_project(tx, who, create))
-    }
-
-    /// [`Command::CreateEnvironment`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn create_environment(
-        &self,
-        who: &Actor,
-        create: &CreateEnvironment,
-    ) -> Result<EnvironmentCreated, RpcError> {
-        self.storage
-            .write(|tx| command::create_environment(tx, who, create))
-    }
-
-    /// [`Command::CreateService`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn create_service(
-        &self,
-        who: &Actor,
-        create: &CreateService,
-    ) -> Result<ServiceStaged, RpcError> {
-        self.storage
-            .write(|tx| command::create_service(tx, who, create))
-    }
-
-    /// [`Command::RenameService`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn rename_service(
-        &self,
-        who: &Actor,
-        rename: &RenameService,
-    ) -> Result<ServiceStaged, RpcError> {
-        self.storage
-            .write(|tx| command::rename_service(tx, who, rename))
-    }
-
-    /// [`Command::RemoveService`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn remove_service(
-        &self,
-        who: &Actor,
-        remove: &RemoveService,
-    ) -> Result<ServiceStaged, RpcError> {
-        self.storage
-            .write(|tx| command::remove_service(tx, who, remove))
-    }
-
-    /// [`Query::Services`]: an Environment's Services.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn services(&self, who: &Actor, query: &ServicesQuery) -> Result<ServicesView, RpcError> {
-        self.storage.read(|tx| query::services(tx, who, query))
-    }
-
-    /// [`Query::Service`]: one Service.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn service(&self, who: &Actor, query: &ServiceQuery) -> Result<ServiceView, RpcError> {
-        self.storage.read(|tx| query::service(tx, who, query))
-    }
-
-    /// [`Command::Edit`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn edit(&self, who: &Actor, edit: &Edit) -> Result<Edited, RpcError> {
-        self.storage
-            .write(|tx| command::edit(tx, who, &self.sealing, edit, &Trusted::default()))
-    }
-
-    /// [`Command::CreateGitService`], with the repository evidence Cloud gathered.
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `not_found` when `trusted` doesn't vouch for the
-    /// repository or branch.
-    pub fn create_git_service(
-        &self,
-        who: &Actor,
-        create: &CreateGitService,
-        trusted: &Trusted,
-    ) -> Result<ServiceStaged, RpcError> {
-        self.storage
-            .write(|tx| git::create_git_service(tx, who, create, trusted))
-    }
-
-    /// [`Query::Diff`]: an Environment's changes and the version to act on them by.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn diff(&self, who: &Actor, query: &DiffQuery) -> Result<DiffView, RpcError> {
-        self.storage.read(|tx| query::diff(tx, who, query))
-    }
-
-    /// [`Command::Publish`]. `trusted` carries what the Servers hold when it
-    /// publishes the removal of deployed Volumes; never pass caller-supplied evidence.
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `confirmation_required` when it publishes the loss of
-    /// data not accepted, `unavailable` when the evidence of that data is missing.
-    pub fn publish(
-        &self,
-        who: &Actor,
-        publish: &Publish,
-        trusted: &Trusted,
-    ) -> Result<Published, RpcError> {
-        self.storage
-            .write(|tx| command::publish(tx, who, publish, trusted))
-    }
-
-    /// [`Command::Discard`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn discard(&self, who: &Actor, discard: &Discard) -> Result<Discarded, RpcError> {
-        self.storage.write(|tx| command::discard(tx, who, discard))
-    }
-
-    /// [`Command::Admit`]: publish if needed, then freeze and queue a Deployment.
-    /// `trusted` carries what the Servers hold when the Deploy removes deployed
-    /// Volumes; never pass caller-supplied evidence.
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `confirmation_required` when it deletes data not
-    /// accepted by name, `unavailable` when the evidence of that data is missing.
-    pub fn admit(
-        &self,
-        who: &Actor,
-        admit: &Admit,
-        trusted: &Trusted,
-    ) -> Result<DeploymentSummary, RpcError> {
-        self.storage
-            .write(|tx| command::admit(tx, who, admit, trusted))
-    }
-
-    /// [`Command::AddDomain`], with Cloud's evidence of the custom-domain capability.
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `unsupported` for a custom domain without the capability.
-    pub fn add_domain(
-        &self,
-        who: &Actor,
-        add: &AddDomain,
-        trusted: &Trusted,
-    ) -> Result<DomainStaged, RpcError> {
-        self.storage
-            .write(|tx| domain::add_domain(tx, who, add, trusted))
-    }
-
-    /// [`Command::RemoveDomain`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn remove_domain(
-        &self,
-        who: &Actor,
-        remove: &RemoveDomain,
-        trusted: &Trusted,
-    ) -> Result<DomainStaged, RpcError> {
-        self.storage
-            .write(|tx| domain::remove_domain(tx, who, remove, trusted))
-    }
-
-    /// [`Query::Domains`]: an Environment's domains, each with its status.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn domains(
-        &self,
-        who: &Actor,
-        query: &DomainsQuery,
-        trusted: &Trusted,
-    ) -> Result<DomainsView, RpcError> {
-        self.storage
-            .read(|tx| domain::domains(tx, who, query, trusted))
-    }
-
-    /// [`Query::Domain`]: one domain, with its status.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn domain(
-        &self,
-        who: &Actor,
-        query: &DomainQuery,
-        trusted: &Trusted,
-    ) -> Result<DomainView, RpcError> {
-        self.storage
-            .read(|tx| domain::domain(tx, who, query, trusted))
-    }
-
-    /// [`Command::Start`]: check a queued Deployment can still go to a runner.
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` unless the Deployment is queued.
-    pub fn start(&self, who: &Actor, start: &Start) -> Result<DeploymentSummary, RpcError> {
-        self.storage.write(|tx| command::start(tx, who, start))
-    }
-
-    /// [`Command::CreateVolume`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn create_volume(
-        &self,
-        who: &Actor,
-        create: &CreateVolume,
-    ) -> Result<VolumeStaged, RpcError> {
-        self.storage
-            .write(|tx| command::create_volume(tx, who, create))
-    }
-
-    /// [`Command::RemoveVolume`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn remove_volume(
-        &self,
-        who: &Actor,
-        remove: &RemoveVolume,
-    ) -> Result<VolumeStaged, RpcError> {
-        self.storage
-            .write(|tx| command::remove_volume(tx, who, remove))
-    }
-
-    /// [`Query::Volumes`]: an Environment's Volumes.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn volumes(&self, who: &Actor, query: &VolumesQuery) -> Result<VolumesView, RpcError> {
-        self.storage.read(|tx| query::volumes(tx, who, query))
-    }
-
-    /// [`Query::Volume`]: one Volume.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn volume(&self, who: &Actor, query: &VolumeQuery) -> Result<VolumeView, RpcError> {
-        self.storage.read(|tx| query::volume(tx, who, query))
-    }
-
-    /// [`Query::Removals`]: the deployed Volumes a full Deploy would remove, so the
-    /// caller knows which Docker Volumes to observe before admitting it.
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn removals(&self, who: &Actor, query: &RemovalsQuery) -> Result<RemovalsView, RpcError> {
-        self.storage.read(|tx| query::removals(tx, who, query))
-    }
-
-    /// [`Command::Cancel`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` when the Deployment already ended.
-    pub fn cancel(&self, who: &Actor, cancel: &Cancel) -> Result<DeploymentSummary, RpcError> {
-        self.storage.write(|tx| command::cancel(tx, who, cancel))
-    }
-
-    /// What deploying would ship, from authored state alone.
-    ///
-    /// # Errors
-    /// As [`Self::read`], plus `invalid_argument` when the Environment can't deploy.
-    pub fn plan(&self, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
-        self.storage
-            .read(|tx| query::deployment::plan(tx, who, query))
-    }
-
-    /// The Namespace an Environment's containers carry on the Servers.
-    ///
-    /// # Errors
-    /// As [`Self::read`].
-    pub fn namespace(
-        &self,
-        who: &Actor,
-        query: &NamespaceQuery,
-    ) -> Result<NamespaceView, RpcError> {
-        self.storage
-            .read(|tx| query::deployment::namespace(tx, who, query))
-    }
-
-    /// One page of an Environment's Deployments, newest first.
-    ///
-    /// # Errors
-    /// As [`Self::read`], plus `invalid_argument` for a bad limit or cursor.
-    pub fn deployments(
-        &self,
-        who: &Actor,
-        query: &DeploymentsQuery,
-    ) -> Result<DeploymentsView, RpcError> {
-        self.storage
-            .read(|tx| query::deployment::page(tx, who, query))
-    }
-
-    /// One Deployment with its recorded Deploy Preview and Node Outcomes.
-    ///
-    /// # Errors
-    /// As [`Self::read`]; `not_found` for a Deployment of another Organization.
-    pub fn deployment(&self, who: &Actor, id: &DeploymentId) -> Result<DeploymentView, RpcError> {
-        self.storage.read(|tx| deployment::view(tx, who, id))
+            .write(|tx| command::run(tx, who, &self.sealing, &command, trusted))
+            .and_then(C::written)
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with
@@ -612,113 +288,6 @@ impl ConfigStore {
             .read(|tx| conditional_save::pending(tx, &who, repository_id, branch))
     }
 
-    /// [`Command::CreateBranch`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn create_branch(&self, who: &Actor, create: &CreateBranch) -> Result<Branched, RpcError> {
-        self.storage
-            .write(|tx| branch::create_branch(tx, who, create))
-    }
-
-    /// [`Command::Move`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `invalid_argument` unless the sides are a Branch
-    /// and its Parent, or for a secret that wants a fresh value; `conflict` for a
-    /// stale version, nothing to move, a Branch being removed, or an Update while
-    /// the Branch doesn't run its Working State.
-    pub fn move_changes(&self, who: &Actor, request: &Move) -> Result<Moved, RpcError> {
-        self.storage
-            .write(|tx| branch::move_changes(tx, who, &self.sealing, request))
-    }
-
-    /// [`Query::Move`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read); `invalid_argument` unless the sides are a Branch
-    /// and its Parent.
-    pub fn move_view(&self, who: &Actor, query: &MoveQuery) -> Result<MoveView, RpcError> {
-        self.storage.read(|tx| branch::move_view(tx, who, query))
-    }
-
-    /// [`Command::CopyNode`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` while the Branch doesn't run its
-    /// Working State.
-    pub fn copy_node(&self, who: &Actor, copy: &CopyNode) -> Result<Branched, RpcError> {
-        self.storage.write(|tx| branch::copy_node(tx, who, copy))
-    }
-
-    /// [`Command::KeepBranch`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn keep_branch(&self, who: &Actor, keep: &KeepBranch) -> Result<Branched, RpcError> {
-        self.storage.write(|tx| branch::keep_branch(tx, who, keep))
-    }
-
-    /// [`Query::Environments`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn environments(
-        &self,
-        who: &Actor,
-        query: &EnvironmentsQuery,
-    ) -> Result<EnvironmentsView, RpcError> {
-        self.storage
-            .read(|tx| teardown::environments(tx, who, query))
-    }
-
-    /// [`Command::SetDefaultEnvironment`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` for an Environment being removed.
-    pub fn set_default_environment(
-        &self,
-        who: &Actor,
-        set: &SetDefaultEnvironment,
-    ) -> Result<EnvironmentsView, RpcError> {
-        self.storage.write(|tx| teardown::set_default(tx, who, set))
-    }
-
-    /// [`Command::RemoveEnvironment`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` for the Default Environment, one with
-    /// Branches, or one that may still run on the Servers (`details.deployed`).
-    pub fn remove_environment(
-        &self,
-        who: &Actor,
-        remove: &RemoveEnvironment,
-    ) -> Result<EnvironmentRemoved, RpcError> {
-        self.storage.write(|tx| teardown::remove(tx, who, remove))
-    }
-
-    /// [`Query::Projects`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn projects(&self, who: &Actor) -> Result<ProjectsView, RpcError> {
-        self.storage.read(|tx| teardown::projects(tx, who))
-    }
-
-    /// [`Command::RemoveProject`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write); `conflict` while any of its Environments may still
-    /// run on the Servers (`details.deployed`, `details.environment` the next to take off).
-    pub fn remove_project(
-        &self,
-        who: &Actor,
-        remove: &RemoveProject,
-    ) -> Result<ProjectRemoved, RpcError> {
-        self.storage
-            .write(|tx| teardown::remove_project(tx, who, remove))
-    }
-
     /// Forget an Organization's configuration once it has no Project: what it
     /// created, what Cloud observed of its repositories, and its Build Order. Cloud's
     /// own Organization removal runs it. In-process only: no command reaches it.
@@ -728,14 +297,6 @@ impl ConfigStore {
     pub fn remove_organization(&self, who: &Actor) -> Result<OrganizationRemoved, RpcError> {
         self.storage
             .write(|tx| teardown::remove_organization(tx, who))
-    }
-
-    /// [`Query::Branch`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read); `invalid_argument` for an Environment that isn't a Branch.
-    pub fn branch(&self, who: &Actor, query: &BranchQuery) -> Result<BranchView, RpcError> {
-        self.storage.read(|tx| branch::branch(tx, who, query))
     }
 
     /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
@@ -844,65 +405,5 @@ impl ConfigStore {
     ) -> Result<Vec<GithubBuild>, RpcError> {
         self.storage
             .read(|tx| build::github_outstanding(tx, deployment))
-    }
-
-    /// The Organization's Build Order.
-    ///
-    /// # Errors
-    /// Returns a storage error.
-    pub fn build_order(&self, who: &Actor) -> Result<BuildOrderView, RpcError> {
-        self.storage.read(|tx| builders::build_order(tx, who))
-    }
-
-    /// [`Command::SetBuildOrder`].
-    ///
-    /// # Errors
-    /// Returns a storage error.
-    pub fn set_build_order(
-        &self,
-        who: &Actor,
-        set: &SetBuildOrder,
-    ) -> Result<BuildOrderView, RpcError> {
-        self.storage
-            .write(|tx| builders::set_build_order(tx, who, set))
-    }
-
-    /// One Git build of a Deployment, with its log.
-    ///
-    /// # Errors
-    /// As [`Self::read`]; `not_found` for a Deployment of another Organization or a
-    /// Service it didn't build.
-    pub fn build_log(&self, who: &Actor, query: &BuildLogQuery) -> Result<BuildLogView, RpcError> {
-        self.storage
-            .read(|tx| deployment::build_log(tx, who, query))
-    }
-
-    /// [`Command::SetPrPlan`].
-    ///
-    /// # Errors
-    /// As [`write`](Self::write).
-    pub fn set_pr_plan(&self, who: &Actor, set: &SetPrPlan) -> Result<PrPlansView, RpcError> {
-        self.storage
-            .write(|tx| pull_request::set_plan(tx, who, set))
-    }
-
-    /// [`Query::PrPlans`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn pr_plans(&self, who: &Actor, query: &PrPlansQuery) -> Result<PrPlansView, RpcError> {
-        self.storage.read(|tx| pull_request::plans(tx, who, query))
-    }
-
-    /// [`Query::PullRequest`].
-    ///
-    /// # Errors
-    /// As [`read`](Self::read).
-    pub fn pull_request(
-        &self,
-        who: &Actor,
-        query: &PullRequestQuery,
-    ) -> Result<PullRequestView, RpcError> {
-        self.storage.read(|tx| pull_request::view(tx, who, query))
     }
 }

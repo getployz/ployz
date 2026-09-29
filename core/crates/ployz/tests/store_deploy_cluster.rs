@@ -356,7 +356,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -385,7 +385,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     let sources = tempfile::tempdir().unwrap();
     for (n, name) in names.iter().enumerate() {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
                     id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
@@ -412,7 +412,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     dockerfile("web", "echo built-web");
     dockerfile("api", "echo broken-api && exit 1");
     store
-        .edit(
+        .write(
             &who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -436,7 +436,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             let id =
                 DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
             store
-                .admit(
+                .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
                         id: id.clone(),
@@ -471,7 +471,14 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             )
             .await
             .unwrap();
-            store.deployment(&who, &id).unwrap()
+            store
+                .read(
+                    &who,
+                    &ployz_store::DeploymentQuery {
+                        id: ToOwned::to_owned(&id),
+                    },
+                )
+                .unwrap()
         }
     };
     let statuses = |view: &ployz_store::DeploymentView| {
@@ -495,7 +502,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
         ])
     );
     let log = store
-        .build_log(
+        .read(
             &who,
             &BuildLogQuery {
                 deployment: failed.deployment.id.clone(),
@@ -545,7 +552,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -556,7 +563,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
                 id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
@@ -568,7 +575,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         .unwrap();
     let set = |setting: &str, value: Value| {
         store
-            .edit(
+            .write(
                 &who,
                 &Edit {
                     environment: EnvironmentRef::default(),
@@ -600,7 +607,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             let id =
                 DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
             store
-                .admit(
+                .write_trusted(
                     &who,
                     &Admit::Deploy(Deploy {
                         id: id.clone(),
@@ -629,7 +636,14 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             )
             .await
             .unwrap();
-            store.deployment(&who, &id).unwrap()
+            store
+                .read(
+                    &who,
+                    &ployz_store::DeploymentQuery {
+                        id: ToOwned::to_owned(&id),
+                    },
+                )
+                .unwrap()
         }
     };
     let built = deploy(1, true).await;
@@ -642,7 +656,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     assert_eq!(built.builds[0].commit, None);
     assert_eq!(built.builds[0].status, BuildStatus::Built);
     let log = store
-        .build_log(
+        .read(
             &who,
             &ployz_store::BuildLogQuery {
                 deployment: built.deployment.id.clone(),

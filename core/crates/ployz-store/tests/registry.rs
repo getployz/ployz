@@ -27,7 +27,7 @@ fn who() -> Actor {
 /// Project `shop` with image Services `web` and `api` and an empty one, `blank`.
 fn shop(store: &ConfigStore) {
     store
-        .create_project(
+        .write(
             &who(),
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -43,7 +43,7 @@ fn shop(store: &ConfigStore) {
         (5, "blank", None),
     ] {
         store
-            .create_service(
+            .write(
                 &who(),
                 &CreateService {
                     id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
@@ -58,7 +58,7 @@ fn shop(store: &ConfigStore) {
 }
 
 fn edit(store: &ConfigStore, change: Change) -> Result<Edited, RpcError> {
-    store.edit(
+    store.write(
         &who(),
         &Edit {
             environment: EnvironmentRef::default(),
@@ -94,7 +94,7 @@ fn paths(paths: &[SettingPath]) -> Vec<String> {
 
 fn value(store: &ConfigStore, path: &str) -> Value {
     store
-        .environment(
+        .read(
             &who(),
             &EnvironmentQuery {
                 path: Some(SettingPath::parse(path).unwrap()),
@@ -110,7 +110,7 @@ fn value(store: &ConfigStore, path: &str) -> Value {
 fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
-        .admit(
+        .write_trusted(
             &who(),
             &Admit::Deploy(Deploy {
                 id: id.clone(),
@@ -161,7 +161,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         let edited = set(&store, PATH, same).unwrap();
         assert!(edited.staged.is_empty() && edited.immediate.is_empty());
     }
-    let diff = store.diff(&who(), &DiffQuery::default()).unwrap();
+    let diff = store.read(&who(), &DiffQuery::default()).unwrap();
     let row = diff
         .changes
         .iter()
@@ -172,7 +172,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         (row.before.clone(), row.after.clone()),
         (Value::Null, json!({ "secret": true }))
     );
-    let plan = store.plan(&who(), &PlanQuery::default()).unwrap();
+    let plan = store.read(&who(), &PlanQuery::default()).unwrap();
     let one = admit(&store, 1);
     assert_eq!(
         pulls_with(&store, &one),
@@ -198,7 +198,7 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
         .unwrap();
     let retried = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
     store
-        .admit(
+        .write_trusted(
             &who(),
             &Admit::Retry(Retry {
                 id: retried.clone(),
@@ -230,19 +230,20 @@ fn a_new_secret_applies_at_once_and_admission_freezes_what_a_deployment_pulls_wi
     let reads = [
         json!(edited),
         json!(rotated),
-        json!(
-            store
-                .environment(&who(), &EnvironmentQuery::default())
-                .unwrap()
-        ),
+        json!(store.read(&who(), &EnvironmentQuery::default()).unwrap()),
         json!(diff),
         json!(plan),
-        json!(store.deployment(&who(), &two).unwrap()),
         json!(
             store
-                .deployments(&who(), &DeploymentsQuery::default())
+                .read(
+                    &who(),
+                    &ployz_store::DeploymentQuery {
+                        id: ToOwned::to_owned(&two)
+                    }
+                )
                 .unwrap()
         ),
+        json!(store.read(&who(), &DeploymentsQuery::default()).unwrap()),
     ];
     for read in reads {
         let text = read.to_string();
@@ -275,7 +276,7 @@ fn unset_keeps_the_stored_secret_and_discard_returns_to_the_introduction() {
     // A new Service's Setting discards to its Node Introduction, which never held a
     // credential; the stored secret stays.
     store
-        .discard(
+        .write(
             &who(),
             &Discard {
                 environment: EnvironmentRef::default(),
