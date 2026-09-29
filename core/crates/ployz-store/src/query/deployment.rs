@@ -96,6 +96,7 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         &review.head.applied,
         &query.services,
         namespace.clone(),
+        None,
     )?;
     let changes = review
         .view

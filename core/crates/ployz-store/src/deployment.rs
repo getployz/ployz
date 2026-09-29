@@ -18,7 +18,7 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
+use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, RunnerId};
 use crate::review::{self, Head};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
@@ -182,6 +182,8 @@ pub(crate) struct TargetNode {
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
     pub(crate) namespace: Namespace,
+    /// The Cluster Domain its generated domains expand under.
+    pub(crate) cluster_domain: Option<Hostname>,
 }
 
 impl Frozen {
@@ -203,22 +205,25 @@ struct Stored {
     summary: DeploymentSummary,
     environment: EnvironmentId,
     namespace: Namespace,
+    cluster_domain: Option<Hostname>,
     nodes: Vec<TargetNode>,
     run: Run,
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run";
+     namespace, run, cluster_domain";
 
 /// Freeze a Deployment of `saved`: its target nodes, checked to lower to a Deploy
 /// Intent. `services` narrows it; none targets every Service, including the removal
-/// of those Applied State holds and `saved` does not.
+/// of those Applied State holds and `saved` does not. Generated domains expand under
+/// `cluster_domain`; a plan, which has none, checks the rest.
 pub(crate) fn freeze(
     environment: &EnvironmentId,
     saved: &SavedEnvironmentIntent,
     applied: &SavedEnvironmentIntent,
     services: &[ServiceName],
     namespace: Namespace,
+    cluster_domain: Option<&Hostname>,
 ) -> Result<Frozen, RpcError> {
     let target = |service: &ployz_core::config::SavedServiceIntent| TargetNode {
         id: service.id.clone(),
@@ -255,8 +260,19 @@ pub(crate) fn freeze(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
-    lower(environment, saved, services, namespace.clone(), None)?;
-    Ok(Frozen { nodes, namespace })
+    lower(
+        environment,
+        saved,
+        services,
+        namespace.clone(),
+        cluster_domain,
+        None,
+    )?;
+    Ok(Frozen {
+        nodes,
+        namespace,
+        cluster_domain: cluster_domain.cloned(),
+    })
 }
 
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
@@ -267,9 +283,13 @@ fn lower(
     saved: &SavedEnvironmentIntent,
     services: &[ServiceName],
     namespace: Namespace,
+    cluster_domain: Option<&Hostname>,
     unseal: Option<&SealingKey>,
 ) -> Result<DeployIntent, RpcError> {
-    let compiled = compile_environment_intent(environment.as_str(), saved.clone());
+    let compiled = compile_environment_intent(
+        environment.as_str(),
+        crate::domain::expand(saved, cluster_domain),
+    );
     let mut resolved = variables::resolve(&compiled, unseal)?;
     let snapshots: Vec<Value> = compiled
         .node_snapshots
@@ -348,8 +368,8 @@ pub(crate) fn admit(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9)",
+          namespace, run, cluster_domain) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -360,6 +380,11 @@ pub(crate) fn admit(
             json_text(&frozen.nodes).as_str().into(),
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
+            frozen
+                .cluster_domain
+                .as_ref()
+                .map_or("", Hostname::as_str)
+                .into(),
         ],
     )?;
     Ok(summary)
@@ -484,6 +509,7 @@ pub(crate) fn claim(
         &saved,
         &stored.summary.services,
         stored.namespace,
+        stored.cluster_domain.as_ref(),
         Some(sealing),
     )?;
     Ok(Ok(Claimed {
@@ -846,6 +872,10 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
         namespace: Namespace::parse(row.text(7)?).map_err(|_| error::corrupt("Namespace"))?,
         run: serde_json::from_value(json(8, "Deployment run")?)
             .map_err(|_| error::corrupt("Deployment run"))?,
+        cluster_domain: match row.text(9)? {
+            "" => None,
+            name => Some(parse_stored(name)?),
+        },
     })
     .map(|mut stored| {
         stored.summary.runner.clone_from(&stored.run.runner);

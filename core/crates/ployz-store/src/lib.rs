@@ -6,6 +6,7 @@
 pub mod catalog;
 mod command;
 mod deployment;
+mod domain;
 mod error;
 mod git;
 mod id;
@@ -24,6 +25,11 @@ pub use command::*;
 pub use deployment::{
     Claimed, DeploymentStatus, DeploymentSummary, DeploymentView, NodeOutcome, NodeStatus, Outcome,
     RunEvidence,
+};
+pub use domain::{
+    AddDomain, CertificateObservation, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord,
+    Domain, DomainAction, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged,
+    DomainStatus, DomainView, DomainsQuery, DomainsView, RemoveDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
@@ -66,7 +72,21 @@ impl ConfigStore {
     /// Returns an RPC error: `not_found`, `ambiguous` or `invalid_argument` for what the
     /// query names, or a storage error.
     pub fn read(&self, who: &Actor, query: &Query) -> Result<View, RpcError> {
-        self.storage.read(|tx| query::run(tx, who, query))
+        self.read_trusted(who, query, &Trusted::default())
+    }
+
+    /// [`read`](Self::read) with what Cloud observed itself, such as the certificates
+    /// behind a domain's status. Never pass caller-supplied evidence.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn read_trusted(
+        &self,
+        who: &Actor,
+        query: &Query,
+        trusted: &Trusted,
+    ) -> Result<View, RpcError> {
+        self.storage.read(|tx| query::run(tx, who, query, trusted))
     }
 
     /// Apply `command` in one transaction: all of it, or none.
@@ -239,7 +259,64 @@ impl ConfigStore {
     /// # Errors
     /// As [`write`](Self::write).
     pub fn admit(&self, who: &Actor, admit: &Admit) -> Result<DeploymentSummary, RpcError> {
-        self.storage.write(|tx| command::admit(tx, who, admit))
+        self.storage
+            .write(|tx| command::admit(tx, who, admit, &Trusted::default()))
+    }
+
+    /// [`Command::AddDomain`], with Cloud's evidence of the custom-domain capability.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `unsupported` for a custom domain without the capability.
+    pub fn add_domain(
+        &self,
+        who: &Actor,
+        add: &AddDomain,
+        trusted: &Trusted,
+    ) -> Result<DomainStaged, RpcError> {
+        self.storage
+            .write(|tx| domain::add_domain(tx, who, add, trusted))
+    }
+
+    /// [`Command::RemoveDomain`].
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn remove_domain(
+        &self,
+        who: &Actor,
+        remove: &RemoveDomain,
+        trusted: &Trusted,
+    ) -> Result<DomainStaged, RpcError> {
+        self.storage
+            .write(|tx| domain::remove_domain(tx, who, remove, trusted))
+    }
+
+    /// [`Query::Domains`]: an Environment's domains, each with its status.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn domains(
+        &self,
+        who: &Actor,
+        query: &DomainsQuery,
+        trusted: &Trusted,
+    ) -> Result<DomainsView, RpcError> {
+        self.storage
+            .read(|tx| domain::domains(tx, who, query, trusted))
+    }
+
+    /// [`Query::Domain`]: one domain, with its status.
+    ///
+    /// # Errors
+    /// As [`read`](Self::read).
+    pub fn domain(
+        &self,
+        who: &Actor,
+        query: &DomainQuery,
+        trusted: &Trusted,
+    ) -> Result<DomainView, RpcError> {
+        self.storage
+            .read(|tx| domain::domain(tx, who, query, trusted))
     }
 
     /// [`Command::Cancel`].

@@ -221,6 +221,7 @@ fn github() -> Trusted {
             default_branch: "main".into(),
             branches: vec!["dev".into()],
         }],
+        ..Trusted::default()
     }
 }
 
