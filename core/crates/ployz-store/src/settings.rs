@@ -38,6 +38,8 @@ pub(crate) enum ServiceSetting {
     MaxRetries,
     MemLimit,
     PreDeployCommand,
+    /// What an image Service's private image is pulled with; see [`crate::registry`].
+    RegistryCredential,
     Replicas,
     RestartPolicy,
     StartCommand,
@@ -47,12 +49,13 @@ pub(crate) enum ServiceSetting {
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 14] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::CpuLimit,
         Self::Image,
         Self::MaxRetries,
         Self::MemLimit,
         Self::PreDeployCommand,
+        Self::RegistryCredential,
         Self::Replicas,
         Self::RestartPolicy,
         Self::StartCommand,
@@ -71,6 +74,7 @@ impl ServiceSetting {
             Self::MaxRetries => "maxRetries",
             Self::MemLimit => "memLimit",
             Self::PreDeployCommand => "preDeployCommand",
+            Self::RegistryCredential => "registryCredential",
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
@@ -86,6 +90,7 @@ impl ServiceSetting {
             Self::MaxRetries => "Max retries",
             Self::MemLimit => "Memory limit",
             Self::PreDeployCommand => "Pre-deploy command",
+            Self::RegistryCredential => "Registry credentials",
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
@@ -102,6 +107,9 @@ impl ServiceSetting {
             Self::PreDeployCommand => {
                 "Runs once in a new replica before a Deploy starts the Service."
             }
+            Self::RegistryCredential => {
+                "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -."
+            }
             Self::Replicas => "How many copies of the Service run.",
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
@@ -113,6 +121,7 @@ impl ServiceSetting {
     pub(crate) const fn field(self) -> &'static str {
         match self {
             Self::Image => "source.image",
+            Self::RegistryCredential => "source.credentials",
             Self::Git(git) => git.field(),
             Self::CpuLimit
             | Self::MaxRetries
@@ -135,6 +144,7 @@ impl ServiceSetting {
             | Self::RestartPolicy
             | Self::StartCommand
             | Self::Git(_) => Apply::Staged,
+            Self::RegistryCredential => Apply::Immediate,
         }
     }
 
@@ -145,6 +155,7 @@ impl ServiceSetting {
             | Self::Image
             | Self::MemLimit
             | Self::PreDeployCommand
+            | Self::RegistryCredential
             | Self::StartCommand => Value::Null,
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
@@ -168,6 +179,15 @@ impl ServiceSetting {
                 "type": "string",
                 "enum": ["always", "no", "on-failure", "unless-stopped"],
             }),
+            Self::RegistryCredential => json!({
+                "type": "object",
+                "properties": {
+                    "username": { "type": "string", "minLength": 1, "maxLength": 255 },
+                    "secret": { "oneOf": [{ "type": "string", "minLength": 1 }, { "const": true }] },
+                },
+                "required": ["secret"],
+                "additionalProperties": false,
+            }),
             Self::Git(git) => git.expected(),
         }
     }
@@ -180,6 +200,7 @@ impl ServiceSetting {
             Self::MaxRetries => json!([3]),
             Self::MemLimit => json!([0.5, 4]),
             Self::PreDeployCommand => json!(["npm run migrate"]),
+            Self::RegistryCredential => json!([{ "secret": true }]),
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
@@ -191,7 +212,9 @@ impl ServiceSetting {
     /// `image` for an image, the source and build Settings for a repository.
     pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
         match self {
-            Self::Image => matches!(config.source, ServiceSource::Image { .. }),
+            Self::Image | Self::RegistryCredential => {
+                matches!(config.source, ServiceSource::Image { .. })
+            }
             Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
             Self::CpuLimit
             | Self::MaxRetries
@@ -207,11 +230,13 @@ impl ServiceSetting {
         if let Self::Git(git) = self {
             return git.value(config);
         }
-        if self == Self::Image {
-            return match &config.source {
-                ServiceSource::Image { image, .. } => json!(image),
-                ServiceSource::Empty { .. } | ServiceSource::Git { .. } => Value::Null,
-            };
+        match (self, &config.source) {
+            (Self::Image, ServiceSource::Image { image, .. }) => return json!(image),
+            (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
+                return self.shown(json!(credentials));
+            }
+            (Self::Image | Self::RegistryCredential, _) => return Value::Null,
+            _ => {}
         }
         // Every other Setting is the stored field of the same name.
         serde_json::to_value(config)
@@ -225,6 +250,11 @@ impl ServiceSetting {
     pub(crate) fn shown(self, value: Value) -> Value {
         match self {
             Self::Git(git) => git.shown(value),
+            // Never the stored credential reference: only whether one is on.
+            Self::RegistryCredential => match value.get("type").and_then(Value::as_str) {
+                Some("configured") => json!({ "secret": true }),
+                _ => Value::Null,
+            },
             Self::Image
             | Self::CpuLimit
             | Self::MaxRetries
@@ -272,10 +302,17 @@ impl ServiceSetting {
         if let Self::Git(git) = self {
             return git.unset(config);
         }
-        if self == Self::Image {
-            return Err(self.invalid("an image Service needs an image; set another one"));
+        match (self, &mut config.source) {
+            (Self::Image, _) => {
+                Err(self.invalid("an image Service needs an image; set another one"))
+            }
+            (Self::RegistryCredential, ServiceSource::Image { credentials, .. }) => {
+                *credentials = ServiceImageCredentials::None;
+                Ok(())
+            }
+            (Self::RegistryCredential, _) => Err(self.invalid("only an image Service has one")),
+            _ => self.store(config, self.default()),
         }
-        self.store(config, self.default())
     }
 
     fn store(self, config: &mut AuthoredServiceConfig, value: Value) -> Result<(), RpcError> {

@@ -211,6 +211,41 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },
+        "registryCredential": {
+          "additionalProperties": false,
+          "description": "The username and secret a private image is pulled with. A new secret replaces the stored one at once; turning credentials on or off is staged, and unset keeps the stored secret for {\"secret\": true} to turn back on. Reads show {\"secret\": true}; set a secret with --secret or --patch -.",
+          "examples": [
+            {
+              "secret": true
+            }
+          ],
+          "properties": {
+            "secret": {
+              "oneOf": [
+                {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "const": true
+                }
+              ]
+            },
+            "username": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "secret"
+          ],
+          "title": "Registry credentials",
+          "type": "object",
+          "x-ployz-apply": "immediate",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": true
+        },
         "replicas": {
           "default": 1,
           "description": "How many copies of the Service run.",

@@ -16,7 +16,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::ServiceId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
-use crate::settings::{ServiceSetting, SettingPath, image_source};
+use crate::settings::{Apply, ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
 
 /// Create a Service that runs `image`, or an empty one to give a source later. Its
@@ -139,7 +139,7 @@ pub(crate) fn insert_service(
     .settings;
     let staged = ServiceSetting::ALL
         .into_iter()
-        .filter(|setting| setting.applies(&config))
+        .filter(|setting| setting.applies(&config) && setting.apply() == Apply::Staged)
         .map(|setting| SettingPath::of(name, setting))
         .collect();
     let node = SavedServiceIntent {

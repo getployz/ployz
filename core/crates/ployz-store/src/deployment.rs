@@ -4,10 +4,12 @@
 //! confirmed Node Outcome advances Applied State.
 //! The Head that reviews compare against comes from here too.
 
+use std::collections::BTreeMap;
+
 use ployz_core::config::{
-    CompiledNodeConfig, SavedEnvironmentIntent, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
-    project_runtime_outcome,
+    CompiledNodeConfig, EncryptedSecretValue, SavedEnvironmentIntent,
+    canonicalize_environment_intent, compile_environment_intent, lower_deployment,
+    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, ExecutionError, Namespace, RpcError, ServiceName,
@@ -19,6 +21,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Revision, RunnerId};
+use crate::registry;
 use crate::review::{self, Head};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
@@ -182,6 +185,8 @@ pub(crate) struct TargetNode {
 pub(crate) struct Frozen {
     pub(crate) nodes: Vec<TargetNode>,
     pub(crate) namespace: Namespace,
+    /// Sealed registry credentials by runtime Service, fixed at admission.
+    pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
 }
 
 impl Frozen {
@@ -256,7 +261,11 @@ pub(crate) fn freeze(
             .collect::<Result<Vec<_>, _>>()?
     };
     lower(environment, saved, services, namespace.clone(), None)?;
-    Ok(Frozen { nodes, namespace })
+    Ok(Frozen {
+        nodes,
+        namespace,
+        credentials: BTreeMap::new(),
+    })
 }
 
 /// Lower Saved revision `saved` to the Deploy Intent of a Deployment of `services`
@@ -348,8 +357,8 @@ pub(crate) fn admit(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9)",
+          namespace, run, credentials) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -360,6 +369,7 @@ pub(crate) fn admit(
             json_text(&frozen.nodes).as_str().into(),
             frozen.namespace.as_str().into(),
             json_text(&Run::default()).as_str().into(),
+            json_text(&frozen.credentials).as_str().into(),
         ],
     )?;
     Ok(summary)
@@ -479,13 +489,25 @@ pub(crate) fn claim(
         }
     }
     let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-    let intent = lower(
+    let mut intent = lower(
         &stored.environment,
         &saved,
         &stored.summary.services,
         stored.namespace,
         Some(sealing),
     )?;
+    let credentials = tx.query(
+        "SELECT credentials FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let credentials = credentials
+        .first()
+        .ok_or_else(|| missing(id))?
+        .text(0)
+        .and_then(|text| {
+            serde_json::from_str(text).map_err(|_| error::corrupt("Deployment credentials"))
+        })?;
+    intent.registry_auth = registry::unseal(credentials, sealing)?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,

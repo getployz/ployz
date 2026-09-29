@@ -287,6 +287,7 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             creation_key: Some(crate::cluster::global_creation_key(slot.resolved_spec())),
             kind: ContainerKind::ServiceContainer,
             namespace: identity.namespace.clone(),
+            registry_auth: None,
             resolved_spec: slot.resolved_spec().clone(),
         };
         match client.create_slot(&this_machine.id, request).await {

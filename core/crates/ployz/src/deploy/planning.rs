@@ -69,6 +69,8 @@ struct Planned {
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     preview: DeployPreview,
+    /// The intent's pull credentials, for execution only; never in the preview.
+    registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
 }
 
 impl DeployPlan {
@@ -80,6 +82,12 @@ impl DeployPlan {
 
     pub(super) fn operations(&self) -> &[DeployOperation] {
         &self.operations
+    }
+
+    pub(super) const fn registry_auth(
+        &self,
+    ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth> {
+        &self.registry_auth
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -112,6 +120,7 @@ impl DeployPlan {
         Self {
             operations,
             preview: DeployPreview::new(rows, Vec::new(), namespace),
+            registry_auth: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -219,6 +228,7 @@ pub fn plan_deploy(
     let mut planned = plan_operations(intent, snapshot)?;
     let budgets = std::mem::take(&mut planned.volumes.budgets);
     let mut plan = seal_plan(planned, snapshot, &intent.namespace);
+    plan.registry_auth.clone_from(&intent.registry_auth);
     if !budgets.is_empty() {
         plan.preview
             .warnings
@@ -282,6 +292,7 @@ fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace)
     DeployPlan {
         operations: planned.operations,
         preview,
+        registry_auth: std::collections::BTreeMap::new(),
     }
 }
 
