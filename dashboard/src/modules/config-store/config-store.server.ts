@@ -118,9 +118,9 @@ export function refusal(error: StoreRefusal) {
   });
 }
 
-/** Who admitted an upload, as the Deployment's provenance names them: the signed-in user's name, else email. */
-const uploaderFor = Effect.fn("ConfigStore.uploaderFor")(function* (call: StoreCall, userId: string | null) {
-  if (userId === null || call.operation !== "write" || call.command.command !== "admit" || !call.command.upload) return null;
+/** Who a user's write is by, as the Store records it (a Deployment's `admitted_by`): their name, else email. */
+const principalFor = Effect.fn("ConfigStore.principalFor")(function* (userId: string | null) {
+  if (userId === null) return null;
   const { drizzle } = yield* Database;
   const [row] = yield* drizzle.select({ name: user.name, email: user.email }).from(user).where(eq(user.id, userId)).limit(1);
   return row === undefined ? null : row.name || row.email;
@@ -131,18 +131,23 @@ const Admission = Schema.Struct({ command: Schema.Literals(["admit", "start"]) }
 
 const serversFor = Effect.fn("ConfigStore.serversFor")(function* (organizationId: string, call: StoreCall) {
   if (call.operation !== "write" || !Schema.is(Admission)(call.command)) return undefined;
+  return yield* organizationServers(organizationId);
+});
+
+/** How many Servers the Organization has enrolled: evidence for anything that may admit a Deployment. */
+export const organizationServers = Effect.fn("ConfigStore.organizationServers")(function* (organizationId: string) {
   const loaded = yield* loadOrganizationConnections(organizationId);
   return loaded.kind === "ready" ? loaded.connections.length : 0;
 });
 
 /**
- * The trusted evidence `call` needs, as Cloud observes it itself (`userId`: who asks, when a user does): GitHub's for
- * repository Services, what Cloud observes of domains, for a Deploy that removes deployed Volumes what the Servers hold
- * of them, who admits an upload, and for an admission how many Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the
- * Cluster Domain can't answer.
+ * The trusted evidence `call` needs, as Cloud observes it itself: GitHub's for repository Services, what Cloud observes
+ * of domains, for a Deploy that removes deployed Volumes what the Servers hold of them, and for an admission how many
+ * Servers could run it. Nothing here comes from the caller. Refused `unavailable` when GitHub or the Cluster Domain
+ * can't answer.
  */
 export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
-  organizationId: string, userId: string | null, call: StoreCall, read: StoreRead,
+  organizationId: string, call: StoreCall, read: StoreRead,
 ) {
   const git = yield* gatherGitEvidence(organizationId, call, read).pipe(
     Effect.catchTag("GithubObservationError", () =>
@@ -155,7 +160,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
   const servers = yield* serversFor(organizationId, call);
-  const trusted: ConfigTrusted = { ...git, domains, uploader: yield* uploaderFor(call, userId).pipe(Effect.orDie) };
+  const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (servers !== undefined) trusted.servers = servers;
   return trusted;
@@ -187,9 +192,10 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {
-    const trusted = yield* gatherTrusted(organizationId, userId, call, read);
+    const trusted = yield* gatherTrusted(organizationId, call, read);
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
-    const written = yield* storeTry(() => store.write(organizationId, call.command, trusted));
+    const principal = yield* principalFor(userId).pipe(Effect.orDie);
+    const written = yield* storeTry(() => store.write(organizationId, call.command, trusted, principal));
     yield* afterWrite(organizationId, call.command, written, read);
     return { ok: true, value: written };
   }).pipe(
@@ -206,9 +212,5 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
   const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
-  // Only Cloud's own Organization removal forgets an Organization's configuration.
-  if (call.operation === "write" && call.command.command === "remove_organization") {
-    return { ok: false, refusal: { code: "unsupported", message: "Delete an Organization from its settings.", details: null } } satisfies StoreResult<never>;
-  }
   return yield* callStore(organization.id, actor.userId, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));

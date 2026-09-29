@@ -1,6 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore, ConfigWritten, SystemEvent } from "@ployz/sdk";
 import { Data, Effect } from "effect";
+import { organizationServers } from "#/modules/config-store/config-store.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import {
   compareInstallationRepositoryCommits,
@@ -59,13 +60,14 @@ const freezeMerged = Effect.fn("StoreGithub.freezeMerged")(function* (
   store: ConfigStore, organizationId: string, payload: GithubPushReceivedEventData,
 ) {
   const { standing } = yield* storeTry(() => store.pendingSaves(organizationId, payload.repositoryId, payload.branch));
+  const servers = yield* organizationServers(organizationId);
   for (const number of standing) {
     const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, number).pipe(
       Effect.catchIf(isGithubObservationNotFound, () => Effect.succeed(null)),
     );
     const { updatedAt } = live ?? {};
     if (!live?.mergeCommitSha || live.targetBranch !== payload.branch || !updatedAt) continue;
-    yield* storeTry(() => store.system(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, null)));
+    yield* storeTry(() => store.system(organizationId, pullRequestEvent(payload.repositoryId, number, { ...live, updatedAt }, null), { servers }));
   }
 });
 
@@ -99,6 +101,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
 ) {
   yield* freezeMerged(store, organizationId, payload);
   const merged = head === null ? [] : yield* mergedInto(store, organizationId, payload, repository, head);
+  const servers = yield* organizationServers(organizationId);
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const base = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, payload.branch));
     // No changed paths (a force-push, diverged or long history) deploys every Service that follows the branch.
@@ -113,7 +116,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
     const event: SystemEvent = {
       event: "branch_head", repository_id: payload.repositoryId, branch: payload.branch, base, head, changed, merged,
     };
-    const written = yield* storeTry(() => store.system(organizationId, event)).pipe(
+    const written = yield* storeTry(() => store.system(organizationId, event, { servers })).pipe(
       Effect.map((written) => ({ written })),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
@@ -158,7 +161,8 @@ export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")
   };
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of organizations) {
-    const written = yield* storeTry(() => store.system(organizationId, event));
+    const servers = yield* organizationServers(organizationId);
+    const written = yield* storeTry(() => store.system(organizationId, event, { servers }));
     deployments.push(...admitted(organizationId, written));
   }
   return deployments;

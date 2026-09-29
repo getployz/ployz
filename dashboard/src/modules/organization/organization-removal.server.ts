@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import { Effect } from "effect";
 import { releaseClusterDomain } from "#/modules/cluster-domain/cluster-domain.server";
-import { callStore } from "#/modules/config-store/config-store.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import type { StoreRefusal, StoreResult } from "#/modules/config-store/store.contract";
 import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import type { Actor, Caller } from "#/modules/identity/actor";
@@ -30,8 +30,12 @@ export const removeOrganization = Effect.fn("Organization.remove")(function* (ca
       details: { next: `ployz org use ${slug}` },
     });
   }
-  const forgotten = yield* callStore(id, caller.userId, { operation: "write", command: { command: "remove_organization" } });
-  if (!forgotten.ok) return forgotten;
+  const refusal = yield* cloudStore.pipe(
+    Effect.flatMap((store) => storeTry(() => store.removeOrganization(id))),
+    Effect.as(null),
+    Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)),
+  );
+  if (refusal !== null) return refused(refusal);
   const revoked = yield* revokeOrganizationPairing(id);
   const servers = {
     confirmed: revoked.endpoints.filter((endpoint) => endpoint.status === "confirmed").map((endpoint) => endpoint.machineId),

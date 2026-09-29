@@ -273,10 +273,10 @@ export interface ConfigStore {
    */
   read<Q extends ConfigQuery>(organization: string, query: Q, trusted?: ConfigTrusted): Promise<Extract<ConfigView, { view: Q["query"] }>>;
   /**
-   * `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. `principal` is who
-   * Cloud authenticated, which Deployments record as their admitter and uploader; none for Cloud itself.
+   * As `principal` (who Cloud authenticated; none for Cloud itself). `trusted` is evidence Cloud gathered itself, such
+   * as readable repositories; never the caller's.
    */
-  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string): Promise<ConfigWritten>;
+  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted, principal?: string | null): Promise<ConfigWritten>;
   /** Cloud's worker only: the Git Services the Deployment builds, each with its pinned commit, if any. */
   deploymentSources(deployment: string): Promise<GitSource[]>;
   /**
@@ -300,12 +300,12 @@ export interface ConfigStore {
   abandonDeployment(deployment: string, runner: string): Promise<DeploymentSummary>;
   /**
    * Cloud's GitHub workers only: apply what Cloud observed of GitHub; resolves to `{written: "automated", …}` with the
-   * Deployments it admitted, or rejects `conflict` when a branch head's `base` is no longer the Store's head.
+   * Deployments it admitted (`trusted.servers`: how many Servers could run them), or rejects `conflict` when a branch head's `base` is no longer the Store's head.
    */
-  system(organization: string, event: SystemEvent, trusted?: ConfigTrusted): Promise<ConfigWritten>;
-  /** Cloud's Organization removal only: forget its configuration once it has no Project. */
+  system(organization: string, event: SystemEvent, trusted?: Pick<ConfigTrusted, "servers">): Promise<ConfigWritten>;
+  /** Cloud's own Organization removal only: forget its configuration once it has no Project; else rejects `conflict`. */
   removeOrganization(organization: string): Promise<OrganizationRemoved>;
-  /** Cloud's sweep only: queued Deployments no runner claimed, admitted before `before` (Unix seconds), oldest first. */
+  /** Cloud's sweep only: every queued Deployment no runner claimed, admitted before `before` (Unix seconds). */
   unclaimed(before: number): Promise<Unclaimed[]>;
   /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */
   branchHead(organization: string, repositoryId: number, branch: string): Promise<string | null>;

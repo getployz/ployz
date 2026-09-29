@@ -108,8 +108,16 @@ type PublicErrorReport = (
   cause: unknown,
 ) => void;
 
+/** The client went away: an interrupted request, or an SDK or fetch call aborted with it. */
+export function isClientDisconnect(cause: unknown): boolean {
+  const failure = Cause.isCause(cause) ? Cause.squash(cause) : cause;
+  return Cause.isCause(cause) && Cause.hasInterruptsOnly(cause)
+    || failure instanceof Error && (failure.name === "AbortError" || failure.message === "aborted");
+}
+
 function defaultReport(kind: "defect" | "interruption", cause: unknown) {
-  Effect.runFork(Effect.logError(`Public boundary ${kind}.`, cause));
+  const log = kind === "interruption" || isClientDisconnect(cause) ? Effect.logDebug : Effect.logError;
+  Effect.runFork(log(`Public boundary ${kind}.`, cause));
 }
 
 function reportUnexpectedCause(

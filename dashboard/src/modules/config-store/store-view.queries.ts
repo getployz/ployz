@@ -236,12 +236,12 @@ export function branchQuery(environment: EnvironmentRef): { query: "branch" } & 
 
 /** What Save would put in a Branch's Parent. */
 export function saveQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: branch, into: null };
+  return { query: "move", move: "save", from: branch };
 }
 
 /** What Update would bring into a Branch from what its Parent runs. */
 export function updateQuery(branch: EnvironmentRef): { query: "move" } & MoveQuery {
-  return { query: "move", from: null, into: branch };
+  return { query: "move", move: "update", into: branch };
 }
 
 /** What a Branch of `from` would copy and use live, for the picks so far (by name), or for a preset around `focus`. */
