@@ -33,6 +33,7 @@ mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod store_call;
 mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
@@ -41,6 +42,7 @@ pub use github_build::{
     github_finish, github_report, github_start,
 };
 pub use running::Running;
+pub use store_call::store_call;
 pub use store_runner::{Sources, observe_volumes, run_deployment};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
