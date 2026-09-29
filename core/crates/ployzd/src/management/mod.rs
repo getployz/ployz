@@ -24,7 +24,9 @@ use iroh::{
     },
     tls::CaTlsConfig,
 };
-use ployz_core::{BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, op};
+use ployz_core::{
+    BUILD_GRANT_ALPN, DEFAULT_RELAY_URL, MANAGEMENT_ALPN, MANAGEMENT_PORT, Rpc, TUNNEL_ALPN, op,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, watch};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFutureOwned};
@@ -36,6 +38,7 @@ use tonic::{
 use crate::machine::{LocalMachine, LocalMachineRecord};
 
 pub mod build_grant;
+mod tunnel;
 pub use build_grant::BuildGrants;
 
 /// Application close code sent when the remote key is not admitted and no tombstone holds it.
@@ -106,7 +109,7 @@ impl std::fmt::Debug for ManagementSecret {
     }
 }
 
-/// Bind the management endpoint: the Machine RPC and Build Grant ALPNs, no address
+/// Bind the management endpoint: the Machine RPC, tunnel and Build Grant ALPNs, no address
 /// lookup, only the configured relay.
 ///
 /// # Errors
@@ -122,7 +125,11 @@ pub async fn bind(
         .build();
     Endpoint::builder(presets::Minimal)
         .secret_key(secret.secret_key())
-        .alpns(vec![MANAGEMENT_ALPN.to_vec(), BUILD_GRANT_ALPN.to_vec()])
+        .alpns(vec![
+            MANAGEMENT_ALPN.to_vec(),
+            TUNNEL_ALPN.to_vec(),
+            BUILD_GRANT_ALPN.to_vec(),
+        ])
         .relay_mode(RelayMode::custom([config.relay_url.clone()]))
         .ca_tls_config(config.relay_tls.clone())
         .transport_config(transport)
@@ -146,6 +153,9 @@ pub async fn bind(
 ///
 /// Connections on the Build Grant ALPN are served by [`build_grant`] alone: only a live
 /// grant's key is admitted there, and no Management Client key reaches it.
+///
+/// Connections on the tunnel ALPN each relay one port-forward TCP stream into the
+/// Cluster network for a slot's accepted key.
 pub async fn serve<S>(
     endpoint: Endpoint,
     local: LocalMachine,
@@ -211,6 +221,11 @@ async fn serve_connection<S>(
     if connection.alpn() == BUILD_GRANT_ALPN {
         drop(permit);
         build_grant::serve(connection, &grants, shutdown).await;
+        return;
+    }
+    if connection.alpn() == TUNNEL_ALPN {
+        drop(permit);
+        tunnel::serve(connection, records, shutdown).await;
         return;
     }
     let remote = *connection.remote_id().as_bytes();

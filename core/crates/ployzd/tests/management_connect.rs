@@ -496,6 +496,117 @@ async fn contract() {
 /// A Build Grant reaches image ingest for one push into its one repository, never
 /// Machine RPC, and nothing once its Build ends.
 #[tokio::test(flavor = "multi_thread")]
+async fn a_port_forward_tunnel_reaches_only_the_cluster_network_and_ends_on_revocation() {
+    tokio::time::timeout(Duration::from_secs(120), tunnel_contract())
+        .await
+        .expect("tunnel test timed out");
+}
+
+async fn tunnel_contract() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let (_map, relay_url, _relay) = run_relay_server().await.unwrap();
+    // Loopback stands in for the Cluster network, so an echo server is a "container".
+    let (_dir, owner, local) = participating_in("127.0.0.0/16").await;
+    let cli = ManagementClientLabel::parse("cli-device").unwrap();
+    let capability = local
+        .set_management_client(SetManagementClientRequest::Set { label: cli.clone() })
+        .await
+        .unwrap()
+        .capability
+        .unwrap();
+    let endpoint = management::bind(
+        local.record().management_secret(),
+        &ManagementConfig {
+            relay_url: relay_url.clone(),
+            port: 0,
+            relay_tls: CaTlsConfig::insecure_skip_verify(),
+        },
+    )
+    .await
+    .unwrap();
+    let shutdown = CancellationToken::new();
+    let server = tokio::spawn(management::serve(
+        endpoint,
+        local.clone(),
+        MachineApi::builder(owner).build(),
+        Arc::default(),
+        shutdown.clone(),
+    ));
+    let connector = SystemConnector::default().with_management_relay(ManagementRelay::custom(
+        relay_url,
+        CaTlsConfig::insecure_skip_verify(),
+    ));
+    let echo = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let target = echo.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = echo.accept().await {
+            tokio::spawn(async move {
+                let (mut read, mut write) = tcp.split();
+                let _ = tokio::io::copy(&mut read, &mut write).await;
+            });
+        }
+    });
+    let managed = connection(&capability);
+    let dial = |address: String| {
+        let connector = &connector;
+        let managed = &managed;
+        async move { connector.dial_proxy(managed, "tcp", &address).await }
+    };
+
+    // A pending candidate may only negotiate; a tunnel is operational.
+    match dial(target.clone()).await {
+        Err(ConnectError::ClientRefused) => {}
+        other => panic!("a pending key must be refused, got {:?}", other.err()),
+    }
+    activate(connector.connect(&managed).await.unwrap()).await;
+
+    // Bytes round-trip unchanged, binary included.
+    let mut tunnel = dial(target.clone()).await.unwrap();
+    let payload = [0_u8, 0xff, b'\n', 7];
+    tunnel.write_all(&payload).await.unwrap();
+    let mut echoed = [0_u8; 4];
+    tunnel.read_exact(&mut echoed).await.unwrap();
+    assert_eq!(echoed, payload);
+
+    // Outside the Cluster network, or nothing listening: refused with the reason.
+    for (address, reason) in [
+        ("192.0.2.1:80".to_owned(), "outside the Cluster network"),
+        ("localhost:80".to_owned(), "not an ip:port"),
+        (unused_port(), "refused the connection"),
+    ] {
+        match dial(address.clone()).await {
+            Err(ConnectError::Attempt(message)) => {
+                assert!(message.contains(reason), "{address}: {message}");
+            }
+            other => panic!("{address}: expected a refusal, got {:?}", other.err()),
+        }
+    }
+
+    // Clearing the key ends the open tunnel and refuses new ones as cleared.
+    local
+        .set_management_client(SetManagementClientRequest::Clear { label: cli })
+        .await
+        .unwrap();
+    let mut rest = Vec::new();
+    let ended = tokio::time::timeout(Duration::from_secs(10), tunnel.read_to_end(&mut rest))
+        .await
+        .expect("revocation must end an open tunnel");
+    assert!(ended.is_err() || rest.is_empty(), "{ended:?}");
+    assert!(matches!(
+        dial(target).await,
+        Err(ConnectError::ClientCleared)
+    ));
+    shutdown.cancel();
+    server.await.unwrap();
+}
+
+fn unused_port() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().to_string()
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_build_grant_pushes_one_image_into_ingest_and_nothing_else() {
     tokio::time::timeout(Duration::from_secs(120), build_grant_contract())
         .await
@@ -774,6 +885,10 @@ fn assert_refused(result: Result<Channel, ConnectError>) {
 }
 
 async fn participating() -> (tempfile::TempDir, RecordOwner, LocalMachine) {
+    participating_in("10.210.0.0/16").await
+}
+
+async fn participating_in(network: &str) -> (tempfile::TempDir, RecordOwner, LocalMachine) {
     let dir = tempfile::tempdir().unwrap();
     let owner = RecordOwner::spawn(LocalMachineStore::open(dir.path()).unwrap()).unwrap();
     let local = LocalMachine::new(owner.clone());
@@ -781,7 +896,7 @@ async fn participating() -> (tempfile::TempDir, RecordOwner, LocalMachine) {
         .initialize(InitializeRequest {
             initial_policy: Default::default(),
             name: MachineName::parse("first").unwrap(),
-            cluster_network: "10.210.0.0/16".parse().unwrap(),
+            cluster_network: network.parse().unwrap(),
             public_ip: None,
             advertised_endpoints: vec![AdvertisedEndpoint("192.0.2.1:51820".parse().unwrap())],
             wireguard_mtu: None,

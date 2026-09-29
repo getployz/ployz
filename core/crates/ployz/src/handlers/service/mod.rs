@@ -444,7 +444,7 @@ pub(crate) fn command() -> Command {
         .subcommand(authored::add_command())
         .subcommand(authored::inspect_command())
         .subcommand(authored::ls_command())
-        .subcommand(service_proxy())
+        .subcommand(service_port_forward())
         .subcommand(authored::rename_command())
         .subcommand(service_restart())
         .subcommand(authored::rm_command())
@@ -452,10 +452,13 @@ pub(crate) fn command() -> Command {
         .subcommand(service_stop())
 }
 
-fn service_proxy() -> Command {
-    base("proxy", "Proxy a local port to a service")
-        .arg(positional("service", true))
-        .arg(positional("port", true))
+fn service_port_forward() -> Command {
+    super::store::scoped(base(
+        "port-forward",
+        "Forward a local port to a Service's container until interrupted",
+    ))
+    .arg(positional("service", true))
+    .arg(positional("port", true).help("REMOTE, or LOCAL:REMOTE; LOCAL 0 picks a free port"))
 }
 
 fn services() -> Arg {
@@ -491,12 +494,12 @@ fn stop_flags(command: Command) -> Command {
 }
 
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::{Refused, Supported};
+    use super::Json::Supported;
     Some(match path {
         "add" => (authored::add, Supported),
         "inspect" => (authored::inspect, Supported),
         "ls" => (authored::list, Supported),
-        "proxy" => (super::operator::proxy, Refused),
+        "port-forward" => (super::operator::port_forward, Supported),
         "rename" => (authored::rename, Supported),
         "restart" => (restart, Supported),
         "rm" => (authored::remove, Supported),
