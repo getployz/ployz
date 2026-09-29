@@ -9,12 +9,11 @@
 
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AddDomain, Admit, CertificateObservation, ClusterDomain, ClusterDomainStatus, Command,
-    ConfigStore, CreateEnvironment, CreateProject, CreateService, DeploymentId, DnsLookup,
-    DomainAction, DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery,
-    EnvironmentId, EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery,
-    ProjectId, ProjectName, Query, RemoveDomain, RunEvidence, RunnerId, ServiceId, Trusted, View,
-    Written,
+    Actor, AddDomain, Admit, ClusterDomain, ClusterDomainStatus, Command, ConfigStore,
+    CreateEnvironment, CreateProject, CreateService, DeploymentId, DnsLookup, DomainAction,
+    DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId,
+    EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName,
+    Query, RemoveDomain, RunEvidence, RunnerId, ServiceId, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -113,11 +112,15 @@ fn rows(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Vec<DomainRow> {
 #[test]
 fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
     let (store, who) = shop();
-    let added = store.add_domain(&who, &add(None, None), &cloud(false)).unwrap();
+    let added = store
+        .add_domain(&who, &add(None, None), &cloud(false))
+        .unwrap();
     assert_eq!(added.domain.shown(), "web.acme.ployz.app");
     assert_eq!(added.staged.len(), 1);
     // Adding it again keeps it; a port retargets it.
-    let again = store.add_domain(&who, &add(None, None), &cloud(false)).unwrap();
+    let again = store
+        .add_domain(&who, &add(None, None), &cloud(false))
+        .unwrap();
     assert!(again.staged.is_empty());
     assert_eq!(again.environment.revision, added.environment.revision);
     let retargeted = store
@@ -162,7 +165,11 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
         .unwrap();
     assert!(same.staged.is_empty());
     let retarget = store
-        .add_domain(&who, &add(Some("app.example.com"), Some(3000)), &cloud(false))
+        .add_domain(
+            &who,
+            &add(Some("app.example.com"), Some(3000)),
+            &cloud(false),
+        )
         .unwrap_err();
     assert_eq!(retarget.code, RpcErrorCode::Unsupported);
 
@@ -183,7 +190,9 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
 #[test]
 fn a_domain_is_removed_by_hostname_or_prefix() {
     let (store, who) = shop();
-    store.add_domain(&who, &add(None, None), &cloud(true)).unwrap();
+    store
+        .add_domain(&who, &add(None, None), &cloud(true))
+        .unwrap();
     store
         .add_domain(&who, &add(Some("app.example.com"), None), &cloud(true))
         .unwrap();
@@ -215,7 +224,12 @@ fn deployment(n: u8) -> DeploymentId {
     DeploymentId::parse(uuid(90 + n)).unwrap()
 }
 
-fn admit(store: &ConfigStore, who: &Actor, n: u8, trusted: &Trusted) -> Result<Written, ployz_core::RpcError> {
+fn admit(
+    store: &ConfigStore,
+    who: &Actor,
+    n: u8,
+    trusted: &Trusted,
+) -> Result<Written, ployz_core::RpcError> {
     store.write_trusted(
         who,
         &Command::Admit(Admit {
@@ -246,7 +260,11 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
     let outcome: DeployOutcome<ployz_core::ExecutionError> =
         serde_json::from_value(json!({ "type": "success", "completed": [operation] })).unwrap();
     store
-        .record(&deployment(n), &runner, RunEvidence::Executed(Box::new(outcome)))
+        .record(
+            &deployment(n),
+            &runner,
+            RunEvidence::Executed(Box::new(outcome)),
+        )
         .unwrap();
     claimed.intent
 }
@@ -254,18 +272,29 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
 #[test]
 fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
     let (store, who) = shop();
-    store.add_domain(&who, &add(None, None), &cloud(false)).unwrap();
+    store
+        .add_domain(&who, &add(None, None), &cloud(false))
+        .unwrap();
     // A plan checks everything but the Cluster Domain, which only Cloud holds.
     store.plan(&who, &PlanQuery::default()).unwrap();
     let refused = admit(&store, &who, 1, &Trusted::default()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Unsupported);
 
     admit(&store, &who, 1, &cloud(false)).unwrap();
-    assert_eq!(rows(&store, &who, &cloud(false))[0].reason.as_deref(), Some("Deploying"));
+    assert_eq!(
+        rows(&store, &who, &cloud(false))[0].reason.as_deref(),
+        Some("Deploying")
+    );
     let intent = serde_json::to_value(apply(&store, 1)).unwrap();
-    assert!(intent.to_string().contains("\"web.acme.ployz.app\""), "{intent}");
+    assert!(
+        intent.to_string().contains("\"web.acme.ployz.app\""),
+        "{intent}"
+    );
     let row = &rows(&store, &who, &cloud(false))[0];
-    assert_eq!((row.status, row.action.clone()), (DomainStatus::Ready, None));
+    assert_eq!(
+        (row.status, row.action.clone()),
+        (DomainStatus::Ready, None)
+    );
 }
 
 #[test]
@@ -285,13 +314,13 @@ fn a_check_sees_fixed_dns_before_the_certificate_retries() {
     apply(&store, 1);
 
     let mut observed = cloud(true);
-    observed.domains.certificates = Some(vec![CertificateObservation {
-        hostname: "app.example.com".into(),
-        status: "failure".into(),
-        failure_kind: Some("does_not_resolve".into()),
-        next_attempt_at: Some("2026-09-29T12:00:00Z".into()),
-        via_proxy: false,
-    }]);
+    observed.domains.certificates = Some(vec![
+        serde_json::from_value(json!({
+            "hostname": "app.example.com", "status": "failure",
+            "backoff": { "failure_kind": "does_not_resolve", "next_attempt_at": "2026-09-29T12:00:00Z", "failures": 2 },
+        }))
+        .unwrap(),
+    ]);
     let waiting = &rows(&store, &who, &observed)[0];
     assert_eq!(waiting.status, DomainStatus::NeedsAttention);
     assert_eq!(

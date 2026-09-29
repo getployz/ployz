@@ -27,9 +27,9 @@ pub use deployment::{
     RunEvidence,
 };
 pub use domain::{
-    AddDomain, CertificateObservation, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord,
-    Domain, DomainAction, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged,
-    DomainStatus, DomainView, DomainsQuery, DomainsView, RemoveDomain,
+    AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, Domain, DomainAction,
+    DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainView,
+    DomainsQuery, DomainsView, RemoveDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;

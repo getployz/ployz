@@ -48,7 +48,8 @@ pub async fn open_config_store(url: String, sealing_secret: String) -> Result<Co
 
 #[napi]
 impl ConfigStore {
-    /// Answer a `ConfigQuery` as the given Organization.
+    /// Answer a `ConfigQuery` as the given Organization. `trusted` is what Cloud
+    /// observed itself (`ConfigTrusted`), never the caller's.
     ///
     /// # Errors
     /// Returns the Store's RPC error, or `unavailable` when it is too busy or slow.
@@ -57,12 +58,15 @@ impl ConfigStore {
         &self,
         organization: String,
         query: serde_json::Value,
+        trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization)?;
         let query: ployz_store::Query = serde_json::from_value(query)
             .map_err(|_| invalid_argument("Expected a Config Store query"))?;
+        let trusted = evidence(trusted)?;
         let store = Arc::clone(&self.store);
-        self.run(move || store.read(&who, &query)).await
+        self.run(move || store.read_trusted(&who, &query, &trusted))
+            .await
     }
 
     /// Apply a `ConfigCommand` as the given Organization, in one transaction.
@@ -80,11 +84,7 @@ impl ConfigStore {
         let who = actor(organization)?;
         let command: ployz_store::Command = serde_json::from_value(command)
             .map_err(|_| invalid_argument("Expected a Config Store command"))?;
-        let trusted: ployz_store::Trusted = trusted
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| invalid_argument("Expected Config Store evidence"))?
-            .unwrap_or_default();
+        let trusted = evidence(trusted)?;
         let store = Arc::clone(&self.store);
         self.run(move || store.write_trusted(&who, &command, &trusted))
             .await
@@ -190,4 +190,13 @@ fn unavailable(message: &str) -> Error {
         message: message.to_owned(),
         details: serde_json::Value::Null,
     })
+}
+
+/// Evidence Cloud gathered itself (`ConfigTrusted`), or none.
+fn evidence(trusted: Option<serde_json::Value>) -> Result<ployz_store::Trusted> {
+    Ok(trusted
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| invalid_argument("Expected Config Store evidence"))?
+        .unwrap_or_default())
 }
