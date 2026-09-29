@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
-use ployz_core::config::{ServiceSource, parse_service_config};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, Claimed, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary,
@@ -153,16 +152,18 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    if source.is_some() && store.local().is_none() {
-        return Err(Error::coded(
-            ployz_core::RpcErrorCode::Unsupported,
-            "Uploading to Cloud isn't available yet; deploy from a connected repository",
-        ));
-    }
     let upload = source.as_deref().map(uploaded_source).transpose()?;
+    let id = DeploymentId::parse(mint())?;
+    if let Some(dir) = source.as_deref().filter(|_| store.local().is_none()) {
+        let archive = crate::build::upload_archive(dir)
+            .map_err(|error| Error::usage(format!("Could not read {}: {error}", dir.display())))?;
+        store
+            .upload(&id, archive)
+            .map_err(failed(matches, &["deploy"]))?;
+    }
     let admitted = store
         .admit(&Admit {
-            id: DeploymentId::parse(mint())?,
+            id,
             environment: environment(matches)?,
             services,
             version: matches.get_one::<String>("expect-version").cloned(),
@@ -246,6 +247,15 @@ fn ship(
                 .get("next")?
                 .as_str()
                 .map(str::to_owned)
+        })
+        .or_else(|| {
+            // Cloud's runner found no upload or usable image for these Services.
+            let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = &view.outcome else {
+                return None;
+            };
+            let dir = source.map_or_else(|| ".".into(), |dir| dir.display().to_string());
+            (!needs_upload.is_empty())
+                .then(|| super::store::next(matches, &["deploy", "--upload", &dir]))
         })
         .unwrap_or(hint);
     finish_view(&view, Some(hint))?;
@@ -345,6 +355,20 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
     })
 }
 
+/// "uploaded by nick, base abc1234 + changes": where an upload came from.
+fn provenance(upload: &UploadedSource) -> String {
+    let who = upload.uploader.as_deref().unwrap_or("this device");
+    let digest = upload.digest.get(..12).unwrap_or(&upload.digest);
+    match &upload.base {
+        Some(base) => format!(
+            "uploaded by {who}, base {}{}",
+            base.commit.get(..7).unwrap_or(&base.commit),
+            if base.changed { " + changes" } else { "" }
+        ),
+        None => format!("uploaded by {who}, sha256 {digest}"),
+    }
+}
+
 /// `dir` as an Uploaded Source: its content digest, and the commit it was checked out
 /// at, if any, with whether it holds changes that commit doesn't.
 fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
@@ -368,27 +392,11 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
             changed: git(&["status", "--porcelain", "--", "."])
                 .is_none_or(|status| !status.is_empty()),
         });
-    Ok(UploadedSource { digest, base })
-}
-
-/// The Services this Deployment targets that have no source of their own: they
-/// build from its upload.
-fn upload_targets(input: &Value) -> Vec<ServiceName> {
-    let selected: Vec<&str> = input["selected"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|selected| selected["name"].as_str())
-        .collect();
-    input["snapshots"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|snapshot| parse_service_config(snapshot["config"].clone()).ok())
-        .filter(|config| matches!(config.settings.source, ServiceSource::Empty { .. }))
-        .map(|config| config.settings.private_dns)
-        .filter(|name| selected.is_empty() || selected.contains(&name.as_str()))
-        .collect()
+    Ok(UploadedSource {
+        digest,
+        base,
+        uploader: None,
+    })
 }
 
 /// Build the Deployment's uploaded Services from `source`, or, without it, reuse their
@@ -526,7 +534,7 @@ async fn run(
         .deployment
         .upload
         .as_ref()
-        .map(|_| upload_targets(&claimed.input))
+        .map(|_| claimed.uploads.clone())
         .unwrap_or_default();
     // Built images stay retained on their Machines until execution ends.
     let (plan, _retained) = if services.is_empty() {
@@ -715,14 +723,20 @@ fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error>
             view.environment.name,
             view.deployment.status
         );
+        if let Some(upload) = &view.deployment.upload {
+            say!("  {}", provenance(upload));
+        }
         for node in &view.nodes {
             say!("  {}: {:?}", node.name, node.outcome);
         }
         for build in &view.builds {
-            let commit = build.commit.get(..7).unwrap_or(&build.commit);
+            let commit = build
+                .commit
+                .as_deref()
+                .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
             let reason = build.message.as_deref().unwrap_or_default();
             say!(
-                "  build {} at {commit}: {:?} {reason}",
+                "  build {} from {commit}: {:?} {reason}",
                 build.service,
                 build.status
             );

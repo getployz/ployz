@@ -36,7 +36,7 @@ mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
 pub use running::Running;
-pub use store_runner::run_deployment;
+pub use store_runner::{Sources, run_deployment};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
