@@ -501,7 +501,10 @@ fn system_project_deploy_still_replaces_its_own_ingress() {
 #[test]
 fn cloud_lowering_orders_dependency_before_migration_and_container() {
     let snapshots: Vec<_> = ["web", "db"].into_iter().map(|name| serde_json::json!({
+        "serviceId": name,
         "config": {"version": 2, "privateDns": name,
+            "env": if name == "web" { serde_json::json!({"DB": {"kind": "literal", "value": "", "parts": [
+                {"kind": "ref", "owner": {"scope": "service", "lineageId": "db-lineage"}, "key": "PORT"}]}}) } else { serde_json::json!({}) },
                 "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
             "source": {"type":"image", "version":1, "image":"nginx:latest", "credentials":{"type":"none"}},
             "preDeployCommand": if name == "web" { Some("migrate") } else { None }
@@ -510,7 +513,7 @@ fn cloud_lowering_orders_dependency_before_migration_and_container() {
     let intent = ployz_core::config::lower_deployment(
         serde_json::from_value(serde_json::json!({
             "projectName": "app", "snapshots": snapshots,
-            "dependencies": {"web": [{"service":"db", "condition":"service_started"}]}
+            "lineages": {"db-lineage": "db"}
         }))
         .unwrap(),
     )

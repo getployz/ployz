@@ -47,3 +47,12 @@ it("preserves authored overrides of the public-domain default", async () => {
   } }], [{ ownerScope: "service", ownerId: "api", ownerLineageId: "api-lineage", key: "PLOYZ_PUBLIC_DOMAIN", value: { kind: "literal", value: "override.example.test" } }]));
   expect(env.get("api")).toEqual({ PLOYZ_PUBLIC_DOMAIN: "override.example.test", APP_URL: "override.example.test" });
 });
+
+it("fails a reference cycle, naming its path", async () => {
+  const ref = (key: string) => ({ kind: "literal" as const, value: "", parts: [{ kind: "ref" as const, owner: { scope: "self" as const }, key }] });
+  const template = (key: string, next: string) => ({ ownerScope: "service" as const, ownerId: "api", ownerLineageId: "api-lineage", key,
+    value: { kind: "template" as const, parts: ref(next).parts } });
+  const failure = await Effect.runPromise(Effect.flip(getResolvedDeployEnvBySnapshotConfig(makeSecretEncryption("test-encryption-secret"),
+    [{ serviceId: "api", config: { routes: [], managedHostnames: [], env: { A: ref("A") } } }], [template("A", "B"), template("B", "A")])));
+  expect(failure.message).toBe("Circular variable reference: api::A -> api::B -> api::A");
+});

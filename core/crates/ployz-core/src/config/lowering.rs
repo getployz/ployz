@@ -5,13 +5,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::{ConfigError, ServiceHealthcheck, ServiceSource, parse_service_config};
+use super::{
+    ConfigError, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource, ValuePart,
+    ValuePartOwner, parse_service_config,
+};
 use crate::{
-    ByteQuantity, ContainerResources, CpuNanos, DeployIntent, HealthcheckSpec, HttpHealthcheck,
-    HttpProtocol, IngressHost, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook,
-    ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt,
-    ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, VolumeDriver,
+    ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
+    HttpHealthcheck, HttpProtocol, IngressHost, PlanOptions, PortPublication, PreDeployCommand,
+    PreDeployHook, ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy,
+    ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount,
+    ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -38,8 +41,10 @@ pub struct LowerDeploymentInput {
     snapshots: Vec<LowerDeploymentSnapshot>,
     #[serde(default)]
     volumes: Vec<LowerDeploymentVolume>,
+    /// Service ID by lineage, from the attempt's frozen variable producers. References
+    /// resolved through it order the deploy.
     #[serde(default)]
-    dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
+    lineages: BTreeMap<String, String>,
     /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
     selected: Option<Vec<ServiceAttempt>>,
 }
@@ -77,13 +82,19 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
         .iter()
         .map(|v| v.volume_resource_id.as_str())
         .collect();
+    let snapshots = input
+        .snapshots
+        .into_iter()
+        .map(|mut snapshot| Ok((parse_service_config(snapshot.config.take())?, snapshot)))
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+    let dependencies = deployment_dependencies(&snapshots, &input.lineages);
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
-    for snapshot in input.snapshots {
-        let super::ServiceConfig {
+    for (parsed, snapshot) in snapshots {
+        let ServiceConfig {
             settings: config,
             mounts: configured_mounts,
             ..
-        } = parse_service_config(snapshot.config)?;
+        } = parsed;
         let image = match &config.source {
             ServiceSource::Empty { .. } => continue,
             ServiceSource::Git { .. } => {
@@ -306,7 +317,89 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             selected,
         },
     )
-    .with_dependencies(input.dependencies))
+    .with_dependencies(dependencies))
+}
+
+/// A deployed Service waits for every deployed Service its variables reference, except that
+/// edges inside a reference cycle are dropped. An HTTP healthcheck makes the wait for health.
+fn deployment_dependencies(
+    snapshots: &[(ServiceConfig, LowerDeploymentSnapshot)],
+    lineages: &BTreeMap<String, String>,
+) -> BTreeMap<ServiceName, Vec<ServiceDependency>> {
+    let deployed = || {
+        snapshots
+            .iter()
+            .filter(|(config, _)| !matches!(config.settings.source, ServiceSource::Empty { .. }))
+    };
+    let by_id: BTreeMap<&str, &ServiceConfig> = deployed()
+        .filter_map(|(config, snapshot)| Some((snapshot.service_id.as_deref()?, config)))
+        .collect();
+    let mut graph: BTreeMap<&ServiceName, (&ServiceConfig, BTreeSet<&ServiceName>)> =
+        BTreeMap::new();
+    for (config, _) in deployed() {
+        let name = &config.settings.private_dns;
+        let references = config
+            .env
+            .values()
+            .filter_map(|value| match value {
+                ServiceEnvValue::Literal { parts, .. } => parts.as_ref(),
+                ServiceEnvValue::Secret { .. } => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    ..
+                } => by_id.get(lineages.get(lineage_id)?.as_str()),
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Self_,
+                    ..
+                }
+                | ValuePart::Text { .. } => None,
+            })
+            .map(|dependency| &dependency.settings.private_dns)
+            .filter(|dependency| *dependency != name)
+            .collect();
+        graph.insert(name, (config, references));
+    }
+    // ponytail: per-edge reachability keeps this small; use SCCs if large environments make it costly.
+    let reaches = |from: &ServiceName, target: &ServiceName| {
+        let mut pending = vec![from];
+        let mut visited = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if name == target {
+                return true;
+            }
+            if visited.insert(name) {
+                pending.extend(graph.get(name).into_iter().flat_map(|(_, next)| next));
+            }
+        }
+        false
+    };
+    graph
+        .iter()
+        .filter_map(|(name, (_, references))| {
+            let edges: Vec<_> = references
+                .iter()
+                .filter(|dependency| !reaches(dependency, name))
+                .map(|dependency| ServiceDependency {
+                    service: (*dependency).clone(),
+                    // Normal startup already monitors Docker health. An explicit HTTP check
+                    // also gates unchanged dependencies.
+                    condition: match graph
+                        .get(dependency)
+                        .map(|(config, _)| &config.settings.healthcheck)
+                    {
+                        Some(ServiceHealthcheck::Http { .. }) => {
+                            DependencyCondition::ServiceHealthy
+                        }
+                        _ => DependencyCondition::ServiceStarted,
+                    },
+                })
+                .collect();
+            (!edges.is_empty()).then(|| ((*name).clone(), edges))
+        })
+        .collect()
 }
 
 fn lowering_error(_: impl std::fmt::Display) -> ConfigError {

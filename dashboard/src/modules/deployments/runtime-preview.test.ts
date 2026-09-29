@@ -246,24 +246,10 @@ function referencedSnapshots(edges: Record<string, string[]>) {
   return { projectName: "production", snapshots, variableProducers };
 }
 
-it("lowers frozen references to runtime dependencies using identity, not display text", () => {
-  const input = referencedSnapshots({ app: ["postgres", "postgres", "app", "absent"], postgres: [] });
-  const [app, postgres] = input.snapshots;
-  if (!app || !postgres) throw new Error("Missing test services");
-  app.config.env["LITERAL"] = { kind: "literal", value: "${{unknown.PORT}}" };
+it("orders the deploy through the frozen producers' lineages", () => {
+  // Core owns the ordering rules; this checks Cloud hands it the lineages.
+  const input = referencedSnapshots({ app: ["postgres"], postgres: [] });
   expect(compileIntent(input).dependencies).toEqual({
     app: [{ service: "postgres", condition: "service_started" }],
-  });
-  postgres.config.healthcheck = { type: "http", path: "/health", timeoutSeconds: 10 };
-  expect(compileIntent(input).dependencies["app"]).toEqual([{ service: "postgres", condition: "service_healthy" }]);
-  postgres.config.source = createEmptyServiceSource();
-  expect(compileIntent(input).dependencies).toEqual({});
-});
-
-it("ignores all intra-cycle edges while preserving incoming and outgoing dependencies", () => {
-  const input = referencedSnapshots({ app: ["a"], a: ["b", "db"], b: ["c"], c: ["a"], db: [] });
-  expect(compileIntent(input).dependencies).toEqual({
-    app: [{ service: "a", condition: "service_started" }],
-    a: [{ service: "db", condition: "service_started" }],
   });
 });

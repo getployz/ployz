@@ -1,4 +1,3 @@
-import { deploymentDependencies } from "./deployment-dependencies";
 import type { EnvironmentSnapshotVariableProducer } from "#/modules/environment-design/tables";
 import { parseRuntimePreview } from "@ployz/sdk/config";
 import { Schema } from "effect";
@@ -33,7 +32,9 @@ export function compileSdkPreparationInput(input: {
 }) {
   const { variableProducers = [], ...deployment } = input;
   // Cloud freezes the complete Attempt Target, including removal of old service names.
-  return { ...deployment, selected: [], dependencies: deploymentDependencies(input.snapshots, variableProducers) };
+  // Core orders the deploy from the frozen references these lineages resolve.
+  const lineages = Object.fromEntries(variableProducers.map((producer) => [producer.ownerLineageId, producer.ownerId]));
+  return { ...deployment, selected: [], lineages };
 }
 
 export function parseSdkDeployPreview<T>(value: T): SdkDeployPreview {
