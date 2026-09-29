@@ -7,8 +7,8 @@ use ployz_store::{
     Actor, Admit, Command, ConfigStore, CreateEnvironment, CreateProject, CreateService,
     DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView, DeploymentsQuery,
     DeploymentsView, DiffQuery, DiffView, Discard, Discarded, Edit, Edited, EnvironmentCreated,
-    EnvironmentName, EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId, PlanQuery,
-    PlanView, ProjectCreated, ProjectName, Publish, Published, Query, ServiceCreated,
+    EnvironmentQuery, EnvironmentRef, EnvironmentView, OrganizationId, PlanQuery, PlanView,
+    ProjectCreated, ProjectName, Publish, Published, Query, ServiceCreated,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -28,7 +28,7 @@ impl From<StoreCallError> for Error {
 }
 
 /// The Organization of the hidden in-process Store.
-const LOCAL_ORGANIZATION: &str = "local";
+pub(super) const LOCAL_ORGANIZATION: &str = "local";
 
 /// `--project`: which Project a command addresses.
 pub(crate) fn project_arg() -> Arg {
@@ -46,22 +46,14 @@ pub(crate) fn scoped(command: clap::Command) -> clap::Command {
     )
 }
 
+/// The Project a command addresses: `--project`, `PLOYZ_PROJECT`, else the directory link.
 pub(crate) fn project(matches: &ArgMatches) -> Result<Option<ProjectName>, Error> {
-    matches
-        .get_one::<String>("project")
-        .map(|name| ProjectName::parse(name.as_str()))
-        .transpose()
-        .map_err(Into::into)
+    Ok(super::link::scope(matches)?.at().project)
 }
 
+/// The Environment a command addresses: flags, environment variables, else the directory link.
 pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error> {
-    Ok(EnvironmentRef {
-        project: project(matches)?,
-        environment: matches
-            .get_one::<String>("env")
-            .map(|name| EnvironmentName::parse(name.as_str()))
-            .transpose()?,
-    })
+    Ok(super::link::scope(matches)?.at())
 }
 
 /// The Config Store a command reads and writes: Cloud's over HTTPS, as

@@ -203,6 +203,10 @@ _Avoid_: Namespace, stage, workspace
 The Environment a project opens, chosen in the project's settings. There is no per-user remembered Environment.
 _Avoid_: Remembered environment, primary environment, main environment
 
+**Directory Link**:
+A directory's recorded Project and Environment, kept on this device beside the CLI config and inherited by its subdirectories. `--project`/`--env` and `PLOYZ_PROJECT`/`PLOYZ_ENV` take precedence over it, in that order; a link made in another Organization is refused.
+_Avoid_: Project file, workspace, current project
+
 **Setting**:
 One named, user-facing value of an Environment Node, Environment, Project or Organization, addressed by a path such as `web.replicas`. It is staged until a Deploy or applies immediately; the settings catalog lists every Setting with its type and default, and the stored configuration behind it is never addressed directly.
 _Avoid_: Field, option, config key, storage path

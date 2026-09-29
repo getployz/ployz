@@ -2,7 +2,8 @@
 //! `service add`, `get`, `set`, `unset`, `diff`, `publish`, `discard`, `schema` and
 //! `explain`, and Setting path completion. Store cases run twice: on the hidden
 //! in-process Store (`PLOYZ_STORE=sqlite:PATH`) and over HTTPS to a Cloud that hosts
-//! the Store behind `/api/config/{read,write}`, as `PLOYZ_TOKEN`.
+//! the Store behind `/api/config/{read,write}`, as `PLOYZ_TOKEN`. `link`, `status`
+//! and `ctx` show how a directory link and overrides pick the scope.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
@@ -141,6 +142,11 @@ fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
         }
         (Some(who), "/api/config/write") => {
             answer(store.write(&who, &serde_json::from_slice(&body).unwrap()))
+        }
+        (Some(who), "/api/cli/organizations") => {
+            let id = who.organization.as_str();
+            let organization = json!({ "id": id, "slug": id, "name": id, "current": true });
+            (200, json!({ "organizations": [organization] }))
         }
         (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
     };
@@ -636,4 +642,199 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
         assert_eq!(listed["next_cursor"], Value::Null);
         failed(store, &["deployment", "show", "not-an-id"], 2);
     }
+}
+
+/// Run `ployz --json ARGS` in `dir` with a lasting `home`, where directory links live.
+fn in_dir(
+    store: &Target,
+    home: &std::path::Path,
+    dir: &std::path::Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (Option<i32>, Value) {
+    let output = store
+        .command(home)
+        .current_dir(dir)
+        .envs(env.iter().copied())
+        .arg("--json")
+        .args(args)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
+    (output.status.code(), json)
+}
+
+#[test]
+fn two_linked_directories_act_on_their_own_environments() {
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let a_dir = a.path().canonicalize().unwrap();
+        let nested = a_dir.join("src");
+        std::fs::create_dir(&nested).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]| {
+            let (code, json) = in_dir(store, home.path(), dir, args, env);
+            assert_eq!(code, Some(0), "{args:?}: {json}");
+            json
+        };
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["env", "new", "staging"]);
+
+        let linked = run(&a_dir, &["link", "--env", "staging"], &[]);
+        assert_eq!(
+            linked.get("directory"),
+            Some(&json!(a_dir.to_str().unwrap()))
+        );
+        assert_eq!(linked.get("project"), Some(&json!("shop")));
+        assert_eq!(linked.get("environment"), Some(&json!("staging")));
+        assert_eq!(linked.get("next"), Some(&json!("ployz status")));
+        let linked = run(b.path(), &["link"], &[]);
+        assert_eq!(linked.get("environment"), Some(&json!("production")));
+
+        // A subdirectory acts where its linked ancestor does.
+        let added = run(&nested, &["service", "add", "api", "--image", "api:1"], &[]);
+        assert_eq!(added.pointer("/environment/name"), Some(&json!("staging")));
+        let got = run(b.path(), &["get"], &[]);
+        assert_eq!(got.pointer("/environment/name"), Some(&json!("production")));
+        assert_eq!(got.get("settings"), Some(&json!([])));
+
+        let status = run(&nested, &["status"], &[]);
+        assert_eq!(status.pointer("/environment/name"), Some(&json!("staging")));
+        assert_eq!(
+            status.pointer("/scope/environment"),
+            Some(&json!({ "name": "staging", "source": "link" }))
+        );
+        assert_eq!(
+            status.pointer("/scope/link"),
+            Some(&json!(a_dir.to_str().unwrap()))
+        );
+        assert_eq!(status.pointer("/staged/published"), Some(&json!(false)));
+        assert_eq!(status.get("deploying"), Some(&json!([])));
+        assert_eq!(status.get("attention"), Some(&json!([])));
+        assert_eq!(status.get("next"), Some(&json!("ployz diff")));
+        let organization = match store {
+            Target::Local(_) => ("local", "local"),
+            Target::Cloud { .. } => ("token", "alice"),
+        };
+        assert_eq!(
+            status.pointer("/identity/credential"),
+            Some(&json!(organization.0))
+        );
+        assert_eq!(
+            status.pointer("/identity/organization/slug"),
+            Some(&json!(organization.1))
+        );
+
+        // Flags beat environment variables, which beat the link.
+        let by_env = run(&a_dir, &["status"], &[("PLOYZ_ENV", "production")]);
+        assert_eq!(
+            by_env.pointer("/scope/environment"),
+            Some(&json!({ "name": "production", "source": "env" }))
+        );
+        assert_eq!(
+            by_env.pointer("/scope/project/source"),
+            Some(&json!("link"))
+        );
+        let by_flag = run(
+            &a_dir,
+            &["status", "--env", "staging"],
+            &[("PLOYZ_ENV", "production")],
+        );
+        assert_eq!(
+            by_flag.pointer("/scope/environment"),
+            Some(&json!({ "name": "staging", "source": "flag" }))
+        );
+
+        let context = run(&nested, &["ctx"], &[]);
+        assert_eq!(
+            context.pointer("/environment/name"),
+            Some(&json!("staging"))
+        );
+        assert_eq!(context.pointer("/project/source"), Some(&json!("link")));
+        let via = match store {
+            Target::Local(_) => "local",
+            Target::Cloud { .. } => "cloud",
+        };
+        assert_eq!(context.pointer("/servers/via"), Some(&json!(via)));
+    }
+}
+
+#[test]
+fn missing_ambiguous_and_foreign_scope_name_the_fix() {
+    for store in &targets() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| in_dir(store, home.path(), dir.path(), args, &[]);
+
+        // Nothing yet: status still says who, and what to do first.
+        let (code, status) = run(&["status"]);
+        assert_eq!(code, Some(0), "{status}");
+        assert_eq!(status.get("environment"), Some(&Value::Null));
+        assert_eq!(
+            status.pointer("/attention/0/reason"),
+            Some(&json!("not_found"))
+        );
+        assert_eq!(status.get("next"), Some(&json!("ployz project new NAME")));
+        let (code, refused) = run(&["link"]);
+        assert_eq!(code, Some(1));
+        assert_eq!(refused.pointer("/error/code"), Some(&json!("not_found")));
+
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["project", "new", "blog"]);
+        let (_, status) = run(&["status"]);
+        assert_eq!(
+            status.pointer("/attention/0/reason"),
+            Some(&json!("ambiguous"))
+        );
+        assert_eq!(
+            status.get("next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+        let (code, refused) = run(&["link"]);
+        assert_eq!(code, Some(1));
+        assert_eq!(
+            refused.pointer("/error/details/next"),
+            Some(&json!("ployz link --project PROJECT"))
+        );
+        let (_, refused) = run(&["link", "--project", "blog", "--env", "preview"]);
+        assert_eq!(
+            refused.pointer("/error/details/next"),
+            Some(&json!("ployz env new preview --project blog"))
+        );
+
+        ok(store, &["env", "new", "staging", "--project", "blog"]);
+        let (code, _) = run(&["link", "--project", "blog", "--env", "staging"]);
+        assert_eq!(code, Some(0));
+        // Another Project on the command line drops the link's Environment.
+        let (_, status) = run(&["status", "--project", "shop"]);
+        assert_eq!(status.pointer("/environment/project"), Some(&json!("shop")));
+        assert_eq!(
+            status.pointer("/environment/name"),
+            Some(&json!("production"))
+        );
+        assert_eq!(status.pointer("/scope/environment"), Some(&Value::Null));
+        assert_eq!(status.pointer("/scope/link"), Some(&Value::Null));
+    }
+
+    // A link made in another Organization is refused, never followed.
+    let store = &targets()[0];
+    let home = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    ok(store, &["project", "new", "shop"]);
+    let (code, _) = in_dir(store, home.path(), dir.path(), &["link"], &[]);
+    assert_eq!(code, Some(0));
+    let links = home.path().join("links.json");
+    let moved = std::fs::read_to_string(&links)
+        .unwrap()
+        .replace("\"local\"", "\"acme\"");
+    std::fs::write(&links, moved).unwrap();
+    let (code, refused) = in_dir(store, home.path(), dir.path(), &["get"], &[]);
+    assert_eq!(code, Some(1));
+    assert_eq!(refused.pointer("/error/code"), Some(&json!("conflict")));
+    assert_eq!(
+        refused.pointer("/error/details/next"),
+        Some(&json!("ployz link"))
+    );
 }
