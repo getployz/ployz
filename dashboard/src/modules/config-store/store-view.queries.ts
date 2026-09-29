@@ -1,5 +1,8 @@
-import { queryOptions, useMutationState, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
-import type { Change, ConfigQuery, ConfigView, DiffQuery, DomainsQuery, EnvironmentQuery, EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery, VolumesQuery } from "@ployz/sdk";
+import { infiniteQueryOptions, queryOptions, useMutationState, useQueries, useSuspenseInfiniteQuery, useSuspenseQuery, type Query, type QueryClient } from "@tanstack/react-query";
+import type {
+  BuildLogQuery, Change, ConfigQuery, ConfigView, DeploymentQuery, DeploymentsQuery, DeploymentsView, DiffQuery, DomainsQuery, EnvironmentQuery,
+  EnvironmentRef, EnvironmentView, JsonValue, ServicesQuery, VolumesQuery,
+} from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
@@ -34,6 +37,8 @@ const refreshedBy = {
   // A Branch's Live Nodes and pending Update follow what its Parent and ancestors run.
   branch: ["store_environment", "store_deployment"],
   build_order: ["store_organization"],
+  // A Move compares a Branch with its Parent's Working and Applied State.
+  move: ["store_environment", "store_deployment"],
   // The Project names its Default Environment; a removal is a Deployment.
   environments: ["store_project", "store_environment", "store_deployment"],
   // Plans list the repositories Working States deploy from, and name nodes of the start-from Environment.
@@ -195,6 +200,45 @@ export function volumesQuery(environment: EnvironmentRef): { query: "volumes" } 
   return { query: "volumes", environment };
 }
 
+/** One Deployment: its Node Outcomes, builds, recorded Deploy Preview and outcome. */
+export function deploymentQuery(id: string): { query: "deployment" } & DeploymentQuery {
+  return { query: "deployment", id };
+}
+
+/** One Service's build log in a Deployment, by its name when admitted. */
+export function buildLogQuery(deployment: string, service: string): { query: "build_log" } & BuildLogQuery {
+  return { query: "build_log", deployment, service };
+}
+
+/** The first page of a paged Store view has no cursor. */
+const FIRST_PAGE: string | null = null;
+
+const deploymentsPage = (environment: EnvironmentRef, cursor: string | null): { query: "deployments" } & DeploymentsQuery =>
+  ({ query: "deployments", environment, limit: null, cursor });
+
+/**
+ * An Environment's Deployments, newest first, a Store page at a time: whoever admitted them, CLI or dashboard. Keyed
+ * like a Store view (its first page's query), so the change stream and a committed write refetch every loaded page.
+ */
+export function storeDeploymentsOptions(organizationSlug: string, scope: CollectionScope, environment: EnvironmentRef) {
+  return infiniteQueryOptions({
+    queryKey: [...storeViewPrefix(organizationSlug), scope.sessionId, scope.userId, deploymentsPage(environment, null)] as const,
+    staleTime: Infinity,
+    initialPageParam: FIRST_PAGE,
+    queryFn: async ({ pageParam, signal }) => {
+      const result = await readStoreViewServerFn({ data: { organizationSlug, query: deploymentsPage(environment, pageParam) }, signal });
+      // SAFETY: the Store answers a `deployments` query with a `deployments` view.
+      return requireView(result) as DeploymentsView;
+    },
+    getNextPageParam: (page) => page.next_cursor,
+  });
+}
+
+/** An Environment's Deployments, prefetched by the page's loader (`prefetchStoreDeployments`). */
+export function useStoreDeployments(organizationSlug: string, environment: EnvironmentRef) {
+  return useSuspenseInfiniteQuery(storeDeploymentsOptions(organizationSlug, useCollectionScope(), environment));
+}
+
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */
 export function requireView<T>(result: StoreResult<T>): T {
   if (!result.ok) throw new Error(result.refusal.message);
@@ -216,4 +260,14 @@ export function useStoreView<Q extends ConfigQuery>(organizationSlug: string, qu
   if (!result.ok || result.value.view !== "environment" || pending.length === 0) return result;
   // SAFETY: an `environment` view answers an `environment` query.
   return { ok: true, value: withPendingChanges(result.value as EnvironmentView, pending.flat()) as StoreViewOf<Q> };
+}
+
+/**
+ * A Store view for chrome that must not wait on it (null reads nothing): the cached answer, if any, kept fresh like any
+ * other. The canvas lights an open Deployment Page's nodes from the view that page's loader prefetched.
+ */
+export function useCachedStoreView<Q extends ConfigQuery>(organizationSlug: string, query: Q | null): StoreResult<StoreViewOf<Q>> | undefined {
+  const scope = useCollectionScope();
+  const queries: ReturnType<typeof storeViewOptions<Q>>[] = query ? [storeViewOptions(organizationSlug, scope, query)] : [];
+  return useQueries({ queries })[0]?.data;
 }

@@ -74,8 +74,8 @@ pub enum Command {
     RemoveDomain(crate::RemoveDomain),
     /// Make a Branch of an Environment.
     CreateBranch(crate::CreateBranch),
-    /// Stage a Branch's Parent's deployed changes in it.
-    UpdateBranch(crate::UpdateBranch),
+    /// Move changes between a Branch and its Parent: Save or Update.
+    Move(crate::Move),
     /// Turn a Branch's Live Node into an Own Copy.
     CopyNode(crate::CopyNode),
     /// Keep a Branch, or stop keeping it.
@@ -114,7 +114,7 @@ impl Command {
             | Self::Cancel(_)
             | Self::AddDomain(_)
             | Self::RemoveDomain(_)
-            | Self::UpdateBranch(_)
+            | Self::Move(_)
             | Self::CopyNode(_)
             | Self::KeepBranch(_)
             | Self::SetBuildOrder(_)
@@ -156,10 +156,12 @@ pub enum Written {
     Domain(crate::DomainStaged),
     /// What a system event made the Store do.
     Automated(crate::Automated),
-    /// A Branch was made, updated, given an Own Copy, or kept.
+    /// A Branch was made, given an Own Copy, or kept.
     Branch(crate::Branched),
     /// The Build Order was set; it applies to the next build.
     BuildOrder(crate::BuildOrderView),
+    /// Changes moved between a Branch and its Parent.
+    Moved(crate::Moved),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
@@ -207,9 +209,7 @@ pub(crate) fn run(
         Command::CreateBranch(create) => {
             crate::branch::create_branch(tx, who, create).map(Written::Branch)
         }
-        Command::UpdateBranch(update) => {
-            crate::branch::update_branch(tx, who, update).map(Written::Branch)
-        }
+        Command::Move(request) => crate::branch::move_changes(tx, who, request).map(Written::Moved),
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
         Command::SetBuildOrder(set) => {

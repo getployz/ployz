@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchRemote } from "#/collections/route-data";
+import { prefetchRemote, prefetchStoreViews } from "#/collections/route-data";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { deploymentQuery } from "#/modules/config-store/store-view.queries";
+import { StoreDeploymentPage } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage";
 import { deploymentBuildLogQueryOptions, deploymentBuildTailQueryOptions } from "#/modules/deployments/deployment-build-log.queries";
 import { deploymentAttemptQueryOptions } from "#/modules/deployments/deployment-history.queries";
 import {
@@ -17,7 +20,8 @@ export const Route = createFileRoute(
   validateSearch: Schema.toStandardSchemaV1(deploymentPageSearchSchema),
   // The attempt (who started it, the configs it deployed), its build tail (each image's stage) and its build log (the Build
   // tab) start together; SSR renders them and hover warms them. The deploy logs stream once the Deploy tab shows.
-  loader: ({ params, context }) => prefetchRemote(context,
+  // Over the Store: the Deployment (Node Outcomes, builds, its Deploy Preview); a build log loads as its tab shows.
+  loader: ({ params, context }) => storeEnabled ? prefetchStoreViews(context, params.organizationSlug, deploymentQuery(params.deploymentId)) : prefetchRemote(context,
     deploymentAttemptQueryOptions(params.organizationSlug, params.deploymentId),
     deploymentBuildTailQueryOptions(params.organizationSlug, params.deploymentId),
     deploymentBuildLogQueryOptions(params.organizationSlug, params.deploymentId)),
@@ -27,5 +31,6 @@ export const Route = createFileRoute(
 });
 
 function RouteComponent() {
-  return <DeploymentPage deploymentId={Route.useParams().deploymentId} search={Route.useSearch()} />;
+  const Page = storeEnabled ? StoreDeploymentPage : DeploymentPage;
+  return <Page deploymentId={Route.useParams().deploymentId} search={Route.useSearch()} />;
 }
