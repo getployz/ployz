@@ -78,32 +78,38 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
             let mut attempts = Vec::new();
             for (index, machine) in machines.iter().enumerate() {
                 let attempt_id = MachineUpgradeAttemptId::random();
-                let stopped = match run_one(client, machine, release.clone(), attempt_id).await {
-                    Err(error) => Some(error),
-                    Ok(attempt) => {
-                        print_attempt(machine, &attempt);
-                        let stopped = match &attempt.outcome {
-                            MachineUpgradeOutcome::Succeeded { .. } => None,
-                            MachineUpgradeOutcome::Failed { error, .. } => {
-                                Some(Error::coded(RpcErrorCode::Internal, error.clone()))
-                            }
-                            MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
-                                RpcErrorCode::Internal,
-                                format!(
-                                    "Machine {} upgrade was interrupted; {}",
-                                    machine.name,
-                                    journal_hint(attempt_id)
-                                ),
-                            )),
-                            MachineUpgradeOutcome::Accepted
-                            | MachineUpgradeOutcome::Running { .. } => {
-                                unreachable!("run_one returns only terminal evidence")
-                            }
-                        };
-                        attempts.push(attempt);
-                        stopped
-                    }
-                };
+                let mut seen = None;
+                let stopped =
+                    match run_one(client, machine, release.clone(), attempt_id, &mut seen).await {
+                        Err(error) => {
+                            // An accepted attempt is committed evidence: keep it in the result.
+                            attempts.extend(seen);
+                            Some(error)
+                        }
+                        Ok(attempt) => {
+                            print_attempt(machine, &attempt);
+                            let stopped = match &attempt.outcome {
+                                MachineUpgradeOutcome::Succeeded { .. } => None,
+                                MachineUpgradeOutcome::Failed { error, .. } => {
+                                    Some(Error::coded(RpcErrorCode::Internal, error.clone()))
+                                }
+                                MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
+                                    RpcErrorCode::Internal,
+                                    format!(
+                                        "Machine {} upgrade was interrupted; {}",
+                                        machine.name,
+                                        journal_hint(attempt_id)
+                                    ),
+                                )),
+                                MachineUpgradeOutcome::Accepted
+                                | MachineUpgradeOutcome::Running { .. } => {
+                                    unreachable!("run_one returns only terminal evidence")
+                                }
+                            };
+                            attempts.push(attempt);
+                            stopped
+                        }
+                    };
                 if let Some(error) = stopped {
                     let unattempted = machines.get(index + 1..).unwrap_or_default();
                     print_unattempted(unattempted, machine);
@@ -147,6 +153,8 @@ async fn run_one(
     machine: &Machine,
     release: MachineRelease,
     attempt_id: MachineUpgradeAttemptId,
+    // The latest observed evidence, kept when a later poll fails.
+    seen: &mut Option<MachineUpgradeAttempt>,
 ) -> Result<MachineUpgradeAttempt, Error> {
     let target = MachineTarget::from(&machine.id);
     let deadline = Instant::now() + OBSERVATION_TIMEOUT;
@@ -169,6 +177,7 @@ async fn run_one(
         }
     };
     print_attempt(machine, &accepted);
+    *seen = Some(accepted.clone());
     if accepted.is_terminal() {
         return Ok(accepted);
     }
@@ -198,6 +207,7 @@ async fn run_one(
         if observed.is_terminal() {
             return Ok(observed);
         }
+        *seen = Some(observed);
     }
 }
 
@@ -344,6 +354,7 @@ mod tests {
             &machine,
             MachineRelease::parse("beta").unwrap(),
             attempt_id,
+            &mut None,
         )
         .await
         .unwrap_err();
@@ -369,6 +380,7 @@ mod tests {
             &machine,
             MachineRelease::parse("1.2.3").unwrap(),
             attempt_id,
+            &mut None,
         )
         .await
         .unwrap_err()
@@ -472,12 +484,14 @@ mod tests {
                 None,
             )
         };
+        let mut seen = None;
         let (attempt, new) = tokio::join!(
             run_one(
                 &mut client,
                 &machine,
                 MachineRelease::parse("1.2.3").unwrap(),
                 MachineUpgradeAttemptId::random(),
+                &mut seen,
             ),
             restart
         );
@@ -496,17 +510,24 @@ mod tests {
         let daemon = daemon(&path, None, None);
         let mut client = crate::connect::test_support::unix_client(&path).await;
         let started = Instant::now();
+        let mut seen = None;
         let error = run_one(
             &mut client,
             &machine('f', 6),
             MachineRelease::parse("1.2.3").unwrap(),
             MachineUpgradeAttemptId::random(),
+            &mut seen,
         )
         .await
         .unwrap_err()
         .to_string();
         daemon.shutdown_background();
         assert!(error.contains("upgrade record is unreadable"), "{error}");
+        // The accepted attempt survives the failed poll as committed evidence.
+        assert!(matches!(
+            seen.map(|attempt| attempt.outcome),
+            Some(MachineUpgradeOutcome::Accepted)
+        ));
         // One poll interval, no retry budget spent.
         assert!(started.elapsed() < Duration::from_secs(3), "{error}");
     }

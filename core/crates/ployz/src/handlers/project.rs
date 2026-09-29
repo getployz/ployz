@@ -15,7 +15,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
             let machines = client.machines().await?;
             let snapshot = client.deploy_snapshot(machines).await?;
             for line in observer_listing_warnings(&snapshot) {
-                crate::output::warning!("{line}");
+                eprintln!("{line}");
             }
             let projects = derive_projects(
                 &snapshot.containers,
@@ -80,8 +80,9 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 crate::context::ConnectionSource::Direct => "direct connection".into(),
                 crate::context::ConnectionSource::LocalSocket => "local socket".into(),
             };
-            let outcome = remove_project(client, &name, volumes, &context, &confirmation).await?;
-            crate::deploy::emit_outcome(&outcome)
+            crate::deploy::emit_outcome(
+                remove_project(client, &name, volumes, &context, &confirmation).await,
+            )
         })
     })
 }

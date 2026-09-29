@@ -22,15 +22,15 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         let mut client =
             connect_client(root, root.get_one::<String>("context").map(String::as_str)).await?;
         let requested = crate::ingress::service_spec(image, constraints).await?;
-        let outcome = crate::deploy::apply_requested(
-            &mut client,
-            &requested,
-            force_recreate,
-            skip_health_monitor,
-            context,
+        crate::deploy::emit_outcome(
+            crate::deploy::apply_requested(
+                &mut client,
+                &requested,
+                force_recreate,
+                skip_health_monitor,
+                context,
+            )
+            .await,
         )
-        .await
-        .map_err(Error::from)?;
-        crate::deploy::emit_outcome(&outcome)
     })
 }

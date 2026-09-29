@@ -4,7 +4,7 @@ use crate::cancellation::on_ctrl_c as cancellation_on_ctrl_c;
 use clap::{ArgMatches, Command};
 use clap_complete::{Shell, generate};
 
-use crate::failure::Failure;
+use crate::failure::{Failure, USAGE_EXIT};
 
 mod build;
 mod cloud;
@@ -38,9 +38,7 @@ fn usage_failure(error: clap::Error) -> Error {
     if !wants_json
         || matches!(
             error.kind(),
-            ErrorKind::DisplayHelp
-                | ErrorKind::DisplayVersion
-                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
         )
     {
         error.exit();
@@ -48,7 +46,7 @@ fn usage_failure(error: clap::Error) -> Error {
     crate::output::set_json(true);
     let message = error.render().to_string();
     Error::usage(message.trim().trim_start_matches("error: ").to_owned())
-        .with_exit(u8::try_from(error.exit_code()).unwrap_or(crate::failure::USAGE_EXIT))
+        .with_exit(u8::try_from(error.exit_code()).unwrap_or(USAGE_EXIT))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
@@ -60,15 +58,17 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     if matches.subcommand().is_none() {
         if matches.get_flag("json") {
-            return Err(Error::usage("a command is required").with_exit(crate::failure::USAGE_EXIT));
+            return Err(Error::usage("a command is required").with_exit(USAGE_EXIT));
         }
         command.print_help()?;
         crate::output::say!();
         return Ok(());
     }
     let path = command_path(matches);
-    let (handler, json) = handler_for(&path)
-        .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
+    // Every leaf has a handler, so a missing one means a group without its subcommand.
+    let (handler, json) = handler_for(&path).ok_or_else(|| {
+        Error::usage(format!("ployz {path} requires a subcommand")).with_exit(USAGE_EXIT)
+    })?;
     if json == Json::Refused && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"

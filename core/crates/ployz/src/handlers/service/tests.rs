@@ -810,6 +810,7 @@ fn action_result_keeps_machine_failures_apart_from_container_failures() {
             container_id,
             error: error.clone(),
         }],
+        wait_error: None,
         partial: true,
     };
     assert_eq!(

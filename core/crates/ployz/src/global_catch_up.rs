@@ -17,6 +17,11 @@ pub(crate) struct CatchUpError {
 }
 
 impl CatchUpError {
+    /// The `--json` code of the underlying failure.
+    pub(crate) fn code(&self) -> ployz_core::RpcErrorCode {
+        self.cause.report().code
+    }
+
     /// Record the failure and Globals whose eligibility or running slot is unresolved.
     pub(crate) fn new(cause: Failure, unresolved: Vec<QualifiedService>) -> Self {
         Self { cause, unresolved }

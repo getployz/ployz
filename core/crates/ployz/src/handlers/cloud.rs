@@ -207,13 +207,17 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
-    if let Err(error) = catch_up {
-        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-            error,
-        )));
-    }
     crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
-    crate::output::emit(&serde_json::json!({ "machine": assigned, "founded": false }))
+    // The join is committed; a catch-up failure makes it partial.
+    crate::output::emit_committed(
+        serde_json::json!({ "machine": assigned, "founded": false }),
+        catch_up.map_err(|error| {
+            Error::coded(
+                error.code(),
+                crate::global_catch_up::joined_catch_up_error(error),
+            )
+        }),
+    )
 }
 
 enum FounderLocalState {
@@ -321,12 +325,12 @@ where
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
-            Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
+            error.reworded(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| Error::usage(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
+        .map_err(|error| error.reworded(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
