@@ -6,6 +6,8 @@ use serde::Serialize;
 
 use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
 use crate::cli::{env, positional, value};
+use ployz_core::RpcErrorCode;
+
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::output::say;
@@ -46,6 +48,23 @@ pub(crate) fn org_command() -> Command {
                 .about("Act in another of your Organizations from this device")
                 .arg(positional("organization", true).help("Organization slug")),
         )
+        .subcommand(
+            Command::new("rm")
+                .about("Delete the Organization you act in, once it has no Project")
+                .long_about(
+                    "Delete the Organization you act in. Remove its Projects first \
+                     (ployz project rm). Every Server is unpaired: Cloud's key and every \
+                     device key are cleared on it. A Server that doesn't confirm keeps the \
+                     Organization, disabled, until the same command confirms it. Type its \
+                     slug with --confirm.",
+                )
+                .arg(positional("organization", true).help("Organization slug"))
+                .arg(
+                    value("confirm", None)
+                        .value_name("ORGANIZATION")
+                        .help("The Organization's slug, typed to confirm its removal"),
+                ),
+        )
 }
 
 pub(crate) fn billing_command() -> Command {
@@ -68,6 +87,7 @@ pub(super) fn org_handler(path: &str) -> Option<(Handler, Json)> {
     Some(match path {
         "ls" => (org_list, Json::Supported),
         "use" => (org_use, Json::Supported),
+        "rm" => (org_remove, Json::Supported),
         _ => return None,
     })
 }
@@ -224,6 +244,66 @@ fn org_use(root: &ArgMatches) -> Result<(), Error> {
             organization.slug
         )
     })
+}
+
+/// Delete the Organization: Cloud refuses while it has a Project, then unpairs its
+/// Servers. Not every Server confirmed: exit 3 naming the same command.
+fn org_remove(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let slug = matches
+        .get_one::<String>("organization")
+        .expect("organization is required");
+    let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
+    let retry = shell_words::join(std::iter::once("ployz").chain(again));
+    if !super::env::confirmed(matches, slug, "Organization")? {
+        return Err(Error::detailed(
+            RpcErrorCode::ConfirmationRequired,
+            format!(
+                "Removing Organization {slug} deletes it with its tokens, Servers' pairing and \
+                 settings; this can't be undone. No changes made.\nRetry: {retry}"
+            ),
+            serde_json::json!({ "organization": slug, "next": retry }),
+        ));
+    }
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let token = std::env::var(env::TOKEN).ok();
+    let cloud = std::env::var(env::CLOUD_URL).ok();
+    let removal = runtime()?
+        .block_on(async {
+            let credential = cloud_account::credential(&store, token, cloud).await?;
+            cloud_account::remove_organization(&credential, slug).await
+        })
+        .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
+    let next = (!removal.removed).then_some(retry.as_str());
+    let report = OrganizationRemoved {
+        removal: &removal,
+        next,
+    };
+    crate::output::finish(&report, || {
+        if !removal.servers.confirmed.is_empty() {
+            say!("Unpaired {} Server(s).", removal.servers.confirmed.len());
+        }
+        match next {
+            None => say!("Removed Organization {}.", removal.organization),
+            Some(next) => say!(
+                "Organization {} is disabled but stays until Server(s) {} confirm unpairing. Retry: {next}",
+                removal.organization,
+                removal.servers.unconfirmed.join(", ")
+            ),
+        }
+    })?;
+    match removal.removed {
+        true => Ok(()),
+        false => Err(Error::partial()),
+    }
+}
+
+#[derive(Serialize)]
+struct OrganizationRemoved<'a> {
+    #[serde(flatten)]
+    removal: &'a cloud_account::OrganizationRemoval,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<&'a str>,
 }
 
 #[derive(Serialize)]
