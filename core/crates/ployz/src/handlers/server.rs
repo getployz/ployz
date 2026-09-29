@@ -72,16 +72,18 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a
                 // config file. The hidden test Store is never signed in, so it keeps the cause.
-                return super::connect_context(matches, context).await.map_err(|error| {
-                    let no_config = std::error::Error::source(&error)
-                        .and_then(|source| source.downcast_ref::<ContextError>())
-                        .is_some_and(|source| *source == ContextError::NoConfig);
-                    if no_config && std::env::var_os(env::STORE).is_none() {
-                        LoginError::SignedOut.into()
-                    } else {
-                        error
-                    }
-                });
+                return super::connect_context(matches, context)
+                    .await
+                    .map_err(|error| {
+                        let no_config = std::error::Error::source(&error)
+                            .and_then(|source| source.downcast_ref::<ContextError>())
+                            .is_some_and(|source| *source == ContextError::NoConfig);
+                        if no_config && std::env::var_os(env::STORE).is_none() {
+                            LoginError::SignedOut.into()
+                        } else {
+                            error
+                        }
+                    });
             }
             Err(error) => return Err(error.into()),
         }
