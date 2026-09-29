@@ -194,13 +194,19 @@ async fn assert_machine_rename_preserves_containers(
         .map(|container| container.as_observation().container_id)
         .collect::<BTreeSet<_>>();
     assert!(
-        !ployz(address, ["machine", "rename", "machine-1", ""])
+        !ployz(address, ["machine", "update", "machine-1", "--name", ""])
             .status
             .success()
     );
     assert_success(ployz(
         address,
-        ["machine", "rename", "machine-1", "workflow-renamed"],
+        [
+            "machine",
+            "update",
+            "machine-1",
+            "--name",
+            "workflow-renamed",
+        ],
     ));
     wait_for_machine_name(client, machine_id, "workflow-renamed").await;
     let after_rename = wait_for_services(client, &["scaled-workflow"], 2).await;
@@ -215,7 +221,13 @@ async fn assert_machine_rename_preserves_containers(
     );
     assert_success(ployz(
         address,
-        ["machine", "rename", machine_id.as_str(), "machine-1"],
+        [
+            "machine",
+            "update",
+            machine_id.as_str(),
+            "--name",
+            "machine-1",
+        ],
     ));
     wait_for_machine_name(client, machine_id, "machine-1").await;
 }

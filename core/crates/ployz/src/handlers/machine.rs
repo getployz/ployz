@@ -9,7 +9,13 @@ use ployz_core::{
     PublicIpUpdate, UpdateMachineRequest, op,
 };
 
-use crate::{connect::TARGET_RPC_TIMEOUT, context::Config};
+use serde_json::json;
+
+use crate::{
+    connect::TARGET_RPC_TIMEOUT,
+    context::Config,
+    output::{self, say},
+};
 
 use super::{Error, leaf_matches, string_values, with_client};
 
@@ -25,9 +31,9 @@ pub(super) use helpers::{
     confirm, initialize, join, machine_name, readiness_timeout_message, reset,
 };
 pub(super) use init::init;
-pub(super) use inspect::{inspect, list, rtt};
+pub(super) use inspect::{inspect, list};
 pub(super) use remove::remove;
-pub(super) use upgrade::{inspect as inspect_upgrade, upgrade};
+pub(super) use upgrade::upgrade;
 
 pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
     let leaf = leaf_matches(matches);
@@ -37,9 +43,10 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
         ));
     }
     ployz_build::clear_cache(&ployz_build::HostPolicy::default())
-        .map_err(|error| Error::usage(error.to_string()))?;
-    println!("Cleared this host user's Ployz build cache.");
-    Ok(())
+        .map_err(|error| Error::coded(ployz_core::RpcErrorCode::Internal, error.to_string()))?;
+    output::finish(&json!({ "build_cache": { "cleared": true } }), || {
+        say!("Cleared this host user's Ployz build cache.");
+    })
 }
 
 pub(super) struct ConnectionOptions {
@@ -73,7 +80,7 @@ impl ConnectionOptions {
             )));
         };
         if !config.contexts.contains_key(&name) {
-            return Err(Error::usage(format!("context {name:?} not found")));
+            return Err(Error::not_found(format!("context {name:?} not found")));
         }
         Ok((config, name))
     }
@@ -94,20 +101,6 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
         .ok_or_else(|| Error::usage(format!("{name} is required")))
 }
 
-pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let selector = target(matches, "old-name")?;
-    let name = MachineName::parse(target(matches, "new-name")?)?;
-    update_target(
-        root,
-        selector,
-        MachineUpdate {
-            name: Some(name),
-            ..Default::default()
-        },
-    )
-}
-
 pub(super) fn update(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "machine")?;
@@ -126,11 +119,13 @@ fn update_target(root: &ArgMatches, selector: &str, update: MachineUpdate) -> Re
                     Some(TARGET_RPC_TIMEOUT),
                 )
                 .await?;
-            println!(
-                "Updated Machine {} ({})",
-                machine.machine.name, machine.machine.id
-            );
-            Ok(())
+            output::finish(&json!({ "machine": machine.machine }), || {
+                say!(
+                    "Updated Machine {} ({})",
+                    machine.machine.name,
+                    machine.machine.id
+                );
+            })
         })
     })
 }

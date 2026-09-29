@@ -1,15 +1,18 @@
 use std::{
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::Path,
 };
 
 use clap::ArgMatches;
+use serde::Serialize;
+use serde_json::json;
 
 use crate::context::{
     Config, ConnectionError, RemovedContext, expand_home, is_management_capability,
 };
 
 use super::{Error, leaf_matches, required};
+use crate::output::{self, say};
 
 fn config(matches: &ArgMatches) -> Result<Config, Error> {
     if matches
@@ -28,42 +31,68 @@ fn config(matches: &ArgMatches) -> Result<Config, Error> {
     Ok(Config::load_or_empty(path)?)
 }
 
+#[derive(Serialize)]
+struct ContextEntry<'a> {
+    name: &'a str,
+    current: bool,
+    /// Connection labels; the first is the default.
+    connections: Vec<String>,
+}
+
 pub(super) fn list(matches: &ArgMatches) -> Result<(), Error> {
     let config = config(matches)?;
-    if config.contexts.is_empty() {
-        println!("No contexts found");
-        return Ok(());
-    }
-    println!("NAME\tCURRENT\tCONNECTIONS");
-    for (name, context) in &config.contexts {
-        let current = if Some(name.as_str()) == config.current_context() {
-            "*"
-        } else {
-            ""
-        };
-        println!("{name}\t{current}\t{}", context.connections.len());
-    }
-    Ok(())
+    let contexts = config
+        .contexts
+        .iter()
+        .map(|(name, context)| ContextEntry {
+            name,
+            current: Some(name.as_str()) == config.current_context(),
+            connections: context
+                .connections
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    output::finish(&json!({ "contexts": contexts }), || {
+        if contexts.is_empty() {
+            say!("No contexts found");
+            return;
+        }
+        say!("NAME\tCURRENT\tDEFAULT\tCONNECTIONS");
+        for context in &contexts {
+            let current = if context.current { "*" } else { "" };
+            let default = context.connections.first().map_or("-", String::as_str);
+            say!(
+                "{}\t{current}\t{default}\t{}",
+                context.name,
+                context.connections.len()
+            );
+        }
+    })
 }
 
-pub(super) fn show(matches: &ArgMatches) -> Result<(), Error> {
-    let config = config(matches)?;
-    if !config.contexts.is_empty() {
-        println!("{}", config.current_context().unwrap_or(""));
-    }
-    Ok(())
-}
-
-pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<(), Error> {
+pub(super) fn select(matches: &ArgMatches) -> Result<(), Error> {
+    let leaf = leaf_matches(matches);
     let mut config = config(matches)?;
     if config.contexts.is_empty() {
-        return Err(Error::usage(format!(
+        return Err(Error::not_found(format!(
             "no contexts found in Ployz config {}",
             config.path().display()
         )));
     }
-    let selected = match requested {
-        Some(name) => name.to_owned(),
+    let requested_connection = leaf.get_one::<String>("connection");
+    let selected = match leaf.get_one::<String>("context-name") {
+        Some(name) => name.clone(),
+        // Choosing a connection alone keeps the current context.
+        None if requested_connection.is_some() => {
+            config.current_context().map(str::to_owned).ok_or_else(|| {
+                Error::usage(format!(
+                    "current context is not set in Ployz config {}",
+                    config.path().display()
+                ))
+            })?
+        }
         None => {
             let names = config.contexts.keys().collect::<Vec<_>>();
             let index = prompt(
@@ -80,9 +109,27 @@ pub(super) fn select(matches: &ArgMatches, requested: Option<&str>) -> Result<()
         }
     };
     config.set_current_context(Some(selected.clone()))?;
+    let context = config
+        .contexts
+        .get_mut(&selected)
+        .expect("set_current_context accepted a known context");
+    if let Some(requested) = requested_connection {
+        let index = connection_index(&selected, &context.connections, requested)?;
+        context.select_connection(index);
+    }
+    let connection = context.connections.first().map(ToString::to_string);
     config.save()?;
-    println!("Current context is now {}.", selected.escape_debug());
-    Ok(())
+    output::finish(
+        &json!({ "context": selected, "connection": connection }),
+        || {
+            say!("Current context is now {}.", selected.escape_debug());
+            if let Some(connection) = &connection
+                && requested_connection.is_some()
+            {
+                say!("Default connection is now {}.", connection.escape_debug());
+            }
+        },
+    )
 }
 
 pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
@@ -90,83 +137,58 @@ pub(super) fn remove(matches: &ArgMatches) -> Result<(), Error> {
     let name = required(leaf_matches(matches), "context-name")?;
     let removed = config.remove_context(&name)?;
     config.save()?;
-    println!("Removed context {}.", name.escape_debug());
-    if removed == RemovedContext::Current {
-        println!("Current context is now unset.");
-    }
-    Ok(())
+    let was_current = removed == RemovedContext::Current;
+    output::finish(
+        &json!({ "removed": name, "was_current": was_current }),
+        || {
+            say!("Removed context {}.", name.escape_debug());
+            if was_current {
+                say!("Current context is now unset.");
+            }
+        },
+    )
 }
 
-pub(super) fn connection(matches: &ArgMatches, requested: Option<&str>) -> Result<(), Error> {
-    let mut config = config(matches)?;
-    let Some(name) = config.current_context().map(str::to_owned) else {
-        return Err(Error::usage(format!(
-            "current context is not set in Ployz config {}",
-            config.path().display()
-        )));
-    };
-    let context = config.contexts.get_mut(&name).ok_or_else(|| {
-        Error::usage(format!("current context {} not found", name.escape_debug()))
-    })?;
-    if context.connections.is_empty() {
-        return Err(Error::usage(format!(
+/// Resolve a connection label or 1-based index within one context.
+fn connection_index(
+    context: &str,
+    connections: &[crate::context::Connection],
+    requested: &str,
+) -> Result<usize, Error> {
+    if connections.is_empty() {
+        return Err(Error::not_found(format!(
             "no connections found in context {}",
-            name.escape_debug()
+            context.escape_debug()
         )));
     }
-    let Some(requested) = requested else {
-        println!(
-            "{}",
-            context
-                .connections
-                .first()
-                .expect("the current context has a connection")
-        );
-        return Ok(());
-    };
     if is_management_capability(requested) {
         return Err(Error::usage(
             ConnectionError::ManagementConfigOnly.to_string(),
         ));
     }
-    let index = if let Ok(index) = requested.parse::<usize>() {
-        index
+    if let Ok(index) = requested.parse::<usize>() {
+        return index
             .checked_sub(1)
-            .filter(|index| *index < context.connections.len())
-            .ok_or_else(|| Error::usage("connection index is out of range"))?
-    } else {
-        let mut matches = context
-            .connections
-            .iter()
-            .enumerate()
-            .filter(|(_, connection)| connection.to_string() == requested);
-        let (index, _) = matches.next().ok_or_else(|| {
-            if requested.starts_with("management:") {
-                Error::usage("management connection label not found; select its 1-based index")
-            } else {
-                Error::usage(format!("connection {requested:?} not found"))
-            }
-        })?;
-        if matches.next().is_some() {
-            return Err(Error::usage(
-                "connection label is ambiguous; select its 1-based index",
-            ));
+            .filter(|index| *index < connections.len())
+            .ok_or_else(|| Error::usage("connection index is out of range"));
+    }
+    let mut matches = connections
+        .iter()
+        .enumerate()
+        .filter(|(_, connection)| connection.to_string() == requested);
+    let (index, _) = matches.next().ok_or_else(|| {
+        if requested.starts_with("management:") {
+            Error::not_found("management connection label not found; select its 1-based index")
+        } else {
+            Error::not_found(format!("connection {requested:?} not found"))
         }
-        index
-    };
-    context.select_connection(index);
-    let selected = context
-        .connections
-        .first()
-        .expect("a connection was selected")
-        .to_string();
-    config.save()?;
-    println!(
-        "Default connection for context {} is now {}.",
-        name.escape_debug(),
-        selected.escape_debug()
-    );
-    Ok(())
+    })?;
+    if matches.next().is_some() {
+        return Err(Error::ambiguous(
+            "connection label is ambiguous; select its 1-based index",
+        ));
+    }
+    Ok(index)
 }
 
 fn prompt<'a>(
@@ -174,22 +196,22 @@ fn prompt<'a>(
     choices: impl Iterator<Item = &'a str>,
     default: Option<usize>,
 ) -> Result<usize, Error> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !output::interactive() {
         return Err(Error::usage(format!(
             "cannot {title} interactively without a terminal"
         )));
     }
     let choices = choices.collect::<Vec<_>>();
-    println!("{title}:");
+    crate::output::say!("{title}:");
     for (index, choice) in choices.iter().enumerate() {
         let marker = if Some(index) == default {
             " (current)"
         } else {
             ""
         };
-        println!("  {}. {choice}{marker}", index + 1);
+        crate::output::say!("  {}. {choice}{marker}", index + 1);
     }
-    print!("> ");
+    crate::output::say_inline!("> ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;

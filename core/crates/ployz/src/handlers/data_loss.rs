@@ -6,8 +6,10 @@ use clap::ArgMatches;
 use ployz_core::{DataLossConfirmation, ObservedDataLoss};
 use std::{
     collections::BTreeSet,
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
 };
+
+use crate::output::{self, say};
 
 #[derive(Clone, Copy)]
 pub(super) enum VolumeEffect {
@@ -30,7 +32,7 @@ pub(super) fn confirm_removal(
         ConnectionSource::Direct => "direct connection",
         ConnectionSource::LocalSocket => "local socket",
     };
-    println!("{operation}: {}\nContext: {context}", targets.join(" "));
+    say!("{operation}: {}\nContext: {context}", targets.join(" "));
     let retry = retry_args(root, client.connection_source());
     confirm_with(
         observed,
@@ -39,10 +41,10 @@ pub(super) fn confirm_removal(
         ConfirmationOptions {
             volume_effect,
             yes: leaf.get_flag("yes"),
-            tty: io::stdin().is_terminal() && io::stdout().is_terminal(),
+            tty: output::interactive(),
         },
         &retry,
-        &mut io::stdout(),
+        &mut output::human(),
         read_answer,
     )
 }
@@ -187,7 +189,7 @@ pub(super) fn confirm_ordinary(root: &ArgMatches, client: &Client) -> Result<boo
     if leaf_matches(root).get_flag("yes") {
         return Ok(true);
     }
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+    if !output::interactive() {
         let mut args = retry_args(root, client.connection_source());
         args.push("--yes".into());
         return Err(Error::usage(format!(

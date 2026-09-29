@@ -25,18 +25,10 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
     cluster.initialize_two().await.unwrap();
     let address = cluster.api_socket_address(0).unwrap();
 
-    for (machine, label) in [("machine-1", "one"), ("machine-2", "two")] {
+    for machine in ["machine-1", "machine-2"] {
         let output = ployz(
             address,
-            [
-                "volume",
-                "create",
-                "shared",
-                "--machine",
-                machine,
-                "--label",
-                &format!("site={label}"),
-            ],
+            ["volume", "create", "shared", "--machine", machine],
         );
         assert!(
             output.status.success(),
@@ -69,7 +61,7 @@ async fn volume_cli_mounts_and_partial_results_stay_machine_local() {
         ["volume", "inspect", "shared", "--machine", "machine-1"],
     );
     assert!(qualified.status.success());
-    assert!(String::from_utf8_lossy(&qualified.stdout).contains("\"site\": \"one\""));
+    assert!(String::from_utf8_lossy(&qualified.stdout).contains("\"machine_name\": \"machine-1\""));
 
     let mixed_remove = ployz(
         address,

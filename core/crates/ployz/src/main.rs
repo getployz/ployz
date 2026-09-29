@@ -1,3 +1,5 @@
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+
 use std::{io::IsTerminal, process::ExitCode};
 
 fn main() -> ExitCode {

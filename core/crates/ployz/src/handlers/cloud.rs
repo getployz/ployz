@@ -169,7 +169,7 @@ where
                     .expect("already assigned Machine exists"),
             ))
     {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
@@ -212,8 +212,8 @@ where
             error,
         )));
     }
-    println!("Joined Machine {} ({})", assigned.name, assigned.id);
-    Ok(())
+    crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
+    crate::output::emit(&serde_json::json!({ "machine": assigned, "founded": false }))
 }
 
 enum FounderLocalState {
@@ -253,13 +253,13 @@ where
         (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
         | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "new founding claim requires an uninitialized Machine, but the local phase is {}",
                 phase.as_str().escape_debug()
             )));
         }
         (InitializeMode::Resume, phase) => {
-            return Err(Error::usage(format!(
+            return Err(Error::conflict(format!(
                 "matching founding Machine cannot resume from local phase {}",
                 phase.as_str().escape_debug()
             )));
@@ -268,7 +268,7 @@ where
     if let FounderLocalState::Resume { machine } = &state
         && !initial_policy.matches(machine)
     {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
         ));
     }
@@ -319,7 +319,7 @@ where
         && let Some(requested) = ingress
     {
         // An interrupted Apply may have completed mutations. Do not replay it.
-        crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
+        let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
             Error::usage(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz cloud enroll command without --reset (keep all other options) to reconcile the observed state"))
         })?;
@@ -340,8 +340,8 @@ where
         &pairing.secret,
     )
     .await?;
-    println!("Initialised Machine {} ({})", machine.name, machine.id);
-    Ok(())
+    crate::output::say!("Initialised Machine {} ({})", machine.name, machine.id);
+    crate::output::emit(&serde_json::json!({ "machine": machine, "founded": true }))
 }
 
 /// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.
@@ -497,7 +497,7 @@ async fn ensure_uninitialized(
         return Ok(client);
     }
     if !reset {
-        return Err(Error::usage(
+        return Err(Error::conflict(
             "Machine is already initialised; rerun with --reset to reset it before enrollment"
                 .to_owned(),
         ));
@@ -551,7 +551,7 @@ async fn wait_phase(
     )
     .await
     .map_err(|error| {
-        Error::usage(if participating {
+        Error::unavailable(if participating {
             format!(
                 "{}: {error}",
                 crate::handlers::machine::readiness_timeout_message(timeout_message)

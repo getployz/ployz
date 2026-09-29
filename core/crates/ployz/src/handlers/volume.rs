@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
 };
 
 use clap::ArgMatches;
@@ -11,9 +11,12 @@ use ployz_core::{
     VolumeRemovalOutcome, op, resolve_machine_selectors,
 };
 
+use serde_json::json;
+
 use crate::{
     connect::{Client, TARGET_RPC_TIMEOUT},
-    volume::{MachineVolume, filter_volumes, machine_volumes, parse_assignments},
+    output::{self, Gaps, say},
+    volume::{MachineVolume, filter_volumes, machine_volumes},
 };
 
 use super::{Error, data_loss, leaf_matches, required, string_values, with_client};
@@ -30,12 +33,8 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
             "ployz".to_owned(),
             BTreeMap::from([("size".to_owned(), size.as_str().to_owned())]),
         ),
-        None => (
-            required(matches, "driver")?,
-            parse_assignments(string_values(matches, "opt").iter().map(String::as_str))?,
-        ),
+        None => ("local".to_owned(), BTreeMap::new()),
     };
-    let labels = parse_assignments(string_values(matches, "label").iter().map(String::as_str))?;
     let selector = matches.get_one::<String>("machine").cloned();
     with_client(root, |client| {
         Box::pin(async move {
@@ -44,7 +43,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
             let Some(machine) = select_create_machine(&machines.machines, selector.as_deref())?
             else {
-                println!("Cancelled. No volume was created.");
+                say!("Cancelled. No volume was created.");
                 return Ok(());
             };
             let report = client
@@ -53,7 +52,7 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                         name,
                         driver,
                         options,
-                        labels,
+                        labels: BTreeMap::new(),
                     },
                     &MachineTarget::from(&machine.machine.id),
                     Some(TARGET_RPC_TIMEOUT),
@@ -61,13 +60,18 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
                 .await?;
             let volume = crate::service::verified_created_volume(report)?;
             if size.as_ref().is_some_and(|size| !size.matches(&volume)) {
-                return Err(Error::usage(format!(
-                    "Docker Volume {} already exists with a different Provisioned shape; resizing is not supported; use the future `ployz volume update` capability",
+                return Err(Error::conflict(format!(
+                    "Docker Volume {} already exists with a different Provisioned shape; resizing is not supported",
                     volume.id.name.as_str().escape_debug()
                 )));
             }
-            println!("{}\t{}", machine.machine.name, volume.id.name);
-            Ok(())
+            let created = MachineVolume {
+                machine_name: machine.machine.name.clone(),
+                volume,
+            };
+            output::finish(&json!({ "volume": created }), || {
+                say!("{}\t{}", created.machine_name, created.volume.id.name);
+            })
         })
     })
 }
@@ -75,22 +79,16 @@ pub(super) fn create(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selectors = string_values(matches, "machine");
-    let quiet = matches.get_flag("quiet");
-    let json = matches.get_one::<String>("output").map(String::as_str) == Some("json");
     with_client(root, |client| {
         Box::pin(async move {
             let (volumes, result) = discover(client, &selectors).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&volumes)?);
-            } else if quiet {
-                for volume in &volumes {
-                    println!("{}", volume.volume.id.name);
-                }
-            } else {
-                println!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
+            let mut gaps = Gaps::of(&result);
+            gaps.unavailable_volumes = volume_failures(&result).cloned().collect();
+            let finished = output::finish_fanout("volumes", &volumes, &gaps, || {
+                say!("MACHINE\tVOLUME\tTYPE\tQUOTA\tUSED\tDRIVER");
                 for volume in &volumes {
                     let (kind, bound, used) = format_storage(&volume.volume.storage);
-                    println!(
+                    say!(
                         "{}\t{}\t{}\t{}\t{}\t{}",
                         volume.machine_name,
                         volume.volume.id.name,
@@ -100,20 +98,17 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
                         volume.volume.driver()
                     );
                 }
-                for failure in volume_failures(&result) {
-                    println!(
+                for failure in &gaps.unavailable_volumes {
+                    say!(
                         "{}\t{}\tUNAVAILABLE\t-\t-\t-",
-                        failure.id.machine_id, failure.id.name
+                        failure.id.machine_id,
+                        failure.id.name
                     );
                 }
-            }
+            });
             report_failures(&result);
             report_inventory_failures(&result);
-            if inventories_complete(&result) {
-                Ok(())
-            } else {
-                Err(Error::exit(1))
-            }
+            finished
         })
     })
 }
@@ -150,21 +145,17 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     .machines,
                 &selectors,
             )?;
-            let result = client.inspect_volumes(&machines, &name).await;
-            if result
+            let mut result = client.inspect_volumes(&machines, &name).await;
+            // `not_found` only means the volume is not on that Machine.
+            result
                 .failures
-                .iter()
-                .any(|failure| failure.error.code != RpcErrorCode::NotFound)
-                || !result.omissions.is_empty()
-            {
-                return Err(Error::usage(failure_summary(&result)));
-            }
+                .retain(|failure| failure.error.code != RpcErrorCode::NotFound);
+            let gaps = Gaps::of(&result);
             let names = machines
                 .iter()
                 .map(|machine| (machine.machine.id, machine.machine.name.clone()))
                 .collect::<BTreeMap<_, _>>();
-            let volumes = result
-                .successes
+            let volumes = std::mem::take(&mut result.successes)
                 .into_iter()
                 .map(|success| MachineVolume {
                     machine_name: names
@@ -174,27 +165,45 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                     volume: success.value,
                 })
                 .collect();
-            match NameMatches::from_matches(volumes) {
-                NameMatches::None => Err(Error::usage(format!(
-                    "Docker Volume {} was not found",
-                    name.as_str().escape_debug()
-                ))),
-                NameMatches::One(volume) => {
-                    println!("{}", serde_json::to_string_pretty(&volume)?);
-                    Ok(())
-                }
-                volumes @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
-                    "Docker Volume {} is ambiguous; select one Machine: {}",
+            let volume = inspected(volumes, &name, &gaps)?;
+            if volume.is_none() {
+                crate::output::warning!(
+                    "Docker Volume {} was not found on the Machines that answered; not checked: {}",
                     name.as_str().escape_debug(),
-                    volumes
-                        .iter()
-                        .map(|volume| volume.machine_name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))),
+                    crate::failure::partial_failure_details(&result)
+                );
             }
+            output::show_fanout("volume", &volume, &gaps)
         })
     })
+}
+
+/// The one inspected volume, or `None` when it was not found but some Machine never
+/// answered, so its absence is unproven.
+fn inspected(
+    volumes: Vec<MachineVolume>,
+    name: &DockerVolumeName,
+    gaps: &Gaps,
+) -> Result<Option<MachineVolume>, Error> {
+    match NameMatches::from_matches(volumes) {
+        NameMatches::None if gaps.failures.is_empty() && gaps.omitted.is_empty() => {
+            Err(Error::not_found(format!(
+                "Docker Volume {} was not found",
+                name.as_str().escape_debug()
+            )))
+        }
+        NameMatches::None => Ok(None),
+        NameMatches::One(volume) => Ok(Some(volume)),
+        volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
+            "Docker Volume {} is ambiguous; select one Machine: {}",
+            name.as_str().escape_debug(),
+            volumes
+                .iter()
+                .map(|volume| volume.machine_name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
 }
 
 pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
@@ -221,7 +230,7 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     summary
                 });
             if let Some(unavailable) = unavailable {
-                return Err(Error::usage(format!(
+                return Err(Error::unavailable(format!(
                     "refusing to remove unavailable Docker Volumes: {unavailable}"
                 )));
             }
@@ -230,28 +239,30 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .iter()
                     .find(|name| !volumes.iter().any(|volume| &volume.volume.id.name == *name))
             {
-                return Err(Error::usage(format!(
+                return Err(Error::not_found(format!(
                     "Docker Volume {} was not found",
                     name.as_str().escape_debug()
                 )));
             }
             report_partial_removal_discovery(&result);
             if volumes.is_empty() {
-                return Err(Error::usage(volume_failure_summary(&result)));
+                return Err(Error::unavailable(volume_failure_summary(&result)));
             }
             let context = match client.connection_source() {
                 crate::context::ConnectionSource::Context(name) => name.as_str(),
                 crate::context::ConnectionSource::Direct => "direct connection",
                 crate::context::ConnectionSource::LocalSocket => "local socket",
             };
-            println!(
+            say!(
                 "Remove volumes\nContext: {context}\nBased on what the connected machine can see; other machines may have additional resources.\nPermanently delete these volumes and their data ({}):",
                 volumes.len()
             );
             for volume in &volumes {
-                println!(
+                say!(
                     "  {} on {} (machine ID: {})",
-                    volume.volume.id.name, volume.machine_name, volume.volume.id.machine_id
+                    volume.volume.id.name,
+                    volume.machine_name,
+                    volume.volume.id.machine_id
                 );
             }
             if !data_loss::confirm_ordinary(&command, client)? {
@@ -263,6 +274,12 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     force,
                 })
                 .await?;
+            let gaps = Gaps::of(&result);
+            output::emit(&json!({
+                "removals": removal,
+                "failures": gaps.failures,
+                "omitted": gaps.omitted,
+            }))?;
             refuse_unless_removed(removal)
         })
     })
@@ -327,28 +344,28 @@ fn select_create_machine(
                     .expect("resolve returned a Machine from this snapshot")
                     .clone(),
             )),
-            NameMatches::None => Err(Error::usage(format!(
+            NameMatches::None => Err(Error::not_found(format!(
                 "Machine {} was not found",
                 selector.escape_debug()
             ))),
-            NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
+            NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
                 "Machine Target {} matched multiple Machines",
                 selector.escape_debug()
             ))),
         };
     }
     match machines {
-        [] => Err(Error::usage("no Machines are available")),
+        [] => Err(Error::not_found("no Machines are available")),
         [machine] => Ok(Some(machine.clone())),
-        _ if !io::stdin().is_terminal() || !io::stdout().is_terminal() => Err(Error::usage(
+        _ if !output::interactive() => Err(Error::usage(
             "multiple Machines are available; specify --machine",
         )),
         _ => {
-            println!("Select a Machine (blank or q cancels):");
+            crate::output::say!("Select a Machine (blank or q cancels):");
             for (index, machine) in machines.iter().enumerate() {
-                println!("  {}. {}", index + 1, machine.machine.name);
+                crate::output::say!("  {}. {}", index + 1, machine.machine.name);
             }
-            print!("> ");
+            crate::output::say_inline!("> ");
             io::stdout().flush()?;
             let mut input = String::new();
             io::stdin().read_line(&mut input)?;
@@ -373,10 +390,10 @@ fn select_create_machine(
 
 fn report_failures<T>(result: &PartialResult<T, RpcError>) {
     for failure in &result.failures {
-        eprintln!("{}: {}", failure.machine_id, failure.error.message);
+        crate::output::warning!("{}: {}", failure.machine_id, failure.error.message);
     }
     for machine_id in &result.omissions {
-        eprintln!("{machine_id}: no terminal response");
+        crate::output::warning!("{machine_id}: no terminal response");
     }
 }
 
@@ -395,24 +412,25 @@ fn inventories_complete(result: &PartialResult<VolumeInventory, RpcError>) -> bo
 
 fn report_inventory_failures(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in volume_failures(result) {
-        eprintln!("{failure}");
+        crate::output::warning!("{failure}");
     }
 }
 
 fn report_partial_removal_discovery(result: &PartialResult<VolumeInventory, RpcError>) {
     for failure in &result.failures {
-        eprintln!(
+        crate::output::warning!(
             "WARNING: Machine {} was not checked and may hold a same-named Docker Volume: {}",
-            failure.machine_id, failure.error.message
+            failure.machine_id,
+            failure.error.message
         );
     }
     for machine_id in &result.omissions {
-        eprintln!(
+        crate::output::warning!(
             "WARNING: Machine {machine_id} was not checked and may hold a same-named Docker Volume: no terminal response"
         );
     }
     for failure in volume_failures(result) {
-        eprintln!("WARNING: {failure}; this Volume will not be removed");
+        crate::output::warning!("WARNING: {failure}; this Volume will not be removed");
     }
 }
 
@@ -430,9 +448,10 @@ fn volume_failure_summary(result: &PartialResult<VolumeInventory, RpcError>) -> 
 pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), Error> {
     for removal in &removals {
         if matches!(removal.outcome, VolumeRemovalOutcome::Removed) {
-            println!(
+            say!(
                 "Deleted volume {} on {}",
-                removal.id.name, removal.id.machine_id
+                removal.id.name,
+                removal.id.machine_id
             );
         }
     }
@@ -442,7 +461,7 @@ pub(super) fn refuse_unless_removed(removals: Vec<VolumeRemoval>) -> Result<(), 
     {
         Ok(())
     } else {
-        Err(Error::usage(removal_failure_summary(&removals)))
+        Err(Error::conflict(removal_failure_summary(&removals)))
     }
 }
 
@@ -511,11 +530,6 @@ fn volume_in_use_hint(removals: &[VolumeRemoval]) -> Option<String> {
     }
 }
 
-fn failure_summary<T>(result: &PartialResult<T, RpcError>) -> String {
-    let failures = crate::failure::partial_failure_details(result);
-    format!("one or more Machines failed: {failures}")
-}
-
 #[cfg(test)]
 mod tests {
     use ployz_core::{
@@ -524,6 +538,19 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn an_unfound_volume_is_not_found_only_when_every_machine_answered() {
+        let name = DockerVolumeName::parse("data").unwrap();
+        let error = inspected(Vec::new(), &name, &Gaps::default()).unwrap_err();
+        assert_eq!(error.report().code, RpcErrorCode::NotFound);
+
+        let gaps = Gaps {
+            omitted: vec![MachineId::parse("1".repeat(32)).unwrap()],
+            ..Gaps::default()
+        };
+        assert!(inspected(Vec::new(), &name, &gaps).unwrap().is_none());
+    }
 
     #[test]
     fn volume_selection_uses_fanout_for_lists_and_identity_for_create() {

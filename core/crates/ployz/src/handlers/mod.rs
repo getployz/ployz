@@ -24,32 +24,71 @@ pub type Error = Failure;
 
 pub fn run() -> Result<(), Error> {
     let mut command = crate::cli::command();
-    let matches = command.clone().get_matches();
+    let matches = command.clone().try_get_matches().map_err(usage_failure)?;
+    crate::output::set_json(matches.get_flag("json"));
     dispatch(&matches, &mut command)
+}
+
+/// Report a rejected command line: clap's own rendering, or one JSON error under `--json`.
+fn usage_failure(error: clap::Error) -> Error {
+    use clap::error::ErrorKind;
+    let wants_json = std::env::args_os()
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json");
+    if !wants_json
+        || matches!(
+            error.kind(),
+            ErrorKind::DisplayHelp
+                | ErrorKind::DisplayVersion
+                | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        )
+    {
+        error.exit();
+    }
+    crate::output::set_json(true);
+    let message = error.render().to_string();
+    Error::usage(message.trim().trim_start_matches("error: ").to_owned())
+        .with_exit(u8::try_from(error.exit_code()).unwrap_or(crate::failure::USAGE_EXIT))
 }
 
 fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     if matches.get_flag("version") {
-        println!("{}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
+        return crate::output::finish(
+            &serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
+            || crate::output::say!("{}", env!("CARGO_PKG_VERSION")),
+        );
     }
-    let Some((name, child)) = matches.subcommand() else {
+    if matches.subcommand().is_none() {
+        if matches.get_flag("json") {
+            return Err(Error::usage("a command is required").with_exit(crate::failure::USAGE_EXIT));
+        }
         command.print_help()?;
-        println!();
-        return Ok(());
-    };
-    if name == "completion" {
-        let shell = child
-            .get_one::<Shell>("shell")
-            .copied()
-            .ok_or_else(|| Error::usage("completion shell is required"))?;
-        generate(shell, command, "ployz", &mut std::io::stdout());
+        crate::output::say!();
         return Ok(());
     }
     let path = command_path(matches);
-    let handler = handler_for(&path)
+    let (handler, json) = handler_for(&path)
         .ok_or_else(|| Error::usage(format!("no handler declared for ployz {path}")))?;
+    if json == Json::Refused && matches.get_flag("json") {
+        return Err(Error::usage(format!(
+            "ployz {path} does not support --json"
+        )));
+    }
     handler(matches)
+}
+
+fn completion(root: &ArgMatches) -> Result<(), Error> {
+    let shell = leaf_matches(root)
+        .get_one::<Shell>("shell")
+        .copied()
+        .ok_or_else(|| Error::usage("completion shell is required"))?;
+    generate(
+        shell,
+        &mut crate::cli::command(),
+        "ployz",
+        &mut std::io::stdout(),
+    );
+    Ok(())
 }
 
 fn command_path(mut matches: &ArgMatches) -> String {
@@ -176,68 +215,59 @@ where
 
 type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-fn handler_for(path: &str) -> Option<Handler> {
-    let handler: Handler = match path {
-        "ingress config" => ingress::config,
-        "ingress deploy" => ingress::deploy,
-        "ingress logs" => operator::ingress_logs,
-        "ctx" => |root| context::select(root, None),
-        "ctx connection" => |root| {
-            context::connection(
-                root,
-                leaf_matches(root)
-                    .get_one::<String>("connection")
-                    .map(String::as_str),
-            )
-        },
-        "ctx ls" => context::list,
-        "ctx rm" => context::remove,
-        "ctx show" => context::show,
-        "ctx use" => |root| {
-            context::select(
-                root,
-                leaf_matches(root)
-                    .get_one::<String>("context-name")
-                    .map(String::as_str),
-            )
-        },
-        "build" => build::build,
-        "cloud enroll" => cloud::enroll,
-        "machine add" => machine::add,
-        "machine init" => machine::init,
-        "machine build-cache-clear" => machine::clear_build_cache,
-        "machine inspect" => machine::inspect,
-        "machine logs" => operator::machine_logs,
-        "machine ls" => machine::list,
-        "machine rename" => machine::rename,
-        "machine rm" => machine::remove,
-        "machine rtt" => machine::rtt,
-        "machine update" => machine::update,
-        "machine upgrade" => machine::upgrade,
-        "machine upgrade inspect" => machine::inspect_upgrade,
-        "proxy" => operator::proxy,
-        "project ls" => project::list,
-        "project rm" => project::remove,
-        "ps" => service::processes,
-        "service exec" => operator::exec,
-        "service inspect" => service::inspect,
-        "service logs" => operator::service_logs,
-        "service ls" => service::list,
-        "service rm" => service::remove,
-        "service scale" => service::scale,
-        "service start" => |root| service::change(root, ployz_core::ContainerAction::Start),
-        "service stop" => |root| service::change(root, ployz_core::ContainerAction::Stop),
-        "version" => |_| {
-            println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        },
-        "volume create" => volume::create,
-        "volume inspect" => volume::inspect,
-        "volume ls" => volume::list,
-        "volume rm" => volume::remove,
+/// Whether a command prints a `--json` result. Refused: a terminal session, a
+/// tunnel, shell code, or the Cloud runner's own fixed JSON.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Json {
+    Supported,
+    Refused,
+}
+
+/// Each command's handler and its `--json` support, declared together.
+fn handler_for(path: &str) -> Option<(Handler, Json)> {
+    use Json::{Refused, Supported};
+    let entry: (Handler, Json) = match path {
+        "completion" => (completion, Refused),
+        "ingress deploy" => (ingress::deploy, Supported),
+        "ctx ls" => (context::list, Supported),
+        "ctx rm" => (context::remove, Supported),
+        "ctx use" => (context::select, Supported),
+        "build" => (build::build, Refused),
+        "cloud enroll" => (cloud::enroll, Supported),
+        "machine add" => (machine::add, Supported),
+        "machine init" => (machine::init, Supported),
+        "machine build-cache-clear" => (machine::clear_build_cache, Supported),
+        "machine inspect" => (machine::inspect, Supported),
+        "machine logs" => (operator::machine_logs, Supported),
+        "machine ls" => (machine::list, Supported),
+        "machine rm" => (machine::remove, Supported),
+        "machine update" => (machine::update, Supported),
+        "machine upgrade" => (machine::upgrade, Supported),
+        "project ls" => (project::list, Supported),
+        "project rm" => (project::remove, Supported),
+        "service exec" => (operator::exec, Refused),
+        "service inspect" => (service::inspect, Supported),
+        "service logs" => (operator::service_logs, Supported),
+        "service ls" => (service::list, Supported),
+        "service proxy" => (operator::proxy, Refused),
+        "service ps" => (service::processes, Supported),
+        "service rm" => (service::remove, Supported),
+        "service scale" => (service::scale, Supported),
+        "service start" => (
+            |root| service::change(root, ployz_core::ContainerAction::Start),
+            Supported,
+        ),
+        "service stop" => (
+            |root| service::change(root, ployz_core::ContainerAction::Stop),
+            Supported,
+        ),
+        "volume create" => (volume::create, Supported),
+        "volume inspect" => (volume::inspect, Supported),
+        "volume ls" => (volume::list, Supported),
+        "volume rm" => (volume::remove, Supported),
         _ => return None,
     };
-    Some(handler)
+    Some(entry)
 }
 
 #[cfg(test)]
@@ -344,11 +374,11 @@ mod tests {
     }
 
     #[test]
-    fn machine_rename_rejects_an_invalid_machine_name_before_connecting() {
+    fn machine_update_rejects_an_invalid_machine_name_before_connecting() {
         let mut command = command();
         let matches = command
             .clone()
-            .try_get_matches_from(["ployz", "machine", "rename", "vultr1", "BAD NAME"])
+            .try_get_matches_from(["ployz", "machine", "update", "vultr1", "--name", "BAD NAME"])
             .unwrap();
         assert_eq!(
             dispatch(&matches, &mut command).unwrap_err().to_string(),
@@ -605,28 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn malformed_volume_assignments_fail_before_connecting() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "volume",
-                "create",
-                "data",
-                "--opt",
-                "missing-delimiter",
-                "--connect",
-                "tcp://127.0.0.1:1",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            r#"expected KEY=VALUE, got "missing-delimiter""#,
-        );
-    }
-
-    #[test]
     fn scale_zero_fails_before_connecting() {
         let mut command = command();
         let matches = command
@@ -724,7 +732,6 @@ mod tests {
         command.build();
         let mut paths = BTreeSet::new();
         collect_actionable_paths(&command, "", &mut paths);
-        paths.remove("completion");
         for path in paths {
             assert!(handler_for(&path).is_some(), "no handler for {path}");
         }
@@ -740,7 +747,7 @@ mod tests {
             .get_subcommands()
             .filter(|child| child.get_name() != "help")
             .collect::<Vec<_>>();
-        if path != "ployz" && (children.is_empty() || path == "ployz ctx") {
+        if path != "ployz" && children.is_empty() {
             paths.insert(path.trim_start_matches("ployz ").to_owned());
         }
         for child in children {

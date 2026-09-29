@@ -23,10 +23,3 @@ fn version_flags_print_the_package_version() {
         assert_eq!(stdout(&output), format!("{}\n", env!("CARGO_PKG_VERSION")));
     }
 }
-
-#[test]
-fn version_command_prints_the_bare_package_version() {
-    let output = ployz(&["version"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), format!("{}\n", env!("CARGO_PKG_VERSION")));
-}

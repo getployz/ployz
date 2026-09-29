@@ -5,13 +5,16 @@ use std::{collections::BTreeSet, time::Duration};
 use clap::ArgMatches;
 use ployz_core::{
     InspectMachineUpgradeRequest, Machine, MachineRelease, MachineTarget, MachineUpgradeAttempt,
-    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, op,
+    MachineUpgradeAttemptId, MachineUpgradeOutcome, RequestMachineUpgradeRequest, RpcErrorCode, op,
 };
 use tokio::time::Instant;
 
 use crate::{cluster::Client, connect::ConnectError};
 
+use serde_json::json;
+
 use super::super::{Error, leaf_matches, string_values, with_client};
+use crate::output::{self, say};
 
 const OBSERVATION_TIMEOUT: Duration = Duration::from_secs(16 * 60);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -72,65 +75,49 @@ pub(in crate::handlers) fn upgrade(root: &ArgMatches) -> Result<(), Error> {
     with_client(root, |client| {
         Box::pin(async move {
             let machines = selected_machines(client, &selectors).await?;
+            let mut attempts = Vec::new();
             for (index, machine) in machines.iter().enumerate() {
                 let attempt_id = MachineUpgradeAttemptId::random();
-                let attempt = match run_one(client, machine, release.clone(), attempt_id).await {
-                    Ok(attempt) => attempt,
-                    Err(error) => {
-                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
-                        return Err(error);
+                let stopped = match run_one(client, machine, release.clone(), attempt_id).await {
+                    Err(error) => Some(error),
+                    Ok(attempt) => {
+                        print_attempt(machine, &attempt);
+                        let stopped = match &attempt.outcome {
+                            MachineUpgradeOutcome::Succeeded { .. } => None,
+                            MachineUpgradeOutcome::Failed { error, .. } => {
+                                Some(Error::coded(RpcErrorCode::Internal, error.clone()))
+                            }
+                            MachineUpgradeOutcome::Interrupted { .. } => Some(Error::coded(
+                                RpcErrorCode::Internal,
+                                format!(
+                                    "Machine {} upgrade was interrupted; {}",
+                                    machine.name,
+                                    journal_hint(attempt_id)
+                                ),
+                            )),
+                            MachineUpgradeOutcome::Accepted
+                            | MachineUpgradeOutcome::Running { .. } => {
+                                unreachable!("run_one returns only terminal evidence")
+                            }
+                        };
+                        attempts.push(attempt);
+                        stopped
                     }
                 };
-                print_attempt(machine, &attempt);
-                match attempt.outcome {
-                    MachineUpgradeOutcome::Succeeded { .. } => {}
-                    MachineUpgradeOutcome::Failed { error, .. } => {
-                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
-                        return Err(Error::usage(error));
+                if let Some(error) = stopped {
+                    let unattempted = machines.get(index + 1..).unwrap_or_default();
+                    print_unattempted(unattempted, machine);
+                    // A recorded attempt is a result: print it, then exit partial.
+                    if !attempts.is_empty() {
+                        output::emit(&json!({
+                            "attempts": attempts,
+                            "unattempted": unattempted.iter().map(|machine| machine.id).collect::<Vec<_>>(),
+                        }))?;
                     }
-                    MachineUpgradeOutcome::Interrupted { .. } => {
-                        print_unattempted(machines.iter().skip(index.saturating_add(1)), machine);
-                        return Err(Error::usage(format!(
-                            "Machine {} upgrade was interrupted; {}",
-                            machine.name,
-                            journal_hint(attempt_id)
-                        )));
-                    }
-                    MachineUpgradeOutcome::Accepted | MachineUpgradeOutcome::Running { .. } => {
-                        unreachable!("run_one returns only terminal evidence")
-                    }
+                    return Err(error);
                 }
             }
-            Ok(())
-        })
-    })
-}
-
-pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let target = MachineTarget::parse(
-        matches
-            .get_one::<String>("machine")
-            .ok_or_else(|| Error::usage("machine is required"))?,
-    )?;
-    let attempt_id = matches
-        .get_one::<MachineUpgradeAttemptId>("attempt")
-        .copied();
-    let json = matches.get_one::<String>("output").is_some();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let attempt = client
-                .call_repeatable::<op::InspectMachineUpgrade>(
-                    InspectMachineUpgradeRequest { attempt_id },
-                    Some(&target),
-                )
-                .await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&attempt)?);
-            } else {
-                print_attempt_target(target.as_str(), &attempt);
-            }
-            Ok(())
+            output::emit(&json!({ "attempts": attempts, "unattempted": [] }))
         })
     })
 }
@@ -225,24 +212,24 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
         outcome,
     } = attempt;
     match outcome {
-        MachineUpgradeOutcome::Accepted => println!(
+        MachineUpgradeOutcome::Accepted => say!(
             "Machine {machine}: upgrade {attempt_id} accepted for {target}; {}",
             journal_hint(*attempt_id)
         ),
-        MachineUpgradeOutcome::Running { stage } => println!(
+        MachineUpgradeOutcome::Running { stage } => say!(
             "Machine {machine}: upgrade {attempt_id} is {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
         MachineUpgradeOutcome::Succeeded { version } => {
-            println!("Machine {machine}: upgrade {attempt_id} succeeded; running version {version}")
+            say!("Machine {machine}: upgrade {attempt_id} succeeded; running version {version}")
         }
-        MachineUpgradeOutcome::Failed { stage, error } => println!(
+        MachineUpgradeOutcome::Failed { stage, error } => say!(
             "Machine {machine}: upgrade {attempt_id} failed at {} for {target}: {error}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
         ),
-        MachineUpgradeOutcome::Interrupted { stage } => println!(
+        MachineUpgradeOutcome::Interrupted { stage } => say!(
             "Machine {machine}: upgrade {attempt_id} was interrupted at {} for {target}; {}",
             stage.as_str(),
             journal_hint(*attempt_id)
@@ -252,7 +239,7 @@ fn print_attempt_target(machine: &str, attempt: &MachineUpgradeAttempt) {
 
 fn print_unattempted<'a>(machines: impl IntoIterator<Item = &'a Machine>, after: &Machine) {
     for line in unattempted_lines(machines, after) {
-        println!("{line}");
+        say!("{line}");
     }
 }
 
@@ -280,8 +267,8 @@ fn uncertain(
     attempt_id: MachineUpgradeAttemptId,
     error: impl std::fmt::Display,
 ) -> Error {
-    Error::usage(format!(
-        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz machine upgrade inspect {} --attempt {attempt_id}`; {}",
+    Error::unavailable(format!(
+        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain: {error}; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,
         machine.id,
@@ -290,8 +277,8 @@ fn uncertain(
 }
 
 fn uncertain_timeout(machine: &Machine, attempt_id: MachineUpgradeAttemptId) -> Error {
-    Error::usage(format!(
-        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz machine upgrade inspect {} --attempt {attempt_id}`; {}",
+    Error::unavailable(format!(
+        "Machine {} ({}) upgrade {attempt_id} outcome is uncertain after {} minutes; reconnect and run `ployz machine inspect {}` and compare its upgrade attempt; {}",
         machine.name,
         machine.id,
         OBSERVATION_TIMEOUT.as_secs() / 60,
@@ -389,7 +376,7 @@ mod tests {
 
         assert!(error.contains("outcome is uncertain"), "{error}");
         assert!(error.contains(attempt_id.as_str()), "{error}");
-        assert!(error.contains("machine upgrade inspect"), "{error}");
+        assert!(error.contains("ployz machine inspect"), "{error}");
         assert_eq!(client.seen, [(attempt_id, machine.id.as_str().to_owned())]);
     }
 

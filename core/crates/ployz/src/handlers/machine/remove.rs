@@ -8,6 +8,9 @@ use super::super::{connect_client, runtime};
 use super::{ConnectionOptions, target};
 use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
 use ployz_core::EnvironmentValues;
+use serde_json::json;
+
+use crate::output::{self, say};
 
 pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let options = ConnectionOptions::from_matches(root)?;
@@ -24,7 +27,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             .await?
             .machine_id;
         if selected.id == current && machines.len() > 1 {
-            return Err(Error::usage(
+            return Err(Error::conflict(
                 "the current entry Machine cannot be removed while another Machine is visible",
             ));
         }
@@ -37,16 +40,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         let live = client.live_services_from(&machines, EnvironmentValues::Redacted).await?;
         if !no_reset {
             if let Some(failure) = live.containers.failures.iter().find(|failure| failure.machine_id == selected.id) {
-                return Err(Error::usage(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: {}. No changes made.", selected.id, failure.error.message)));
             }
             if live.containers.omissions.contains(&selected.id) {
-                return Err(Error::usage(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
+                return Err(Error::unavailable(format!("Cannot observe Services on Machine {}: no terminal response. No changes made.", selected.id)));
             }
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
         for line in service_warnings(&selected.name, &services) {
-            eprintln!("{line}");
+            crate::output::warning!("{line}");
         }
         let Some(confirmation) = super::super::data_loss::confirm_removal(
             root, &client, &observed, &format!("Remove Machine ({})", selected.id),
@@ -65,16 +68,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                     .map_err(crate::failure::refusal_from_rpc)?;
             reset_failure = removed.reset_warning;
         }
-        println!("Removed Machine {} ({}) membership", selected.name, selected.id);
+        say!("Removed Machine {} ({}) membership", selected.name, selected.id);
         if let Some(reason) = &reset_failure {
-            eprintln!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
+            crate::output::warning!("Machine {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
             for loss in &observed.data_loss {
-                println!("Volume data was not erased by reset: {loss}");
+                say!("Volume data was not erased by reset: {loss}");
             }
         }
         if !replicated_services.is_empty() {
-            eprintln!(
+            crate::output::warning!(
                 "WARNING: Replicated Services may now be under-replicated: {}. Replicas are not re-placed automatically.",
                 replicated_services
                     .iter()
@@ -93,8 +96,14 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             context.drop_machine(&selected.id);
             config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         }
+        output::emit(&json!({
+            "machine": selected,
+            "reset_warning": reset_failure,
+            "data_loss": observed.data_loss,
+            "under_replicated": replicated_services,
+        }))?;
         if reset_failure.is_some() {
-            return Err(Error::exit(1));
+            return Err(Error::partial());
         }
         Ok::<_, Error>(())
     })
@@ -106,12 +115,12 @@ pub(super) fn select_machine(
 ) -> Result<Machine, Error> {
     let selector = MachineTarget::parse(selector)?;
     match selector.resolve(machines.iter().map(|entry| &entry.machine)) {
-        NameMatches::None => Err(Error::usage(format!(
+        NameMatches::None => Err(Error::not_found(format!(
             "Machine {} was not found",
             selector.as_str().escape_debug()
         ))),
         NameMatches::One(machine) => Ok(machine.clone()),
-        matches @ NameMatches::Ambiguous { .. } => Err(Error::usage(format!(
+        matches @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
             "Machine name {} is ambiguous: {}",
             selector.as_str().escape_debug(),
             matches
@@ -125,7 +134,7 @@ pub(super) fn select_machine(
 
 fn machine_removal_refusal(error: RpcError) -> Error {
     if error.code == RpcErrorCode::Unavailable {
-        Error::usage(format!(
+        Error::unavailable(format!(
             "{error}; use --no-reset to remove it from the Cluster without resetting"
         ))
     } else {
