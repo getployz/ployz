@@ -14,6 +14,7 @@ use ployz_core::config::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
@@ -23,7 +24,7 @@ use crate::settings::ServiceSetting;
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct DiffView {
     /// The Environment reviewed.
     pub environment: EnvironmentSummary,
@@ -40,7 +41,7 @@ pub struct DiffView {
 }
 
 /// What happens to one node, and its changed Settings.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct NodeChange {
     /// The node's type and ID.
     #[serde(flatten)]

@@ -21,6 +21,7 @@ import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './route
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as ApiAuthGithubRouteImport } from './routes/api/auth/github'
 import { Route as ApiCliSplatRouteImport } from './routes/api/cli/$'
+import { Route as ApiConfigSplatRouteImport } from './routes/api/config/$'
 import { Route as ApiEnrollTokenRouteImport } from './routes/api/enroll/$token'
 import { Route as ApiGithubWebhookRouteImport } from './routes/api/github/webhook'
 import { Route as ApiOrgChangesRouteImport } from './routes/api/org/changes'
@@ -113,6 +114,11 @@ const ApiAuthGithubRoute = ApiAuthGithubRouteImport.update({
 const ApiCliSplatRoute = ApiCliSplatRouteImport.update({
   id: '/api/cli/$',
   path: '/api/cli/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiConfigSplatRoute = ApiConfigSplatRouteImport.update({
+  id: '/api/config/$',
+  path: '/api/config/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiEnrollTokenRoute = ApiEnrollTokenRouteImport.update({
@@ -356,6 +362,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -398,6 +405,7 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -442,6 +450,7 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
   '/api/cli/$': typeof ApiCliSplatRoute
+  '/api/config/$': typeof ApiConfigSplatRoute
   '/api/enroll/$token': typeof ApiEnrollTokenRouteWithChildren
   '/api/github/webhook': typeof ApiGithubWebhookRoute
   '/api/org/changes': typeof ApiOrgChangesRoute
@@ -490,6 +499,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/auth/github'
     | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -532,6 +542,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/auth/github'
     | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -575,6 +586,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/auth/github'
     | '/api/cli/$'
+    | '/api/config/$'
     | '/api/enroll/$token'
     | '/api/github/webhook'
     | '/api/org/changes'
@@ -619,6 +631,7 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiAuthGithubRoute: typeof ApiAuthGithubRoute
   ApiCliSplatRoute: typeof ApiCliSplatRoute
+  ApiConfigSplatRoute: typeof ApiConfigSplatRoute
   ApiEnrollTokenRoute: typeof ApiEnrollTokenRouteWithChildren
   ApiGithubWebhookRoute: typeof ApiGithubWebhookRoute
   ApiOrgChangesRoute: typeof ApiOrgChangesRoute
@@ -715,6 +728,13 @@ declare module '@tanstack/react-router' {
       path: '/api/cli/$'
       fullPath: '/api/cli/$'
       preLoaderRoute: typeof ApiCliSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/config/$': {
+      id: '/api/config/$'
+      path: '/api/config/$'
+      fullPath: '/api/config/$'
+      preLoaderRoute: typeof ApiConfigSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/enroll/$token': {
@@ -1160,6 +1180,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiAuthGithubRoute: ApiAuthGithubRoute,
   ApiCliSplatRoute: ApiCliSplatRoute,
+  ApiConfigSplatRoute: ApiConfigSplatRoute,
   ApiEnrollTokenRoute: ApiEnrollTokenRouteWithChildren,
   ApiGithubWebhookRoute: ApiGithubWebhookRoute,
   ApiOrgChangesRoute: ApiOrgChangesRoute,

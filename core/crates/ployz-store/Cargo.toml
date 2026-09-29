@@ -7,9 +7,11 @@ repository.workspace = true
 
 [dependencies]
 ployz-core.workspace = true
+postgres = "0.19.14"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+ts-rs.workspace = true
 uuid = "1.24.0"
 
 [dev-dependencies]

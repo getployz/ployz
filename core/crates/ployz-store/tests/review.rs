@@ -1,4 +1,5 @@
-//! Review, Publish and Discard through `read` and `write` only, on in-memory SQLite.
+//! Review, Publish and Discard through `read` and `write` only, on SQLite and on
+//! Postgres (see `backend`).
 
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
@@ -8,12 +9,14 @@ use ployz_store::{
 };
 use serde_json::{Value, json};
 
+mod backend;
+
 const PROJECT: &str = "00000000-0000-4000-8000-000000000001";
 const ENVIRONMENT: &str = "00000000-0000-4000-8000-000000000002";
 
 /// A store with Project `shop` and new Services `web` (nginx) and `api` (caddy).
 fn shop() -> (ConfigStore, Actor) {
-    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    let store = backend::open();
     let who = Actor {
         organization: OrganizationId::parse("org").unwrap(),
     };

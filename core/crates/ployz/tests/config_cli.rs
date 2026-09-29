@@ -1,316 +1,422 @@
-//! Authoring through the hidden in-process Config Store (`PLOYZ_STORE=sqlite:PATH`):
-//! the JSON contract of `project new`, `env new`, `service add`, `get`, `set`,
-//! `unset`, `schema` and `explain`, and Setting path completion.
+//! Authoring through the Config Store: the JSON contract of `project new`, `env new`,
+//! `service add`, `get`, `set`, `unset`, `diff`, `publish`, `discard`, `schema` and
+//! `explain`, and Setting path completion. Store cases run twice: on the hidden
+//! in-process Store (`PLOYZ_STORE=sqlite:PATH`) and over HTTPS to a Cloud that hosts
+//! the Store behind `/api/config/{read,write}`, as `PLOYZ_TOKEN`.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::process::Command;
 
+use ployz_core::RpcError;
+use ployz_store::{Actor, ConfigStore, OrganizationId};
 use serde_json::{Value, json};
 
-/// Run `ployz --json ARGS` against the Store at `store`; returns (exit code, stdout JSON).
-fn ployz(store: Option<&Path>, args: &[&str]) -> (Option<i32>, Value) {
-    let home = tempfile::tempdir().unwrap();
+/// Where the CLI's Config Store is.
+enum Target {
+    Local(tempfile::TempDir),
+    Cloud { url: String, token: &'static str },
+}
+
+/// A new empty Store, reached both ways.
+fn targets() -> [Target; 2] {
+    [
+        Target::Local(tempfile::tempdir().unwrap()),
+        Target::Cloud {
+            url: fake_cloud(),
+            token: "ployz_alice",
+        },
+    ]
+}
+
+/// A `ployz` process with its own home, away from any ambient Store or sign-in.
+fn isolated(home: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
     command
-        .args(args)
-        .arg("--json")
-        .env("HOME", home.path())
+        .env("HOME", home)
+        .env("PLOYZ_CONFIG", home.join("config.yaml"))
         .env_remove("PLOYZ_STORE")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
         .env_remove("PLOYZ_PROJECT")
         .env_remove("PLOYZ_ENV");
-    if let Some(store) = store {
-        command.env("PLOYZ_STORE", format!("sqlite:{}", store.display()));
+    command
+}
+
+impl Target {
+    /// A `ployz` process pointed at this Store.
+    fn command(&self, home: &std::path::Path) -> Command {
+        let mut command = isolated(home);
+        match self {
+            Self::Local(dir) => {
+                let store = dir.path().join("store.db");
+                command.env("PLOYZ_STORE", format!("sqlite:{}", store.display()));
+            }
+            Self::Cloud { url, token } => {
+                command
+                    .env("PLOYZ_CLOUD_URL", url)
+                    .env("PLOYZ_TOKEN", token);
+            }
+        }
+        command
     }
-    let output = command.output().unwrap();
+}
+
+/// Run `ployz --json ARGS` against `target`; returns (exit code, stdout JSON).
+fn ployz(target: Option<&Target>, args: &[&str]) -> (Option<i32>, Value) {
+    let home = tempfile::tempdir().unwrap();
+    let mut command = target.map_or_else(
+        || isolated(home.path()),
+        |target| target.command(home.path()),
+    );
+    let output = command.args(args).arg("--json").output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
     let json = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("stdout is not one JSON object ({error}): {stdout:?}"));
     (output.status.code(), json)
 }
 
-fn ok(store: &Path, args: &[&str]) -> Value {
+fn ok(store: &Target, args: &[&str]) -> Value {
     let (code, json) = ployz(Some(store), args);
     assert_eq!(code, Some(0), "{args:?}: {json}");
     json
 }
 
-fn error(store: &Path, args: &[&str]) -> Value {
+fn error(store: &Target, args: &[&str]) -> Value {
     failed(store, args, 1)
 }
 
-fn failed(store: &Path, args: &[&str], exit: i32) -> Value {
+fn failed(store: &Target, args: &[&str], exit: i32) -> Value {
     let (code, json) = ployz(Some(store), args);
     assert_eq!(code, Some(exit), "{args:?}: {json}");
     json.get("error").cloned().unwrap()
 }
 
+/// Cloud's `/api/config` contract over one in-memory Store: the bearer
+/// `ployz_<org>` acts in Organization `<org>`; any other caller is refused 401.
+fn fake_cloud() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let store = ConfigStore::open("sqlite::memory:").unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            serve(&store, stream.unwrap()).unwrap();
+        }
+    });
+    url
+}
+
+fn serve(store: &ConfigStore, mut stream: TcpStream) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut request = String::new();
+    reader.read_line(&mut request)?;
+    let path = request.split(' ').nth(1).unwrap_or_default().to_owned();
+    let (mut length, mut organization) = (0, None);
+    loop {
+        let mut header = String::new();
+        reader.read_line(&mut header)?;
+        if header.trim().is_empty() {
+            break;
+        }
+        let header = header.to_ascii_lowercase();
+        if let Some(value) = header.strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        if let Some(value) = header.strip_prefix("authorization: bearer ployz_") {
+            organization = Some(Actor {
+                organization: OrganizationId::parse(value.trim()).unwrap(),
+            });
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body)?;
+    let (status, reply) = match (organization, path.as_str()) {
+        (None, _) => (401, json!({ "code": "UNAUTHORIZED" })),
+        (Some(who), "/api/config/read") => {
+            answer(store.read(&who, &serde_json::from_slice(&body).unwrap()))
+        }
+        (Some(who), "/api/config/write") => {
+            answer(store.write(&who, &serde_json::from_slice(&body).unwrap()))
+        }
+        (Some(_), _) => (404, json!({ "code": "NOT_FOUND" })),
+    };
+    let reply = reply.to_string();
+    write!(
+        stream,
+        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+        reply.len()
+    )
+}
+
+fn answer<T: serde::Serialize>(result: Result<T, RpcError>) -> (u16, Value) {
+    match result {
+        Ok(value) => (200, serde_json::to_value(value).unwrap()),
+        Err(error) => (409, json!({ "error": error })),
+    }
+}
+
 #[test]
 fn an_agent_creates_and_edits_an_image_service() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
+    for store in &targets() {
+        let created = ok(store, &["project", "new", "shop"]);
+        assert_eq!(created.pointer("/project/name"), Some(&json!("shop")));
+        assert_eq!(
+            created.pointer("/environment/name"),
+            Some(&json!("production"))
+        );
 
-    let created = ok(&store, &["project", "new", "shop"]);
-    assert_eq!(created.pointer("/project/name"), Some(&json!("shop")));
-    assert_eq!(
-        created.pointer("/environment/name"),
-        Some(&json!("production"))
-    );
+        let added = ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        assert_eq!(added.pointer("/service/name"), Some(&json!("web")));
+        assert_eq!(
+            added.get("staged"),
+            Some(&json!([
+                "web.cpuLimit",
+                "web.image",
+                "web.maxRetries",
+                "web.memLimit",
+                "web.preDeployCommand",
+                "web.replicas",
+                "web.restartPolicy",
+                "web.startCommand"
+            ]))
+        );
+        assert_eq!(added.get("immediate"), Some(&json!([])));
 
-    let added = ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
-    assert_eq!(added.pointer("/service/name"), Some(&json!("web")));
-    assert_eq!(
-        added.get("staged"),
-        Some(&json!([
-            "web.cpuLimit",
-            "web.image",
-            "web.maxRetries",
-            "web.memLimit",
-            "web.preDeployCommand",
-            "web.replicas",
-            "web.restartPolicy",
-            "web.startCommand"
-        ]))
-    );
-    assert_eq!(added.get("immediate"), Some(&json!([])));
+        let set = ok(
+            store,
+            &[
+                "set",
+                "web.replicas=3",
+                "web.startCommand=nginx -g 'daemon off;'",
+            ],
+        );
+        assert_eq!(
+            set.get("staged"),
+            Some(&json!(["web.replicas", "web.startCommand"]))
+        );
+        assert_eq!(set.pointer("/environment/revision"), Some(&json!(3)));
 
-    let set = ok(
-        &store,
-        &[
-            "set",
-            "web.replicas=3",
-            "web.startCommand=nginx -g 'daemon off;'",
-        ],
-    );
-    assert_eq!(
-        set.get("staged"),
-        Some(&json!(["web.replicas", "web.startCommand"]))
-    );
-    assert_eq!(set.pointer("/environment/revision"), Some(&json!(3)));
+        let got = ok(store, &["get", "web"]);
+        assert_eq!(
+            got.pointer("/settings").unwrap().as_array().unwrap().len(),
+            8
+        );
+        assert_eq!(
+            got.pointer("/settings/5"),
+            Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
+        );
+        assert_eq!(
+            got.get("values"),
+            Some(&json!({
+                "image": "nginx:1",
+                "maxRetries": 10,
+                "replicas": 3,
+                "restartPolicy": "unless-stopped",
+                "startCommand": "nginx -g 'daemon off;'",
+            }))
+        );
 
-    let got = ok(&store, &["get", "web"]);
-    assert_eq!(
-        got.pointer("/settings").unwrap().as_array().unwrap().len(),
-        8
-    );
-    assert_eq!(
-        got.pointer("/settings/5"),
-        Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
-    );
-    assert_eq!(
-        got.get("values"),
-        Some(&json!({
-            "image": "nginx:1",
-            "maxRetries": 10,
-            "replicas": 3,
-            "restartPolicy": "unless-stopped",
-            "startCommand": "nginx -g 'daemon off;'",
-        }))
-    );
-
-    ok(&store, &["unset", "web.replicas"]);
-    let got = ok(&store, &["get", "web.replicas"]);
-    assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+        ok(store, &["unset", "web.replicas"]);
+        let got = ok(store, &["get", "web.replicas"]);
+        assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+    }
 }
 
 #[test]
 fn a_stale_revision_conflicts_and_names_the_read_that_refreshes_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    ok(&store, &["project", "new", "shop"]);
-    ok(&store, &["env", "new", "staging"]);
-    ok(
-        &store,
-        &[
-            "service", "add", "web", "--image", "nginx:1", "--env", "staging",
-        ],
-    );
-    let error = error(
-        &store,
-        &["set", "web.replicas=2", "--expect", "1", "--env", "staging"],
-    );
-    assert_eq!(error.get("code"), Some(&json!("conflict")));
-    assert_eq!(
-        error.get("details"),
-        Some(&json!({ "revision": 2, "next": "ployz get --env staging" }))
-    );
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["env", "new", "staging"]);
+        ok(
+            store,
+            &[
+                "service", "add", "web", "--image", "nginx:1", "--env", "staging",
+            ],
+        );
+        let error = error(
+            store,
+            &["set", "web.replicas=2", "--expect", "1", "--env", "staging"],
+        );
+        assert_eq!(error.get("code"), Some(&json!("conflict")));
+        assert_eq!(
+            error.get("details"),
+            Some(&json!({ "revision": 2, "next": "ployz get --env staging" }))
+        );
+    }
 }
 
 #[test]
 fn mistakes_fail_with_their_codes() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    let no_project = error(&store, &["get"]);
-    assert_eq!(no_project.get("code"), Some(&json!("not_found")));
-    assert_eq!(
-        no_project.pointer("/details/next"),
-        Some(&json!("ployz project new NAME"))
-    );
-    ok(&store, &["project", "new", "shop"]);
-    ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
-    let no_env = error(&store, &["get", "--env", "preview"]);
-    assert_eq!(
-        no_env.pointer("/details/next"),
-        Some(&json!("ployz env new preview --project shop"))
-    );
-
-    let malformed = failed(&store, &["set", "web.replicas"], 2);
-    assert_eq!(malformed.get("code"), Some(&json!("invalid_argument")));
-    let bad_revision = failed(
-        &store,
-        &["set", "web.replicas=2", "--expect", "SECRET-CANARY"],
-        2,
-    );
-    let bad_name = error(
-        &store,
-        &["service", "add", "SECRET-CANARY", "--image", "nginx:1"],
-    );
-    for error in [bad_revision, bad_name] {
-        assert_eq!(error.get("code"), Some(&json!("invalid_argument")));
-        assert!(!error.to_string().contains("CANARY"), "echoed: {error}");
-    }
-
-    for (args, code) in [
-        (&["set", "web.replicas=lots"][..], "invalid_argument"),
-        (&["set", "web.nope=1"], "invalid_argument"),
-        (&["set", "api.replicas=1"], "not_found"),
-        (&["project", "new", "shop"], "conflict"),
-        (&["service", "add", "web", "--image", "nginx:2"], "conflict"),
-    ] {
-        let error = error(&store, args);
-        assert_eq!(error.get("code"), Some(&json!(code)), "{args:?}: {error}");
-        assert!(
-            !error.to_string().contains("lots"),
-            "values are never echoed"
+    for store in &targets() {
+        let no_project = error(store, &["get"]);
+        assert_eq!(no_project.get("code"), Some(&json!("not_found")));
+        assert_eq!(
+            no_project.pointer("/details/next"),
+            Some(&json!("ployz project new NAME"))
         );
-    }
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let no_env = error(store, &["get", "--env", "preview"]);
+        assert_eq!(
+            no_env.pointer("/details/next"),
+            Some(&json!("ployz env new preview --project shop"))
+        );
 
-    let (code, json) = ployz(None, &["get"]);
-    assert_eq!(code, Some(1));
-    assert_eq!(json.pointer("/error/code"), Some(&json!("unsupported")));
+        let malformed = failed(store, &["set", "web.replicas"], 2);
+        assert_eq!(malformed.get("code"), Some(&json!("invalid_argument")));
+        let bad_revision = failed(
+            store,
+            &["set", "web.replicas=2", "--expect", "SECRET-CANARY"],
+            2,
+        );
+        let bad_name = error(
+            store,
+            &["service", "add", "SECRET-CANARY", "--image", "nginx:1"],
+        );
+        for error in [bad_revision, bad_name] {
+            assert_eq!(error.get("code"), Some(&json!("invalid_argument")));
+            assert!(!error.to_string().contains("CANARY"), "echoed: {error}");
+        }
+
+        for (args, code) in [
+            (&["set", "web.replicas=lots"][..], "invalid_argument"),
+            (&["set", "web.nope=1"], "invalid_argument"),
+            (&["set", "api.replicas=1"], "not_found"),
+            (&["project", "new", "shop"], "conflict"),
+            (&["service", "add", "web", "--image", "nginx:2"], "conflict"),
+        ] {
+            let error = error(store, args);
+            assert_eq!(error.get("code"), Some(&json!(code)), "{args:?}: {error}");
+            assert!(
+                !error.to_string().contains("lots"),
+                "values are never echoed"
+            );
+        }
+    }
 }
 
 #[test]
 fn an_agent_reviews_publishes_and_discards() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    ok(&store, &["project", "new", "shop"]);
-    let added = ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
-    assert_eq!(added.get("next"), Some(&json!("ployz diff")));
-    let set = ok(&store, &["set", "web.replicas=3"]);
-    assert_eq!(set.get("next"), Some(&json!("ployz diff")));
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        let added = ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        assert_eq!(added.get("next"), Some(&json!("ployz diff")));
+        let set = ok(store, &["set", "web.replicas=3"]);
+        assert_eq!(set.get("next"), Some(&json!("ployz diff")));
 
-    let diff = ok(&store, &["diff"]);
-    let version = diff
-        .get("version")
-        .and_then(Value::as_str)
-        .unwrap()
-        .to_owned();
-    assert_eq!(diff.pointer("/changes/0/name"), Some(&json!("web")));
-    assert_eq!(diff.pointer("/changes/0/lifecycle"), Some(&json!("create")));
-    assert_eq!(
-        diff.pointer("/changes/0/settings/0/path"),
-        Some(&json!("web.replicas"))
-    );
-    assert_eq!(
-        diff.get("next"),
-        Some(&json!(format!("ployz publish --version {version}")))
-    );
+        let diff = ok(store, &["diff"]);
+        let version = diff
+            .get("version")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned();
+        assert_eq!(diff.pointer("/changes/0/name"), Some(&json!("web")));
+        assert_eq!(diff.pointer("/changes/0/lifecycle"), Some(&json!("create")));
+        assert_eq!(
+            diff.pointer("/changes/0/settings/0/path"),
+            Some(&json!("web.replicas"))
+        );
+        assert_eq!(
+            diff.get("next"),
+            Some(&json!(format!("ployz publish --version {version}")))
+        );
 
-    // A review taken before another edit is stale.
-    ok(&store, &["set", "web.startCommand=nginx"]);
-    let stale = error(&store, &["publish", "--version", &version]);
-    assert_eq!(stale.get("code"), Some(&json!("conflict")));
-    assert_eq!(stale.pointer("/details/next"), Some(&json!("ployz diff")));
-    let fresh = stale
-        .pointer("/details/diff/version")
-        .unwrap()
-        .as_str()
-        .unwrap();
+        // A review taken before another edit is stale.
+        ok(store, &["set", "web.startCommand=nginx"]);
+        let stale = error(store, &["publish", "--version", &version]);
+        assert_eq!(stale.get("code"), Some(&json!("conflict")));
+        assert_eq!(stale.pointer("/details/next"), Some(&json!("ployz diff")));
+        let fresh = stale
+            .pointer("/details/diff/version")
+            .unwrap()
+            .as_str()
+            .unwrap();
 
-    let published = ok(&store, &["publish", "--version", fresh]);
-    assert_eq!(published.get("saved"), Some(&json!(1)));
-    assert_eq!(published.get("created"), Some(&json!(true)));
-    let diff = ok(&store, &["diff"]);
-    assert_eq!(diff.get("published"), Some(&json!(true)));
-    assert_eq!(diff.get("next"), None, "nothing left to publish");
+        let published = ok(store, &["publish", "--version", fresh]);
+        assert_eq!(published.get("saved"), Some(&json!(1)));
+        assert_eq!(published.get("created"), Some(&json!(true)));
+        let diff = ok(store, &["diff"]);
+        assert_eq!(diff.get("published"), Some(&json!(true)));
+        assert_eq!(diff.get("next"), None, "nothing left to publish");
 
-    // The Service is published but not deployed: discarding it unpublishes it too.
-    let discarded = ok(&store, &["discard", "web"]);
-    assert_eq!(discarded.get("saved"), Some(&json!(2)));
-    assert_eq!(discarded.get("next"), Some(&json!("ployz diff")));
-    assert_eq!(ok(&store, &["diff"]).get("changes"), Some(&json!([])));
+        // The Service is published but not deployed: discarding it unpublishes it too.
+        let discarded = ok(store, &["discard", "web"]);
+        assert_eq!(discarded.get("saved"), Some(&json!(2)));
+        assert_eq!(discarded.get("next"), Some(&json!("ployz diff")));
+        assert_eq!(ok(store, &["diff"]).get("changes"), Some(&json!([])));
+    }
 }
 
 #[test]
 fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    ok(&store, &["project", "new", "shop"]);
-    ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
 
-    let mut values = ok(&store, &["get", "web"])["values"].clone();
-    values["cpuLimit"] = json!(0.5);
-    values["memLimit"] = json!(1.5);
-    values["restartPolicy"] = json!("on-failure");
-    let patch = values.to_string();
-    let patched = ok(&store, &["set", "web", "--patch", &patch]);
-    assert_eq!(
-        patched.get("staged"),
-        Some(&json!([
-            "web.cpuLimit",
-            "web.memLimit",
-            "web.restartPolicy"
-        ]))
-    );
-    assert_eq!(ok(&store, &["get", "web"])["values"], values);
+        let mut values = ok(store, &["get", "web"])["values"].clone();
+        values["cpuLimit"] = json!(0.5);
+        values["memLimit"] = json!(1.5);
+        values["restartPolicy"] = json!("on-failure");
+        let patch = values.to_string();
+        let patched = ok(store, &["set", "web", "--patch", &patch]);
+        assert_eq!(
+            patched.get("staged"),
+            Some(&json!([
+                "web.cpuLimit",
+                "web.memLimit",
+                "web.restartPolicy"
+            ]))
+        );
+        assert_eq!(ok(store, &["get", "web"])["values"], values);
 
-    let mut stdin = Command::new(env!("CARGO_BIN_EXE_ployz"));
-    stdin
-        .args(["set", "web", "--patch", "-", "--json"])
-        .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped());
-    let mut child = stdin.spawn().unwrap();
-    std::io::Write::write_all(child.stdin.as_mut().unwrap(), br#"{"replicas": 2}"#).unwrap();
-    assert!(child.wait_with_output().unwrap().status.success());
+        let home = tempfile::tempdir().unwrap();
+        let mut stdin = store.command(home.path());
+        stdin
+            .args(["set", "web", "--patch", "-", "--json"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped());
+        let mut child = stdin.spawn().unwrap();
+        std::io::Write::write_all(child.stdin.as_mut().unwrap(), br#"{"replicas": 2}"#).unwrap();
+        assert!(child.wait_with_output().unwrap().status.success());
 
-    let whole = ok(&store, &["get"]);
-    let paths = whole["settings"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["path"].as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        paths,
-        [
-            "web.cpuLimit",
-            "web.image",
-            "web.memLimit",
-            "web.replicas",
-            "web.restartPolicy"
-        ]
-    );
-    assert_eq!(whole.get("values"), None);
-    assert_eq!(
-        ok(&store, &["get", "--all"])["settings"]
+        let whole = ok(store, &["get"]);
+        let paths = whole["settings"]
             .as_array()
             .unwrap()
-            .len(),
-        8
-    );
-
-    for patch in [r#"{"memLimit": null}"#, "not json"] {
-        let refused = error(&store, &["set", "web", "--patch", patch]);
+            .iter()
+            .map(|row| row["path"].as_str().unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(
-            refused.get("code"),
-            Some(&json!("invalid_argument")),
-            "{patch}"
+            paths,
+            [
+                "web.cpuLimit",
+                "web.image",
+                "web.memLimit",
+                "web.replicas",
+                "web.restartPolicy"
+            ]
         );
+        assert_eq!(whole.get("values"), None);
+        assert_eq!(
+            ok(store, &["get", "--all"])["settings"]
+                .as_array()
+                .unwrap()
+                .len(),
+            8
+        );
+
+        for patch in [r#"{"memLimit": null}"#, "not json"] {
+            let refused = error(store, &["set", "web", "--patch", patch]);
+            assert_eq!(
+                refused.get("code"),
+                Some(&json!("invalid_argument")),
+                "{patch}"
+            );
+        }
     }
 }
 
@@ -357,40 +463,78 @@ fn the_catalog_describes_settings_without_a_store() {
 
 #[test]
 fn setting_paths_complete_from_the_store_and_the_catalog() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    ok(&store, &["project", "new", "shop"]);
-    ok(&store, &["service", "add", "web", "--image", "nginx:1"]);
-    let complete = |word: &str| {
-        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(["--", "ployz", "set", word])
-            .env("PLOYZ_COMPLETE", "bash")
-            .env("PLOYZ_STORE", format!("sqlite:{}", store.display()))
-            .env("_CLAP_COMPLETE_INDEX", "2")
-            .env("_CLAP_IFS", "\n")
-            .env_remove("PLOYZ_PROJECT")
-            .env_remove("PLOYZ_ENV")
-            .output()
-            .unwrap();
-        String::from_utf8(output.stdout).unwrap()
-    };
-    assert_eq!(complete("w").trim(), "web.");
-    assert_eq!(complete("web.me").trim(), "web.memLimit");
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["service", "add", "web", "--image", "nginx:1"]);
+        let complete = |word: &str| {
+            let home = tempfile::tempdir().unwrap();
+            let output = store
+                .command(home.path())
+                .args(["--", "ployz", "set", word])
+                .env("PLOYZ_COMPLETE", "bash")
+                .env("_CLAP_COMPLETE_INDEX", "2")
+                .env("_CLAP_IFS", "\n")
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        assert_eq!(complete("w").trim(), "web.");
+        assert_eq!(complete("web.me").trim(), "web.memLimit");
+    }
 }
 
 #[test]
 fn an_ambiguous_project_names_the_rerun() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = dir.path().join("store.db");
-    ok(&store, &["project", "new", "shop"]);
-    ok(&store, &["project", "new", "blog"]);
-    let error = error(&store, &["env", "new", "staging"]);
-    assert_eq!(error.get("code"), Some(&json!("ambiguous")));
+    for store in &targets() {
+        ok(store, &["project", "new", "shop"]);
+        ok(store, &["project", "new", "blog"]);
+        let error = error(store, &["env", "new", "staging"]);
+        assert_eq!(error.get("code"), Some(&json!("ambiguous")));
+        assert_eq!(
+            error.get("details"),
+            Some(&json!({
+                "projects": ["blog", "shop"],
+                "next": "ployz env new staging --json --project PROJECT",
+            }))
+        );
+    }
+}
+
+#[test]
+fn cloud_answers_only_a_credential_in_its_own_organization() {
+    let url = fake_cloud();
+    let alice = Target::Cloud {
+        url: url.clone(),
+        token: "ployz_alice",
+    };
+    ok(&alice, &["project", "new", "shop"]);
+    let bob = Target::Cloud {
+        url: url.clone(),
+        token: "ployz_bob",
+    };
     assert_eq!(
-        error.get("details"),
-        Some(&json!({
-            "projects": ["blog", "shop"],
-            "next": "ployz env new staging --json --project PROJECT",
-        }))
+        error(&bob, &["get"]).get("code"),
+        Some(&json!("not_found")),
+        "another Organization sees nothing"
+    );
+    let refused = error(
+        &Target::Cloud {
+            url,
+            token: "revoked",
+        },
+        &["get"],
+    );
+    assert_eq!(refused.get("code"), Some(&json!("unauthenticated")));
+    assert_eq!(
+        refused.pointer("/details/next"),
+        Some(&json!("ployz token new"))
+    );
+
+    let (code, json) = ployz(None, &["get"]);
+    assert_eq!(code, Some(1), "signed out: {json}");
+    assert_eq!(json.pointer("/error/code"), Some(&json!("unauthenticated")));
+    assert_eq!(
+        json.pointer("/error/details/next"),
+        Some(&json!("ployz login"))
     );
 }

@@ -29,13 +29,13 @@ pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
 
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let name = ProjectName::parse(required(leaf_matches(root), "name")?)?;
-    let (store, actor) = store()?;
+    let store = store(root)?;
     let create = CreateProject {
         id: ProjectId::parse(mint())?,
         name,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.create_project(&actor, &create).map_err(failed)?;
+    let created = store.create_project(&create).map_err(failed)?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",

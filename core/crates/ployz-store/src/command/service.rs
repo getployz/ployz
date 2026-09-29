@@ -5,6 +5,7 @@ use ployz_core::config::{SavedServiceIntent, ServiceImageCredentials, parse_serv
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use super::{Command, replayable};
 use crate::Actor;
@@ -15,7 +16,7 @@ use crate::settings::{ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
 
 /// Create a Service that runs `image`. Its name is its Private DNS name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateService {
     /// The new Service's ID, also its lineage.
@@ -30,7 +31,7 @@ pub struct CreateService {
 }
 
 /// The new Service, staged in Working State until a Deploy.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceCreated {
     /// The Service.
     pub service: ServiceSummary,
@@ -43,7 +44,7 @@ pub struct ServiceCreated {
 }
 
 /// A Service as results name it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
     /// Its durable identity.
     pub id: ServiceId,

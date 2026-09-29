@@ -12,12 +12,13 @@ use ployz_core::config::{
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 use crate::error;
 use crate::id::EnvironmentName;
 
 /// Whether a change waits for a Deploy or takes effect at once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Apply {
     /// Saved in Working State; running Services see it after the next Deploy.
@@ -293,8 +294,9 @@ pub(crate) fn image_source(
 
 /// What a request addresses in an Environment: `SERVICE` for a whole Service, or
 /// `SERVICE.SETTING` for one of its Settings.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
+#[ts(as = "String")]
 pub struct SettingPath {
     service: ServiceName,
     setting: Option<ServiceSetting>,

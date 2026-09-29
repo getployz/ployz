@@ -6,7 +6,9 @@
 //! about / runtime.watch / prepare / build / preview / run / previewNamespaceRemoval /
 //! remove_volumes / pruneImages / dataLossIfMachineRemoved / removeMachine /
 //! dataLossIfNamespaceDestroyed / destroyNamespace / dataLossIfClusterDestroyed /
-//! destroyCluster / close.
+//! destroyCluster / close, and the Config Store's openConfigStore / read / write.
+pub mod config_store;
+
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz::sdk;

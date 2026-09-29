@@ -5,6 +5,7 @@
 //! as written; the Postgres adapter rewrites `?N` to `$N`. Adding an adapter means a
 //! [`Storage`] variant and a [`Tx`] implementation; the Store's logic never changes.
 
+mod pg;
 mod sqlite;
 
 use ployz_core::RpcError;
@@ -25,14 +26,25 @@ const MIGRATIONS: &[(&str, &str)] = &[
 
 pub(crate) enum Storage {
     Sqlite(sqlite::Sqlite),
+    Postgres(Box<pg::Postgres>),
 }
 
 impl Storage {
-    /// Open `url` (`sqlite:PATH` or `sqlite::memory:`) and apply pending migrations.
+    /// Open `url` (`postgres://…`, `sqlite:PATH` or `sqlite::memory:`) and apply
+    /// pending migrations.
     pub(crate) fn open(url: &str) -> Result<Self, RpcError> {
+        if url.starts_with("postgres://") || url.starts_with("postgresql://") {
+            let storage = Self::Postgres(Box::new(pg::Postgres::open(url)?));
+            storage.write(|tx| {
+                // Processes opening one database at once migrate it one at a time.
+                tx.execute("SELECT pg_advisory_xact_lock(1225)", &[])?;
+                migrate(tx)
+            })?;
+            return Ok(storage);
+        }
         let Some(path) = url.strip_prefix("sqlite:") else {
             return Err(error::invalid(
-                "Expected a Config Store URL starting with sqlite:",
+                "Expected a Config Store URL starting with postgres:// or sqlite:",
                 serde_json::Value::Null,
             ));
         };
@@ -50,6 +62,7 @@ impl Storage {
     ) -> Result<T, RpcError> {
         match self {
             Self::Sqlite(sqlite) => sqlite.transaction(true, work),
+            Self::Postgres(postgres) => postgres.transaction(true, work),
         }
     }
 
@@ -60,6 +73,7 @@ impl Storage {
     ) -> Result<T, RpcError> {
         match self {
             Self::Sqlite(sqlite) => sqlite.transaction(false, work),
+            Self::Postgres(postgres) => postgres.transaction(false, work),
         }
     }
 }

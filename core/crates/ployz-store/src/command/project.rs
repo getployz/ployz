@@ -4,6 +4,7 @@ use ployz_core::RpcError;
 use ployz_core::config::SavedEnvironmentIntent;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use super::{Command, replayable};
 use crate::Actor;
@@ -16,7 +17,7 @@ use crate::storage::Tx;
 const DEFAULT_ENVIRONMENT: &str = "production";
 
 /// Create a Project with its Default Environment, `production`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateProject {
     /// The new Project's ID.
@@ -28,7 +29,7 @@ pub struct CreateProject {
 }
 
 /// The new Project and its Default Environment.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProjectCreated {
     /// The Project.
     pub project: ProjectSummary,
@@ -37,7 +38,7 @@ pub struct ProjectCreated {
 }
 
 /// A Project as results name it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ProjectSummary {
     /// Its durable identity.
     pub id: ProjectId,
@@ -46,7 +47,7 @@ pub struct ProjectSummary {
 }
 
 /// Create an empty Environment in a Project.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct CreateEnvironment {
     /// The new Environment's ID.
@@ -59,7 +60,7 @@ pub struct CreateEnvironment {
 }
 
 /// The new, empty Environment.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentCreated {
     /// The Environment.
     pub environment: EnvironmentSummary,

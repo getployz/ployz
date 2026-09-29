@@ -12,6 +12,7 @@ for (const file of ["package.json", ...manifest.files, "ployz-sdk.node"]) {
 // Rung 1: load the shipped WASM config and native RPC binding, outside the source package.
 const require = createRequire(new URL("../.output/server/index.mjs", import.meta.url));
 assert.equal(typeof require("@ployz/sdk").connect, "function");
+assert.equal(typeof require("@ployz/sdk").openConfigStore, "function");
 const { parseServiceSetting } = require("@ployz/sdk/config");
 assert.deepEqual(parseServiceSetting("source", { version: 1, type: "empty", rootDir: "/" }),
   { version: 1, type: "empty", rootDir: "/" });

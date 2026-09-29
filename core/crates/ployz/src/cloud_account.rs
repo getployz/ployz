@@ -1,9 +1,11 @@
 //! Acting in Cloud from the CLI: Organizations, Organization Tokens and signed-in
-//! devices, and billing, through Cloud's `/api/cli` surface.
+//! devices, and billing, through Cloud's `/api/cli` surface; and the Config Store's
+//! `read` and `write`, through `/api/config`.
 //!
 //! Every call carries one credential: `PLOYZ_TOKEN` when set, else this device's
 //! approved sign-in. Either acts in exactly one Organization.
 
+use ployz_core::RpcError;
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -306,6 +308,56 @@ pub(crate) enum BillingPage {
     Portal,
 }
 
+/// Why a Config Store call over HTTPS failed.
+#[derive(Debug)]
+pub(crate) enum StoreCallError {
+    /// The Store refused the command or query, exactly as it would in-process.
+    Refused(RpcError),
+    /// Cloud or the credential failed before the Store answered.
+    Cloud(LoginError),
+}
+
+impl From<LoginError> for StoreCallError {
+    fn from(error: LoginError) -> Self {
+        Self::Cloud(error)
+    }
+}
+
+/// Call the Config Store's `operation` (`read` or `write`) in the credential's
+/// Organization. `body` is a Query or a Command; the reply is a View or Written.
+///
+/// # Errors
+///
+/// Returns the Store's refusal, or a Cloud failure; a Cloud without the Store is
+/// [`LoginError::Unsupported`].
+pub(crate) async fn config_store<T: DeserializeOwned>(
+    credential: &Credential,
+    operation: &str,
+    body: &impl Serialize,
+) -> Result<T, StoreCallError> {
+    #[derive(Deserialize)]
+    struct Refusal {
+        error: RpcError,
+    }
+    let body = serde_json::to_value(body).map_err(|error| LoginError::Reply(error.to_string()))?;
+    let url = format!("{}/api/config/{operation}", credential.cloud());
+    let response = send(credential, Method::POST, &url, Some(&body)).await?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    if !status.is_success() {
+        if let Ok(refusal) = serde_json::from_slice::<Refusal>(&bytes) {
+            return Err(StoreCallError::Refused(refusal.error));
+        }
+        if status == StatusCode::NOT_FOUND {
+            return Err(LoginError::Unsupported(credential.cloud().to_owned()).into());
+        }
+    }
+    Ok(answer(credential, status, &bytes)?)
+}
+
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface.
 async fn call<T: DeserializeOwned>(
     credential: &Credential,
@@ -350,6 +402,14 @@ async fn read<T: DeserializeOwned>(
         .bytes()
         .await
         .map_err(|error| cloud_login::unreachable(credential.cloud(), error))?;
+    answer(credential, status, &body)
+}
+
+fn answer<T: DeserializeOwned>(
+    credential: &Credential,
+    status: StatusCode,
+    body: &[u8],
+) -> Result<T, LoginError> {
     match (status, credential) {
         (status, _) if status.is_success() => cloud_login::decode(body.to_vec()),
         (StatusCode::UNAUTHORIZED, Credential::Device(_)) => Err(LoginError::Ended),
@@ -359,7 +419,7 @@ async fn read<T: DeserializeOwned>(
         }
         (status, _) => Err(LoginError::Status {
             status: status.as_u16(),
-            body: String::from_utf8_lossy(&body).into_owned(),
+            body: String::from_utf8_lossy(body).into_owned(),
         }),
     }
 }

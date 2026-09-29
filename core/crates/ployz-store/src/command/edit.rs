@@ -7,6 +7,7 @@
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
@@ -16,7 +17,7 @@ use crate::settings::{Apply, ServiceSetting, SettingPath};
 use crate::storage::Tx;
 
 /// Apply every change to one Environment, all or none.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Edit {
     /// The Environment to edit.
@@ -30,7 +31,7 @@ pub struct Edit {
 }
 
 /// One change, addressed as `SERVICE.SETTING`, or as `SERVICE` for a patch.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Change {
     /// Set a value. Text is accepted for any Setting type.
@@ -57,7 +58,7 @@ pub enum Change {
 
 /// The Environment after an edit, and which Setting paths it changed: staged until
 /// a Deploy, or applied immediately. An edit that changed nothing keeps the revision.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 pub struct Edited {
     /// The Environment, at its revision after the edit.
     pub environment: EnvironmentSummary,
