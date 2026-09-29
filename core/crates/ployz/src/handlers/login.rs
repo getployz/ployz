@@ -109,14 +109,36 @@ fn report(signed_in: &SignedIn) -> Result<(), Error> {
 
 pub(super) fn logout(root: &ArgMatches) -> Result<(), Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
-    let cloud = runtime()?.block_on(cloud_login::logout(&store))?;
-    crate::output::finish(
-        &serde_json::json!({ "signed_out": cloud.is_some(), "cloud": cloud }),
-        || match &cloud {
-            Some(cloud) => say!("Signed out of {cloud}."),
-            None => say!("Not signed in."),
-        },
-    )
+    let out = runtime()?.block_on(cloud_login::logout(&store))?;
+    let next = out.as_ref().and_then(|out| {
+        let device = out.device.as_deref()?;
+        // Run from another signed-in device or with PLOYZ_TOKEN: this one is signed out.
+        super::account::retry_clears(&out.servers, device)
+    });
+    let report = LogoutReport {
+        signed_out: out.is_some(),
+        cloud: out.as_ref().map(|out| out.cloud.as_str()),
+        device: out.as_ref().and_then(|out| out.device.as_deref()),
+        servers: out.as_ref().map(|out| &out.servers),
+        next: next.as_deref(),
+    };
+    crate::output::finish(&report, || match &out {
+        Some(out) => {
+            say!("Signed out of {}.", out.cloud);
+            super::account::say_clears(&out.servers, next.as_deref());
+        }
+        None => say!("Not signed in."),
+    })
+}
+
+#[derive(serde::Serialize)]
+struct LogoutReport<'a> {
+    signed_out: bool,
+    cloud: Option<&'a str>,
+    device: Option<&'a str>,
+    servers: Option<&'a crate::cloud_account::ServerClears>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<&'a str>,
 }
 
 pub(super) fn open_browser(url: &str) {

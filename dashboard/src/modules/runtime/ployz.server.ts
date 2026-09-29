@@ -94,6 +94,8 @@ export interface PloyzSession {
   readonly logs: (options: LogOptions) => Effect.Effect<AsyncIterable<LogEvent>, PloyzSdkError>;
   readonly logHistory: (options: LogHistoryOptions) => Effect.Effect<LogHistoryPage, PloyzSdkError>;
   readonly inspect: () => Effect.Effect<MachineDetails, PloyzSdkError>;
+  /** Resolves to the secret `ployz1:` Management Capability for `label`. */
+  readonly setManagementClient: (label: string) => Effect.Effect<string, PloyzSdkError>;
   readonly clearManagementClient: (label: string) => Effect.Effect<void, PloyzSdkError>;
   readonly observeEnrollment: () => Effect.Effect<EnrollmentSnapshot, PloyzProviderError>;
   readonly register: (assignment: EnrollmentAssignment) => Effect.Effect<JsonValue, PloyzProviderError>;
@@ -288,6 +290,7 @@ function wrapClient(client: Client): PloyzSession {
     logs: (options) => Effect.try({ try: () => client.runtime.logs(options), catch: (cause) => asSdkFailure("logs", cause) }),
     logHistory: (options) => sdkPromise("log history", (signal) => client.runtime.logHistory({ ...options, signal })),
     inspect: () => sdkPromise("inspect", () => client.inspect()),
+    setManagementClient: (label) => sdkPromise("set Management Client", () => client.setManagementClient(label)),
     clearManagementClient: (label) => sdkPromise("clear Management Client", () => client.clearManagementClient(label)),
     observeEnrollment: () => Effect.tryPromise({
       try: () => client.observeEnrollment(),

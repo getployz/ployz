@@ -34,6 +34,7 @@ import {
   createScheduleClusterDomainSync,
   createSyncClusterDomain,
 } from "#/modules/cluster-domain/sync.inngest";
+import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createSweepIdleBranches } from "#/modules/branches/branch-sweep.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
@@ -61,6 +62,7 @@ describe("Inngest function policies", () => {
       createProcessMachineRemove(inngest),
       createCancelMachineRemove(inngest),
       createApplyServerPolicyChange(inngest),
+      createRetireServerAccess(inngest),
       createProcessTeardown(inngest),
       createCancelTeardown(inngest),
       createProcessVolumeRemove(inngest),
@@ -94,6 +96,7 @@ describe("Inngest function policies", () => {
       { id: "process-machine-remove", retries: 5, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-machine-remove", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "apply-server-policy-change", retries: 3, concurrency: [{ key: "event.data.machineId", limit: 1 }] },
+      { id: "retire-server-access", retries: 3, concurrency: [{ limit: 1 }] },
       { id: "process-teardown", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },
       { id: "cancel-teardown", retries: 3, concurrency: [{ key: "event.data.run_id", limit: 1 }] },
       { id: "process-volume-remove", retries: 0, concurrency: [{ key: "event.data.attemptId", limit: 1 }] },

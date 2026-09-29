@@ -233,6 +233,25 @@ impl Session {
         .await
     }
 
+    /// Set `label`'s Management Client slot to a fresh client key and return its Management
+    /// Capability. A repeated Set rotates the key; the previous one works until the new one is used.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or `failed_precondition` off a participating Machine.
+    pub async fn set_management_client(
+        &self,
+        label: ployz_core::ManagementClientLabel,
+    ) -> Result<ployz_core::ManagementCapability, RpcError> {
+        let response = self
+            .unary::<op::SetManagementClient>(ployz_core::SetManagementClientRequest::Set { label })
+            .await?;
+        response.capability.ok_or_else(|| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Machine set a Management Client without a Management Capability".into(),
+            details: Value::Null,
+        })
+    }
+
     /// Inspect the selected Machine, including its Management Client labels.
     ///
     /// # Errors
