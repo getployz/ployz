@@ -192,6 +192,8 @@ export declare class Client {
   build(input: PreparationInput, options?: BuildOptions): RunningBuild;
   /** What a Builder outside the Cluster does for the one Git Service in `deployment` at `commit`; never builds. */
   outsideBuild(input: OutsideBuildInput): Promise<OutsideBuild>;
+  /** Sets `label`'s slot to a fresh key; resolves to its secret `ployz1:` Management Capability. */
+  setManagementClient(label: string): Promise<string>;
   clearManagementClient(label: string): Promise<void>;
   inspect(): Promise<MachineDetails>;
   observeEnrollment(): Promise<EnrollmentSnapshot>;

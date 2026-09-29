@@ -76,7 +76,7 @@ impl ConfigStore {
         let command: ployz_store::Command = serde_json::from_value(command)
             .map_err(|_| invalid_argument("Expected a Config Store command"))?;
         let store = Arc::clone(&self.store);
-        self.run(move || store.write(&who, command)).await
+        self.run(move || store.write(&who, &command)).await
     }
 }
 

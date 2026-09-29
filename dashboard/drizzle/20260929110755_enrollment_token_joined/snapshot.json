@@ -1,9 +1,9 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "b81364c0-ad84-4f3d-91ff-1529127701ec",
+  "id": "8ce67b0e-38cb-4e7a-b0aa-f352d5ecafaa",
   "prevIds": [
-    "5268b07c-7386-43f5-8f69-8bdefdc78a96"
+    "b98bb7e5-d35f-464c-a018-7ecc089943b3"
   ],
   "ddl": [
     {
@@ -255,6 +255,12 @@
     {
       "isRlsEnabled": false,
       "name": "organization_machine",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "server_access",
       "entityType": "tables",
       "schema": "public"
     },
@@ -5261,6 +5267,123 @@
       "table": "organization_machine"
     },
     {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "organization_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "machine_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "credential_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "credential_kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "encrypted_capability",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "revoked_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
       "type": "integer",
       "typeSchema": null,
       "notNull": true,
@@ -8622,6 +8745,27 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "credential_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "server_access_credential_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "installation_id",
           "isExpression": false,
           "asc": true,
@@ -10625,6 +10769,25 @@
       "table": "organization_machine"
     },
     {
+      "nameExplicit": true,
+      "columns": [
+        "organization_id",
+        "machine_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "organization_machine",
+      "columnsTo": [
+        "organization_id",
+        "machine_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "name": "server_access_organization_machine_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
       "nameExplicit": false,
       "columns": [
         "last_delivery_id",
@@ -11019,6 +11182,18 @@
       "entityType": "pks",
       "schema": "public",
       "table": "organization_machine"
+    },
+    {
+      "columns": [
+        "organization_id",
+        "credential_id",
+        "machine_id"
+      ],
+      "nameExplicit": false,
+      "name": "server_access_pkey",
+      "entityType": "pks",
+      "schema": "public",
+      "table": "server_access"
     },
     {
       "columns": [
@@ -12184,6 +12359,20 @@
       "entityType": "checks",
       "schema": "public",
       "table": "organization_machine"
+    },
+    {
+      "value": "\"credential_kind\" in ('session', 'token')",
+      "name": "server_access_credential_kind_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_access"
+    },
+    {
+      "value": "(\"revoked_at\" is null) = (\"encrypted_capability\" is not null)",
+      "name": "server_access_revoked_shape_check",
+      "entityType": "checks",
+      "schema": "public",
+      "table": "server_access"
     },
     {
       "value": "\"installation_id\" > 0 and \"repository_id\" > 0 and \"last_receipt_sequence\" > 0 and \"evaluation_revision\" > 0",

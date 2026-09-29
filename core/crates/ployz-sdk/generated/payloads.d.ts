@@ -128,7 +128,19 @@ export type CertificateObservation = { hostname: CertificateHost, status: Certif
  */
 via_proxy: boolean, };
 
-export type Change = { "op": "set", path: string, value: JsonValue, } | { "op": "unset", path: string, };
+export type Change = { "op": "set",
+/**
+ * The Setting.
+ */
+path: SettingPath,
+/**
+ * Its new value.
+ */
+value: JsonValue, } | { "op": "unset",
+/**
+ * The Setting.
+ */
+path: SettingPath, };
 
 export type ChangeKind = "add" | "update" | "remove";
 
@@ -204,11 +216,51 @@ daemon_version: string, capabilities: Array<CapabilityName>, };
 
 export type CpuNanos = number;
 
-export type CreateEnvironment = { id: EnvironmentId, project: ProjectName | null, name: EnvironmentName, };
+export type CreateEnvironment = {
+/**
+ * The new Environment's ID.
+ */
+id: EnvironmentId,
+/**
+ * The Project to create it in; omitted means the Organization's only Project.
+ */
+project: ProjectName | null,
+/**
+ * Its name, unique in the Project.
+ */
+name: EnvironmentName, };
 
-export type CreateProject = { id: ProjectId, name: ProjectName, default_environment: EnvironmentId, };
+export type CreateProject = {
+/**
+ * The new Project's ID.
+ */
+id: ProjectId,
+/**
+ * Its name, unique in the Organization.
+ */
+name: ProjectName,
+/**
+ * The ID of its Default Environment, created with it.
+ */
+default_environment: EnvironmentId, };
 
-export type CreateService = { id: ServiceId, environment: EnvironmentRef, name: ServiceName, image: string, };
+export type CreateService = {
+/**
+ * The new Service's ID, also its lineage.
+ */
+id: ServiceId,
+/**
+ * The Environment to create it in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name, unique in the Environment.
+ */
+name: ServiceName,
+/**
+ * The container image it runs.
+ */
+image: string, };
 
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
@@ -329,13 +381,33 @@ bound_bytes: number,
  */
 used_bytes: number, };
 
-export type Edit = { environment: EnvironmentRef,
+export type Edit = {
+/**
+ * The Environment to edit.
+ */
+environment: EnvironmentRef,
 /**
  * Refuse with `conflict` unless Working State is still at this revision.
  */
-expect: Revision | null, changes: Array<Change>, };
+expect: Revision | null,
+/**
+ * The changes, applied in order.
+ */
+changes: Array<Change>, };
 
-export type Edited = { environment: EnvironmentSummary, staged: Array<string>, immediate: Array<string>, };
+export type Edited = {
+/**
+ * The Environment, at its revision after the edit.
+ */
+environment: EnvironmentSummary,
+/**
+ * Settings changed in Working State, waiting for a Deploy.
+ */
+staged: Array<SettingPath>,
+/**
+ * Settings that took effect at once.
+ */
+immediate: Array<SettingPath>, };
 
 export type EncryptedSecretValue = { version: 1, iv: string, tag: string, ciphertext: string, };
 
@@ -369,7 +441,11 @@ machines: Array<Machine>,
  */
 target_versions: { [key in string]: number }, };
 
-export type EnvironmentCreated = { environment: EnvironmentSummary, };
+export type EnvironmentCreated = {
+/**
+ * The Environment.
+ */
+environment: EnvironmentSummary, };
 
 export type EnvironmentId = string;
 
@@ -377,13 +453,53 @@ export type EnvironmentName = string;
 
 export type EnvironmentNodeType = "service" | "volume";
 
-export type EnvironmentQuery = { environment: EnvironmentRef, path: string | null, };
+export type EnvironmentQuery = {
+/**
+ * The Environment to read.
+ */
+environment: EnvironmentRef,
+/**
+ * Narrow to one Service or one Setting; omitted means every Setting.
+ */
+path: SettingPath | null, };
 
-export type EnvironmentRef = { project: ProjectName | null, environment: EnvironmentName | null, };
+export type EnvironmentRef = {
+/**
+ * The Project, by name.
+ */
+project: ProjectName | null,
+/**
+ * The Environment, by name within the Project.
+ */
+environment: EnvironmentName | null, };
 
-export type EnvironmentSummary = { id: EnvironmentId, project: ProjectName, name: EnvironmentName, namespace: Namespace, revision: Revision, };
+export type EnvironmentSummary = {
+/**
+ * Its durable identity.
+ */
+id: EnvironmentId,
+/**
+ * The Project it belongs to.
+ */
+project: ProjectName,
+/**
+ * Its name within the Project.
+ */
+name: EnvironmentName,
+/**
+ * Working State's revision after the request.
+ */
+revision: Revision, };
 
-export type EnvironmentView = { environment: EnvironmentSummary, settings: Array<SettingRow>, };
+export type EnvironmentView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * Every Setting asked for, by Service name then Setting.
+ */
+settings: Array<SettingRow>, };
 
 export type ExecutionError = { "type": "machine", action: MachineAction, error: RpcError, } | { "type": "health", container_id: ContainerId, failure: HealthFailure, } | { "type": "dependency_health", dependency: QualifiedService, failure: DependencyHealthFailure, } | { "type": "hook", container_id: ContainerId, failure: HookFailure, } | { "type": "cancelled" };
 
@@ -743,13 +859,29 @@ id: DockerVolumeId,
  */
 machine_name: MachineName | null, };
 
-export type ProjectCreated = { project: ProjectSummary, environment: EnvironmentSummary, };
+export type ProjectCreated = {
+/**
+ * The Project.
+ */
+project: ProjectSummary,
+/**
+ * Its Default Environment.
+ */
+environment: EnvironmentSummary, };
 
 export type ProjectId = string;
 
 export type ProjectName = string;
 
-export type ProjectSummary = { id: ProjectId, name: ProjectName, };
+export type ProjectSummary = {
+/**
+ * Its durable identity.
+ */
+id: ProjectId,
+/**
+ * Its name.
+ */
+name: ProjectName, };
 
 export type ProvisionedVolumeMaximumBytes = number;
 
@@ -955,7 +1087,23 @@ hostname: ContainerHostname | null,
  */
 extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
-export type ServiceCreated = { service: ServiceSummary, environment: EnvironmentSummary, staged: Array<string>, immediate: Array<string>, };
+export type ServiceCreated = {
+/**
+ * The Service.
+ */
+service: ServiceSummary,
+/**
+ * The Environment, at its revision after the create.
+ */
+environment: EnvironmentSummary,
+/**
+ * Every Setting of the new Service, waiting for a Deploy.
+ */
+staged: Array<SettingPath>,
+/**
+ * Settings that took effect at once: none for a new Service.
+ */
+immediate: Array<SettingPath>, };
 
 export type ServiceDependency = {
 /**
@@ -1023,7 +1171,15 @@ export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | 
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
-export type ServiceSummary = { id: ServiceId, name: ServiceName, };
+export type ServiceSummary = {
+/**
+ * Its durable identity.
+ */
+id: ServiceId,
+/**
+ * Its name, also its Private DNS name.
+ */
+name: ServiceName, };
 
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
@@ -1031,7 +1187,25 @@ export type ServiceVolumeReference = string;
 
 export type SetManagementClientResponse = { capability: string | null, };
 
-export type SettingRow = { path: string, value: JsonValue, default: JsonValue, apply: Apply, };
+export type SettingPath = string;
+
+export type SettingRow = {
+/**
+ * The Setting.
+ */
+path: SettingPath,
+/**
+ * Its value in Working State; `null` when it has none.
+ */
+value: JsonValue,
+/**
+ * The value `unset` restores.
+ */
+default: JsonValue,
+/**
+ * Whether a change to it waits for a Deploy.
+ */
+apply: Apply, };
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

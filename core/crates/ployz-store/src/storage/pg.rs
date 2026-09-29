@@ -110,6 +110,10 @@ impl Tx for PostgresTx<'_, '_> {
             .map_err(storage_error)?;
         rows.iter().map(row).collect()
     }
+
+    fn batch(&mut self, sql: &str) -> Result<(), RpcError> {
+        self.0.batch_execute(sql).map_err(storage_error)
+    }
 }
 
 /// `?N` to Postgres's `$N`. The Store's SQL never puts `?` in a literal.
@@ -154,10 +158,16 @@ fn row(row: &postgres::Row) -> Result<Row, RpcError> {
         .map_err(storage_error)
 }
 
-/// A lost connection, a timeout, a lock or serialization failure, or a racing
-/// insert of the same key: nothing the caller can see was decided, so it is
-/// `unavailable` and a retry answers properly.
+/// A taken key or unique name is `conflict`, whichever check first noticed it. A
+/// lost connection, a timeout, or a lock or serialization failure decided nothing
+/// the caller can see, so it is `unavailable` and a retry answers properly.
 fn storage_error(source: postgres::Error) -> RpcError {
+    if source.code() == Some(&SqlState::UNIQUE_VIOLATION) {
+        return error::conflict(
+            "An ID or name in this request is already taken",
+            serde_json::Value::Null,
+        );
+    }
     let transient = source.is_closed()
         || source.code().is_none_or(|code| {
             [
@@ -165,7 +175,6 @@ fn storage_error(source: postgres::Error) -> RpcError {
                 SqlState::T_R_DEADLOCK_DETECTED,
                 SqlState::LOCK_NOT_AVAILABLE,
                 SqlState::QUERY_CANCELED,
-                SqlState::UNIQUE_VIOLATION,
                 SqlState::ADMIN_SHUTDOWN,
             ]
             .contains(code)

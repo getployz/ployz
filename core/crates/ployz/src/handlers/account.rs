@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
 use crate::cli::{env, positional, value};
-use crate::cloud_account::{self, BillingPage, Credential};
+use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::output::say;
 
@@ -137,6 +137,14 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
             let current = if device.current { " *" } else { "" };
             say!("device\t{}\t-{current}\t{}", device.id, device.expires_at);
         }
+        for revoking in &listed.revoking {
+            say!(
+                "{}\t{}\trevoked; not yet cleared on {}\t-",
+                revoking.kind,
+                revoking.id,
+                revoking.unconfirmed.join(", ")
+            );
+        }
     })
 }
 
@@ -144,16 +152,47 @@ fn token_remove(root: &ArgMatches) -> Result<(), Error> {
     let id = leaf_matches(root)
         .get_one::<String>("id")
         .expect("id is required");
-    let removed = in_cloud(root, async |_, credential| {
+    let (removed, servers) = in_cloud(root, async |_, credential| {
         cloud_account::remove_token(credential, id).await
     })?;
-    crate::output::finish(
-        &serde_json::json!({ "removed": removed }),
-        || match removed.kind.as_str() {
+    let next = retry_clears(&servers, id);
+    let report = TokenRemoved {
+        removed: &removed,
+        servers: &servers,
+        next: next.as_deref(),
+    };
+    crate::output::finish(&report, || {
+        match removed.kind.as_str() {
             "device" => say!("Signed out device {}.", removed.id),
             _ => say!("Revoked token {}.", removed.id),
-        },
-    )
+        }
+        say_clears(&servers, next.as_deref());
+    })
+}
+
+#[derive(Serialize)]
+struct TokenRemoved<'a> {
+    removed: &'a cloud_account::Removed,
+    servers: &'a ServerClears,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<&'a str>,
+}
+
+/// The retry for Servers that haven't confirmed clearing credential `id`'s key.
+pub(super) fn retry_clears(servers: &ServerClears, id: &str) -> Option<String> {
+    (!servers.unconfirmed.is_empty()).then(|| format!("ployz token rm {id}"))
+}
+
+pub(super) fn say_clears(servers: &ServerClears, next: Option<&str>) {
+    if !servers.confirmed.is_empty() {
+        say!("Cleared its key on {} Server(s).", servers.confirmed.len());
+    }
+    if let Some(next) = next {
+        say!(
+            "Not yet confirmed on Server(s) {}; Cloud already refuses it. Retry: {next}",
+            servers.unconfirmed.join(", ")
+        );
+    }
 }
 
 fn org_list(root: &ArgMatches) -> Result<(), Error> {

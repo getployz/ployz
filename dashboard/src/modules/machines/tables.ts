@@ -11,7 +11,7 @@ import { type DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 
 import { sql } from "drizzle-orm";
 
-import { boolean, check, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 
 
@@ -133,6 +133,39 @@ export const organizationMachine = pgTable(
       "organization_machine_id_format_check",
       sql`${table.machineId} ~ '^[0-9a-f]{32}$'`,
     ),
+  ],
+);
+
+/**
+ * Server Access: one Server's `cli-<id>` Management Client held for one signed-in device or Organization Token.
+ * A revoked row keeps no capability and stays until its Server confirms the Clear.
+ */
+export const serverAccess = pgTable(
+  "server_access",
+  {
+    organizationId: uuid("organization_id").notNull(),
+    machineId: text("machine_id").notNull().$type<MachineId>(),
+    // No foreign keys to the credential or its user: a pending revocation outlives both.
+    credentialId: uuid("credential_id").notNull(),
+    credentialKind: text("credential_kind").notNull().$type<"session" | "token">(),
+    userId: uuid("user_id").notNull(),
+    encryptedCapability: jsonb("encrypted_capability").$type<EncryptedSecretValue>(),
+    revokedAt: timestamp("revoked_at", { mode: "date", withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.credentialId, table.machineId] }),
+    // Pairing removal clears every `cli-` slot on its Servers, so these rows go with the Server.
+    foreignKey({
+      name: "server_access_organization_machine_fkey",
+      columns: [table.organizationId, table.machineId],
+      foreignColumns: [organizationMachine.organizationId, organizationMachine.machineId],
+    }).onDelete("cascade"),
+    index("server_access_credential_idx").on(table.credentialId),
+    check("server_access_credential_kind_check", sql`${table.credentialKind} in ('session', 'token')`),
+    check("server_access_revoked_shape_check",
+      sql`(${table.revokedAt} is null) = (${table.encryptedCapability} is not null)`),
   ],
 );
 

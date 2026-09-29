@@ -1,44 +1,67 @@
 //! Creating Services. A new Service is staged in Working State, and its Node
 //! Introduction is captured in the same transaction and never changes after.
 
-use ployz_core::config::{SavedServiceIntent, parse_service_config};
+use ployz_core::config::{SavedServiceIntent, ServiceImageCredentials, parse_service_config};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+use super::{Command, replayable};
 use crate::Actor;
 use crate::error;
 use crate::id::ServiceId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
+use crate::settings::{ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
 
 /// Create a Service that runs `image`. Its name is its Private DNS name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
 pub struct CreateService {
+    /// The new Service's ID, also its lineage.
     pub id: ServiceId,
+    /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
+    /// Its name, unique in the Environment.
     pub name: ServiceName,
+    /// The container image it runs.
     pub image: String,
 }
 
 /// The new Service, staged in Working State until a Deploy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceCreated {
+    /// The Service.
     pub service: ServiceSummary,
+    /// The Environment, at its revision after the create.
     pub environment: EnvironmentSummary,
-    pub staged: Vec<String>,
-    pub immediate: Vec<String>,
+    /// Every Setting of the new Service, waiting for a Deploy.
+    pub staged: Vec<SettingPath>,
+    /// Settings that took effect at once: none for a new Service.
+    pub immediate: Vec<SettingPath>,
 }
 
+/// A Service as results name it.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
+    /// Its durable identity.
     pub id: ServiceId,
+    /// Its name, also its Private DNS name.
     pub name: ServiceName,
 }
 
-pub(super) fn create(
+pub(crate) fn create_service(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    create: &CreateService,
+) -> Result<ServiceCreated, RpcError> {
+    let command = Command::CreateService(create.clone());
+    replayable(tx, who, &command, |tx| insert_service(tx, who, create))
+}
+
+fn insert_service(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateService,
@@ -58,14 +81,10 @@ pub(super) fn create(
             json!({ "service": create.name }),
         ));
     }
+    let source = image_source(create.image.clone(), ServiceImageCredentials::None)?;
     let config = parse_service_config(json!({
         "version": 2,
-        "source": {
-            "type": "image",
-            "version": 1,
-            "image": create.image,
-            "credentials": { "type": "none" },
-        },
+        "source": source,
         "preDeployCommand": null,
         "startCommand": null,
         "healthcheck": { "type": "none" },
@@ -110,7 +129,10 @@ pub(super) fn create(
             name: create.name.clone(),
         },
         environment: environment.summary,
-        staged: vec![create.name.to_string()],
+        staged: ServiceSetting::ALL
+            .into_iter()
+            .map(|setting| SettingPath::of(create.name.as_str(), setting))
+            .collect::<Result<_, _>>()?,
         immediate: Vec::new(),
     })
 }
@@ -120,8 +142,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use crate::{
-        Actor, Change, Command, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
-        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceId,
+        Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
+        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceId, SettingPath,
     };
 
     /// Node Introductions have no read yet (Discard uses them), so this reads the row.
@@ -133,37 +155,37 @@ mod tests {
         };
         let uuid = |n: u8| format!("00000000-0000-4000-8000-00000000000{n}");
         store
-            .write(
+            .create_project(
                 &who,
-                Command::CreateProject(CreateProject {
+                &CreateProject {
                     id: ProjectId::parse(uuid(1)).unwrap(),
                     name: ProjectName::parse("shop").unwrap(),
                     default_environment: EnvironmentId::parse(uuid(2)).unwrap(),
-                }),
+                },
             )
             .unwrap();
         store
-            .write(
+            .create_service(
                 &who,
-                Command::CreateService(CreateService {
+                &CreateService {
                     id: ServiceId::parse(uuid(3)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse("web").unwrap(),
                     image: "nginx:1".into(),
-                }),
+                },
             )
             .unwrap();
         store
-            .write(
+            .edit(
                 &who,
-                Command::Edit(Edit {
+                &Edit {
                     environment: EnvironmentRef::default(),
                     expect: None,
                     changes: vec![Change::Set {
-                        path: "web.replicas".into(),
+                        path: SettingPath::parse("web.replicas").unwrap(),
                         value: json!(4),
                     }],
-                }),
+                },
             )
             .unwrap();
         let introduction: Value = store
