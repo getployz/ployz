@@ -23,7 +23,7 @@ export const Route = createFileRoute(
     const environment = await requireEnvironment(context, params);
     if (storeEnabled) {
       // TODO(#1267): route params become the Store names.
-      await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: environment.name }));
+      await prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug }));
       return;
     }
     if (deps.tab !== "deployments") return;

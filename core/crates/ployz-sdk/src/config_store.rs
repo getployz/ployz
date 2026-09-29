@@ -11,7 +11,7 @@ use std::time::Duration;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
-use ployz_store::{Actor, DeploymentId, OrganizationId, RunEvidence, RunnerId};
+use ployz_store::{Actor, DeploymentId, GithubBuildId, OrganizationId, RunEvidence, RunnerId};
 use tokio::sync::Semaphore;
 
 use crate::{invalid_argument, rpc_to_napi};
@@ -262,6 +262,159 @@ impl ConfigStore {
         self.run(move || store.branch_head(&who.organization, repository_id, &branch))
             .await
     }
+}
+
+/// GitHub as a Builder: Cloud dispatches and follows the run; these do the parts
+/// that touch the Store's secrets or a Machine.
+#[napi]
+impl ConfigStore {
+    /// Start GitHub build `build` (`DEPLOYMENT.SERVICE`): `{kind: "reused"}`,
+    /// `{kind: "dispatch", runner}` or `{kind: "skipped", message}`.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build started or ended.
+    #[napi]
+    pub async fn github_start(
+        &self,
+        build: String,
+        connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let (build, connections) = (github_id(&build)?, connections_of(connections)?);
+        to_json(ployz::sdk::github_start(Arc::clone(&self.store), build, connections).await)
+    }
+
+    /// Hand a pinned build to GitHub run `run` (`GithubRun`).
+    ///
+    /// # Errors
+    /// Returns `conflict` once the Deployment no longer wants it: cancel the run.
+    #[napi]
+    pub async fn github_dispatched(
+        &self,
+        build: String,
+        run: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let build = github_id(&build)?;
+        let run =
+            serde_json::from_value(run).map_err(|_| invalid_argument("Expected a GitHub run"))?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.github_dispatched(&build, &run))
+            .await
+    }
+
+    /// A build handed to GitHub (`GithubBuild`).
+    ///
+    /// # Errors
+    /// Returns `not_found` unless GitHub holds or held it.
+    #[napi]
+    pub async fn github_build(&self, build: String) -> Result<serde_json::Value> {
+        let build = github_id(&build)?;
+        let store = Arc::clone(&self.store);
+        self.run(move || store.github_build(&build)).await
+    }
+
+    /// Skip GitHub for a build it can't take, before any run: the next Builder takes it.
+    ///
+    /// # Errors
+    /// Returns `conflict` once the build started or ended.
+    #[napi]
+    pub async fn github_skip(&self, build: String, message: String) -> Result<serde_json::Value> {
+        let build = github_id(&build)?;
+        let store = Arc::clone(&self.store);
+        self.run(move || {
+            store.github_end(&build, None, &ployz_store::GithubEnd::Skipped { message })
+        })
+        .await
+    }
+
+    /// A runner's check-in with its verified OIDC `claims` (`GithubClaims`): its Build
+    /// Grant and build inputs, secrets included. Only the runner may receive them.
+    ///
+    /// # Errors
+    /// Returns `unauthenticated` for another repository, workflow or run, `conflict`
+    /// once it checked in or is no longer wanted, or the Machine's refusal.
+    #[napi]
+    pub async fn github_check_in(
+        &self,
+        build: String,
+        claims: serde_json::Value,
+        connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let (build, claims) = (github_id(&build)?, claims_of(claims)?);
+        let connections = connections_of(connections)?;
+        to_json(
+            ployz::sdk::github_check_in(Arc::clone(&self.store), build, claims, connections).await,
+        )
+    }
+
+    /// A runner's report of its `ployz build --events` lines: `{received, ended}`.
+    ///
+    /// # Errors
+    /// As `githubCheckIn`, `invalid_argument` for a body that is not a report, and
+    /// `conflict` before check-in, after the end, or for missing lines.
+    #[napi]
+    pub async fn github_report(
+        &self,
+        build: String,
+        claims: serde_json::Value,
+        report: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let (build, claims) = (github_id(&build)?, claims_of(claims)?);
+        to_json(ployz::sdk::github_report(Arc::clone(&self.store), build, claims, report).await)
+    }
+
+    /// End a build whose run reported its end, completed or ran out of time:
+    /// `"waiting"` while its Machine can't end the grant, else `{ended: status}`.
+    ///
+    /// # Errors
+    /// Returns a storage error, or `conflict` when it ended meanwhile.
+    #[napi]
+    pub async fn github_finish(
+        &self,
+        build: String,
+        timed_out: bool,
+        connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let (build, connections) = (github_id(&build)?, connections_of(connections)?);
+        to_json(
+            ployz::sdk::github_finish(Arc::clone(&self.store), build, timed_out, connections).await,
+        )
+    }
+
+    /// Stop Deployment `deployment`'s builds still on GitHub: end their grants and
+    /// fail them. Returns them (`GithubBuild[]`) so Cloud cancels their runs.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn github_cancel(
+        &self,
+        deployment: String,
+        connections: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let deployment = DeploymentId::parse(deployment).map_err(rpc_to_napi)?;
+        let connections = connections_of(connections)?;
+        to_json(ployz::sdk::github_cancel(Arc::clone(&self.store), deployment, connections).await)
+    }
+}
+
+fn github_id(build: &str) -> Result<GithubBuildId> {
+    GithubBuildId::parse(build).map_err(rpc_to_napi)
+}
+
+fn claims_of(claims: serde_json::Value) -> Result<ployz_store::GithubClaims> {
+    serde_json::from_value(claims).map_err(|_| invalid_argument("Expected OIDC claims"))
+}
+
+fn connections_of(connections: serde_json::Value) -> Result<Vec<ployz::context::Connection>> {
+    serde_json::from_value(connections)
+        .map_err(|_| invalid_argument("invalid management connections"))
+}
+
+fn to_json<T: serde::Serialize>(
+    value: std::result::Result<T, RpcError>,
+) -> Result<serde_json::Value> {
+    serde_json::to_value(value.map_err(rpc_to_napi)?)
+        .map_err(|error| Error::from_reason(error.to_string()))
 }
 
 impl ConfigStore {

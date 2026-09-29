@@ -6,6 +6,8 @@ use serde::Serialize;
 
 use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
 use crate::cli::{env, positional, value};
+use ployz_core::RpcErrorCode;
+
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
 use crate::cloud_login::{CredentialStore, LoginError};
 use crate::output::say;
@@ -46,6 +48,35 @@ pub(crate) fn org_command() -> Command {
                 .about("Act in another of your Organizations from this device")
                 .arg(positional("organization", true).help("Organization slug")),
         )
+        .subcommand(
+            Command::new("build-order")
+                .about("Show or set which Builders build Git Services, in turn")
+                .long_about("Show or set the Organization's Build Order: which Builders a Git Service's build tries, in turn, after its Preferred Builder (SERVICE.preferredBuilder). A change applies to the next build. auto tries GitHub first, skipping it at once where the repository has no ployz-build.yml workflow.")
+                .arg(positional("order", false).value_parser([
+                    "auto",
+                    "servers-only",
+                    "github-then-servers",
+                    "servers-then-github",
+                    "github-only",
+                ])),
+        )
+        .subcommand(
+            Command::new("rm")
+                .about("Delete the Organization you act in, once it has no Project")
+                .long_about(
+                    "Delete the Organization you act in. Remove its Projects first \
+                     (ployz project rm). Every Server is unpaired: Cloud's key and every \
+                     device key are cleared on it. A Server that doesn't confirm keeps the \
+                     Organization, disabled, until the same command confirms it. Type its \
+                     slug with --confirm.",
+                )
+                .arg(positional("organization", true).help("Organization slug"))
+                .arg(
+                    value("confirm", None)
+                        .value_name("ORGANIZATION")
+                        .help("The Organization's slug, typed to confirm its removal"),
+                ),
+        )
 }
 
 pub(crate) fn billing_command() -> Command {
@@ -68,6 +99,8 @@ pub(super) fn org_handler(path: &str) -> Option<(Handler, Json)> {
     Some(match path {
         "ls" => (org_list, Json::Supported),
         "use" => (org_use, Json::Supported),
+        "build-order" => (org_build_order, Json::Supported),
+        "rm" => (org_remove, Json::Supported),
         _ => return None,
     })
 }
@@ -211,6 +244,39 @@ fn org_list(root: &ArgMatches) -> Result<(), Error> {
     )
 }
 
+fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
+    let store = super::store::store(root)?;
+    let order = leaf_matches(root).get_one::<String>("order");
+    let view = match order {
+        None => store.build_order()?,
+        Some(order) => {
+            let build_order = (order != "auto")
+                .then(|| serde_json::from_value(serde_json::json!(order)))
+                .transpose()
+                .expect("clap accepts only Build Orders");
+            store.set_build_order(&ployz_store::SetBuildOrder { build_order })?
+        }
+    };
+    let builders = view
+        .builders
+        .iter()
+        .map(|builder| match builder {
+            ployz_store::Builder::Github => "GitHub",
+            ployz_store::Builder::Servers => "your servers",
+        })
+        .collect::<Vec<_>>()
+        .join(", then ");
+    let mut json = serde_json::to_value(&view).expect("a Build Order is JSON");
+    if let (Some(_), Some(fields)) = (order, json.as_object_mut()) {
+        fields.insert("immediate".to_owned(), serde_json::json!(true));
+    }
+    crate::output::finish(&json, || match (order, view.build_order) {
+        (Some(_), _) => say!("Builds try {builders} from the next build on."),
+        (None, None) => say!("Auto: builds try {builders}."),
+        (None, Some(_)) => say!("Builds try {builders}."),
+    })
+}
+
 fn org_use(root: &ArgMatches) -> Result<(), Error> {
     let slug = leaf_matches(root)
         .get_one::<String>("organization")
@@ -224,6 +290,66 @@ fn org_use(root: &ArgMatches) -> Result<(), Error> {
             organization.slug
         )
     })
+}
+
+/// Delete the Organization: Cloud refuses while it has a Project, then unpairs its
+/// Servers. Not every Server confirmed: exit 3 naming the same command.
+fn org_remove(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let slug = matches
+        .get_one::<String>("organization")
+        .expect("organization is required");
+    let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
+    let retry = shell_words::join(std::iter::once("ployz").chain(again));
+    if !super::env::confirmed(matches, slug, "Organization")? {
+        return Err(Error::detailed(
+            RpcErrorCode::ConfirmationRequired,
+            format!(
+                "Removing Organization {slug} deletes it with its tokens, Servers' pairing and \
+                 settings; this can't be undone. No changes made.\nRetry: {retry}"
+            ),
+            serde_json::json!({ "organization": slug, "next": retry }),
+        ));
+    }
+    let store = CredentialStore::beside(&config_path(matches)?);
+    let token = std::env::var(env::TOKEN).ok();
+    let cloud = std::env::var(env::CLOUD_URL).ok();
+    let removal = runtime()?
+        .block_on(async {
+            let credential = cloud_account::credential(&store, token, cloud).await?;
+            cloud_account::remove_organization(&credential, slug).await
+        })
+        .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
+    let next = (!removal.removed).then_some(retry.as_str());
+    let report = OrganizationRemoved {
+        removal: &removal,
+        next,
+    };
+    crate::output::finish(&report, || {
+        if !removal.servers.confirmed.is_empty() {
+            say!("Unpaired {} Server(s).", removal.servers.confirmed.len());
+        }
+        match next {
+            None => say!("Removed Organization {}.", removal.organization),
+            Some(next) => say!(
+                "Organization {} is disabled but stays until Server(s) {} confirm unpairing. Retry: {next}",
+                removal.organization,
+                removal.servers.unconfirmed.join(", ")
+            ),
+        }
+    })?;
+    match removal.removed {
+        true => Ok(()),
+        false => Err(Error::partial()),
+    }
+}
+
+#[derive(Serialize)]
+struct OrganizationRemoved<'a> {
+    #[serde(flatten)]
+    removal: &'a cloud_account::OrganizationRemoval,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<&'a str>,
 }
 
 #[derive(Serialize)]

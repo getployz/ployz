@@ -12,7 +12,8 @@ import { Inngest } from "inngest";
 import { organizationBillingState } from "#/modules/billing/tables";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
 import { startFakeHostedDns } from "#/modules/cluster-domain/hosted-dns.test-fixture";
-import { callStoreAsMember, cloudStore, handleConfigRequest } from "#/modules/config-store/config-store.server";
+import { callStoreAsMember, cloudStore } from "#/modules/config-store/config-store.server";
+import { handleConfigRequest } from "#/routes/api/config/-config.handler";
 import { runStoreDeployment } from "#/modules/config-store/store-deployment.server";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { receiveUpload, releaseUpload } from "#/modules/config-store/upload.server";
@@ -169,6 +170,10 @@ it.live(
         const foreign = yield* request("read", bob, get(null));
         assert.strictEqual(foreign.status, 404);
         assert.strictEqual(foreign.json.error?.code, "not_found");
+
+        // Only Cloud's own Organization removal forgets an Organization's configuration.
+        const forget = yield* request("write", alice, { command: "remove_organization" });
+        assert.strictEqual(forget.json.error?.code, "unsupported");
 
         const invalid = yield* request("write", alice, { command: "claim", deployment: "d1" });
         assert.strictEqual(invalid.status, 422);

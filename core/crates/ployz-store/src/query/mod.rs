@@ -69,10 +69,14 @@ pub enum Query {
     Branch(crate::BranchQuery),
     /// What a Branch would copy and use live, before it is created.
     BranchPlan(crate::BranchPlanQuery),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderQuery),
     /// What moving changes between a Branch and its Parent would stage.
     Move(crate::MoveQuery),
     /// A Project's Environments.
     Environments(crate::EnvironmentsQuery),
+    /// The Organization's Projects.
+    Projects(crate::ProjectsQuery),
 }
 
 /// A [`Query`]'s answer.
@@ -112,10 +116,14 @@ pub enum View {
     Branch(crate::BranchView),
     /// A planned Branch.
     BranchPlan(crate::BranchPlanView),
+    /// The Organization's Build Order.
+    BuildOrder(crate::BuildOrderView),
     /// A Move's changes.
     Move(crate::MoveView),
     /// A Project's Environments.
     Environments(crate::EnvironmentsView),
+    /// The Organization's Projects.
+    Projects(crate::ProjectsView),
 }
 
 pub(crate) fn run(
@@ -145,9 +153,11 @@ pub(crate) fn run(
         Query::BranchPlan(query) => {
             crate::branch::branch_plan(tx, who, query).map(View::BranchPlan)
         }
+        Query::BuildOrder(_) => crate::builders::build_order(tx, who).map(View::BuildOrder),
         Query::Move(query) => crate::branch::move_view(tx, who, query).map(View::Move),
         Query::Environments(query) => {
             crate::teardown::environments(tx, who, query).map(View::Environments)
         }
+        Query::Projects(_) => crate::teardown::projects(tx, who).map(View::Projects),
     }
 }

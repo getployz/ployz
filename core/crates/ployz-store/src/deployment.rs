@@ -266,6 +266,9 @@ pub struct Claimed {
     pub deletes: Vec<DockerVolumeId>,
     /// The Services it builds from `deployment.upload`, by runtime name.
     pub uploads: Vec<ServiceName>,
+    /// The Organization's Build Order as the build starts. Uploaded Services skip
+    /// GitHub in it: GitHub can't build uploaded source, so they build on Servers.
+    pub build_order: Vec<crate::Builder>,
 }
 
 /// One node a Deployment targets, as frozen at admission.
@@ -666,7 +669,7 @@ pub(crate) fn retry(
     }
     if stored.summary.remove {
         let environment = scope::load_by_id(tx, &stored.environment)?;
-        crate::teardown::guard(tx, &environment)?;
+        crate::teardown::guard_removal(tx, &environment)?;
     }
     let number = queue(tx, &stored.environment)?;
     // Every frozen column comes from the source, so a retry never re-reads authored state.
@@ -858,25 +861,15 @@ pub(crate) fn claim(
             serde_json::from_str(text).map_err(|_| error::corrupt("Deployment credentials"))
         })?;
     intent.registry_auth = registry::unseal(credentials, sealing)?;
-    let receipts = tx
-        .query(
-            "SELECT service, receipt FROM config_build_receipt WHERE environment_id = ?1",
-            &[stored.environment.as_str().into()],
-        )?
-        .iter()
-        .map(|row| {
-            Ok((
-                ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?,
-                serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?,
-            ))
-        })
-        .collect::<Result<_, RpcError>>()?;
+    let receipts = receipts(tx, &stored.environment)?;
     let deletes = stored
         .nodes
         .iter()
         .filter_map(|node| node.deletes.clone())
         .flatten()
         .collect();
+    let organization = build::organization(tx, id)?;
+    let build_order = crate::builders::order(tx, &organization)?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -885,7 +878,70 @@ pub(crate) fn claim(
         sources,
         deletes,
         uploads,
+        build_order,
     }))
+}
+
+/// The latest build receipt of each Service of `environment`, by runtime name.
+pub(crate) fn receipts(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<BTreeMap<ServiceName, Value>, RpcError> {
+    tx.query(
+        "SELECT service, receipt FROM config_build_receipt WHERE environment_id = ?1",
+        &[environment.as_str().into()],
+    )?
+    .iter()
+    .map(|row| {
+        Ok((
+            ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?,
+            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?,
+        ))
+    })
+    .collect()
+}
+
+/// Replace `service`'s latest build receipt in `environment`.
+pub(crate) fn save_receipt(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    service: &ServiceName,
+    receipt: &Value,
+) -> Result<(), RpcError> {
+    if !receipt.is_object() {
+        return Err(invalid_evidence("build receipt"));
+    }
+    tx.execute(
+        "INSERT INTO config_build_receipt (environment_id, service, receipt) \
+         VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, service) \
+         DO UPDATE SET receipt = excluded.receipt",
+        &[
+            environment.as_str().into(),
+            service.as_str().into(),
+            json_text(receipt).as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// The lowering input of `stored`, secrets unsealed: what a build of it takes.
+/// In-process only.
+pub(crate) fn input(
+    tx: &mut dyn Tx,
+    stored: &Stored,
+    sealing: &SealingKey,
+) -> Result<Value, RpcError> {
+    let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+    let branch = crate::branch::lowering(tx, &stored.environment, &saved)?;
+    let (input, _) = lower(
+        &stored.environment,
+        &saved,
+        &stored.summary.services,
+        (stored.namespace.clone(), stored.cluster_domain.as_ref()),
+        &branch,
+        Some(sealing),
+    )?;
+    Ok(input)
 }
 
 /// Cancel a Deployment of `who`'s Organization. A queued one never runs; a running
@@ -979,19 +1035,7 @@ pub(crate) fn record(
         RunEvidence::Built(receipts) => {
             running(&stored)?;
             for (service, receipt) in &receipts {
-                if !receipt.is_object() {
-                    return Err(invalid_evidence("build receipt"));
-                }
-                tx.execute(
-                    "INSERT INTO config_build_receipt (environment_id, service, receipt) \
-                     VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, service) \
-                     DO UPDATE SET receipt = excluded.receipt",
-                    &[
-                        stored.environment.as_str().into(),
-                        service.as_str().into(),
-                        json_text(receipt).as_str().into(),
-                    ],
-                )?;
+                save_receipt(tx, &stored.environment, service, receipt)?;
             }
             Ok(stored.summary)
         }

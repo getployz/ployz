@@ -7,6 +7,9 @@ import { isActiveDeployment } from "#/modules/deployments/runtime-contract";
 import { useDeploymentAttempt, type ViewedAttempt } from "#/modules/deployments/deployment.collection";
 import { deploymentLighting, type DeploymentNodeView, type LogTab } from "#/modules/deployments/deployment-view";
 import { Uuid } from "#/modules/environment-design/schema";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { deploymentQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { nodeLight } from "#/modules/config-store/store-deployments";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 
@@ -69,8 +72,14 @@ export function useOpenDeployment(): Lighting {
   const matched = useCanvasInspectorSelection().deploymentId;
   // A malformed id is no attempt; the page itself says so.
   const deploymentId = matched !== null && Schema.is(Uuid)(matched) ? matched : null;
-  const { attempt } = useDeploymentAttempt(organizationSlug, environmentId, deploymentId, { buildLog: true });
+  const { attempt } = useDeploymentAttempt(organizationSlug, environmentId, storeEnabled ? null : deploymentId, { buildLog: true });
   useOpenStartedDeploymentsSync(attempt, deploymentId);
+  // TODO(#1275): only this, once the Store is the only backend.
+  const store = useCachedStoreView(organizationSlug, storeEnabled && deploymentId ? deploymentQuery(deploymentId) : null);
+  if (store?.ok) {
+    const { id, status, nodes } = store.value;
+    return { deploymentId: id, lit: new Map(nodes.map((node) => [node.id, nodeLight(node.outcome, status)])), pending: false };
+  }
   if (!attempt) return null;
   // Nodes the canvas no longer draws are simply never matched; the page lists them.
   return { deploymentId: attempt.deployment.id, lit: deploymentLighting(attempt), pending: attempt.buildPending };

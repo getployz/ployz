@@ -1,4 +1,4 @@
-import type { ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { LiveNode } from "#/modules/branches/use-live-nodes";
 import type { Node } from "@xyflow/react";
 
@@ -54,8 +54,8 @@ export type CanvasStoreVolumeNode = Node<{
 export type StoreCanvas = {
   services: StoreCanvasService[];
   volumes: VolumeListing[];
-  /** How many Services and Volumes the next Deploy changes. */
-  totalChanges: number;
+  /** What the next Deploy changes: the bottom bar's count and its Details. */
+  diff: DiffView;
 };
 
 /** A Branch's Live Node: another Environment's service its Own Copies use live. */

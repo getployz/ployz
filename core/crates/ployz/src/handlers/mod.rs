@@ -27,6 +27,7 @@ pub(crate) mod server;
 pub(crate) mod service;
 pub(crate) mod setup;
 pub(crate) mod store;
+pub(crate) mod up;
 pub(crate) mod volume;
 
 #[doc(hidden)]
@@ -291,6 +292,7 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("status", "") => Some((link::status, Json::Supported)),
         ("token", rest) => account::token_handler(rest),
         ("unset", "") => Some((config::unset, Json::Supported)),
+        ("up", "") => Some((up::up, Json::Supported)),
         ("volume", rest) => volume::handler(rest),
         _ => None,
     }

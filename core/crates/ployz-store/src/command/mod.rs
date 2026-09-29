@@ -80,10 +80,16 @@ pub enum Command {
     CopyNode(crate::CopyNode),
     /// Keep a Branch, or stop keeping it.
     KeepBranch(crate::KeepBranch),
+    /// Set the Organization's Build Order, at once.
+    SetBuildOrder(crate::SetBuildOrder),
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
+    /// Delete a Project nothing of which runs on the Servers.
+    RemoveProject(crate::RemoveProject),
+    /// Forget an Organization's configuration once it has no Project.
+    RemoveOrganization(crate::RemoveOrganization),
 }
 
 impl Command {
@@ -113,8 +119,11 @@ impl Command {
             | Self::Move(_)
             | Self::CopyNode(_)
             | Self::KeepBranch(_)
+            | Self::SetBuildOrder(_)
             | Self::SetDefaultEnvironment(_)
-            | Self::RemoveEnvironment(_) => Vec::new(),
+            | Self::RemoveEnvironment(_)
+            | Self::RemoveProject(_)
+            | Self::RemoveOrganization(_) => Vec::new(),
         }
     }
 }
@@ -152,12 +161,18 @@ pub enum Written {
     Automated(crate::Automated),
     /// A Branch was made, given an Own Copy, or kept.
     Branch(crate::Branched),
+    /// The Build Order was set; it applies to the next build.
+    BuildOrder(crate::BuildOrderView),
     /// Changes moved between a Branch and its Parent.
     Moved(crate::Moved),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
+    /// A Project was deleted.
+    ProjectRemoved(crate::ProjectRemoved),
+    /// An Organization's configuration was forgotten.
+    OrganizationRemoved(crate::OrganizationRemoved),
 }
 
 pub(crate) fn run(
@@ -204,11 +219,20 @@ pub(crate) fn run(
         }
         Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
+        Command::SetBuildOrder(set) => {
+            crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
+        }
         Command::SetDefaultEnvironment(set) => {
             crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
         }
         Command::RemoveEnvironment(remove) => {
             crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
+        }
+        Command::RemoveProject(remove) => {
+            crate::teardown::remove_project(tx, who, remove).map(Written::ProjectRemoved)
+        }
+        Command::RemoveOrganization(_) => {
+            crate::teardown::remove_organization(tx, who).map(Written::OrganizationRemoved)
         }
     }
 }

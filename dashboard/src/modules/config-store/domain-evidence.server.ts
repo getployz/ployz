@@ -10,6 +10,7 @@ import { sendInngestEvent } from "#/modules/inngest/client";
 import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import type { StoreCall } from "./store.contract";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 const DNS_TIMEOUT_MS = 3_000;
 /** A slow or unreachable Cluster leaves statuses unobserved rather than holding up the page that reads them. */
@@ -105,7 +106,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
         cluster_domain: clusterDomain(yield* loadClusterDomain(organizationId)),
       };
     }
-    const domains = yield* Effect.tryPromise(() => read({
+    const domains = yield* storeTry(() => read({
       query: "domains",
       environment: { project: wanted.environment?.project ?? null, environment: wanted.environment?.environment ?? null },
       service: null,
@@ -125,7 +126,7 @@ export const gatherDomainEvidence = Effect.fn("ConfigStore.gatherDomainEvidence"
   yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId })).pipe(
     Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; the hourly sync covers it.", error)),
   );
-  const found = Option.getOrUndefined(yield* Effect.tryPromise(() => read({
+  const found = Option.getOrUndefined(yield* storeTry(() => read({
     query: "domain",
     environment: { project: wanted.environment?.project ?? null, environment: wanted.environment?.environment ?? null },
     domain: wanted.domain,

@@ -22,7 +22,7 @@ export type CollectionReadInput = typeof collectionReadInput.Type;
 export type CollectionName = CollectionReadInput["table"];
 
 /** The Config Store's table families: each refreshes the Store views its tables back (`store-view.queries.ts`). */
-export const storeViewNames = ["store_project", "store_environment", "store_deployment"] as const;
+export const storeViewNames = ["store_project", "store_environment", "store_deployment", "store_organization"] as const;
 export type StoreViewName = (typeof storeViewNames)[number];
 
 /**

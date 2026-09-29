@@ -476,7 +476,8 @@ fn wrong_paths_and_values_name_the_fix() {
             "buildCommand",
             "autoDeploy",
             "waitForCi",
-            "watchPaths"
+            "watchPaths",
+            "preferredBuilder"
         ])
     );
     let error = SettingPath::parse("Web!.replicas").unwrap_err();
