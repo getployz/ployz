@@ -50,7 +50,7 @@ function HintNote({ hint }: { hint: PullRequestHint }) {
       {tag}<span className="truncate font-mono text-foreground">{presented(hint).after || "—"}</span>
       <Button variant="link" size="xs" aria-label={`Use PR #${hint.pull_request}'s ${hint.row}`}
         // Stages the pull request's value over this Environment's own; the refetched review shows it, a refusal toasts.
-        onClick={() => void writer.commit({ command: "move", into: store, take: hint.save, picks: [{ row: hint.row }] })}>
+        onClick={() => void writer.commit({ command: "move", move: "take", from: hint.save, into: store, rows: [hint.row] })}>
         Use
       </Button>
     </span>

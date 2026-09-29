@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { plural } from "#/lib/plural";
@@ -116,12 +116,17 @@ export const deploymentStatusIcons = {
 } satisfies Record<DeploymentStatus, DeploymentLight>;
 
 export const nodeStatusLabels = {
-  pending: "Pending", applied: "Applied", not_applied: "Not applied", unknown: "Unknown",
+  pending: "Pending", deployed: "Deployed", removed: "Removed", failed: "Failed", not_attempted: "Not attempted",
+  unchanged: "Unchanged", unknown: "Unknown",
 } satisfies Record<NodeStatus, string>;
+
+/** Whether the Deployment left the node as intended: deployed, removed, or nothing it had to change. */
+export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
 export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
-  if (outcome === "applied") return "deployed";
+  if (nodeApplied(outcome)) return "deployed";
+  if (outcome === "failed") return "failed";
   if (outcome === "unknown") return "unknown";
   if (outcome === "pending" && deployment === "queued") return "queued";
   if (outcome === "pending" && isInFlight(deployment)) return "deploying";
@@ -132,15 +137,15 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
 export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>
   deployment.services.length === 0 ? "every service" : deployment.services.join(", ");
 
-// ponytail: the Store's DeploymentSummary is gaining these (who admitted it, when, in Unix seconds); once it has
-// them, read them off it and drop this type.
-type Admission = { admitted_by?: string | null; admitted_at?: number };
+const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
 
-/** Who admitted a Deployment and when: nobody for the Store's own automation, no time before the Store records it. */
-export function admission(deployment: (DeploymentSummary | DeploymentView) & Admission) {
+/** Who admitted a Deployment (nobody for the Store's own automation), and when it was admitted, started and ended. */
+export function admission(deployment: DeploymentSummary) {
   return {
-    by: deployment.admitted_by ?? null,
-    at: deployment.admitted_at === undefined ? null : new Date(deployment.admitted_at * 1000),
+    by: deployment.admitted_by,
+    at: time(deployment.admitted_at),
+    started: time(deployment.started_at),
+    ended: time(deployment.ended_at),
   };
 }
 

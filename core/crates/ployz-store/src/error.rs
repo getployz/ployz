@@ -56,6 +56,22 @@ pub(crate) fn did_you_mean<'a>(
         .map(|(_, option)| option)
 }
 
+/// `not_found` for a mistyped name: the closest of `names`, if one is close, and
+/// every one there is.
+pub(crate) fn choices<'a>(
+    message: impl Into<String>,
+    input: &str,
+    names: impl IntoIterator<Item = &'a str> + Clone,
+) -> RpcError {
+    not_found(
+        message,
+        serde_json::json!({
+            "did_you_mean": did_you_mean(input, names.clone()),
+            "valid_children": names.into_iter().collect::<Vec<_>>(),
+        }),
+    )
+}
+
 /// Levenshtein distance.
 fn distance(a: &[char], b: &[char]) -> usize {
     let mut previous = (0..=b.len()).collect::<Vec<_>>();

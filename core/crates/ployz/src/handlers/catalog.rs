@@ -188,7 +188,7 @@ fn services() -> Vec<String> {
         let mut services = view
             .settings
             .into_iter()
-            .map(|row| row.path.service().to_string())
+            .filter_map(|row| row.path.service().map(ToString::to_string))
             .collect::<Vec<_>>();
         services.dedup();
         Some(services)

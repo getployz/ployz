@@ -9,8 +9,9 @@
 //! SQLite Store) no repository can be connected.
 
 use ployz_core::config::{
-    AuthoredServiceConfig, BuildMethod, SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch,
-    ServiceSource, parse_service_setting,
+    AuthoredServiceConfig, BRANCH_MAX, BuildMethod, COMMAND_MAX, DOCKERFILE_PATH_MAX,
+    REPOSITORY_MAX, SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
+    parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -191,13 +192,17 @@ impl GitSetting {
             Self::Repository => json!({
                 "type": "string",
                 "pattern": "^[A-Za-z0-9-]+/[A-Za-z0-9_.-]+$",
-                "maxLength": 300,
+                "maxLength": REPOSITORY_MAX,
             }),
-            Self::Branch => json!({ "type": "string", "minLength": 1, "maxLength": 255 }),
+            Self::Branch => json!({ "type": "string", "minLength": 1, "maxLength": BRANCH_MAX }),
             Self::RootDir => json!({ "type": "string", "pattern": "^/[A-Za-z0-9/._-]*$" }),
             Self::BuildMethod => json!({ "type": "string", "enum": ["dockerfile", "railpack"] }),
-            Self::DockerfilePath => json!({ "type": "string", "minLength": 1, "maxLength": 500 }),
-            Self::BuildCommand => json!({ "type": "string", "minLength": 1, "maxLength": 2000 }),
+            Self::DockerfilePath => {
+                json!({ "type": "string", "minLength": 1, "maxLength": DOCKERFILE_PATH_MAX })
+            }
+            Self::BuildCommand => {
+                json!({ "type": "string", "minLength": 1, "maxLength": COMMAND_MAX })
+            }
         }
     }
 
@@ -441,7 +446,7 @@ fn valid_repository(name: &str) -> bool {
                 .bytes()
                 .all(|c| c.is_ascii_alphanumeric() || c == b'-' || extra.contains(&c))
     };
-    name.len() <= 300
+    name.len() <= REPOSITORY_MAX
         && fits(owner, b"")
         && fits(repository, b"_.")
         && !matches!(repository, "." | "..")
@@ -450,7 +455,7 @@ fn valid_repository(name: &str) -> bool {
 pub(crate) fn valid_branch(branch: &str) -> Result<String, RpcError> {
     let branch = branch.trim();
     let valid = !branch.is_empty()
-        && branch.chars().count() <= 255
+        && branch.chars().count() <= BRANCH_MAX
         && !branch.contains("..")
         && !branch.starts_with(['-', '/'])
         && !branch.ends_with(['/', '.'])

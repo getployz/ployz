@@ -54,7 +54,7 @@ pub enum RuntimeOutcomeSummary {
     },
 }
 
-/// Services whose complete set of planned operations is confirmed by this outcome.
+/// Each planned Service by what this outcome did to it.
 #[derive(Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeOutcomeProjection {
@@ -62,6 +62,12 @@ pub struct RuntimeOutcomeProjection {
     pub summary: RuntimeOutcomeSummary,
     /// Services whose every planned operation completed, ordered by name.
     pub confirmed_services: Vec<ServiceName>,
+    /// Services work started on but didn't finish: one of their operations
+    /// completed or failed. Ordered by name.
+    pub failed_services: Vec<ServiceName>,
+    /// Services with planned operations an earlier failure stopped before any ran.
+    /// Ordered by name.
+    pub unattempted_services: Vec<ServiceName>,
 }
 
 fn invalid() -> ConfigError {
@@ -156,18 +162,19 @@ pub fn project_runtime_outcome(
     if evidence.version != 1 {
         return Err(invalid());
     }
-    let (summary, completed, pending) = match evidence.outcome {
+    let (summary, completed, failed, pending) = match evidence.outcome {
         DeployOutcome::Success { completed } => (
             RuntimeOutcomeSummary::Success {
                 completed: completed.len(),
             },
             completed,
+            None,
             Vec::new(),
         ),
         DeployOutcome::Failed {
             completed,
             failed,
-            mut unexecuted,
+            unexecuted,
         } => {
             let (operation, error) = match failed {
                 FailedOperation::Operation { operation, error } => (operation, error),
@@ -187,19 +194,28 @@ pub fn project_runtime_outcome(
                 unexecuted: unexecuted.len(),
                 reason,
             };
-            unexecuted.push(operation);
-            (summary, completed, unexecuted)
+            (summary, completed, Some(operation), unexecuted)
         }
     };
-    if completed.len() + pending.len() != preview.operations.len() {
+    if completed.len() + usize::from(failed.is_some()) + pending.len() != preview.operations.len() {
         return Err(invalid());
     }
     let mut matched = vec![false; preview.operations.len()];
-    let mut services = BTreeMap::new();
-    for (mut operation, completed) in completed
+    // Per Service: whether every operation completed, and whether any ran at all.
+    let mut services: BTreeMap<ServiceName, (bool, bool)> = BTreeMap::new();
+    for (mut operation, (completed, ran)) in completed
         .into_iter()
-        .map(|operation| (operation, true))
-        .chain(pending.into_iter().map(|operation| (operation, false)))
+        .map(|operation| (operation, (true, true)))
+        .chain(
+            failed
+                .into_iter()
+                .map(|operation| (operation, (false, true))),
+        )
+        .chain(
+            pending
+                .into_iter()
+                .map(|operation| (operation, (false, false))),
+        )
     {
         redact_operation(&mut operation)?;
         // ponytail: quadratic matching for bounded plans; index operation identities if large plans make this measurable.
@@ -226,7 +242,9 @@ pub fn project_runtime_outcome(
             .or_else(|| operation.service_name());
         match service {
             Some(service) => {
-                *services.entry(service.clone()).or_insert(true) &= completed;
+                let entry = services.entry(service.clone()).or_insert((true, false));
+                entry.0 &= completed;
+                entry.1 |= ran;
             }
             None if matches!(
                 operation,
@@ -235,11 +253,17 @@ pub fn project_runtime_outcome(
             None => return Err(invalid()),
         }
     }
+    let named = |wanted: fn(bool, bool) -> bool| {
+        services
+            .iter()
+            .filter(|(_, (complete, ran))| wanted(*complete, *ran))
+            .map(|(service, _)| service.clone())
+            .collect()
+    };
     Ok(RuntimeOutcomeProjection {
         summary,
-        confirmed_services: services
-            .into_iter()
-            .filter_map(|(service, complete)| complete.then_some(service))
-            .collect(),
+        confirmed_services: named(|complete, _| complete),
+        failed_services: named(|complete, ran| !complete && ran),
+        unattempted_services: named(|complete, ran| !complete && !ran),
     })
 }

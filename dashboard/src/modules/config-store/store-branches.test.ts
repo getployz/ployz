@@ -28,7 +28,7 @@ describe("Save sheet over the Store", () => {
       { row: "cache.env.A", choice: "leave_out" },
       { row: "cache.env.B", choice: "from" },
       { row: "web.image" },
-      { row: "web.env.TOKEN", choice: "new", value: "fresh" },
+      { row: "web.env.TOKEN", choice: { new: "fresh" } },
     ]);
   });
 });

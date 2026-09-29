@@ -67,7 +67,7 @@ pub(crate) fn environment(
     let environment = scope::environment(tx, who, &query.environment)?;
     let path = query.path.as_ref();
     let services = match path {
-        Some(path) => vec![environment.service(path.service())?],
+        Some(path) => vec![environment.service(path.settings_of()?)?],
         None => {
             let mut services = environment.working.services.iter().collect::<Vec<_>>();
             services.sort_by(|a, b| a.slug.cmp(&b.slug));

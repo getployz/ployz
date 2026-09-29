@@ -276,10 +276,19 @@ fn shown_env(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
-/// Refuse unless `version` still names this review; the refusal carries the fresh one.
+/// Refuse unless `version` still names this review; the refusal carries the fresh
+/// one. A version a destructive review handed back names this review, then what it
+/// deletes (see `crate::removal::review`).
 pub(crate) fn check(review: &Review, version: Option<&str>) -> Result<(), RpcError> {
+    let current = review.view.version.as_str();
+    let names_it = |version: &str| {
+        version == current
+            || version
+                .strip_prefix(current)
+                .is_some_and(|rest| rest.starts_with(':'))
+    };
     match version {
-        Some(version) if version != review.view.version => Err(error::conflict(
+        Some(version) if !names_it(version) => Err(error::conflict(
             "The Environment changed after this review. Review the latest changes and try again",
             json!({ "diff": review.view }),
         )),

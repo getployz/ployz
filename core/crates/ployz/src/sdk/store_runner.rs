@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ployz_core::{DeployOutcome, RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, BuildReport, BuildStatus, Builder, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
+    BuildReport, BuildStatus, Builder, Claimed, ConfigStore, DeploymentId, DeploymentStatus,
     DeploymentSummary, RunEvidence, RunnerId,
 };
 use serde_json::Value;
@@ -63,7 +63,7 @@ struct Target {
     github_skipped: bool,
 }
 
-/// Run Deployment `deployment` of `who` as `runner` on one of `connections`, and
+/// Run Deployment `deployment` as `runner` on one of `connections`, and
 /// return its summary once its outcome is recorded. Its Git and uploaded Services
 /// build first, at once, each from its checkout or the upload in `checkouts`; then
 /// preparation reuses their images. A failed connection, build or preparation is
@@ -77,7 +77,6 @@ struct Target {
 /// or a storage error.
 pub async fn run_deployment(
     store: Arc<ConfigStore>,
-    who: Actor,
     deployment: DeploymentId,
     runner: RunnerId,
     connections: Vec<Connection>,
@@ -85,7 +84,6 @@ pub async fn run_deployment(
 ) -> Result<DeploymentSummary, RpcError> {
     let run = Run {
         store,
-        who,
         deployment,
         runner,
     };
@@ -134,7 +132,6 @@ pub async fn observe_volumes(
 
 struct Run {
     store: Arc<ConfigStore>,
-    who: Actor,
     deployment: DeploymentId,
     runner: RunnerId,
 }
@@ -416,11 +413,12 @@ impl Run {
             .await
     }
 
+    /// Renew this runner's lease on the Deployment and read its status back, which
+    /// says whether it was cancelled.
     async fn status(&self) -> Result<DeploymentStatus, RpcError> {
-        let (who, deployment) = (self.who.clone(), self.deployment.clone());
-        self.store(move |store| store.deployment(&who, &deployment))
+        self.record(RunEvidence::Alive)
             .await
-            .map(|view| view.deployment.status)
+            .map(|summary| summary.status)
     }
 
     /// Store calls block on the database, so they run off the async threads.

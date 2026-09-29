@@ -1,11 +1,12 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
+import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
-import { cloudStore } from "#/modules/config-store/config-store.server";
-import { storeTry } from "#/modules/config-store/store-sdk.server";
-import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
-import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { gatherTrusted, organizationServers } from "#/modules/config-store/config-store.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { unclaimedStoreDeployments } from "#/modules/config-store/store-deployment.server";
+import type { StoreCall, StoreRead } from "./store.contract";
+import { StoreGithubFailure, admitted, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { member } from "#/modules/identity/tables";
@@ -19,9 +20,6 @@ import { Database } from "#/server/database.server";
 /** The check Ployz posts on a PR Environment's pull request. It never blocks a deploy; GitHub may require it to merge. */
 const PR_CHECK_NAME = "Ployz · ready to merge";
 
-const storeCall = <A>(call: () => Promise<A>) =>
-  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
-
 /** What an observation left Cloud to do: runs to dispatch, Branches to take off the Servers, a check to publish. */
 export type StoreOutcome = {
   deployments: ConfigDeploymentAdmittedEventData[];
@@ -32,9 +30,7 @@ export type StoreOutcome = {
 /** Gather what `written` left Cloud to do into `into`; an Environment the Store skipped is logged. */
 const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId: string, written: ConfigWritten, into: StoreOutcome) {
   if (written.written !== "automated") return;
-  into.deployments.push(...written.admitted.map((deployed) => ({
-    organizationId, environmentId: deployed.environment, deploymentId: deployed.deployment.id,
-  })));
+  into.deployments.push(...admitted(organizationId, written));
   into.closing.push(...written.closing.map((environment) => ({ organizationId, environment })));
   into.check ||= written.checks.length > 0;
   for (const skipped of written.skipped) {
@@ -54,7 +50,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
   if (organizations.length === 0) return done;
   const live = yield* fetchInstallationPullRequest(payload.installationId, payload.repositoryId, payload.number);
   const { updatedAt } = live;
-  if (updatedAt === null) return yield* new StoreGithubFailure({ cause: "GitHub sent a pull request without updated_at." });
+  if (updatedAt === null) return yield* new StoreGithubFailure({ message: "GitHub sent a pull request without updated_at." });
   const merge = live.open ? null : live.mergeCommitSha;
   const repository = merge === null ? null : yield* resolveGithubRepository(payload.installationId, payload.repositoryId);
   for (const organizationId of organizations) {
@@ -62,17 +58,19 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
     // Conditional Saves land with what that push deployed.
     let reached: string | null = null;
     if (merge !== null && repository !== null) {
-      const head = yield* storeCall(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
+      const head = yield* storeTry(() => store.branchHead(organizationId, payload.repositoryId, live.targetBranch));
       if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
     }
     const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
-    yield* collect(organizationId, yield* storeCall(() => store.system(organizationId, event)), done);
+    const servers = yield* organizationServers(organizationId);
+    yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event, { servers })), done);
   }
   return done;
 });
 
 /**
- * Hourly: each Organization's Store closes Branches idle for a week, and deletes closing ones whose removal applied.
+ * Hourly: queued Deployments whose hand-off to the worker was lost go to it again, and each Organization's Store
+ * closes Branches idle for a week, and deletes closing ones whose removal applied.
  * ponytail: every Organization each hour; list only those with Branches once that costs.
  */
 export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: Date) {
@@ -81,8 +79,11 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
   const organizations = yield* drizzle.select({ id: organization.id }).from(organization);
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
+  // Before the Stores admit anything new, so only admissions whose hand-off was lost are handed over again.
+  done.deployments.push(...yield* unclaimedStoreDeployments(now));
   for (const { id } of organizations) {
-    yield* storeCall(() => store.system(id, event)).pipe(
+    yield* organizationServers(id).pipe(
+      Effect.flatMap((servers) => storeTry(() => store.system(id, event, { servers }))),
       Effect.flatMap((written) => collect(id, written, done)),
       // One Organization's Store failing never holds back the others; the next sweep retries it.
       Effect.catch((error) => Effect.logWarning("A Config Store sweep failed.", { organizationId: id, error })),
@@ -98,30 +99,28 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
  */
 export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(function* (closing: StoreOutcome["closing"]) {
   const store = yield* cloudStore;
-  const admitted: ConfigDeploymentAdmittedEventData[] = [];
+  const removals: ConfigDeploymentAdmittedEventData[] = [];
   for (const { organizationId, environment: summary } of closing) {
-    const read = (query: ConfigQuery) => store.read(organizationId, query);
+    const read: StoreRead = (query) => store.read(organizationId, query);
     const environment = { project: summary.project, environment: summary.name };
-    const removals = yield* storeCall(() => read({ query: "removals", environment, remove: true }));
-    const volumes = yield* gatherVolumeEvidence(organizationId, { command: "admit", environment, remove: true }, read);
-    const command: ConfigCommand = {
-      command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: true,
-      accept_volume_loss: removals.view === "removals" ? removals.volumes.map((volume) => volume.name) : [],
-    };
-    // A removal expands no domain and reads no repository: the Servers' Volumes are all it needs observed.
-    const trusted: ConfigTrusted = {
-      repositories: [], uploader: null,
-      domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
-    };
-    if (volumes !== undefined) trusted.volumes = volumes;
-    const written = yield* storeCall(() => store.write(organizationId, command, trusted)).pipe(Effect.option);
+    const written = yield* Effect.gen(function* () {
+      const losses = yield* storeTry(() => read({ query: "removals", environment, remove: true }));
+      const call = {
+        operation: "write", command: {
+          command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: true,
+          accept_volume_loss: losses.volumes.map((volume) => volume.name),
+        },
+      } satisfies StoreCall;
+      const trusted = yield* gatherTrusted(organizationId, call, read);
+      return yield* storeTry(() => store.write(organizationId, call.command, trusted));
+    }).pipe(Effect.option);
     if (written._tag === "Some" && written.value.written === "deployment") {
-      admitted.push({ organizationId, environmentId: summary.id, deploymentId: written.value.id });
+      removals.push({ organizationId, environmentId: summary.id, deploymentId: written.value.id });
     } else {
       yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment });
     }
   }
-  return admitted;
+  return removals;
 });
 
 /**
@@ -153,8 +152,8 @@ export const publishStorePrCheck = Effect.fn("StorePullRequest.publishCheck")(fu
   const organizations = yield* listGithubInstallationOrganizationIds(payload.installationId);
   const views: { organizationId: string; view: PullRequestView }[] = [];
   for (const organizationId of organizations) {
-    const view = yield* storeCall(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
-    if (view.view === "pull_request" && view.pull_request?.open && view.environments.length > 0) views.push({ organizationId, view });
+    const view = yield* storeTry(() => store.read(organizationId, { query: "pull_request", repository_id: payload.repositoryId, number: payload.number }));
+    if (view.pull_request?.open && view.environments.length > 0) views.push({ organizationId, view });
   }
   const [first] = views;
   if (!first?.view.pull_request) return "skipped" as const;

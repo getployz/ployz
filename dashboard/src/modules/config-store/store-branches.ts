@@ -59,7 +59,7 @@ export function movePicks(entries: readonly SheetPick[]): MovePick[] {
 }
 
 const choicePick = (row: string, choice: BranchOption, value: string): MovePick =>
-  choice === "new" ? { row, choice, value } : { row, choice };
+  choice === "new" ? { row, choice: { new: value } } : { row, choice };
 
 /** A Branch's Live Nodes as the canvas draws them, each with the ids of the Services here the Store says read it. */
 export function liveNodes(live: readonly LiveNode[], services: ReadonlyArray<{ id: string; name: string }>) {

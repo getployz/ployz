@@ -948,9 +948,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -994,7 +992,6 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let run = |runner: &str| {
         ployz::sdk::run_deployment(
             Arc::clone(&store),
-            who.clone(),
             id.clone(),
             RunnerId::parse(runner).unwrap(),
             vec![ployz::context::Connection::tcp(address)],
@@ -1008,7 +1005,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     assert!(
         view.nodes
             .iter()
-            .all(|node| node.outcome == NodeStatus::Applied)
+            .all(|node| node.outcome == NodeStatus::Deployed)
     );
     assert!(view.preview.is_some());
 
@@ -1037,7 +1034,6 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         .unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
-        who.clone(),
         second.clone(),
         RunnerId::parse("cloud-run-3").unwrap(),
         vec![ployz::context::Connection::tcp(address)],
@@ -1072,7 +1068,6 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         .unwrap();
     let never = ployz::sdk::run_deployment(
         Arc::clone(&store),
-        who.clone(),
         admit.id.clone(),
         RunnerId::parse("cloud-run-4").unwrap(),
         vec![ployz::context::Connection::tcp(address)],
@@ -1096,9 +1091,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
 
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -1164,7 +1157,6 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     let first = deploy(1, Vec::new(), Trusted::default()).unwrap();
     let ran = ployz::sdk::run_deployment(
         Arc::clone(&store),
-        who.clone(),
         first,
         RunnerId::parse("cloud-run-1").unwrap(),
         connections(),
@@ -1225,7 +1217,6 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     held.lock().unwrap().push(on('b'));
     let ran = ployz::sdk::run_deployment(
         Arc::clone(&store),
-        who.clone(),
         second,
         RunnerId::parse("cloud-run-2").unwrap(),
         connections(),
@@ -1260,9 +1251,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
 
     let store =
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -1338,7 +1327,6 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     let (address, server) = listening(DeployService::new(machine('a', "one"))).await;
     let summary = ployz::sdk::run_deployment(
         Arc::clone(&store),
-        who.clone(),
         id.clone(),
         RunnerId::parse("cloud-run-1").unwrap(),
         vec![ployz::context::Connection::tcp(address)],

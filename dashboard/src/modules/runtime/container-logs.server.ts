@@ -26,12 +26,11 @@ export type LogSearch = typeof logSearchSchema.Type;
 export const resolveLogFilter = Effect.fn("Runtime.resolveLogFilter")(function* (organizationId: string, search: LogSearch) {
   const { deploymentId, projectSlug, environmentSlug } = search;
   const missing = new NotFound({ message: deploymentId ? "Deployment was not found." : "Environment was not found." });
-  const query: ConfigQuery | null = deploymentId ? { query: "deployment", id: deploymentId }
+  const query: Extract<ConfigQuery, { query: "deployment" | "namespace" }> | null = deploymentId ? { query: "deployment", id: deploymentId }
     : projectSlug && environmentSlug ? { query: "namespace", environment: { project: projectSlug, environment: environmentSlug } }
     : null;
   if (query === null) return yield* new Validation({ message: "An environment is required." });
   const view = yield* readStore(organizationId, query).pipe(Effect.mapError(() => missing));
-  if (view.view !== "deployment" && view.view !== "namespace") return yield* missing;
   return { namespace: view.namespace, serviceId: search.serviceId, deploymentId } satisfies LogFilter;
 });
 

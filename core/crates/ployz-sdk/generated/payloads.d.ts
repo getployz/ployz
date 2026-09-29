@@ -33,13 +33,15 @@ upload?: UploadedSource | null,
 retry?: DeploymentId | null,
 /**
  * Remove the Environment from the Servers: ship it empty, deleting its deployed
- * Volumes, without touching Working or Saved State. `services`, `version`,
- * `upload` and `retry` stay empty. `RemoveEnvironment` then deletes it.
+ * Volumes, without touching Working or Saved State. `services`, `upload` and
+ * `retry` stay empty. `RemoveEnvironment` then deletes it.
  */
 remove: boolean,
 /**
  * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
- * deletes data refuses with `confirmation_required` unless it names each one.
+ * deletes data, or publishes a removal that will, refuses with
+ * `confirmation_required` unless it names each one and passes the `version`
+ * that refusal handed back.
  */
 accept_volume_loss: Array<VolumeName>, };
 
@@ -438,15 +440,17 @@ export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
 export type ConditionalSave = {
 /**
- * Pass to [`Move::take`] to use a hint it left.
+ * Pass to [`Take::from`] to use a hint it left.
  */
-id: string, pull_request: number,
+id: ConditionalSaveId, pull_request: number,
 /**
  * The rows it holds.
  */
 rows: Array<string>, state: SaveState, };
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "remove_organization" } & RemoveOrganization | { "command": "set_pr_plan" } & SetPrPlan;
+export type ConditionalSaveId = string;
+
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "create_volume" } & CreateVolume | { "command": "remove_volume" } & RemoveVolume | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit | { "command": "start" } & Start | { "command": "cancel" } & Cancel | { "command": "add_domain" } & AddDomain | { "command": "remove_domain" } & RemoveDomain | { "command": "create_branch" } & CreateBranch | { "command": "move" } & Move | { "command": "copy_node" } & CopyNode | { "command": "keep_branch" } & KeepBranch | { "command": "set_build_order" } & SetBuildOrder | { "command": "set_default_environment" } & SetDefaultEnvironment | { "command": "remove_environment" } & RemoveEnvironment | { "command": "remove_project" } & RemoveProject | { "command": "set_pr_plan" } & SetPrPlan;
 
 export type ConfigDomainEvidence = {
 /**
@@ -495,13 +499,15 @@ domains: ConfigDomainEvidence,
  */
 volumes?: VolumeObservation,
 /**
- * Who Cloud authenticated for this write: an admitted upload records them.
+ * How many Servers the Organization has, as Cloud counts them: a Deployment is
+ * admitted only when one could run it. None when the caller can't count them,
+ * such as the hidden local Store, which runs its Deployments itself.
  */
-uploader?: string | null, };
+servers?: number, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "build_log" } & BuildLogView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView | { "view": "namespace" } & NamespaceView | { "view": "domains" } & DomainsView | { "view": "domain" } & DomainView | { "view": "volumes" } & VolumesView | { "view": "volume" } & VolumeView | { "view": "removals" } & RemovalsView | { "view": "branch" } & BranchView | { "view": "branch_plan" } & BranchPlanView | { "view": "build_order" } & BuildOrderView | { "view": "move" } & MoveView | { "view": "environments" } & EnvironmentsView | { "view": "projects" } & ProjectsView | { "view": "pr_plans" } & PrPlansView | { "view": "pull_request" } & PullRequestView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "project_removed" } & ProjectRemoved | { "written": "organization_removed" } & OrganizationRemoved | { "written": "pr_plans" } & PrPlansView;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "volume" } & VolumeStaged | { "written": "volume_removed" } & VolumeStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary | { "written": "domain" } & DomainStaged | { "written": "automated" } & Automated | { "written": "branch" } & Branched | { "written": "build_order" } & BuildOrderView | { "written": "moved" } & Moved | { "written": "default_environment" } & EnvironmentsView | { "written": "environment_removed" } & EnvironmentRemoved | { "written": "project_removed" } & ProjectRemoved | { "written": "pr_plans" } & PrPlansView;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -812,7 +818,25 @@ upload: UploadedSource | null,
  * Whether it removes the Environment from the Servers: it ships the empty
  * Environment ([`NOTHING`]) and deletes the data it accepted.
  */
-remove: boolean, };
+remove: boolean,
+/**
+ * Who admitted it, as Cloud authenticated them; none when the Store's own
+ * automation did, or the hidden local Store.
+ */
+admitted_by: Principal | null,
+/**
+ * When it was admitted, in Unix seconds.
+ */
+admitted_at: number,
+/**
+ * When its runner claimed it, in Unix seconds.
+ */
+started_at: number | null,
+/**
+ * When it ended, in Unix seconds: its outcome recorded, or cancelled before
+ * it ran.
+ */
+ended_at: number | null, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -855,7 +879,25 @@ upload: UploadedSource | null,
  * Whether it removes the Environment from the Servers: it ships the empty
  * Environment ([`NOTHING`]) and deletes the data it accepted.
  */
-remove: boolean, };
+remove: boolean,
+/**
+ * Who admitted it, as Cloud authenticated them; none when the Store's own
+ * automation did, or the hidden local Store.
+ */
+admitted_by: Principal | null,
+/**
+ * When it was admitted, in Unix seconds.
+ */
+admitted_at: number,
+/**
+ * When its runner claimed it, in Unix seconds.
+ */
+started_at: number | null,
+/**
+ * When it ended, in Unix seconds: its outcome recorded, or cancelled before
+ * it ran.
+ */
+ended_at: number | null, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -883,7 +925,7 @@ changes: number,
  */
 save: DestinationSave | null, };
 
-export type DestinationSave = { id: string,
+export type DestinationSave = { id: ConditionalSaveId,
 /**
  * False once the PR Environment or the target branch changed since: save again.
  */
@@ -940,7 +982,8 @@ export type Discard = {
  */
 environment: EnvironmentRef,
 /**
- * `SERVICE` or `SERVICE.SETTING`; none discards everything.
+ * `SERVICE`, `volumes.VOLUME`, `SERVICE.SETTING`, `SERVICE.env.KEY` or
+ * `SERVICE.mounts.VOLUME`; none discards everything.
  */
 path: SettingPath | null,
 /**
@@ -1605,36 +1648,7 @@ service: ServiceName,
  */
 path: string, };
 
-export type Move = {
-/**
- * Where the changes come from; omitted, the Parent of `into` (Update).
- */
-from?: EnvironmentRef | null,
-/**
- * Where they land; omitted, the Parent of `from` (Save).
- */
-into?: EnvironmentRef | null,
-/**
- * The changes to move; omitted, every change, each variable its default way.
- */
-picks?: Array<MovePick> | null,
-/**
- * Refuse with `conflict` unless the Move view is still at this version.
- */
-version?: string | null,
-/**
- * `now` stages the changes; `at_merge` saves them as a Conditional Save that
- * goes live with the pull request's merge, and `picks: []` withdraws it.
- * Omitted: `at_merge` from a PR Environment, else `now`.
- */
-when?: When | null,
-/**
- * Take the picked rows (omitted: every hint) from retained Conditional Save
- * `ID`, sealed secrets included, even once its PR Environment is gone: the
- * pull request's value replaces the Destination's own edit, staged. `from`,
- * `when` and `version` are then omitted.
- */
-take?: string | null, };
+export type Move = { "move": "save" } & Save | { "move": "update" } & Update | { "move": "take" } & Take;
 
 export type MoveChoice = {
 /**
@@ -1658,31 +1672,11 @@ export type MovePick = {
  */
 row: string,
 /**
- * How the variables picked land: `from` (the moving value, sealed secrets
- * included), `parent` (the Parent's deployed value) or `leave_out`; omitted,
- * each its default.
+ * How the variables picked land; omitted, each its default.
  */
-choice?: BranchOption | null,
-/**
- * With `choice: new`, the variable's own value in the receiver: text that may
- * reference Services there by name, or a secret's plaintext, sealed before it
- * is stored.
- */
-value?: string | null, };
+choice?: PickChoice | null, };
 
-export type MoveQuery = {
-/**
- * As [`Move::from`].
- */
-from?: EnvironmentRef | null,
-/**
- * As [`Move::into`].
- */
-into?: EnvironmentRef | null,
-/**
- * As [`Move::when`].
- */
-when?: When | null, };
+export type MoveQuery = { "move": "save", from: EnvironmentRef, into?: EnvironmentRef | null, when?: When | null, } | { "move": "update", into: EnvironmentRef, };
 
 export type MoveRow = {
 /**
@@ -1794,7 +1788,7 @@ id: string,
  */
 name: string, outcome: NodeStatus, };
 
-export type NodeStatus = "pending" | "applied" | "not_applied" | "unknown";
+export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
 export type ObservationKind = "container" | "volume";
 
@@ -1844,18 +1838,15 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, confirmed: Array<ServiceName>,
-/**
- * The Volumes it applied: every Service mounting a kept one confirmed, and
- * every Docker Volume of a removed one deleted.
- */
-volumes: Array<string>, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
+export type Outcome = { "type": "executed", summary: JsonValue, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
  * Targets selected by the entry Machine that produced no terminal response.
  */
 omissions: Array<MachineId>, };
+
+export type PickChoice = "from" | "parent" | "leave_out" | { "new": string };
 
 export type PidMode = string;
 
@@ -1983,6 +1974,8 @@ id: DockerVolumeId,
  */
 machine_name: MachineName | null, };
 
+export type Principal = string;
+
 export type ProjectCreated = {
 /**
  * The Project.
@@ -2037,9 +2030,16 @@ export type Publish = {
  */
 environment: EnvironmentRef,
 /**
- * Refuse with `conflict` unless this is still the latest `diff` version.
+ * Refuse with `conflict` unless this is still the latest `diff` version, or the
+ * version a refusal to delete data handed back.
  */
-version: string | null, };
+version: string | null,
+/**
+ * Deployed Volumes whose removal it may publish, by name: the next full Deploy
+ * deletes their data. Publishing one refuses with `confirmation_required` unless
+ * it names each one and passes the `version` that refusal handed back.
+ */
+accept_volume_loss: Array<VolumeName>, };
 
 export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 
@@ -2097,9 +2097,9 @@ updated: string, };
 
 export type PullRequestHint = {
 /**
- * The Conditional Save: pass to [`Move::take`].
+ * The Conditional Save: pass to [`Take::from`].
  */
-save: string, pull_request: number,
+save: ConditionalSaveId, pull_request: number,
 /**
  * `NODE.path`, as a Move names it.
  */
@@ -2185,8 +2185,6 @@ export type RemoveDomain = { environment: EnvironmentRef,
 domain: string, };
 
 export type RemoveEnvironment = { environment: EnvironmentRef, };
-
-export type RemoveOrganization = Record<symbol, never>;
 
 export type RemoveProject = { project: ProjectName, };
 
@@ -2320,7 +2318,17 @@ summary: RuntimeOutcomeSummary,
 /**
  * Services whose every planned operation completed, ordered by name.
  */
-confirmedServices: Array<ServiceName>, };
+confirmedServices: Array<ServiceName>,
+/**
+ * Services work started on but didn't finish: one of their operations
+ * completed or failed. Ordered by name.
+ */
+failedServices: Array<ServiceName>,
+/**
+ * Services with planned operations an earlier failure stopped before any ran.
+ * Ordered by name.
+ */
+unattemptedServices: Array<ServiceName>, };
 
 export type RuntimeOutcomeSummary = { "type": "success",
 /**
@@ -2347,6 +2355,31 @@ export type RuntimeWatchView = { services: Array<ServiceObservation>, effective_
  * Freshness of the entry-local membership/RTT sample. Not Cluster truth.
  */
 observed_at: string, };
+
+export type Save = {
+/**
+ * The Branch whose changes move.
+ */
+from: EnvironmentRef,
+/**
+ * Its Parent; from a PR Environment, the Destination. Omitted: the Parent, or
+ * the only Destination.
+ */
+into?: EnvironmentRef | null,
+/**
+ * The changes to move; omitted, every change, each variable its default way.
+ */
+picks?: Array<MovePick> | null,
+/**
+ * Refuse with `conflict` unless the Move view is still at this version.
+ */
+version?: string | null,
+/**
+ * `now` stages the changes; `at_merge` saves them as a Conditional Save that
+ * goes live with the pull request's merge, and `picks: []` withdraws it.
+ * Omitted: `at_merge` from a PR Environment, else `now`.
+ */
+when?: When | null, };
 
 export type SaveState = "standing" | "frozen" | "landed";
 
@@ -2738,6 +2771,25 @@ now: number, };
 
 export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep;
 
+export type Take = {
+/**
+ * The retained Conditional Save whose hints to take.
+ */
+from: ConditionalSaveId,
+/**
+ * Its Destination; refused unless it is.
+ */
+into?: EnvironmentRef | null,
+/**
+ * The hints to take, by row or a prefix of rows; omitted, every one.
+ */
+rows?: Array<string> | null,
+/**
+ * Refuse with `conflict` unless the Destination's `diff` is still at this
+ * version: its Working State and the Saved revision the hints landed on.
+ */
+version?: string | null, };
+
 export type TelemetryObservation = { "scope": "bridge_capacity",
 /**
  * Fresh Ployz bridge endpoint capacity.
@@ -2757,6 +2809,26 @@ export type TemplateWarning = { kind: 'missing', ownerId: string | null, key: st
 export type TransportProtocol = "tcp" | "udp";
 
 export type Ulimit = { soft: number, hard: number, };
+
+export type Unclaimed = { organization: OrganizationId, environment: EnvironmentId, deployment: DeploymentId,
+/**
+ * When it was admitted, in Unix seconds.
+ */
+admitted_at: number, };
+
+export type Update = {
+/**
+ * The Branch the changes move into.
+ */
+into: EnvironmentRef,
+/**
+ * The changes to move; omitted, every change.
+ */
+picks?: Array<MovePick> | null,
+/**
+ * Refuse with `conflict` unless the Move view is still at this version.
+ */
+version?: string | null, };
 
 export type UpdateConfig = {
 /**
@@ -2786,7 +2858,7 @@ base: UploadBase | null,
  * Who uploaded it, as Cloud authenticated them; admission overwrites whatever a
  * caller sends. Provenance only.
  */
-uploader?: string | null, };
+uploader?: Principal | null, };
 
 export type ValuePart = { "kind": "text", value: string, } | { "kind": "ref", owner: ValuePartOwner, key: string, };
 

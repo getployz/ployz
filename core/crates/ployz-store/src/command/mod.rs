@@ -88,8 +88,6 @@ pub enum Command {
     RemoveEnvironment(crate::RemoveEnvironment),
     /// Delete a Project nothing of which runs on the Servers.
     RemoveProject(crate::RemoveProject),
-    /// Forget an Organization's configuration once it has no Project.
-    RemoveOrganization(crate::RemoveOrganization),
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan),
 }
@@ -125,7 +123,6 @@ impl Command {
             | Self::SetDefaultEnvironment(_)
             | Self::RemoveEnvironment(_)
             | Self::RemoveProject(_)
-            | Self::RemoveOrganization(_)
             | Self::SetPrPlan(_) => Vec::new(),
         }
     }
@@ -174,8 +171,6 @@ pub enum Written {
     EnvironmentRemoved(crate::EnvironmentRemoved),
     /// A Project was deleted.
     ProjectRemoved(crate::ProjectRemoved),
-    /// An Organization's configuration was forgotten.
-    OrganizationRemoved(crate::OrganizationRemoved),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
 }
@@ -205,7 +200,9 @@ pub(crate) fn run(
         Command::CreateVolume(create) => create_volume(tx, who, create).map(Written::Volume),
         Command::RemoveVolume(remove) => remove_volume(tx, who, remove).map(Written::VolumeRemoved),
         Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
-        Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
+        Command::Publish(publish) => {
+            self::publish(tx, who, publish, trusted).map(Written::Published)
+        }
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
         Command::Admit(request) => admit(tx, who, request, trusted).map(Written::Deployment),
         Command::Start(request) => start(tx, who, request).map(Written::Deployment),
@@ -234,9 +231,6 @@ pub(crate) fn run(
         }
         Command::RemoveProject(remove) => {
             crate::teardown::remove_project(tx, who, remove).map(Written::ProjectRemoved)
-        }
-        Command::RemoveOrganization(_) => {
-            crate::teardown::remove_organization(tx, who).map(Written::OrganizationRemoved)
         }
         Command::SetPrPlan(set) => {
             crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)

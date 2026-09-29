@@ -12,8 +12,8 @@ use ployz_store::{
     Actor, AddDomain, Admit, Branched, Change, ConfigStore, CopyNode, CreateBranch, CreateProject,
     CreateService, CreateVolume, DeploymentId, DiffQuery, DomainName, DomainsQuery, Edit,
     EnvironmentId, EnvironmentName, EnvironmentRef, KeepBranch, LiveNode, Mount, Move, MoveQuery,
-    OrganizationId, ProjectId, ProjectName, RunEvidence, RunnerId, ServiceId, ServiceQuery,
-    SettingPath, SetupCommand, Trusted, VolumeId, VolumeName,
+    OrganizationId, PickChoice, ProjectId, ProjectName, RunEvidence, RunnerId, Save, ServiceId,
+    ServiceQuery, SettingPath, SetupCommand, Trusted, Update, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -34,9 +34,7 @@ fn at(environment: &str) -> EnvironmentRef {
 /// registry credential) uses `db`, which mounts Volume `data`. Nothing deployed.
 fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
-    let who = Actor {
-        organization: OrganizationId::parse("org").unwrap(),
-    };
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
         .create_project(
             &who,
@@ -464,18 +462,21 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     store
         .create_branch(&who, &branch("fix-web", "production", &["web"]))
         .unwrap();
-    let update = Move {
-        into: Some(at("fix-web")),
-        ..Move::default()
+    let update = |version: Option<String>| {
+        Move::Update(Update {
+            into: at("fix-web"),
+            picks: None,
+            version,
+        })
     };
     // Never deployed: it doesn't run its Working State yet.
     assert_eq!(
-        code(store.move_changes(&who, &update)),
+        code(store.move_changes(&who, &update(None))),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 2, true);
     assert_eq!(
-        store.move_changes(&who, &update).unwrap_err().message,
+        store.move_changes(&who, &update(None)).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -505,25 +506,18 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     let review = store
         .move_view(
             &who,
-            &MoveQuery {
-                into: Some(at("fix-web")),
-                ..MoveQuery::default()
+            &MoveQuery::Update {
+                into: at("fix-web"),
             },
         )
         .unwrap();
     assert_eq!(review.from.name.as_str(), "production");
-    let stale = Move {
-        version: Some("0:0".into()),
-        ..update.clone()
-    };
+    let stale = update(Some("0:0".into()));
     assert_eq!(
         code(store.move_changes(&who, &stale)),
         RpcErrorCode::Conflict
     );
-    let reviewed = Move {
-        version: Some(review.version),
-        ..update.clone()
-    };
+    let reviewed = update(Some(review.version));
     assert_eq!(
         store
             .move_changes(&who, &reviewed)
@@ -541,12 +535,12 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     // The base advanced: nothing left, and the change waits for a Deploy.
     assert!(view(&store).update.is_empty());
     assert_eq!(
-        code(store.move_changes(&who, &update)),
+        code(store.move_changes(&who, &update(None))),
         RpcErrorCode::Conflict
     );
     deploy(&store, &who, "fix-web", 4, true);
     assert_eq!(
-        store.move_changes(&who, &update).unwrap_err().message,
+        store.move_changes(&who, &update(None)).unwrap_err().message,
         "Nothing new in production"
     );
 
@@ -555,7 +549,7 @@ fn update_stages_the_parents_deployed_changes_once_the_branch_runs_its_working_s
     deploy(&store, &who, "fix-web", 5, false);
     assert!(
         store
-            .move_changes(&who, &update)
+            .move_changes(&who, &update(None))
             .unwrap_err()
             .message
             .contains("aren't deployed")
@@ -708,21 +702,20 @@ fn keep_applies_at_once_and_generated_domains_follow_the_branch_name() {
 }
 
 fn save(picks: &[(&str, Option<&str>)], version: Option<&str>) -> Move {
-    Move {
-        from: Some(at("fix-web")),
+    Move::Save(Save {
+        from: at("fix-web"),
         picks: (!picks.is_empty()).then(|| {
             picks
                 .iter()
                 .map(|(row, choice)| ployz_store::MovePick {
                     row: (*row).to_owned(),
                     choice: choice.map(|choice| serde_json::from_value(json!(choice)).unwrap()),
-                    value: None,
                 })
                 .collect()
         }),
         version: version.map(str::to_owned),
-        ..Move::default()
-    }
+        ..Save::default()
+    })
 }
 
 #[test]
@@ -755,9 +748,10 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         "production",
         &[("web.image", json!("web:hot"))],
     );
-    let query = MoveQuery {
-        from: Some(at("fix-web")),
-        ..MoveQuery::default()
+    let query = MoveQuery::Save {
+        from: at("fix-web"),
+        into: None,
+        when: None,
     };
     let review = store.move_view(&who, &query).unwrap();
     assert_eq!(review.into.name.as_str(), "production");
@@ -797,10 +791,10 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         RpcErrorCode::InvalidArgument
     );
     // Only a Branch saves, into its own Parent.
-    let root = Move {
-        from: Some(at("production")),
-        ..Move::default()
-    };
+    let root = Move::Save(Save {
+        from: at("production"),
+        ..Save::default()
+    });
     assert_eq!(
         code(store.move_changes(&who, &root)),
         RpcErrorCode::InvalidArgument
@@ -881,22 +875,29 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
     );
     let fresh = |row: &str, value: &str| ployz_store::MovePick {
         row: row.to_owned(),
-        choice: Some(serde_json::from_value(json!("new")).unwrap()),
-        value: Some(value.to_owned()),
+        choice: Some(PickChoice::New(value.to_owned())),
     };
-    let mut plain = fresh("web.env.HOST", "x");
-    plain.choice = None;
-    let mut picked = save(&[], None);
-    picked.picks = Some(vec![plain]);
+    let picked = |picks: Vec<ployz_store::MovePick>| {
+        Move::Save(Save {
+            from: at("fix-web"),
+            picks: Some(picks),
+            ..Save::default()
+        })
+    };
+    // A value is one variable's own.
     assert_eq!(
-        code(store.move_changes(&who, &picked)),
+        code(store.move_changes(&who, &picked(vec![fresh("web.env", "x")]))),
         RpcErrorCode::InvalidArgument
     );
-    picked.picks = Some(vec![
-        fresh("web.env.SESSION_KEY", "prod-key"),
-        fresh("web.env.HOST", "${{ web.NEW }}-prod"),
-    ]);
-    store.move_changes(&who, &picked).unwrap();
+    store
+        .move_changes(
+            &who,
+            &picked(vec![
+                fresh("web.env.SESSION_KEY", "prod-key"),
+                fresh("web.env.HOST", "${{ web.NEW }}-prod"),
+            ]),
+        )
+        .unwrap();
     let input = deploy(&store, &who, "production", 5, true);
     let env = &snapshot(&input, &uuid(3))["resolvedEnv"];
     assert_eq!(

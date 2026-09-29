@@ -65,7 +65,7 @@
             2
           ],
           "exclusiveMinimum": 0,
-          "maximum": 64,
+          "maximum": 64.0,
           "title": "CPU limit",
           "type": "number",
           "x-ployz-apply": "staged",
@@ -168,6 +168,38 @@
           "x-ployz-data-loss": false,
           "x-ployz-secret": true
         },
+        "healthcheck": {
+          "additionalProperties": false,
+          "description": "An HTTP check a new replica must pass before it takes traffic: a path on the container PORT, and how many seconds it may take (default 300). Text sets the path. Unset turns it off.",
+          "examples": [
+            {
+              "path": "/health",
+              "timeoutSeconds": 30
+            }
+          ],
+          "properties": {
+            "path": {
+              "maxLength": 500,
+              "minLength": 1,
+              "pattern": "^/",
+              "type": "string"
+            },
+            "timeoutSeconds": {
+              "default": 300,
+              "maximum": 300,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "title": "Healthcheck",
+          "type": "object",
+          "x-ployz-apply": "staged",
+          "x-ployz-data-loss": false,
+          "x-ployz-secret": false
+        },
         "image": {
           "description": "The container image each replica runs.",
           "examples": [
@@ -203,7 +235,7 @@
             4
           ],
           "exclusiveMinimum": 0,
-          "maximum": 1024,
+          "maximum": 1024.0,
           "title": "Memory limit",
           "type": "number",
           "x-ployz-apply": "staged",

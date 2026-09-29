@@ -34,7 +34,7 @@ async function renderAt(path: string) {
   ] });
   seed(environmentsQuery("store"), { view: "environments", project: { id: "store", name: "store" }, environments: [
     listing("fix-web", { parent: "production" }),
-    listing("pr-142", { parent: "staging", removal: { id: "d", number: 3, status: "running", saved: 0, services: [], runner: null, upload: null, remove: true } }),
+    listing("pr-142", { parent: "staging", removal: { id: "d", number: 3, status: "running", saved: 0, services: [], runner: null, upload: null, remove: true, admitted_by: null, admitted_at: 0, started_at: null, ended_at: null } }),
     listing("production", { default: true }),
     listing("staging"),
   ] });

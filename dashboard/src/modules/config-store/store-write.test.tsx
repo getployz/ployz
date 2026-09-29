@@ -137,7 +137,7 @@ it("runs a Move after pending edits in every Environment", async () => {
   const edit = deferred<StoreResult<ConfigWritten>>();
   test.write.mockImplementationOnce(() => edit.promise).mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
   act(() => { void test.edit({ environment: { project: "shop", environment: "staging" }, changes: replicas(3) }).isPersisted.promise.catch(() => {}); });
-  const moved = test.writer.commit({ command: "move", from: ref, into: null, picks: null });
+  const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: null, picks: null });
   await new Promise((resolve) => setTimeout(resolve, 10));
   expect(test.write).toHaveBeenCalledTimes(1);
   edit.resolve(edited(3));

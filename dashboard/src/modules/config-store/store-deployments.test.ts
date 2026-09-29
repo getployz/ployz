@@ -37,7 +37,10 @@ it("reads a pending node as its Deployment does, and a vanished runner's node as
   expect(nodeLight("pending", "queued")).toBe("queued");
   expect(nodeLight("pending", "running")).toBe("deploying");
   expect(nodeLight("pending", "cancelled")).toBe("not_applied");
-  expect(nodeLight("applied", "failed")).toBe("deployed");
+  expect(nodeLight("deployed", "failed")).toBe("deployed");
+  expect(nodeLight("unchanged", "failed")).toBe("deployed");
+  expect(nodeLight("failed", "failed")).toBe("failed");
+  expect(nodeLight("not_attempted", "failed")).toBe("not_applied");
   expect(nodeLight("unknown", "unknown")).toBe("unknown");
 });
 

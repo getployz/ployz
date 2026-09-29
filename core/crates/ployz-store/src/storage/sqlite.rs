@@ -93,6 +93,7 @@ impl ToSql for Param<'_> {
         Ok(match self {
             Self::Text(value) => ToSqlOutput::Borrowed(ValueRef::Text(value.as_bytes())),
             Self::Int(value) => ToSqlOutput::Borrowed(ValueRef::Integer(*value)),
+            Self::NullText | Self::NullInt => ToSqlOutput::Borrowed(ValueRef::Null),
         })
     }
 }

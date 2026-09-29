@@ -38,8 +38,7 @@ import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { callStore, cloudStore } from "#/modules/config-store/config-store.server";
-import { storeTry } from "#/modules/config-store/store-sdk.server";
+import { callStore, readStore } from "#/modules/config-store/config-store.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -512,16 +511,13 @@ export const completeMachineEnrollment = Effect.fn(
  * button would. A refusal (a Deploy that would delete data asks first) leaves that Environment for the user.
  */
 const deployPublished = Effect.fn("MachineEnrollment.deployPublished")(function* (organizationId: string) {
-  const store = yield* cloudStore;
-  const { projects } = yield* storeTry(() => store.read(organizationId, { query: "projects" })).pipe(
-    Effect.flatMap((view) => view.view === "projects" ? Effect.succeed(view) : Effect.die(new Error("A projects query answered another view"))),
-  );
+  const { projects } = yield* readStore(organizationId, { query: "projects" });
   const environments = projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment })));
   yield* Effect.forEach(environments, (environment) => Effect.gen(function* () {
-    const diff = yield* storeTry(() => store.read(organizationId, { query: "diff", environment }));
-    if (diff.view !== "diff" || diff.saved === null) return;
-    // No member admits it and nothing uploads, so no user is named.
-    const result = yield* callStore(organizationId, "", { operation: "write", command: {
+    const diff = yield* readStore(organizationId, { query: "diff", environment });
+    if (diff.saved === null) return;
+    // No member admits it, and nothing uploads.
+    const result = yield* callStore(organizationId, null, { operation: "write", command: {
       command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: false, accept_volume_loss: [],
     } });
     if (!result.ok) yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);

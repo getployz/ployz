@@ -260,7 +260,7 @@ The per-Environment-Node projection of the latest confirmed runtime outcomes. Su
 _Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
 
 **Environment Change Set**:
-One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. Node Introductions supply field resets only while a node is absent from Head, Saved State, and Applied State. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate.
 _Avoid_: Persisted diff, mutation log, deployment snapshot
 
 **Environment Publication Review**:
@@ -276,7 +276,7 @@ One command restoring a field, node, or the whole Environment to the Environment
 _Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
 
 **Node Introduction**:
-The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the reset source for edits made before the node has Saved or Applied State; it is not a second editable draft.
+The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the comparison and reset source for edits made before the node has Applied State; it is not a second editable draft.
 _Avoid_: Initial diff, creation event log, default config
 
 **Derived Service Configuration**:
