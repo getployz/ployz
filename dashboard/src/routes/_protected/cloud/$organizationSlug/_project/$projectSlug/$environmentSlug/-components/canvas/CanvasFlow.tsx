@@ -24,7 +24,7 @@ import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import { useDeploymentFocus } from "../deployment-page";
 import { useServiceCreator } from "./useServiceCreator";
 import { LIVE_EDGE_STYLE } from "./nodes";
-import { useBranchPicking } from "../new-branch/branch-picking";
+import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
@@ -124,11 +124,14 @@ export function CanvasFlow({
     off: useShutdown(params.organizationSlug, environmentId) === "off",
   });
   // While picking a Branch, links into what it would use live are dashed.
-  const picking = useBranchPicking();
+  const picking = usePickingView();
   const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.lineageId] : []));
   const pickedLiveIds = new Set([
     ...[...servicesById].flatMap(([id, state]) => liveRoles.has(state.serviceView.service.lineageId) ? [id] : []),
     ...[...volumeResourcesById].flatMap(([id, state]) => liveRoles.has(state.resource.resource.lineageId) ? [id] : []),
+    // Over the Store, a plan names nodes.
+    ...(store?.services ?? []).flatMap(({ service }) => liveRoles.has(service.name) ? [service.id] : []),
+    ...(store?.volumes ?? []).flatMap((volume) => liveRoles.has(volume.name) ? [volume.id] : []),
   ]);
   const edges = pickedLiveIds.size === 0 ? canvasEdges : canvasEdges.map((edge) =>
     pickedLiveIds.has(edge.source) || pickedLiveIds.has(edge.target) ? { ...edge, style: LIVE_EDGE_STYLE } : edge);

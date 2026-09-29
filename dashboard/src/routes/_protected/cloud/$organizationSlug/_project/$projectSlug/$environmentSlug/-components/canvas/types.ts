@@ -50,10 +50,25 @@ export type CanvasStoreVolumeNode = Node<{
   environmentId: string;
 }, "storeVolume">;
 
+/** A node a Branch uses live over the Config Store, by its name where it runs. */
+export type StoreLiveNode = {
+  name: string;
+  /** The Environment it runs in; null when none does. */
+  owner: string | null;
+  /** It holds its owner's real data. */
+  data: boolean;
+  /** The Services here that read it, by id. */
+  usedBy: string[];
+};
+
+export type CanvasStoreLiveNode = Node<{ live: StoreLiveNode }, "storeLive">;
+
 /** What the canvas draws from the Config Store while it backs this Environment. */
 export type StoreCanvas = {
   services: StoreCanvasService[];
   volumes: VolumeListing[];
+  /** A Branch's Live Nodes; none elsewhere. */
+  live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
 };
@@ -66,6 +81,7 @@ export type CanvasResourceNode =
   | CanvasStoreServiceNode
   | CanvasVolumeNode
   | CanvasStoreVolumeNode
+  | CanvasStoreLiveNode
   | CanvasLiveNode;
 
 export type FlowPosition = { x: number; y: number };

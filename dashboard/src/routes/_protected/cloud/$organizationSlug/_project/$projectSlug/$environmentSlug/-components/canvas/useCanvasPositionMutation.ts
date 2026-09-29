@@ -115,7 +115,7 @@ export function useCanvasPositionMutation(params: {
 
   const onNodeDrag: OnNodeDrag<CanvasResourceNode> = (_event, node) => {
     // Live Nodes sit where their owner put them.
-    if (node.type === "live") return;
+    if (node.type === "live" || node.type === "storeLive") return;
     mutate({
       environmentId: node.data.environmentId,
       resourceType: node.data.resourceType,

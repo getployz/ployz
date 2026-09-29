@@ -37,10 +37,12 @@ import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page
 import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes, buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
 import type { StoreCanvas, StoreCanvasService } from "./canvas/types";
 import { storeEnabled } from "#/modules/config-store/store.contract";
-import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { BranchPickingProvider } from "./new-branch/branch-picking";
+import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 
 export function PendingCanvas() {
   return (
@@ -80,12 +82,15 @@ function StoreCanvasWithData() {
   const settings = requireView(useStoreView(organizationSlug, environmentSettingsQuery(store)));
   const diff = requireView(useStoreView(organizationSlug, diffQuery(store)));
   const volumes = requireView(useStoreView(organizationSlug, volumesQuery(store)));
+  // Refused unless this is a Branch.
+  const branch = useStoreView(organizationSlug, branchQuery(store));
   const storeServices = services.services.map((service): StoreCanvasService => ({
     service,
     subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
     changeCount: serviceChanges(diff, service.id).size,
   }));
-  return <CanvasWithData store={{ services: storeServices, volumes: volumes.volumes, diff }} />;
+  const live = branch.ok ? liveNodes(branch.value.live, settings, services.services) : [];
+  return <CanvasWithData store={{ services: storeServices, volumes: volumes.volumes, live, diff }} />;
 }
 
 // TODO(#1275): one canvas, over the Store, once the dark gate goes.
@@ -249,7 +254,9 @@ export function EnvironmentCanvasScene() {
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
+    {/* TODO(#1275): over the Store only; PR Environment plans stay on the Cloud document until #1271. */}
+    <BranchPickingProvider newBranch={storeEnabled ? null : newBranch} prPlan={prPlan}>
+    <StorePickingProvider newBranch={storeEnabled ? newBranch : null}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
@@ -271,6 +278,7 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
+    </StorePickingProvider>
     </BranchPickingProvider>
     </BottomBarSlot.Provider>
   );

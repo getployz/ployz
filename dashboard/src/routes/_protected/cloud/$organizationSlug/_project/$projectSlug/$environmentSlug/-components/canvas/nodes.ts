@@ -16,6 +16,8 @@ import type {
   CanvasStoreServiceNode,
   CanvasStoreVolumeNode,
   StoreCanvas,
+  StoreLiveNode,
+  CanvasStoreLiveNode,
   CanvasLiveNode,
   CanvasResourceNode,
   CanvasServiceNode,
@@ -142,11 +144,11 @@ export function buildNodes(
  * mounts a Volume, until someone drags it.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "volumes">,
+  store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] },
   canvasPositions: ServiceCanvasPositionRecord[],
   selectedNodeId: string | null,
   environmentId: string,
-): (CanvasStoreServiceNode | CanvasStoreVolumeNode)[] {
+): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
   const positionByResource = getPositionByCanvasResource(canvasPositions);
   const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...SERVICE_NODE_SIZE }));
   const place = (resourceType: CanvasResourceType, resourceId: string, near = { x: 0, y: 0 }) => {
@@ -180,16 +182,30 @@ export function buildStoreNodes(
       selected: volume.id === selectedNodeId,
       data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
     } satisfies CanvasStoreVolumeNode)),
+    // A Branch's Live Nodes take free spots; they are their owner's to move.
+    ...(store.live ?? []).map((live) => ({
+      ...node,
+      id: liveNodeId(live.name),
+      type: "storeLive",
+      position: place("service", liveNodeId(live.name)),
+      draggable: false,
+      selected: liveNodeId(live.name) === selectedNodeId,
+      data: { live },
+    } satisfies CanvasStoreLiveNode)),
   ];
 }
 
 /** A link from each Config Store Volume into every Service that mounts it, as legacy mounts drew them. */
-export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes">): Edge[] {
+export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] }): Edge[] {
   const serviceIdByName = new Map(store.services.map(({ service }) => [service.name, service.id]));
-  return store.volumes.flatMap((volume) => volume.mounts.flatMap((mount) => {
+  return [...store.volumes.flatMap((volume) => volume.mounts.flatMap((mount) => {
     const serviceId = serviceIdByName.get(mount.service);
     return serviceId ? [{ id: `mount:${volume.id}:${serviceId}`, source: volume.id, target: serviceId }] : [];
-  }));
+  })),
+  // Dashed links from each Live Node into the Services here that read it.
+  ...(store.live ?? []).flatMap((live) => live.usedBy.map((serviceId) => ({
+    id: `${liveNodeId(live.name)}:${serviceId}`, source: liveNodeId(live.name), target: serviceId, style: LIVE_EDGE_STYLE,
+  })))];
 }
 
 export function buildEdges(

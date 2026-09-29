@@ -26,6 +26,7 @@ const CREATES_SOURCE = /\b(createApiCollection|createChangeCollection|queryColle
 const SPINNER = /<Spinner\b|Loader2Icon|animate-spin/;
 /** Spinners mean a write is in flight or a runtime process is running, never a read. */
 const SPINNER_FILES = {
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "creating a Branch in the Config Store",
   "components/ui/spinner.tsx": "the primitive",
   "components/ui/sonner.tsx": "promise toasts for writes",
   "components/cancel-deployment-dialog.tsx": "cancel in flight",
@@ -111,6 +112,8 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/StoreDeploymentPage.tsx": "retry starts runtime work and opens the new Deployment",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useVolumeCreator.ts": "the server assigns a new volume's id and lineage; over the Store the dialog stays open until the name is accepted",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/close-branch.ts": "closing a Branch is destructive, and the page leaves it once the close starts",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "Save rewrites the Parent and closing a Branch is destructive; the page leaves the Branch once either lands",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/resources/$resourceId/-components/VolumeDrawer.tsx": "deleting a volume's data is destructive",
 };
 
