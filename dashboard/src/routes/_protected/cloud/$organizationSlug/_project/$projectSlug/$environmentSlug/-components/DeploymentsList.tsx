@@ -4,9 +4,10 @@ import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-rou
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { ListRowSkeletons, ShowMore } from "#/components/show-more";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
-import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { admission, deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel } from "#/modules/config-store/store-deployments";
+import { RelativeTime } from "#/components/relative-time";
 import { requireView, servicesQuery, useStoreDeployments, useStoreView } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "./deployment-page";
@@ -63,18 +64,24 @@ export function StoreDeploymentRows({ service, returnTo }: { service: ServiceLis
   const deployments = data.pages.flatMap((page) => page.deployments)
     .filter((deployment) => !service || deployment.services.length === 0 || deployment.services.includes(service.name));
   return <Rows hasMore={hasNextPage} loading={isFetchingNextPage} onShowMore={() => void fetchNextPage()}>
-    {deployments.map((deployment) => (
-      <Item key={deployment.id} size="sm" render={<Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }}
-        search={{ service: service?.id, returnTo }} />}>
-        <ItemContent className="min-w-0">
-          <ItemTitle className="w-full"><span className="truncate">Deployment #{deployment.number}</span></ItemTitle>
-          <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
-            <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
-            {" · "}<span className="truncate">{deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}${deployment.admitted_by ? ` · by ${deployment.admitted_by}` : ""}`}</span>
-          </ItemDescription>
-        </ItemContent>
-      </Item>
-    ))}
+    {deployments.map((deployment) => {
+      const { by, at } = admission(deployment);
+      return (
+        <Item key={deployment.id} size="sm" render={<Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }}
+          search={{ service: service?.id, returnTo }} />}>
+          <ItemContent className="min-w-0">
+            <ItemTitle className="w-full"><span className="truncate">Deployment #{deployment.number}</span></ItemTitle>
+            <ItemDescription className="flex items-center gap-1.5 [&_svg]:size-3.5">
+              <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
+              {" · "}<span className="truncate">
+                {deployment.upload ? uploadLabel(deployment.upload) : `Deploys ${targetsLabel(deployment)}${by ? ` · by ${by}` : ""}`}
+              </span>
+            </ItemDescription>
+          </ItemContent>
+          {at ? <ItemActions className="text-sm text-muted-foreground"><RelativeTime date={at} /></ItemActions> : null}
+        </Item>
+      );
+    })}
   </Rows>;
 }
 

@@ -46,7 +46,10 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       managed={storeManagedExports(service, settings.environment)}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
       allowSealOnCreate
-      onCreateVariable={({ key, value, sealed, exported }) => set(key, { value: sealed ? { secret: value } : value, exported })}
+      onCreateVariable={({ key, value, sealed, exported }) => store.edit({ environment, changes: [
+        { op: "set", path: `${service.name}.env.${key}`, value: sealed ? { secret: value } : value },
+        { op: "set", path: `${service.name}.env.${key}.exported`, value: exported },
+      ] })}
       onSealVariable={(variable) => set(variable.key, { secret: variable.value.value })}
       onUpdateMetadata={(variable, patch) => set(`${variable.key}.exported`, patch.exported ?? variable.exported)}
       onApplyRaw={({ creates, updates, deletes }) => store.edit({

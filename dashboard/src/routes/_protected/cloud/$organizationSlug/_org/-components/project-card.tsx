@@ -14,7 +14,8 @@ export function ProjectCard({
   runtimeStatus,
 }: {
   name: string;
-  environment: { name: string; namespace: string; services: { id: string; slug: string; config: { source: { type: "empty" | "git" | "image" } } }[] } | null;
+  /** Its Services by name; `slug` is how runtime evidence names each in the Namespace. */
+  environment: { name: string; namespace: string; services: { id: string; name: string; slug: string; config: { source: { type: "empty" | "git" | "image" } } }[] } | null;
   runtimeServices: readonly RuntimeServiceRecord[];
   runtimeStatus: RuntimeLensStatus;
 }) {
@@ -34,9 +35,9 @@ export function ProjectCard({
           </ReactFlowProvider>
           <div className="relative flex flex-1 flex-wrap content-center items-center justify-center gap-3 p-4" aria-label="Services">
             {services.map(service => (
-              <span key={service.id} title={service.slug} className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-card [&_svg]:size-6">
+              <span key={service.id} title={service.name} className="flex size-12 shrink-0 items-center justify-center rounded-lg border bg-card [&_svg]:size-6">
                 {getServiceIcon(service.config)}
-                <span className="sr-only">{service.slug}</span>
+                <span className="sr-only">{service.name}</span>
               </span>
             ))}
           </div>

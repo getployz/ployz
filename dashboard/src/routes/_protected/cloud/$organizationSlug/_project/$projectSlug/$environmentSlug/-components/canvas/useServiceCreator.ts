@@ -2,38 +2,33 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { getCanvasPositionsCollection } from "#/collections/collections";
 import { createServiceCommand, newServiceName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { servicesQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
-import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
+import { usePlaceNewNode } from "./useCanvasPositionMutation";
 import { SERVICE_NODE_SIZE } from "./constants";
 import type { CanvasResourceNode, CreatorPanel, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 
 /**
- * Creates a Service in the Config Store where the canvas put it, named from its source. Resolves with its id once
- * every Store view shows it, so the page can open it.
+ * Creates a Service in the Config Store where the canvas put it, named from its source: on the canvas at once, saved
+ * in the background. `persisted` settles once the Store has it, for callers whose next page can't show it before.
  */
 export function useCreateStoreService(organizationSlug: string) {
   const scope = useCollectionScope();
   const writer = useStoreWriter(organizationSlug);
-  const place = useServerFn(updateCanvasPositionServerFn);
-  return async (target: { store: EnvironmentRef; environmentId: string; position: FlowPosition }, source: NewServiceSource) => {
+  const place = usePlaceNewNode(organizationSlug);
+  return (target: { store: EnvironmentRef; environmentId: string; position: FlowPosition }, source: NewServiceSource) => {
     const listed = scope.queryClient.getQueryData(storeViewOptions(organizationSlug, scope, servicesQuery(target.store)).queryKey);
     const id = crypto.randomUUID();
-    // Placed first, so it appears where it was put rather than jumping there.
-    const placed = await place({ data: { organizationSlug, environmentId: target.environmentId, resourceType: "service", resourceId: id,
-      x: Math.round(target.position.x), y: Math.round(target.position.y) } });
-    await getCanvasPositionsCollection(organizationSlug, scope).writeCommitted(placed.data);
+    place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
     const name = newServiceName(source, listed?.ok ? listed.value.services : []);
-    await writer.commit(createServiceCommand(id, target.store, name, source)).isPersisted.promise;
-    return { service: { id } };
+    const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
+    return { service: { id }, persisted: isPersisted.promise };
   };
 }
 
@@ -80,7 +75,7 @@ export function useServiceCreator(
 
   async function createBlankService(position: FlowPosition) {
     const placement = computePlacement(position);
-    const created = await createStoreService({ store, environmentId, position: placement }, { type: "empty" });
+    const created = createStoreService({ store, environmentId, position: placement }, { type: "empty" });
     await navigate({ to: ENVIRONMENT_SERVICE_ROUTE_TO, params: { ...params, serviceId: created.service.id } });
   }
 

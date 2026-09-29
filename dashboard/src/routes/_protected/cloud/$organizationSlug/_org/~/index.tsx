@@ -12,7 +12,8 @@ import {
   CardHeader,
 } from "#/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
-import { projectsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { namespaceQuery, projectsQuery, requireView, servicesQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { useRuntimeServices } from "../../-components/services-online";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
@@ -22,9 +23,11 @@ export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~
   loader: async ({ params, context }) => {
     const projects = await requireStoreProjects(context, params.organizationSlug);
     if (projects.length === 0) throw redirect({ to: NewProjectRoute.to, params: { organizationSlug: params.organizationSlug } });
-    // Each card draws its Default Environment's Services.
-    await prefetchStoreViews(context, params.organizationSlug, ...projects.map((project) =>
-      servicesQuery({ project: project.name, environment: project.default_environment })));
+    // Each card draws its Default Environment's Services, and counts those online in its Namespace.
+    await prefetchStoreViews(context, params.organizationSlug, ...projects.flatMap((project) => {
+      const environment = { project: project.name, environment: project.default_environment };
+      return [servicesQuery(environment), namespaceQuery(environment)];
+    }));
   },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
@@ -132,12 +135,14 @@ function StoreProjectsGrid({ organizationSlug, query }: { organizationSlug: stri
 }
 
 function StoreProjectCard({ organizationSlug, project, environment }: { organizationSlug: string; project: string; environment: string }) {
-  const listed = useStoreView(organizationSlug, servicesQuery({ project, environment }));
+  const [listed, namespace] = useStoreViews(organizationSlug,
+    [servicesQuery({ project, environment }), namespaceQuery({ project, environment })] as const);
   const services = listed.ok ? listed.value.services : [];
-  // ponytail: no online count yet; runtime evidence is matched by Namespace, which the Store names only once deployed.
-  return <ProjectCard name={project} runtimeServices={[]} runtimeStatus="unavailable" environment={{
-    name: environment, namespace: "",
-    services: services.map((service) => ({ id: service.id, slug: service.name, config: { source: { type: service.source } } })),
+  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
+  // Runtime evidence names a Service by its Namespace and Private DNS.
+  return <ProjectCard name={project} runtimeServices={runtimeServices} runtimeStatus={namespace.ok ? runtimeStatus : "unavailable"} environment={{
+    name: environment, namespace: namespace.ok ? namespace.value.namespace : "",
+    services: services.map((service) => ({ id: service.id, name: service.name, slug: service.private_dns, config: { source: { type: service.source } } })),
   }} />;
 }
 

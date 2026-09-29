@@ -24,7 +24,8 @@ import { LIVE_EDGE_STYLE } from "./nodes";
 import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
-import { useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { useSavesInto, useStoreDeployments } from "#/modules/config-store/store-view.queries";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { changeGroups, isInFlight } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -73,7 +74,7 @@ export function CanvasFlow({
   const selectedNodePositionKey = selectedNode ? `${selectedNode.position.x}:${selectedNode.position.y}` : null;
   // While picking a Branch, links into what it would use live are dashed. A plan names nodes.
   const picking = usePickingView();
-  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.lineageId] : []));
+  const liveRoles = new Set(picking?.plan.nodes.flatMap((node) => node.role === "live" ? [node.name] : []));
   const pickedLiveIds = new Set([
     ...store.services.flatMap(({ service }) => liveRoles.has(service.name) ? [service.id] : []),
     ...store.volumes.flatMap((volume) => liveRoles.has(volume.name) ? [volume.id] : []),
@@ -176,9 +177,7 @@ export function CanvasFlow({
         open={volumeCreator.creatorOpen}
         onOpenChange={volumeCreator.setCreatorOpen}
         position={volumeCreator.creatorPosition}
-        onCreate={async (input) => {
-          await volumeCreator.createVolume(input);
-        }}
+        onCreate={volumeCreator.createVolume}
       />
     </>
   );
@@ -192,10 +191,12 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const navigate = useNavigate();
   const ref = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM }).store;
-  const actions = useStoreChangeActions(params.organizationSlug, ref,
+  const { diff } = store;
+  const actions = useStoreChangeActions(params.organizationSlug, ref, diff.version,
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const deployments = useStoreDeployments(params.organizationSlug, ref).data.pages[0]?.deployments ?? [];
-  const { diff } = store;
+  const waiting = useSavesInto(params.organizationSlug, params.projectSlug, diff.environment.name);
+  const { noServers } = useRuntimeLens(params.organizationSlug);
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
@@ -206,10 +207,12 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDeploy={actions.deploy}
         onPublish={actions.publish}
         onDiscardAll={() => actions.discard(null)}
-        onDiscardNode={(group) => void actions.discard(group.nodeName)}
-        onDiscardRow={(_, path) => void actions.discard(path)}
+        onDiscardNode={(group) => actions.discard(group.nodeName)}
+        onDiscardRow={(_, path) => actions.discard(path)}
         active={deployments.filter((deployment) => isInFlight(deployment.status))}
         notes={storeHintNotes(diff, groups)}
+        waiting={waiting}
+        noServers={noServers}
       />
       {actions.dialog}
     </>

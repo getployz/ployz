@@ -20,7 +20,7 @@ const replicas: ChangeGroup = asTestDouble<ChangeGroup>()({
 });
 const cache = asTestDouble<ChangeGroup>()({ ...replicas, nodeId: "cache", nodeName: "cache" });
 const onDeploy = vi.fn();
-const onDiscardAll = vi.fn(async () => true);
+const onDiscardAll = vi.fn();
 /** In flight, newest first, as the Store lists them. */
 let active: DeploymentSummary[] = [];
 
@@ -85,17 +85,12 @@ it("shows changes to deploy first, in one row like Railway's: the count, Details
   expect(onDiscardAll).toHaveBeenCalledOnce();
 });
 
-it("holds Discard all while a discard is saving, so a second click can't fail", async () => {
-  let finish!: (discarded: boolean) => void;
-  onDiscardAll.mockClear().mockImplementationOnce(() => new Promise((done) => { finish = done; }));
+it("closes the review as Discard all is clicked: the discard shows at once and saves in the background", async () => {
+  onDiscardAll.mockClear();
   open(canvasUrl, [replicas], 1);
   fireEvent.click((await bar()).getByRole("button", { name: "Details" }));
-  const discard = screen.getByRole("button", { name: "Discard all changes" });
-  await act(async () => { fireEvent.click(discard); });
-  expect(discard.hasAttribute("disabled")).toBe(true);
-  fireEvent.click(discard);
+  await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Discard all changes" })); });
   expect(onDiscardAll).toHaveBeenCalledOnce();
-  await act(async () => { finish(true); });
   expect(screen.queryByRole("dialog", { name: "Environment changes" })).toBeNull();
 });
 

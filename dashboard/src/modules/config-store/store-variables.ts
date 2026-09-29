@@ -36,14 +36,18 @@ export function storeVariableWriter(
 ): VariableWriter {
   const path = (key: string) => `${service}.env.${key}`;
   const edit = (...changes: Change[]) => writer.edit({ environment, changes });
-  const value = (variable: VariableRecord) => variable.value.type === "plain" ? variable.value.value : { secret: true };
+  // A variable is two rows, its value and whether it's exported; the dashboard sets each by its own path.
+  const rows = (variable: VariableRecord): Change[] => [
+    { op: "set", path: path(variable.key), value: variable.value.type === "plain" ? variable.value.value : { secret: true } },
+    { op: "set", path: `${path(variable.key)}.exported`, value: variable.exported },
+  ];
   return {
-    insert: (variable) => edit({ op: "set", path: path(variable.key), value: { value: value(variable), exported: variable.exported } }),
+    insert: (variable) => edit(...rows(variable)),
     update(key, updater) {
       const variable = structuredClone(variables.find((candidate) => candidate.key === key));
       if (!variable) throw new Error("Variable is not loaded.");
       updater(variable);
-      return edit({ op: "set", path: path(key), value: { value: value(variable), exported: variable.exported } });
+      return edit(...rows(variable));
     },
     delete: (key) => edit({ op: "unset", path: path(key) }),
   };

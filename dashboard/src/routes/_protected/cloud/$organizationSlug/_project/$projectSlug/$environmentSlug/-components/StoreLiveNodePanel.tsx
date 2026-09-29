@@ -6,7 +6,7 @@ import { FieldDescription, FieldGroup, FieldLegend, FieldSet } from "#/component
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { cn } from "#/lib/utils";
 import { liveNodes } from "#/modules/config-store/store-branches";
-import { branchQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { branchQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { CanvasInspectorError } from "./CanvasInspectorRouteStates";
@@ -22,10 +22,9 @@ export function StoreLiveNodePanel({ name }: { name: string }) {
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
   const navigate = useNavigate();
-  const branch = useStoreView(params.organizationSlug, branchQuery(store));
-  const settings = requireView(useStoreView(params.organizationSlug, environmentSettingsQuery(store)));
-  const services = requireView(useStoreView(params.organizationSlug, servicesQuery(store))).services;
-  const live = branch.ok ? liveNodes(branch.value.live, settings, services).find((node) => node.name === name) : undefined;
+  const [branch, servicesResult] = useStoreViews(params.organizationSlug, [branchQuery(store), servicesQuery(store)] as const);
+  const services = requireView(servicesResult).services;
+  const live = branch.ok ? liveNodes(branch.value.live, services).find((node) => node.name === name) : undefined;
   if (!live) return <CanvasInspectorError noun="Live service" />;
 
   // Once staged it's no longer live here; the canvas shows it as a new Service of this Branch.

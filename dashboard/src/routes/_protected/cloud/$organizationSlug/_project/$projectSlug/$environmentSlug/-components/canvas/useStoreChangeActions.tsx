@@ -6,22 +6,24 @@ import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volume
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 type Acceptance = Pick<VolumeLoss, "accept" | "version">;
+type Action = "deploy" | "publish";
 
 /**
  * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish) and Discard, each in the
  * Environment's write queue after its pending edits, so the CLI and this tab share one queue of Deployments.
  *
- * When a Deploy would delete Volume data the Servers hold, the Store refuses with `confirmation_required`; the user
- * reads every Volume that goes, types where, and the Deploy is admitted again accepting exactly those. Any other
- * refusal (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
+ * When a Deploy or Publish would delete Volume data the Servers hold, the Store refuses with `confirmation_required`;
+ * the user reads every Volume that goes, types where, and it runs again accepting exactly those. Any other refusal
+ * (Servers that can't be checked, a newer version) is the writer's toast. An admitted Deploy opens its page.
  */
 export function useStoreChangeActions(organizationSlug: string, environment: EnvironmentRef,
-  onAdmitted: (deploymentId: string) => void) {
+  /** The version of the review the user sees: every action acts on exactly it, and a newer one is refused. */
+  version: string, onAdmitted: (deploymentId: string) => void) {
   const writer = useStoreWriter(organizationSlug);
   const { machines } = useRuntimeLens(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
-  const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
+  const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance> } | null>(null);
 
   function check(refused: VolumeLoss): DeletionCheck<Acceptance> {
     const items = refused.volumes.map((volume): DeletionItem => ({
@@ -33,50 +35,44 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     return { items, evidence: { accept: refused.accept, version: refused.version } };
   }
 
-  /** Admits the Deploy; resolves with what it would delete when the Store asks first, else null. */
-  async function admit({ accept, version }: { accept: readonly string[]; version: string | null }) {
+  /** Deploys or publishes; resolves with what it would delete when the Store asks first, else null. */
+  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }) {
     const id = crypto.randomUUID();
     try {
-      await writer.commit({
-        command: "admit", id, environment, services: [], version, remove: false, accept_volume_loss: [...accept],
-      }).isPersisted.promise;
-      onAdmitted(id);
+      await writer.commit(action === "deploy"
+        ? { command: "admit", id, environment, services: [], version, remove: false, accept_volume_loss: [...accept] }
+        : { command: "publish", environment, version, accept_volume_loss: [...accept] }).isPersisted.promise;
+      if (action === "deploy") onAdmitted(id);
       return null;
     } catch (error) {
       const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
-      if (refused) return check(refused);
+      if (refused) return { action, check: check(refused) };
       // The writer toasted it.
       return null;
     }
   }
 
-  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything); resolves whether it did. */
-  async function discard(path: string | null) {
-    try {
-      await writer.commit({ command: "discard", environment, path, version: null }).isPersisted.promise;
-      return true;
-    } catch {
-      // The writer toasted it and refetched the review.
-      return false;
-    }
+  /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything): gone at once, a refusal brings it back. */
+  function discard(path: string | null) {
+    writer.commit({ command: "discard", environment, path, version });
   }
 
   return {
-    deploy: () => void admit({ accept: [], version: null }).then(setLoss),
-    publish: () => { writer.commit({ command: "publish", environment, version: null, accept_volume_loss: [] }); },
+    deploy: () => void run("deploy", { accept: [], version }).then(setLoss),
+    publish: () => void run("publish", { accept: [], version }).then(setLoss),
     discard,
     dialog: (
       <DeletionDialog
         open={loss !== null}
         onOpenChange={(open) => { if (!open) setLoss(null); }}
-        title="Deploy deletes data"
+        title={loss?.action === "publish" ? "Publishing deletes data on the next deploy" : "Deploy deletes data"}
         place={place}
-        confirmLabel="Deploy"
-        items={loss?.items}
+        confirmLabel={loss?.action === "publish" ? "Publish" : "Deploy"}
+        items={loss?.check.items}
         callbacks={{
-          load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
+          load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" } }),
           // Servers holding more by now: the Store asks again, and so does the dialog.
-          confirm: async (evidence) => (await admit(evidence)) ?? undefined,
+          confirm: async (evidence) => loss ? (await run(loss.action, evidence))?.check : undefined,
         }}
       />
     ),

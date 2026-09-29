@@ -10,7 +10,7 @@ import { Button } from "#/components/ui/button";
 import { Spinner } from "#/components/ui/spinner";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { toErrorMessage } from "#/lib/error-message";
-import { removalsQuery, requireView, servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { fetchStoreView, removalsQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
 import { removing, teardownStep, type AcceptedLoss, type TeardownStep, type TeardownTarget } from "#/modules/config-store/store-workspace";
 import type { ConfigQuery } from "#/modules/config-store/store.contract";
@@ -75,8 +75,7 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
   }, [applied]);
 
   async function load(): Promise<DeletionCheck<AcceptedLoss>> {
-    const read = <Q extends ConfigQuery>(query: Q) =>
-      scope.queryClient.fetchQuery({ ...storeViewOptions(organizationSlug, scope, query), staleTime: 0 }).then(requireView);
+    const read = <Q extends ConfigQuery>(query: Q) => fetchStoreView(organizationSlug, scope, query);
     const each = await Promise.all(inScope.map(async (environment) => {
       const ref = { project: target.project, environment: environment.name };
       const [services, volumes, removals] = await Promise.all([read(servicesQuery(ref)), read(volumesQuery(ref)), read(removalsQuery(ref))]);

@@ -15,12 +15,9 @@ import {
   ItemTitle,
 } from "#/components/ui/item";
 import {
-  getDefaultRegistryCredentialUsername,
   getRegistryHostFromImageReference,
-  detectRegistryCredentialProvider,
-  getRegistryCredentialProviderHelp,
-  getRegistryCredentialProviderLabel,
   registryCredentialSecretSchema,
+  registryProvider,
 } from "#/modules/config-store/registry-credentials";
 import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialForm";
 import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
@@ -134,13 +131,12 @@ export function RegistryCredentialsField({
   onRestore?: () => void;
 }) {
   const [mode, setMode] = useState<"create" | "edit" | null>(null);
-  const provider = detectRegistryCredentialProvider(image);
-  const providerLabel = getRegistryCredentialProviderLabel(provider);
-  const providerHelp = getRegistryCredentialProviderHelp(provider);
-  const fixedUsername = getDefaultRegistryCredentialUsername(provider);
+  const provider = registryProvider(image);
+  const providerLabel = provider.label;
+  const fixedUsername = provider.fixedUsername;
   const registryHost = getRegistryHostFromImageReference(image);
   const usesSingleFieldUpdater =
-    providerHelp.usernameLabel == null || fixedUsername != null;
+    provider.usernameLabel == null || fixedUsername != null;
 
   // Optimistic: the writer rolls back and toasts if saving fails.
   function handleSubmit(value: { username: string | null; secret: string }) {
@@ -197,13 +193,13 @@ export function RegistryCredentialsField({
             {usesSingleFieldUpdater ? (
               <ServiceRegistryCredentialSingleFieldEditor
                 schema={registryCredentialSecretSchema}
-                secretLabel={providerHelp.secretLabel}
-                description={providerHelp.description}
+                secretLabel={provider.secretLabel}
+                description={provider.description}
                 baselineLabel={baselineLabel}
                 baselineValue={baselineValue}
                 isChanged={changed}
-                multiline={provider === "gcp-artifact-registry"}
-                rows={provider === "gcp-artifact-registry" ? 8 : undefined}
+                multiline={provider.multiline}
+                rows={provider.multiline ? 8 : undefined}
                 onCommit={(secret) => {
                   const transaction = onSet({
                     username: fixedUsername,
@@ -217,9 +213,9 @@ export function RegistryCredentialsField({
             ) : (
               <ServiceRegistryCredentialForm
                 key={`${mode}:${username ?? ""}`}
-                usernameLabel={providerHelp.usernameLabel ?? "Username"}
-                secretLabel={providerHelp.secretLabel}
-                description={providerHelp.description}
+                usernameLabel={provider.usernameLabel ?? "Username"}
+                secretLabel={provider.secretLabel}
+                description={provider.description}
                 initialUsername={username ?? ""}
                 baselineLabel={baselineLabel}
                 baselineValue={baselineValue}

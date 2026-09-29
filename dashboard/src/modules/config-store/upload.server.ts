@@ -7,6 +7,7 @@ import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import type { StoreRefusal } from "./store.contract";
 import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
+import { IN_FLIGHT, isInFlight } from "./store-deployments";
 
 /** The most compressed source one Deployment may upload: the same cap as a repository archive's download. */
 const UPLOAD_LIMIT = 256 * 1024 * 1024;
@@ -46,7 +47,7 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
         eq(uploadChunk.organizationId, organizationId),
         sql`${uploadChunk.createdAt} < now() - interval '1 day'`,
         sql`${uploadChunk.deploymentId} not in (select id from config_deployment
-          where status in ('queued', 'running', 'cancelling'))`,
+          where status in (${sql.join(IN_FLIGHT.map((status) => sql`${status}`), sql`, `)}))`,
       ));
       let pending = Buffer.alloc(0);
       let total = 0;
@@ -100,7 +101,7 @@ export const releaseUpload = Effect.fn("ConfigStore.releaseUpload")(function* (
     Effect.map((view) => view.status),
     Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
   );
-  if (status === "queued" || status === "running" || status === "cancelling") return;
+  if (status !== undefined && isInFlight(status)) return;
   const { drizzle } = yield* Database;
   yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
 });

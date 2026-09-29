@@ -184,11 +184,11 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
 });
 
 /**
- * One Store read or write by user `userId` as `organizationId`: the answer, or the Store's refusal verbatim. It first
+ * One Store read or write by user `userId` (null: Cloud itself) as `organizationId`: the answer, or the Store's refusal verbatim. It first
  * gathers the trusted evidence the call needs (`gatherTrusted`). Anything else (the Store failing to open, a broken
  * binding) is a defect.
  */
-export const callStore = <C extends StoreCall>(organizationId: string, userId: string, call: C) => Effect.gen(function* () {
+export const callStore = <C extends StoreCall>(organizationId: string, userId: string | null, call: C) => Effect.gen(function* () {
   const store = yield* cloudStore;
   const read: StoreRead = (query) => store.read(organizationId, query);
   return yield* Effect.gen(function* () {

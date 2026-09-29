@@ -114,7 +114,14 @@ export type PreparedDeploy = DeployPreview & {
 
 /** Backend-only input. Checkout paths are repository roots, keyed by config.privateDns. */
 export type PreparationInput = {
-  deployment: Parameters<typeof import("./config").lowerDeployment>[0];
+  deployment: {
+    namespace: string;
+    selected?: import("./generated/payloads").ServiceAttempt[];
+    /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */
+    lineages?: Record<string, string>;
+    snapshots: readonly { serviceId?: string; config: import("./generated/payloads").ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[];
+    volumes?: readonly { volumeResourceId: string }[];
+  };
   sources: Record<string, string>;
   source_commits?: Record<string, string>;
   /** Uploaded Source content digests, keyed by config.privateDns. A `sources` directory must hold exactly that content; without one only a matching, usable receipt serves it. */

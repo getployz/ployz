@@ -26,10 +26,10 @@ const admitted = { ok: true, value: { written: "deployment", id: "d" } } as neve
 const admittedIds: string[] = [];
 
 function Deploy() {
-  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, (id) => admittedIds.push(id));
+  const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
     <button type="button" onClick={deploy}>Deploy now</button>
-    <button type="button" onClick={() => void discard("web.replicas")}>Discard replicas</button>
+    <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     {dialog}
   </>;
 }
@@ -61,7 +61,7 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
 
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
-  expect(test.admits()).toMatchObject([{ accept_volume_loss: [], version: null }, { accept_volume_loss: ["pg-data"], version: "9:1:0.1" }]);
+  expect(test.admits()).toMatchObject([{ accept_volume_loss: [], version: "2:1:0" }, { accept_volume_loss: ["pg-data"], version: "9:1:0.1" }]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
   // The admitted Deploy, the second admission's own id, opens.
@@ -75,7 +75,7 @@ it("discards a Setting by its Store path, through the Environment's queue", asyn
 
   act(() => { fireEvent.click(screen.getByText("Discard replicas")); });
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: null }]);
+  expect(test.admits()).toEqual([{ command: "discard", environment: ref, path: "web.replicas", version: "2:1:0" }]);
 });
 
 it("fails closed when the Servers can't be checked: nothing to accept, and the Store's reason shows", async () => {
