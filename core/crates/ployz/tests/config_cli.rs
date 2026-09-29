@@ -995,6 +995,16 @@ fn an_agent_retries_a_failed_deployment_and_reads_its_logs() {
             ],
         );
         assert_eq!(unknown["code"], json!("not_found"));
+
+        // Its build logs: an image-only Deployment built nothing; `--build` needs a Deployment.
+        let builds = ok(store, &["logs", "--deployment", &failed_id, "--build"]);
+        assert_eq!(builds, json!({"builds": []}));
+        let unbuilt = error(
+            store,
+            &["logs", "--deployment", &failed_id, "--build", "web"],
+        );
+        assert_eq!(unbuilt["code"], json!("not_found"));
+        failed(store, &["logs", "--build"], 2);
     }
 }
 

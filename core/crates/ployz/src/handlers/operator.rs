@@ -57,6 +57,11 @@ pub(crate) fn logs_command() -> Command {
             .value_name("ID")
             .help("Only the running containers this Deployment created, in its Environment"),
     )
+    .arg(
+        switch("build", None)
+            .requires("deployment")
+            .help("The Deployment's build logs instead: its Git Services' builds, or those named"),
+    )
 }
 
 pub(crate) fn ps_command() -> Command {
@@ -187,6 +192,9 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
         .is_some()
         .then(|| super::deploy::deployment_id(leaf, "deployment"))
         .transpose()?;
+    if let Some(id) = deployment.as_ref().filter(|_| leaf.get_flag("build")) {
+        return build_logs(root, id, &named);
+    }
     // A Deployment names its Environment, whatever the scope says.
     let namespace = match &deployment {
         Some(id) => Some(
@@ -224,6 +232,51 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
             .await?;
             print_logs(merge_logs(inputs, cancellation), utc).await
         })
+    })
+}
+
+/// Print Deployment `id`'s build logs: each Service in `named`, or every build.
+fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<(), Error> {
+    let leaf = leaf_matches(root);
+    let store = super::store::store(root)?;
+    let names: Vec<String> = if named.is_empty() {
+        store
+            .deployment(id)
+            .map_err(super::store::failed(leaf, &["logs"]))?
+            .builds
+            .into_iter()
+            .map(|build| build.service)
+            .collect()
+    } else {
+        named.to_vec()
+    };
+    let builds = names
+        .iter()
+        .map(|name| {
+            let service = ployz_core::ServiceName::parse(name.as_str())
+                .map_err(|_| Error::usage(format!("{name} is not a Service name")))?;
+            let query = ployz_store::BuildLogQuery {
+                deployment: id.clone(),
+                service,
+            };
+            store
+                .build_log(&query)
+                .map_err(super::store::failed(leaf, &["logs"]))
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    crate::output::finish(&serde_json::json!({ "builds": builds }), || {
+        if builds.is_empty() {
+            crate::output::say!("Deployment {id} built nothing.");
+        }
+        for build in &builds {
+            crate::output::say!(
+                "== {} at {}: {:?}",
+                build.build.service,
+                build.build.commit,
+                build.build.status
+            );
+            crate::output::say!("{}", build.log);
+        }
     })
 }
 
