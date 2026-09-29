@@ -616,14 +616,41 @@ pub(crate) fn unreachable(cloud: &str, error: reqwest::Error) -> LoginError {
     }
 }
 
-/// Cloud's client; its User-Agent marks the sessions it starts as signed-in devices.
+/// Cloud's client; its User-Agent marks the sessions it starts as signed-in devices,
+/// and `X-Ployz-Agent` names a detected coding agent, for telemetry only.
 pub(crate) fn http() -> Result<reqwest::Client, LoginError> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(agent) = agent(|name| std::env::var(name).ok())
+        .and_then(|agent| reqwest::header::HeaderValue::from_str(&agent).ok())
+    {
+        headers.insert("x-ployz-agent", agent);
+    }
     reqwest::Client::builder()
         .user_agent(concat!("ployz-cli/", env!("CARGO_PKG_VERSION")))
+        .default_headers(headers)
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|error| LoginError::Reply(error.to_string()))
+}
+
+/// The coding agent running this CLI, from the markers agent harnesses set. It
+/// never changes output, prompts or consent.
+fn agent(var: impl Fn(&str) -> Option<String>) -> Option<String> {
+    if let Some(agent) = var("AI_AGENT").filter(|agent| !agent.is_empty()) {
+        return Some(agent);
+    }
+    [
+        ("CLAUDECODE", "claude-code"),
+        ("CURSOR_AGENT", "cursor"),
+        ("CODEX_THREAD_ID", "codex"),
+        ("GEMINI_CLI", "gemini-cli"),
+        ("OPENCODE", "opencode"),
+        ("AMP_CURRENT_THREAD_ID", "amp"),
+    ]
+    .into_iter()
+    .find(|(marker, _)| var(marker).is_some_and(|value| !value.is_empty()))
+    .map(|(_, agent)| agent.to_owned())
 }
 
 fn now() -> u64 {
@@ -641,6 +668,28 @@ pub(crate) mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn agent_names_the_harness_from_its_markers() {
+        let only = |pairs: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).to_owned())
+            }
+        };
+        assert_eq!(agent(only(&[])), None);
+        assert_eq!(agent(only(&[("CLAUDECODE", "")])), None);
+        assert_eq!(
+            agent(only(&[("CLAUDECODE", "1")])).as_deref(),
+            Some("claude-code")
+        );
+        assert_eq!(
+            agent(only(&[("CODEX_THREAD_ID", "t1"), ("AI_AGENT", "pi")])).as_deref(),
+            Some("pi")
+        );
+    }
 
     /// A fake Cloud on loopback: `reply("POST /api/auth/device/token", body)` → (status, JSON).
     pub(crate) fn fake_cloud(
