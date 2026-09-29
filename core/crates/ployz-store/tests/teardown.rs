@@ -15,8 +15,8 @@ use ployz_store::{
     Actor, Admit, Cancel, ConfigStore, CreateBranch, CreateEnvironment, CreateProject,
     CreateService, CreateVolume, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName,
     EnvironmentRef, EnvironmentsQuery, Mount, OrganizationId, ProjectId, ProjectName,
-    RemovalsQuery, RemoveEnvironment, RemoveOrganization, RemoveProject, RunEvidence, RunnerId, ServiceId, SetDefaultEnvironment,
-    Trusted, VolumeId, VolumeName, VolumeObservation,
+    RemovalsQuery, RemoveEnvironment, RemoveProject, RunEvidence, RunnerId, ServiceId,
+    SetDefaultEnvironment, Trusted, VolumeId, VolumeName, VolumeObservation,
 };
 use serde_json::json;
 
@@ -457,7 +457,13 @@ fn remove_shop(store: &ConfigStore, who: &Actor) -> Result<Vec<String>, RpcError
                 project: ProjectName::parse("shop").unwrap(),
             },
         )
-        .map(|removed| removed.environments.iter().map(ToString::to_string).collect())
+        .map(|removed| {
+            removed
+                .environments
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        })
 }
 
 /// Take `environment` off the Servers with Deployment `n`, which applies.
@@ -492,12 +498,19 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].default_environment.as_str(), "production");
     assert_eq!(
-        listed[0].environments.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        listed[0]
+            .environments
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
         ["fix", "production", "staging"]
     );
     let kept = refusal(store.remove_organization(&who));
     assert_eq!(kept.code, RpcErrorCode::Conflict);
-    assert_eq!(kept.details["next"], json!("ployz project rm shop --confirm shop"));
+    assert_eq!(
+        kept.details["next"],
+        json!("ployz project rm shop --confirm shop")
+    );
 
     // Branches come off first; the Default Environment only after the rest.
     let next = refusal(remove_shop(&store, &who));
@@ -512,18 +525,41 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
     assert_eq!(in_flight.code, RpcErrorCode::Conflict);
     assert_eq!(in_flight.details.get("deployed"), None);
     store.cancel(&who, &Cancel { deployment: id(5) }).unwrap();
-    assert_eq!(refusal(remove_shop(&store, &who)).details["environment"], json!("fix"));
+    assert_eq!(
+        refusal(remove_shop(&store, &who)).details["environment"],
+        json!("fix")
+    );
 
     take_off(&store, &who, "fix", 6, &["web"]);
-    assert_eq!(refusal(remove_shop(&store, &who)).details["environment"], json!("staging"));
+    assert_eq!(
+        refusal(remove_shop(&store, &who)).details["environment"],
+        json!("staging")
+    );
     let default = refusal(admit(&store, &who, "production", 7, true, &[], None));
     assert_eq!(default.details["environments"], json!(["staging"]));
     take_off(&store, &who, "staging", 8, &[]);
 
     // Last, the Default Environment, under the same destructive review.
-    let unaccepted = refusal(admit(&store, &who, "production", 9, true, &[], Some(observed())));
+    let unaccepted = refusal(admit(
+        &store,
+        &who,
+        "production",
+        9,
+        true,
+        &[],
+        Some(observed()),
+    ));
     assert_eq!(unaccepted.code, RpcErrorCode::ConfirmationRequired);
-    admit(&store, &who, "production", 9, true, &["data"], Some(observed())).unwrap();
+    admit(
+        &store,
+        &who,
+        "production",
+        9,
+        true,
+        &["data"],
+        Some(observed()),
+    )
+    .unwrap();
     prepare(&store, 9, &["web", "db"]);
     succeed(
         &store,
@@ -557,7 +593,10 @@ fn a_project_leaves_the_servers_branches_first_and_its_default_last() {
 #[test]
 fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_parent() {
     let (store, who) = shop();
-    assert_eq!(remove_shop(&store, &who).unwrap(), ["staging", "production"]);
+    assert_eq!(
+        remove_shop(&store, &who).unwrap(),
+        ["staging", "production"]
+    );
 
     // The Default Environment may be a Branch: it comes off before its Parent.
     let (store, who) = shop();
@@ -579,9 +618,21 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
         .unwrap();
     deploy(&store, &who, "next", 2, &["web"]);
     set_default(&store, &who, "next");
-    assert_eq!(refusal(remove_shop(&store, &who)).details["environment"], json!("next"));
+    assert_eq!(
+        refusal(remove_shop(&store, &who)).details["environment"],
+        json!("next")
+    );
     take_off(&store, &who, "next", 3, &["web"]);
-    admit(&store, &who, "production", 4, true, &["data"], Some(observed())).unwrap();
+    admit(
+        &store,
+        &who,
+        "production",
+        4,
+        true,
+        &["data"],
+        Some(observed()),
+    )
+    .unwrap();
     prepare(&store, 4, &["web", "db"]);
     succeed(
         &store,

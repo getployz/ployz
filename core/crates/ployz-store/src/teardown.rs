@@ -215,7 +215,10 @@ fn on_servers(
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
     let history = deployment::history(tx, environment, i64::MAX)?;
-    if let Some(running) = history.iter().find(|deployment| deployment.status.in_flight()) {
+    if let Some(running) = history
+        .iter()
+        .find(|deployment| deployment.status.in_flight())
+    {
         return Ok(Some(running.clone()));
     }
     Ok(history
@@ -382,7 +385,10 @@ fn teardown_order<'a>(members: &'a [Member], default: &EnvironmentId) -> Vec<&'a
         } else {
             0
         };
-        (class, std::cmp::Reverse(ancestors(members, &member.id).len()))
+        (
+            class,
+            std::cmp::Reverse(ancestors(members, &member.id).len()),
+        )
     });
     order
 }
@@ -555,7 +561,10 @@ pub(crate) fn remove_project(
             id: project.id,
             name: project.name,
         },
-        environments: order.into_iter().map(|member| member.name.clone()).collect(),
+        environments: order
+            .into_iter()
+            .map(|member| member.name.clone())
+            .collect(),
     })
 }
 
