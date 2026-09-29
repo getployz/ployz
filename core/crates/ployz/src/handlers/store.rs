@@ -233,6 +233,29 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
     shell_words::join(next)
 }
 
+/// This same command again with `--project`. It keeps every guard flag it was given
+/// (`--expect`, `--version`, `--all`): dropping one would make a guarded write blind.
+/// Only [`next`]'s scope flags travel to other commands, so this stays separate.
+fn rerun(matches: &ArgMatches, words: &[&str]) -> String {
+    let mut rerun = words
+        .iter()
+        .map(|word| (*word).to_owned())
+        .collect::<Vec<_>>();
+    for flag in ["expect", "version"] {
+        if let Ok(Some(value)) = matches.try_get_one::<String>(flag) {
+            rerun.extend([format!("--{flag}"), value.clone()]);
+        }
+    }
+    if let Ok(Some(true)) = matches.try_get_one::<bool>("all") {
+        rerun.push("--all".to_owned());
+    }
+    rerun.extend(["--project".to_owned(), "PROJECT".to_owned()]);
+    next(
+        matches,
+        &rerun.iter().map(String::as_str).collect::<Vec<_>>(),
+    )
+}
+
 /// A refused stale write names the `read` command that shows the fresh state.
 pub(crate) fn with_refresh_hint(
     error: StoreCallError,
@@ -253,10 +276,10 @@ pub(crate) fn with_refresh_hint(
 /// Turn a Store error into this command's failure, adding the next step only the
 /// command line can name: an ambiguous Project is fixed by rerunning `words` with
 /// `--project`. `words` are the command and its accepted arguments, never raw input.
-pub(crate) fn failed<'m>(
-    matches: &'m ArgMatches,
-    words: &'m [&'m str],
-) -> impl FnOnce(StoreCallError) -> Error + 'm {
+pub(crate) fn failed<'matches>(
+    matches: &'matches ArgMatches,
+    words: &'matches [&'matches str],
+) -> impl FnOnce(StoreCallError) -> Error + 'matches {
     move |error| {
         let StoreCallError::Refused(mut error) = error else {
             return error.into();
@@ -265,8 +288,7 @@ pub(crate) fn failed<'m>(
             && let Some(details) = error.details.as_object_mut()
             && details.contains_key("projects")
         {
-            let rerun = [words, &["--project", "PROJECT"]].concat();
-            details.insert("next".into(), json!(next(matches, &rerun)));
+            details.insert("next".into(), json!(rerun(matches, words)));
         }
         error.into()
     }
