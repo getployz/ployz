@@ -590,5 +590,14 @@ fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result<(), Error>
         for node in &view.nodes {
             say!("  {}: {:?}", node.name, node.outcome);
         }
+        for build in &view.builds {
+            let commit = build.commit.get(..7).unwrap_or(&build.commit);
+            let reason = build.message.as_deref().unwrap_or_default();
+            say!(
+                "  build {} at {commit}: {:?} {reason}",
+                build.service,
+                build.status
+            );
+        }
     })
 }
