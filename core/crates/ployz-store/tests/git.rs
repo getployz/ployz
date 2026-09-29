@@ -8,11 +8,13 @@
 use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, AuthorizedRepository, Change, Command, ConfigStore, CreateGitService, CreateProject,
-    DiffQuery, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, Publish, ServiceId, SettingPath, Trusted, Written,
+    Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
+    ConfigStore, CreateGitService, CreateProject, CreateService, DeploymentId, DiffQuery, Edit,
+    EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
+    Publish, Query, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
 };
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 mod backend;
 
@@ -265,4 +267,189 @@ fn a_git_service_round_trips_get_edit_publish() {
         .unwrap();
     assert!(published.saved.0 >= 1);
     assert!(store.diff(&who, &DiffQuery::default()).unwrap().published);
+}
+
+fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
+    let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
+    store
+        .admit(
+            who,
+            &Admit {
+                id: id.clone(),
+                environment: EnvironmentRef::default(),
+                services: services
+                    .iter()
+                    .map(|name| ServiceName::parse(*name).unwrap())
+                    .collect(),
+                version: None,
+                upload: None,
+            },
+        )
+        .unwrap();
+    id
+}
+
+fn pins(commit: &str) -> BTreeMap<ServiceName, String> {
+    BTreeMap::from([(ServiceName::parse("web").unwrap(), commit.to_owned())])
+}
+
+fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence {
+    RunEvidence::Build(BuildReport {
+        service: ServiceName::parse("web").unwrap(),
+        status,
+        message: message.map(Into::into),
+        log: log.into(),
+    })
+}
+
+#[test]
+fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
+    let (store, who) = shop();
+    store
+        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .unwrap();
+    store
+        .create_service(
+            &who,
+            &CreateService {
+                id: ServiceId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("nginx:1".into()),
+            },
+        )
+        .unwrap();
+    let first = admit(&store, &who, 1, &[]);
+
+    // Only Git Services have a source to pin; Cloud reads it at the pinned commit.
+    let sources = store.sources(&first).unwrap();
+    assert_eq!(sources.len(), 1);
+    let source = &sources[0];
+    assert_eq!(
+        (source.service.as_str(), source.repository.as_str()),
+        ("web", "acme/web")
+    );
+    assert_eq!(source.repository_id, 11);
+    assert_eq!(
+        source.access,
+        ServiceGitAccess::GithubInstallation { installation_id: 7 }
+    );
+    assert_eq!(
+        (source.branch.as_deref(), source.commit.as_deref()),
+        (Some("main"), None)
+    );
+
+    // A pin never moves: the branch moving on changes nothing for this Deployment.
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    assert_eq!(
+        store.pin(&first, &pins(&a)).unwrap()[0].commit,
+        Some(a.clone())
+    );
+    assert_eq!(
+        store.pin(&first, &pins(&b)).unwrap()[0].commit,
+        Some(a.clone())
+    );
+    for bad in [
+        pins("HEAD"),
+        BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]),
+    ] {
+        let error = store.pin(&first, &bad).unwrap_err();
+        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    }
+
+    // Its runner gets the pin, and reports the build as it goes.
+    let runner = RunnerId::parse("cloud-1").unwrap();
+    let claimed = store.claim(&first, &runner).unwrap();
+    assert_eq!(claimed.sources[0].commit, Some(a.clone()));
+    let other = RunnerId::parse("cloud-2").unwrap();
+    let error = store
+        .record(&first, &other, report(BuildStatus::Building, None, "x"))
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    store
+        .record(
+            &first,
+            &runner,
+            report(BuildStatus::Building, None, "#1 FROM node\n"),
+        )
+        .unwrap();
+    let view = store.deployment(&who, &first).unwrap();
+    assert_eq!(
+        json!(view.builds),
+        json!([{"service": "web", "commit": a, "status": "building", "message": null}])
+    );
+    store
+        .record(
+            &first,
+            &runner,
+            report(BuildStatus::Failed, Some("npm ci failed"), "exit 1\n"),
+        )
+        .unwrap();
+    let View::BuildLog(log) = store
+        .read(
+            &who,
+            &Query::BuildLog(BuildLogQuery {
+                deployment: first.clone(),
+                service: ServiceName::parse("web").unwrap(),
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("a build log")
+    };
+    assert_eq!(log.log, "#1 FROM node\nexit 1\n");
+    assert_eq!(
+        (log.build.status, log.build.message.as_deref()),
+        (BuildStatus::Failed, Some("npm ci failed"))
+    );
+    let stranger = Actor {
+        organization: OrganizationId::parse("other").unwrap(),
+    };
+    let query = BuildLogQuery {
+        deployment: first.clone(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    assert_eq!(
+        store.build_log(&stranger, &query).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
+
+    // A build that succeeded leaves its receipt for the next Deployment to reuse.
+    let receipt = json!({"fingerprint": "f".repeat(64)});
+    store
+        .record(
+            &first,
+            &runner,
+            RunEvidence::Built(BTreeMap::from([(
+                ServiceName::parse("web").unwrap(),
+                receipt.clone(),
+            )])),
+        )
+        .unwrap();
+    store
+        .record(
+            &first,
+            &runner,
+            RunEvidence::NotExecuted("Build failed".into()),
+        )
+        .unwrap();
+    assert_eq!(
+        store.pin(&first, &pins(&b)).unwrap_err().code,
+        RpcErrorCode::Conflict
+    );
+
+    // A retry is a new Deployment: it pins afresh and gets the receipt as a hint.
+    let retry = admit(&store, &who, 2, &[]);
+    assert_eq!(store.sources(&retry).unwrap()[0].commit, None);
+    store.pin(&retry, &pins(&b)).unwrap();
+    let claimed = store.claim(&retry, &runner).unwrap();
+    assert_eq!(
+        claimed.receipts[&ServiceName::parse("web").unwrap()],
+        receipt
+    );
+
+    // A Deployment of other Services builds nothing.
+    let targeted = admit(&store, &who, 3, &["api"]);
+    assert!(store.sources(&targeted).unwrap().is_empty());
 }

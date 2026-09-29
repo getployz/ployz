@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, SavedEnvironmentIntent,
+    CompiledNodeConfig, EncryptedSecretValue, SavedEnvironmentIntent, ServiceSource,
     canonicalize_environment_intent, compile_environment_intent, lower_deployment,
     parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
 };
@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::Actor;
+use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::command::Admit;
 use crate::error;
 use crate::id::{DeploymentId, EnvironmentId, Hostname, Revision, RunnerId};
@@ -151,6 +152,8 @@ pub struct DeploymentView {
     /// The Deploy Preview its runner prepared, with environment values removed.
     pub preview: Option<Value>,
     pub outcome: Option<Outcome>,
+    /// Its Git Services' builds, once their commits are pinned.
+    pub builds: Vec<BuildView>,
 }
 
 /// What a Deployment did to one of its target nodes.
@@ -207,6 +210,8 @@ pub enum RunEvidence {
     /// The build receipts preparation produced, by runtime Service name. Each replaces
     /// that Service's latest receipt in the Environment.
     Built(BTreeMap<ServiceName, Value>),
+    /// Progress and log output of one pinned Git build.
+    Build(BuildReport),
 }
 
 /// A claimed Deployment and the frozen Deploy Intent its runner executes.
@@ -220,15 +225,17 @@ pub struct Claimed {
     pub input: Value,
     /// The latest build receipt of each Service, by runtime name: hints preparation verifies.
     pub receipts: BTreeMap<ServiceName, Value>,
+    /// The Git Services it builds, each with its pinned commit, if any.
+    pub sources: Vec<GitSource>,
 }
 
 /// One node a Deployment targets, as frozen at admission.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TargetNode {
-    id: String,
-    name: String,
+    pub(crate) id: String,
+    pub(crate) name: String,
     /// The runtime Service it lowers to, which Node Outcomes are confirmed by.
-    service: ServiceName,
+    pub(crate) service: ServiceName,
 }
 
 /// What admission freezes, besides the Saved revision.
@@ -256,12 +263,12 @@ struct Run {
     outcome: Option<Outcome>,
 }
 
-struct Stored {
-    summary: DeploymentSummary,
-    environment: EnvironmentId,
+pub(crate) struct Stored {
+    pub(crate) summary: DeploymentSummary,
+    pub(crate) environment: EnvironmentId,
     namespace: Namespace,
     cluster_domain: Option<Hostname>,
-    nodes: Vec<TargetNode>,
+    pub(crate) nodes: Vec<TargetNode>,
     run: Run,
 }
 
@@ -347,10 +354,24 @@ fn lower(
         crate::domain::expand(saved, cluster_domain),
     );
     let mut resolved = variables::resolve(&compiled, unseal)?;
+    let targeted: Vec<&str> = saved
+        .services
+        .iter()
+        .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
+        .map(|service| service.id.as_str())
+        .collect();
     let snapshots: Vec<Value> = compiled
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
+            // A targeted Deployment builds only the Git Services it targets.
+            CompiledNodeConfig::Service(config)
+                if !services.is_empty()
+                    && matches!(config.settings.source, ServiceSource::Git { .. })
+                    && !targeted.contains(&node.node_id.as_str()) =>
+            {
+                None
+            }
             CompiledNodeConfig::Service(config) => Some(json!({
                 "serviceId": node.node_id,
                 "resolvedEnv": resolved.remove(&node.node_id).unwrap_or_default(),
@@ -377,15 +398,45 @@ fn lower(
         "lineages": lineages,
         "selected": selected,
     });
-    let intent =
-        lower_deployment(serde_json::from_value(input.clone()).expect("lowering input is valid"))
-            .map_err(|error| {
-            error::invalid(
-                format!("This Environment can't deploy: {}", error.message),
-                json!({ "path": error.path }),
-            )
-        })?;
+    let intent = lower_deployment(
+        serde_json::from_value(built_later(input.clone())).expect("lowering input is valid"),
+    )
+    .map_err(|error| {
+        error::invalid(
+            format!("This Environment can't deploy: {}", error.message),
+            json!({ "path": error.path }),
+        )
+    })?;
     Ok((input, intent))
+}
+
+/// `input` with each Git Service's source replaced by the image its build will
+/// produce, as the SDK's preparation does once it built it.
+fn built_later(mut input: Value) -> Value {
+    let snapshots = input.get_mut("snapshots").and_then(Value::as_array_mut);
+    for config in snapshots
+        .into_iter()
+        .flatten()
+        .filter_map(|snapshot| snapshot.get_mut("config"))
+    {
+        if config.pointer("/source/type") != Some(&json!("git")) {
+            continue;
+        }
+        let name = config
+            .get("privateDns")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let image = json!({
+            "type": "image",
+            "version": 1,
+            "image": format!("ployz-build/{name}:pending"),
+            "credentials": { "type": "none" },
+        });
+        if let Some(source) = config.get_mut("source") {
+            *source = image;
+        }
+    }
+    input
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
@@ -520,6 +571,14 @@ pub(crate) fn retry(
             json_text(&Run::default()).as_str().into(),
             source.as_str().into(),
         ],
+    )?;
+    // A retry builds the commits its source pinned.
+    tx.execute(
+        "INSERT INTO config_build \
+         (deployment_id, service, organization_id, commit_sha, status, message, log) \
+         SELECT ?1, service, organization_id, commit_sha, 'pending', '', '' \
+         FROM config_build WHERE deployment_id = ?2",
+        &[id.as_str().into(), source.as_str().into()],
     )?;
     Ok(DeploymentSummary {
         id: id.clone(),
@@ -661,6 +720,7 @@ pub(crate) fn claim(
             save(tx, &stored)?;
         }
     }
+    let sources = build::sources_of(tx, &stored)?;
     let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
     let (input, mut intent) = lower(
         &stored.environment,
@@ -700,6 +760,7 @@ pub(crate) fn claim(
         intent,
         input,
         receipts,
+        sources,
     }))
 }
 
@@ -799,6 +860,11 @@ pub(crate) fn record(
                     ],
                 )?;
             }
+            Ok(stored.summary)
+        }
+        RunEvidence::Build(report) => {
+            running(&stored)?;
+            build::record(tx, &stored, &report)?;
             Ok(stored.summary)
         }
         RunEvidence::NotExecuted(reason) => {
@@ -988,7 +1054,9 @@ pub(crate) fn view(
             },
         })
         .collect();
+    let builds = build::views(tx, &stored)?;
     Ok(DeploymentView {
+        builds,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,
@@ -996,6 +1064,23 @@ pub(crate) fn view(
         preview: stored.run.preview,
         outcome: stored.run.outcome,
     })
+}
+
+/// One Git build of a Deployment in `who`'s Organization, with its log.
+pub(crate) fn build_log(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &build::BuildLogQuery,
+) -> Result<build::BuildLogView, RpcError> {
+    let rows = tx.query(
+        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
+        &[
+            query.deployment.as_str().into(),
+            who.organization.as_str().into(),
+        ],
+    )?;
+    let stored = stored(rows.first().ok_or_else(|| missing(&query.deployment))?)?;
+    build::log(tx, &stored, &query.service)
 }
 
 /// One page of `environment`'s Deployments, newest first, before `cursor`.
@@ -1030,20 +1115,22 @@ pub(crate) fn page(
 
 /// Load a Deployment with its Environment locked, so admissions, claims and records
 /// of one Environment apply in turn.
-fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let load = |tx: &mut dyn Tx| {
-        let rows = tx.query(
-            &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1"),
-            &[id.as_str().into()],
-        )?;
-        stored(rows.first().ok_or_else(|| missing(id))?)
-    };
-    let environment = load(tx)?.environment;
+pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
+    let environment = load(tx, id)?.environment;
     tx.execute(
         "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
         &[environment.as_str().into()],
     )?;
-    load(tx)
+    load(tx, id)
+}
+
+/// Load a Deployment of any Organization: in-process runner calls only.
+pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
+    let rows = tx.query(
+        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1"),
+        &[id.as_str().into()],
+    )?;
+    stored(rows.first().ok_or_else(|| missing(id))?)
 }
 
 fn stored(row: &Row) -> Result<Stored, RpcError> {
@@ -1113,7 +1200,7 @@ fn running(stored: &Stored) -> Result<(), RpcError> {
     }
 }
 
-fn saved_at(
+pub(crate) fn saved_at(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
     revision: Revision,

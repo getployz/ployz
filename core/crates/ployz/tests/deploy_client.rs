@@ -995,6 +995,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
             id.clone(),
             RunnerId::parse(runner).unwrap(),
             vec![ployz::context::Connection::tcp(address)],
+            Ok(Default::default()),
         )
     };
 
@@ -1033,6 +1034,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         second.clone(),
         RunnerId::parse("cloud-run-3").unwrap(),
         vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
     ));
     while store.deployment(&who, &second).unwrap().preview.is_none() {
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1065,6 +1067,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         admit.id.clone(),
         RunnerId::parse("cloud-run-4").unwrap(),
         vec![ployz::context::Connection::tcp(address)],
+        Ok(Default::default()),
     )
     .await
     .unwrap_err();

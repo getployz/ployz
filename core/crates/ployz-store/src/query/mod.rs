@@ -42,6 +42,8 @@ pub enum Query {
     Deployments(DeploymentsQuery),
     /// One Deployment.
     Deployment(DeploymentQuery),
+    /// One Git build of a Deployment, with its log.
+    BuildLog(crate::BuildLogQuery),
     /// An Environment's Services.
     Services(ServicesQuery),
     /// One Service.
@@ -69,6 +71,8 @@ pub enum View {
     Deployments(DeploymentsView),
     /// One Deployment.
     Deployment(crate::DeploymentView),
+    /// One Git build with its log.
+    BuildLog(crate::BuildLogView),
     /// An Environment's Services.
     Services(ServicesView),
     /// One Service.
@@ -95,6 +99,7 @@ pub(crate) fn run(
         Query::Deployment(query) => {
             crate::deployment::view(tx, who, &query.id).map(View::Deployment)
         }
+        Query::BuildLog(query) => crate::deployment::build_log(tx, who, query).map(View::BuildLog),
         Query::Services(query) => services(tx, who, query).map(View::Services),
         Query::Service(query) => service(tx, who, query).map(View::Service),
         Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
