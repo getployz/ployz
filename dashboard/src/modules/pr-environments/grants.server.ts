@@ -44,7 +44,10 @@ export const listMissingStorePrGrants = Effect.fn("PrEnvironments.listMissingSto
     const result = yield* callStoreAsMember(actor, input.organizationSlug, { operation: "read", query: { query: "pr_plans", project: input.projectSlug } });
     const view = result.ok && "view" in result.value && result.value.view === "pr_plans" ? result.value : null;
     const installationIds = [...new Set(view?.plans.map((plan) => plan.installation_id))];
-    const checked = yield* Effect.forEach(installationIds, missingGrant, { concurrency: 4 });
+    // GitHub not answering hides the warning rather than the page; the next read asks again.
+    const checked = yield* Effect.forEach(installationIds, (installationId) => missingGrant(installationId).pipe(
+      Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
+    ), { concurrency: 4 });
     return checked.filter((missing) => missing !== null);
   },
 );

@@ -197,7 +197,7 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
     return setting === "repository" && row.value === active.repository && service ? [service] : [];
   }) : [];
   const picks = copy ?? active?.copy ?? [];
-  const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: picks }) : null);
+  const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: [...focus, ...picks] }) : null);
   const view = result?.ok ? result.value : null;
   if (!active || !view) return null;
   const plan = planOf(view);

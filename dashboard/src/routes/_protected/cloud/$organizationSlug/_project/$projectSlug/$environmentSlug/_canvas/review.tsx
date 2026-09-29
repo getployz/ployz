@@ -12,12 +12,13 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/review",
 )({
   loader: async ({ params, context }) => {
-    const environment = await requireEnvironment(context, params);
+    // Over the Store the Environment's page read it already; Cloud keeps no row for it.
     if (storeEnabled) {
       const store = { project: params.projectSlug, environment: params.environmentSlug };
       await prefetchStoreViews(context, params.organizationSlug, branchQuery(store), saveQuery(store), updateQuery(store), environmentsQuery(params.projectSlug));
       return;
     }
+    const environment = await requireEnvironment(context, params);
     await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug: params.organizationSlug, scope: "environment", environmentId: environment.id }));
   },
   pendingComponent: CanvasInspectorPending,
