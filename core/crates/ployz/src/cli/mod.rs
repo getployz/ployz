@@ -5,6 +5,7 @@ use crate::handlers;
 pub mod env {
     pub const AUTO_CONFIRM: &str = "PLOYZ_AUTO_CONFIRM";
     pub const BUILD_GRANT: &str = "PLOYZ_BUILD_GRANT";
+    pub const CLOUD_URL: &str = "PLOYZ_CLOUD_URL";
     pub const CONFIG: &str = "PLOYZ_CONFIG";
     pub const CONNECT: &str = "PLOYZ_CONNECT";
     pub const CONTEXT: &str = "PLOYZ_CONTEXT";
@@ -24,6 +25,8 @@ pub fn command() -> Command {
         .subcommand(handlers::cloud::command())
         .subcommand(handlers::context::command())
         .subcommand(handlers::ingress::command())
+        .subcommand(handlers::login::login_command())
+        .subcommand(handlers::login::logout_command())
         .subcommand(handlers::machine::command())
         .subcommand(handlers::project::command())
         .subcommand(handlers::service::command())
