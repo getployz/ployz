@@ -329,33 +329,64 @@ pub(crate) async fn wait(
     }
 }
 
-/// End this device's sign-in: Cloud first, then the stored credential.
+/// A finished logout: the Cloud, and for an approved sign-in, the device Cloud signed out and
+/// which Servers confirmed clearing its key.
+#[derive(Debug)]
+pub(crate) struct SignedOut {
+    pub(crate) cloud: String,
+    pub(crate) device: Option<String>,
+    pub(crate) servers: crate::cloud_account::ServerClears,
+}
+
+/// End this device's sign-in: Cloud first (which also clears its key on each Server), then
+/// the stored credential. A sign-in Cloud already ended is only forgotten.
 ///
-/// Returns the Cloud it signed out of, or `None` when nothing was signed in.
+/// Returns `None` when nothing was signed in.
 ///
 /// # Errors
 ///
 /// Returns a Cloud failure, keeping the stored sign-in so logout can be retried,
 /// or a store failure.
-pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<String>, LoginError> {
-    let cloud = match store.load()? {
+pub(crate) async fn logout(store: &CredentialStore) -> Result<Option<SignedOut>, LoginError> {
+    #[derive(Deserialize)]
+    struct Reply {
+        signed_out: Device,
+        servers: crate::cloud_account::ServerClears,
+    }
+    #[derive(Deserialize)]
+    struct Device {
+        id: String,
+    }
+    let signed_out = match store.load()? {
         None => return Ok(None),
-        Some(Stored::Pending(pending)) => pending.cloud,
+        Some(Stored::Pending(pending)) => SignedOut {
+            cloud: pending.cloud,
+            device: None,
+            servers: Default::default(),
+        },
         Some(Stored::SignedIn(signed_in)) => {
-            let url = format!("{}/api/auth/sign-out", signed_in.cloud);
+            let url = format!("{}/api/cli/logout", signed_in.cloud);
             let response = http()?
                 .post(url)
                 .bearer_auth(&signed_in.token.0)
-                .json(&serde_json::json!({}))
                 .send()
                 .await
                 .map_err(|error| unreachable(&signed_in.cloud, error))?;
-            ensure_success(response).await?;
-            signed_in.cloud
+            let (device, servers) = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+                (None, Default::default())
+            } else {
+                let reply: Reply = decode(ensure_success(response).await?)?;
+                (Some(reply.signed_out.id), reply.servers)
+            };
+            SignedOut {
+                cloud: signed_in.cloud,
+                device,
+                servers,
+            }
         }
     };
     store.clear()?;
-    Ok(Some(cloud))
+    Ok(Some(signed_out))
 }
 
 enum Poll {
@@ -652,7 +683,13 @@ pub(crate) mod tests {
                     "session": { "activeOrganizationId": "o1", "activeOrganizationSlug": "acme" },
                 }),
             ),
-            "POST /api/auth/sign-out" => (200, serde_json::json!({ "success": true })),
+            "POST /api/cli/logout" => (
+                200,
+                serde_json::json!({
+                    "signed_out": { "id": "d1" },
+                    "servers": { "confirmed": ["m1"], "unconfirmed": ["m2"] },
+                }),
+            ),
             other => panic!("unexpected {other}"),
         })
     }
@@ -697,6 +734,24 @@ pub(crate) mod tests {
             let mode = std::fs::metadata(&store.path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    #[tokio::test]
+    async fn logout_reports_servers_still_to_clear_and_forgets_the_sign_in() {
+        let cloud = device_cloud(Arc::new(Mutex::new(Some("approved"))));
+        let (_dir, store) = store();
+        let Start::Pending { pending, .. } = start(&store, &cloud).await.unwrap() else {
+            panic!("a fresh login waits for approval");
+        };
+        wait(&store, pending).await.unwrap();
+        let out = logout(&store).await.unwrap().unwrap();
+        assert_eq!(out.device.as_deref(), Some("d1"));
+        assert_eq!(out.servers.unconfirmed, ["m2"]);
+        assert!(matches!(
+            signed_in(&store).await,
+            Err(LoginError::SignedOut)
+        ));
+        assert!(logout(&store).await.unwrap().is_none());
     }
 
     #[tokio::test]
