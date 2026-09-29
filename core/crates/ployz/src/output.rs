@@ -191,15 +191,26 @@ impl Gaps {
         }
     }
 
+    fn is_complete(&self) -> bool {
+        self.failures.is_empty() && self.omitted.is_empty() && self.unavailable_volumes.is_empty()
+    }
+
     /// `Ok` when every Machine answered; otherwise the partial exit.
     pub(crate) fn outcome(&self) -> Result<(), Failure> {
-        if self.failures.is_empty()
-            && self.omitted.is_empty()
-            && self.unavailable_volumes.is_empty()
-        {
+        if self.is_complete() {
             Ok(())
         } else {
             Err(Failure::partial())
+        }
+    }
+
+    /// A fan-out that found nothing: `not_found` only when every Machine answered,
+    /// otherwise an absent value, since absence is unproven.
+    pub(crate) fn absence<T>(&self, not_found: Failure) -> Result<Option<T>, Failure> {
+        if self.is_complete() {
+            Err(not_found)
+        } else {
+            Ok(None)
         }
     }
 }

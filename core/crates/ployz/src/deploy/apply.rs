@@ -77,6 +77,12 @@ pub(crate) enum ApplyError {
     },
 }
 
+impl From<Failure> for ApplyError {
+    fn from(error: Failure) -> Self {
+        Self::Prepare(error)
+    }
+}
+
 impl From<DeployError> for ApplyError {
     fn from(error: DeployError) -> Self {
         Self::Prepare(error.into())
@@ -91,17 +97,23 @@ impl From<ApplyError> for Failure {
                 outcome,
                 rows,
                 live_shown,
-            } => {
-                let text =
-                    report::paint_closing(&outcome, &rows, live_shown, &Ink::detect(io::stderr()));
-                Failure::detailed(
-                    ployz_core::RpcErrorCode::Internal,
-                    text.trim().to_owned(),
-                    serde_json::json!({ "outcome": outcome }),
-                )
-            }
+            } => closing_failure(&outcome, &rows, live_shown),
         }
     }
+}
+
+/// The closing report of a failed execution, with its outcome as evidence.
+fn closing_failure(
+    outcome: &DeployOutcome<ExecutionError>,
+    rows: &[OperationRow],
+    live_shown: bool,
+) -> Failure {
+    let text = report::paint_closing(outcome, rows, live_shown, &Ink::detect(io::stderr()));
+    Failure::detailed(
+        ployz_core::RpcErrorCode::Internal,
+        text.trim().to_owned(),
+        serde_json::json!({ "outcome": outcome }),
+    )
 }
 
 pub(crate) struct ConfirmGate<'a> {
@@ -115,7 +127,7 @@ pub(crate) async fn deploy_scale(
     replicas: NonZeroU32,
     skip_health_monitor: bool,
     gate: ConfirmGate<'_>,
-) -> Result<Outcome, Failure> {
+) -> Result<Outcome, ApplyError> {
     let preview = plan_scale(
         client,
         selector,
@@ -134,7 +146,7 @@ async fn confirm_and_execute(
     preview: &DeployPlan,
     gate: ConfirmGate<'_>,
     cancellation: &CancellationToken,
-) -> Result<Outcome, Failure> {
+) -> Result<Outcome, ApplyError> {
     say_inline!("{}", render::plan_text(preview, gate.context));
     if preview.noop() {
         return Ok(nothing_done());
@@ -160,7 +172,6 @@ async fn confirm_and_execute(
         .await,
         &format!("Deployed to {}", gate.context),
     )
-    .map_err(Into::into)
 }
 
 pub(crate) async fn remove_project(
@@ -169,7 +180,7 @@ pub(crate) async fn remove_project(
     volumes: VolumeFate,
     context: &str,
     confirm_data_loss: &DataLossConfirmation,
-) -> Result<Outcome, Failure> {
+) -> Result<Outcome, ApplyError> {
     let preview = client
         .prepare_project_destroy(name, confirm_data_loss, volumes)
         .await
@@ -192,7 +203,6 @@ pub(crate) async fn remove_project(
         .await,
         &format!("Removed Project {name} from {context}"),
     )
-    .map_err(Into::into)
 }
 
 async fn stream_confirm(
@@ -343,8 +353,20 @@ fn nothing_done() -> Outcome {
 /// # Errors
 ///
 /// Returns a serialization or stdout write error.
-pub(crate) fn emit_outcome(outcome: &Outcome) -> Result<(), Failure> {
-    crate::output::emit(&serde_json::json!({ "outcome": outcome }))
+pub(crate) fn emit_outcome(result: Result<Outcome, ApplyError>) -> Result<(), Failure> {
+    match result {
+        Ok(outcome) => crate::output::emit(&serde_json::json!({ "outcome": outcome })),
+        // Execution committed: its outcome is the result, and the failure makes it partial.
+        Err(ApplyError::Execute {
+            outcome,
+            rows,
+            live_shown,
+        }) => {
+            crate::output::emit(&serde_json::json!({ "outcome": outcome }))?;
+            Err(closing_failure(&outcome, &rows, live_shown))
+        }
+        Err(ApplyError::Prepare(error)) => Err(error),
+    }
 }
 
 fn finish(

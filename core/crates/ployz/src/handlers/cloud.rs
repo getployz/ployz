@@ -207,13 +207,10 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
-    if let Err(error) = catch_up {
-        return Err(Error::usage(crate::global_catch_up::joined_catch_up_error(
-            error,
-        )));
-    }
     crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
-    crate::output::emit(&serde_json::json!({ "machine": assigned, "founded": false }))
+    crate::output::emit(&serde_json::json!({ "machine": assigned, "founded": false }))?;
+    // The join is committed and printed; a catch-up failure makes it partial.
+    catch_up.map_err(|error| Error::usage(crate::global_catch_up::joined_catch_up_error(error)))
 }
 
 enum FounderLocalState {

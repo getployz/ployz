@@ -186,13 +186,10 @@ fn inspected(
     gaps: &Gaps,
 ) -> Result<Option<MachineVolume>, Error> {
     match NameMatches::from_matches(volumes) {
-        NameMatches::None if gaps.failures.is_empty() && gaps.omitted.is_empty() => {
-            Err(Error::not_found(format!(
-                "Docker Volume {} was not found",
-                name.as_str().escape_debug()
-            )))
-        }
-        NameMatches::None => Ok(None),
+        NameMatches::None => gaps.absence(Error::not_found(format!(
+            "Docker Volume {} was not found",
+            name.as_str().escape_debug()
+        ))),
         NameMatches::One(volume) => Ok(Some(volume)),
         volumes @ NameMatches::Ambiguous { .. } => Err(Error::ambiguous(format!(
             "Docker Volume {} is ambiguous; select one Machine: {}",
@@ -280,7 +277,9 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 "failures": gaps.failures,
                 "omitted": gaps.omitted,
             }))?;
-            refuse_unless_removed(removal)
+            refuse_unless_removed(removal)?;
+            // A Machine that never answered may still hold a same-named volume.
+            gaps.outcome()
         })
     })
 }

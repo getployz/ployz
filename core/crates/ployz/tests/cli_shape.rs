@@ -294,6 +294,18 @@ fn json_without_a_command_is_the_version_or_an_error() {
     assert_eq!(message(&json), "a command is required");
 }
 
+#[test]
+fn json_with_a_missing_subcommand_is_a_usage_error_not_help() {
+    let (code, json, _) = run_json(&["machine", "--json"]);
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "invalid_argument",
+        "{json}"
+    );
+    assert_eq!(message(&json), "ployz machine requires a subcommand");
+}
+
 fn message(json: &serde_json::Value) -> &str {
     json.pointer("/error/message")
         .and_then(serde_json::Value::as_str)

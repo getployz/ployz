@@ -6,7 +6,7 @@ use ployz_core::{
     DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
     MachineId, MachineObservation, MembershipObservation, ObservedDataLoss, QualifiedService,
     RemoveVolumesRequest, RpcError, ServiceObservation, ServicePlacementEligibility,
-    ServiceSelector, VolumeRemoval, VolumeSource, select_service,
+    ServiceSelector, ServiceSelectorError, VolumeRemoval, VolumeSource, select_service,
 };
 use serde::Serialize;
 
@@ -252,8 +252,13 @@ pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let services = live.services();
-            let service = select_service(&services, &selector)?;
-            output::show_fanout("service", &service, &Gaps::of(&live.containers))
+            let gaps = Gaps::of(&live.containers);
+            let service = match select_service(&services, &selector) {
+                Ok(service) => Some(service),
+                Err(error @ ServiceSelectorError::NotFound { .. }) => gaps.absence(error.into())?,
+                Err(error) => return Err(error.into()),
+            };
+            output::show_fanout("service", &service, &gaps)
         })
     })
 }
@@ -494,6 +499,8 @@ struct ServiceActionOutcome {
     containers: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
     container_failures: Vec<ContainerFailure>,
+    /// Why the action's effect was not confirmed.
+    wait_error: Option<RpcError>,
     partial: bool,
 }
 
@@ -522,6 +529,8 @@ struct ServiceActionResult<'a> {
     failures: &'a [MachineFailure<RpcError>],
     omitted: &'a [MachineId],
     #[serde(skip_serializing_if = "Option::is_none")]
+    wait_error: Option<&'a RpcError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     volumes: Option<&'a [VolumeRemoval]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     volumes_not_attempted: Option<&'a [DockerVolumeId]>,
@@ -534,6 +543,7 @@ impl ServiceActionOutcome {
             container_failures: &self.container_failures,
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
+            wait_error: self.wait_error.as_ref(),
             volumes: None,
             volumes_not_attempted: None,
         }
@@ -595,7 +605,8 @@ async fn apply_service_action(
     }
     let cancellation = cancellation_on_ctrl_c();
     let _parent = cancellation.clone().drop_guard();
-    client
+    // The action already committed: an unconfirmed wait is part of the result.
+    let wait_error = client
         .wait_for_container_observations(
             &changed,
             match action {
@@ -606,7 +617,14 @@ async fn apply_service_action(
             },
             &cancellation,
         )
-        .await?;
+        .await
+        .err();
+    if let Some(error) = &wait_error {
+        eprintln!("WARNING: {action} was not confirmed: {}", error.message);
+        partial = true;
+        // Unconfirmed Containers may still mount their volumes.
+        changed.clear();
+    }
     if !live.containers.all_targets_succeeded() {
         eprintln!("WARNING: the Service selection came from a partial Live Observation");
         partial = true;
@@ -615,6 +633,7 @@ async fn apply_service_action(
         affected: changed.into_iter().collect(),
         containers: rows,
         container_failures,
+        wait_error,
         partial,
     })
 }
@@ -640,8 +659,8 @@ pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
                 context: context.unwrap_or("default"),
             },
         )
-        .await?;
-        crate::deploy::emit_outcome(&outcome)
+        .await;
+        crate::deploy::emit_outcome(outcome)
     })
 }
 

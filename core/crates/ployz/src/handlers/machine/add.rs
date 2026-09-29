@@ -102,6 +102,8 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
 
         Ok::<_, Error>(assigned)
     })?;
+    // The Machine joined: print it before any follow-up can fail.
+    output::emit(&json!({ "machine": assigned }))?;
 
     connection = connection.with_machine_id(assigned.id);
     config.save_connection(&context_name, connection.clone())?;
@@ -120,16 +122,15 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
     if let Err(error) = catch_up {
         let recovery =
             super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
-        return Err(Error::detailed(
+        return Err(Error::coded(
             ployz_core::RpcErrorCode::Internal,
             format!(
                 "{}\nFor ingress, continue with: {recovery}",
                 crate::global_catch_up::joined_catch_up_error(error)
             ),
-            json!({ "machine": assigned }),
         ));
     }
-    output::emit(&json!({ "machine": assigned }))
+    Ok(())
 }
 
 fn added_machine_line(assigned: &Machine) -> String {

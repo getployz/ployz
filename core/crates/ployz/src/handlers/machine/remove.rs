@@ -87,8 +87,15 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             );
         }
 
+        // The removal is committed: print it before local cleanup can fail.
+        output::emit(&json!({
+            "machine": selected,
+            "reset_warning": reset_failure,
+            "data_loss": observed.data_loss,
+            "under_replicated": replicated_services,
+        }))?;
         // Cleanup failure must not leave the removed Machine named in the
-        // context (#249) and must not fail the command (#449).
+        // context (#249); after the printed result it is partial, not a failed removal (#449).
         let mut config = options.load_or_empty_config().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         if let Some(context_name) = config.context_name(options.context()).map(str::to_owned)
             && let Some(context) = config.contexts.get_mut(&context_name)
@@ -96,12 +103,6 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             context.drop_machine(&selected.id);
             config.save().map_err(|error| Error::warned("local context cleanup failed after Machine removal", error))?;
         }
-        output::emit(&json!({
-            "machine": selected,
-            "reset_warning": reset_failure,
-            "data_loss": observed.data_loss,
-            "under_replicated": replicated_services,
-        }))?;
         if reset_failure.is_some() {
             return Err(Error::partial());
         }

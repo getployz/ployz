@@ -137,12 +137,14 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
             return Ok(Some(outcome));
         }
         Ok::<_, Error>(None)
-    })?;
+    });
+    // The Machine and its context are committed: print them before a follow-up failure.
     output::emit(&json!({
         "machine": machine,
         "context": context_name,
-        "ingress": ingress,
-    }))
+        "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
+    }))?;
+    ingress.map(drop)
 }
 
 #[cfg(test)]
