@@ -7,7 +7,8 @@ import { buttonVariants } from "#/components/ui/button-variants";
 import { Spinner } from "#/components/ui/spinner";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "#/components/ui/table";
 import { cn } from "#/lib/utils";
-import type { DnsRecord, PublicDomainStatus } from "#/modules/services/public-domain-status";
+import type { DnsRecord, DomainRow } from "@ployz/sdk";
+import type { PublicDomainStatus } from "#/modules/services/public-domain-status";
 import { RelativeTime } from "#/components/relative-time";
 
 export function DomainTitle({
@@ -60,10 +61,24 @@ export function DomainRowShell({
   );
 }
 
-type StatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "organization_settings" | null };
-
 /** The icon is the status; one short phrase and at most one link say what's next. */
-function statusView(status: PublicDomainStatus): StatusView {
+export type DomainStatusView = { icon: ReactNode; phrase: ReactNode; action: "dns" | "organization_settings" | "servers" | null };
+
+/** A Store domain's status: the Store words the phrase and names the action. */
+export function storeStatusView(row: Pick<DomainRow, "status" | "reason" | "action">): DomainStatusView {
+  const action = row.action?.type === "dns" ? "dns" : row.action?.type === "add_server" ? "servers" : null;
+  switch (row.status) {
+    case "ready":
+      return { icon: <GlobeIcon />, phrase: row.reason, action };
+    case "setting_up":
+      return { icon: row.action?.type === "deploy" ? <GlobeIcon className="opacity-50" /> : <Spinner />, phrase: row.reason, action };
+    case "needs_attention":
+      return { icon: <AlertTriangleIcon className="text-warning" />, phrase: row.reason, action };
+  }
+}
+
+// TODO(#1275): goes with the legacy drawer.
+export function statusView(status: PublicDomainStatus): DomainStatusView {
   const warning = <AlertTriangleIcon className="text-warning" />;
   switch (status.kind) {
     case "live":
@@ -134,7 +149,7 @@ export function PublicDomainRow({
   title,
   label,
   portLabel,
-  status,
+  view,
   dnsRecords = [],
   changed,
   onEdit,
@@ -146,7 +161,7 @@ export function PublicDomainRow({
   /** Names the domain in the edit and remove buttons. */
   label: string;
   portLabel: string;
-  status: PublicDomainStatus;
+  view: DomainStatusView;
   /** The records that point the domain here; only custom domains have them. */
   dnsRecords?: DnsRecord[];
   changed: boolean;
@@ -154,7 +169,6 @@ export function PublicDomainRow({
   onDelete: () => void;
 }) {
   const [showDns, setShowDns] = useState(false);
-  const view = statusView(status);
   const action = view.action === "dns" && dnsRecords.length === 0 ? null : view.action;
   return (
     <div className="flex flex-col gap-2">
@@ -191,6 +205,15 @@ export function PublicDomainRow({
               className={buttonVariants({ variant: "link", size: "sm" })}
             >
               Organization › General
+            </Link>
+          ) : null}
+          {action === "servers" ? (
+            <Link
+              to="/cloud/$organizationSlug/~/servers"
+              params={{ organizationSlug }}
+              className={buttonVariants({ variant: "link", size: "sm" })}
+            >
+              Add a server
             </Link>
           ) : null}
         </div>
