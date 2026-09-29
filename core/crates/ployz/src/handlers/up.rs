@@ -94,7 +94,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             services: Vec::new(),
             version: None,
             source: Some(directory),
-            accept: super::env::accepted(matches)?,
+            accept: super::teardown::accepted(matches)?,
         },
         events,
     )?;
