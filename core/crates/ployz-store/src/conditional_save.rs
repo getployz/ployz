@@ -388,7 +388,7 @@ pub(crate) fn save(
     tx.execute(
         "INSERT INTO config_conditional_save (id, organization_id, environment_id, state, \
          pr_environment_id, repository_id, number, target_branch, working_revision, merge_commit, \
-         saved_at, saved) VALUES (?1, ?2, ?3, 'standing', ?4, ?5, ?6, ?7, ?8, '', ?9, ?10)",
+         saved_at, saved) VALUES (?1, ?2, ?3, 'standing', ?4, ?5, ?6, ?7, ?8, NULL, ?9, ?10)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -693,14 +693,10 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
         if stands {
             tx.execute(
                 "UPDATE config_conditional_save \
-                 SET state = 'frozen', pr_environment_id = '', merge_commit = ?2 WHERE id = ?1",
+                 SET state = 'frozen', pr_environment_id = NULL, merge_commit = ?2 WHERE id = ?1",
                 &[
                     id.as_str().into(),
-                    event
-                        .merge_commit
-                        .as_ref()
-                        .map_or("", CommitSha::as_str)
-                        .into(),
+                    event.merge_commit.as_ref().map(CommitSha::as_str).into(),
                 ],
             )?;
             frozen.push((id, into));

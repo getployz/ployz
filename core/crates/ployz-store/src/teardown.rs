@@ -462,35 +462,8 @@ fn removal(
         .filter(|latest| latest.remove))
 }
 
-/// Delete every row of `environment`, children before what they reference.
+/// Delete `environment` and everything it owns: its rows go with it.
 pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        "DELETE FROM config_build WHERE deployment_id IN \
-         (SELECT id FROM config_deployment WHERE environment_id = ?1)",
-        &[environment.as_str().into()],
-    )?;
-    for table in [
-        "config_applied",
-        "config_deployment",
-        "config_namespace",
-        "config_saved",
-        "config_node_introduction",
-        "config_registry_credential",
-        "config_build_receipt",
-        "config_service_policy",
-        "config_waiting_deploy",
-        "config_pr_environment",
-        "config_environment_branch",
-    ] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE environment_id = ?1"),
-            &[environment.as_str().into()],
-        )?;
-    }
-    tx.execute(
-        "DELETE FROM config_conditional_save WHERE environment_id = ?1 OR pr_environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
     tx.execute(
         "DELETE FROM config_environment WHERE id = ?1",
         &[environment.as_str().into()],
@@ -541,13 +514,7 @@ pub(crate) fn remove_project(
             return Err(still_on_servers(&member.name, &running));
         }
     }
-    for member in &order {
-        purge(tx, &member.id)?;
-    }
-    tx.execute(
-        "DELETE FROM config_pr_plan WHERE project_id = ?1",
-        &[project.id.as_str().into()],
-    )?;
+    // Its Environments and PR plans go with it, and everything they own.
     tx.execute(
         "DELETE FROM config_project WHERE id = ?1",
         &[project.id.as_str().into()],
@@ -591,7 +558,6 @@ pub(crate) fn remove_organization(
         "config_check_suite",
         "config_build_order",
         "config_pull_request",
-        "config_conditional_save",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),

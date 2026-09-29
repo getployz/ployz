@@ -16,7 +16,7 @@ use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::Tx;
+use crate::storage::{Tx, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -62,26 +62,6 @@ pub enum BuildStatus {
     /// A matching image from an earlier build served it.
     Reused,
     Failed,
-}
-
-impl BuildStatus {
-    const ALL: [Self; 5] = [
-        Self::Pending,
-        Self::Building,
-        Self::Built,
-        Self::Reused,
-        Self::Failed,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Building => "building",
-            Self::Built => "built",
-            Self::Reused => "reused",
-            Self::Failed => "failed",
-        }
-    }
 }
 
 /// A runner's report on one build: where it is now, and its log output since the
@@ -157,7 +137,7 @@ pub(crate) fn pin(
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, ?3, 'pending', '', '' \
+             SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
              FROM config_deployment WHERE id = ?1 \
              ON CONFLICT (deployment_id, service) DO NOTHING",
             &[
@@ -182,7 +162,7 @@ pub(crate) fn record(
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, '', 'pending', '', '' \
+             SELECT id, ?2, organization_id, NULL, 'pending', NULL, '' \
              FROM config_deployment WHERE id = ?1 \
              ON CONFLICT (deployment_id, service) DO NOTHING",
             &[id.as_str().into(), report.service.as_str().into()],
@@ -199,15 +179,15 @@ pub(crate) fn record(
     };
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = trimmed(report.message.as_deref());
+    let message = report.message.as_deref().map(trimmed);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5 \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
             id.as_str().into(),
             report.service.as_str().into(),
-            report.status.as_str().into(),
-            message.as_str().into(),
+            name_of(report.status).as_str().into(),
+            message.as_deref().into(),
             log.as_str().into(),
         ],
     )?;
@@ -252,7 +232,7 @@ struct BuildRow {
     /// None when it builds from the Deployment's upload.
     commit: Option<CommitSha>,
     status: BuildStatus,
-    message: String,
+    message: Option<String>,
     log: String,
     /// The GitHub run it was handed to, if any.
     github: Option<GithubState>,
@@ -277,7 +257,7 @@ impl BuildRow {
                 .unwrap_or_else(|| self.service.to_string()),
             commit: self.commit.clone(),
             status: self.status,
-            message: (!self.message.is_empty()).then(|| self.message.clone()),
+            message: self.message.clone(),
         }
     }
 }
@@ -291,25 +271,21 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let status = row.text(2)?;
         Ok(BuildRow {
             service: ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("build"))?,
-            commit: match row.text(1)? {
-                "" => None,
-                _ => Some(row.parse(1, "build commit")?),
-            },
-            status: BuildStatus::ALL
-                .into_iter()
-                .find(|known| known.as_str() == status)
-                .ok_or_else(|| error::corrupt("build status"))?,
-            message: row.text(3)?.to_owned(),
+            commit: row
+                .optional_text(1)?
+                .map(|commit| CommitSha::parse(commit).map_err(|_| error::corrupt("build commit")))
+                .transpose()?,
+            status: row.variant(2, "build status")?,
+            message: row.optional_text(3)?.map(str::to_owned),
             log: row.text(4)?.to_owned(),
-            github: match row.text(5)? {
-                "" => None,
-                github => {
-                    Some(serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))?)
-                }
-            },
+            github: row
+                .optional_text(5)?
+                .map(|github| {
+                    serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))
+                })
+                .transpose()?,
             organization: row.parse(6, "build")?,
         })
     })
@@ -388,9 +364,7 @@ fn source_of(
         builders: Vec::new(),
         preferred_machine: None,
         status: row.map(|row| row.status),
-        message: row
-            .filter(|row| !row.message.is_empty())
-            .map(|row| row.message.clone()),
+        message: row.and_then(|row| row.message.clone()),
     })
 }
 
@@ -415,8 +389,8 @@ fn append(log: &mut String, more: &str) {
     }
 }
 
-fn trimmed(message: Option<&str>) -> String {
-    message.unwrap_or_default().chars().take(500).collect()
+fn trimmed(message: &str) -> String {
+    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -580,23 +554,22 @@ fn save_github(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     status: BuildStatus,
-    message: &str,
+    message: Option<&str>,
     log: &str,
     github: Option<&GithubState>,
 ) -> Result<(), RpcError> {
-    let github = github.map_or_else(String::new, |github| {
-        serde_json::to_string(github).expect("a GitHub build is JSON")
-    });
+    let github =
+        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
             id.deployment.as_str().into(),
             id.service.as_str().into(),
-            status.as_str().into(),
+            name_of(status).as_str().into(),
             message.into(),
             log.into(),
-            github.as_str().into(),
+            github.as_deref().into(),
         ],
     )?;
     Ok(())
@@ -654,7 +627,7 @@ pub(crate) fn github_dispatched(
         received: 0,
         ended: None,
     };
-    save_github(tx, id, BuildStatus::Building, "", &log, Some(&github))
+    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
 }
 
 /// The GitHub build `id`.
@@ -742,7 +715,14 @@ pub(crate) fn github_check_in(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs()),
     );
-    save_github(tx, id, row.status, &row.message, &row.log, Some(&github))
+    save_github(
+        tx,
+        id,
+        row.status,
+        row.message.as_deref(),
+        &row.log,
+        Some(&github),
+    )
 }
 
 /// Take a batch of run `run_id`'s log after it checked in, until its final report.
@@ -781,7 +761,14 @@ pub(crate) fn github_report(
     let mut github = github.clone();
     github.received = github.received.max(report.from + report.lines.len() as u64);
     github.ended.clone_from(&report.ended);
-    save_github(tx, id, row.status, &row.message, &log, Some(&github))?;
+    save_github(
+        tx,
+        id,
+        row.status,
+        row.message.as_deref(),
+        &log,
+        Some(&github),
+    )?;
     Ok(github.received)
 }
 
@@ -815,23 +802,23 @@ pub(crate) fn github_end(
             } else {
                 BuildStatus::Reused
             };
-            (status, String::new(), row.github.as_ref())
+            (status, None, row.github.as_ref())
         }
         GithubEnd::Failed { message } => {
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                trimmed(Some(message)),
+                Some(trimmed(message)),
                 row.github.as_ref(),
             )
         }
         // The next Builder starts it afresh.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, trimmed(Some(message)), None)
+            (BuildStatus::Pending, Some(trimmed(message)), None)
         }
     };
-    save_github(tx, id, status, &message, &log, github)?;
+    save_github(tx, id, status, message.as_deref(), &log, github)?;
     Ok(status)
 }
 
