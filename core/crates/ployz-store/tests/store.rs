@@ -60,7 +60,9 @@ fn get(store: &ConfigStore, who: &Actor, path: Option<&str>) -> EnvironmentView 
         environment: EnvironmentRef::default(),
         path: path.map(Into::into),
     });
-    let View::Environment(view) = store.read(who, &query).unwrap();
+    let View::Environment(view) = store.read(who, &query).unwrap() else {
+        unreachable!("an Environment query reads an Environment")
+    };
     view
 }
 
@@ -376,7 +378,9 @@ fn environments_are_created_in_a_named_project_and_addressed_by_name() {
         },
         path: None,
     });
-    let View::Environment(view) = store.read(&who, &query).unwrap();
+    let View::Environment(view) = store.read(&who, &query).unwrap() else {
+        unreachable!("an Environment query reads an Environment")
+    };
     assert!(view.settings.is_empty(), "web lives in production only");
 }
 
