@@ -8,7 +8,7 @@ export const Route = createFileRoute(
   loader: async ({ params, context }) => {
     const environment = await requireEnvironment(context, params);
     // TODO(#1267): Projects and Environments move to the Store; until then the Store names them like the dashboard.
-    const store = { project: params.projectSlug, environment: environment.name };
+    const store = { project: params.projectSlug, environment: params.environmentSlug };
     await prefetchStoreViews(context, params.organizationSlug, environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store));
     return { environmentId: environment.id, organizationId: environment.organizationId, store };
   },

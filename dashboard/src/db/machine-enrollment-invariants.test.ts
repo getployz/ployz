@@ -31,7 +31,7 @@ describe("organization machine enrollment invariants", () => {
     ]);
   });
 
-  it("keeps token persistence authorization-only", () => {
+  it("keeps token persistence to authorization and the Server that joined through it", () => {
     const columns = getTableConfig(machineEnrollmentToken).columns.map(
       columnName,
     );
@@ -41,6 +41,7 @@ describe("organization machine enrollment invariants", () => {
       "token_hash",
       "created_by_user_id",
       "expires_at",
+      "joined_machine_id",
       "created_at",
       "updated_at",
     ]);

@@ -4,6 +4,7 @@ import type * as PloyzSdk from "@ployz/sdk";
 import type { ConfigQuery, ConfigView, VolumeObservation } from "@ployz/sdk";
 import { Effect, Option, Schema } from "effect";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { observeVolumes } = createRequire(import.meta.url)("@ployz/sdk") as Pick<typeof PloyzSdk, "observeVolumes">;
@@ -32,13 +33,13 @@ export const gatherVolumeEvidence = Effect.fn("ConfigStore.gatherVolumeEvidence"
 ) {
   if (command === undefined || (command.services ?? []).length > 0) return undefined;
   const environment = { project: command.environment?.project ?? null, environment: command.environment?.environment ?? null };
-  const view = yield* Effect.tryPromise(() => read({ query: "removals", environment, remove: command.remove ?? false })).pipe(Effect.option);
+  const view = yield* storeTry(() => read({ query: "removals", environment, remove: command.remove ?? false })).pipe(Effect.option);
   const removals = Option.getOrUndefined(view);
   if (removals?.view !== "removals" || removals.volumes.length === 0) return undefined;
   const loaded = yield* loadOrganizationConnections(organizationId).pipe(Effect.option);
   const connections = Option.getOrUndefined(loaded);
   if (connections?.kind !== "ready") return undefined;
   const sought = removals.volumes.map((volume) => volume.docker_volume);
-  const observed = yield* Effect.tryPromise(() => observeVolumes(connections.connections, sought)).pipe(Effect.option);
+  const observed = yield* storeTry(() => observeVolumes(connections.connections, sought)).pipe(Effect.option);
   return Option.getOrUndefined(observed) satisfies VolumeObservation | undefined;
 });
