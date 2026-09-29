@@ -33,6 +33,10 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "ctx ls",
             "ctx rm",
             "ctx use",
+            "deploy",
+            "deployment",
+            "deployment ls",
+            "deployment show",
             "diff",
             "discard",
             "env",
@@ -399,7 +403,7 @@ fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
 #[test]
 fn compose_workflows_and_inputs_are_not_accepted() {
     for args in [
-        &["ployz", "deploy"][..],
+        &["ployz", "deploy", "--file", "compose.yaml"][..],
         &["ployz", "changes"],
         &["ployz", "build"],
         &["ployz", "run", "nginx"],

@@ -14,6 +14,7 @@ pub(crate) mod cloud;
 pub(crate) mod config;
 pub(crate) mod context;
 mod data_loss;
+pub(crate) mod deploy;
 pub(crate) mod env;
 pub(crate) mod ingress;
 pub(crate) mod login;
@@ -248,6 +249,8 @@ fn handler_for(path: &str) -> Option<(Handler, Json)> {
         ("completion", "") => Some((completion, Json::Refused)),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
+        ("deploy", "") => Some((deploy::deploy, Json::Supported)),
+        ("deployment", rest) => deploy::deployment_handler(rest),
         ("diff", "") => Some((review::diff, Json::Supported)),
         ("discard", "") => Some((review::discard, Json::Supported)),
         ("env", rest) => env::handler(rest),
