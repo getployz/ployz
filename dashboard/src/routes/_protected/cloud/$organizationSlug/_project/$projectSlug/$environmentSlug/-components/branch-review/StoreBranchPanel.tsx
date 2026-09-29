@@ -78,7 +78,7 @@ function BranchPanel({ params, store, branch }: { params: Params; store: Environ
         </> : update.refusal.message}
         action={update.ok ? (
           <Button size="sm" variant={actionVariant(!removal && !saveView?.rows.length)}
-            onClick={() => void writer.commit({ command: "move", from: null, into: store, picks: null, version: update.value.version })}>
+            onClick={() => void writer.commit({ command: "move", move: "update", into: store, picks: null, version: update.value.version })}>
             Update
           </Button>
         ) : null}
@@ -172,7 +172,7 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
     try {
       // Awaited: Save rewrites the Parent, and the page moves on once it has.
       await writer.commit({
-        command: "move", from: store, into: null, version: view.version,
+        command: "move", move: "save", from: store, version: view.version,
         picks: movePicks(rows.picks.map(({ row, pick }) => ({ key: row.key, ticked: pick.ticked, choice: row.choice, option: pick.option, value: pick.value }))),
       }).isPersisted.promise;
       toast.success(`Saved to ${into}`);

@@ -9,7 +9,7 @@ import { createStoreGithubCheckSuite, createStoreGithubPush } from "#/modules/co
 import { githubCheckSuiteReceivedEvent, githubPushReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
-import { seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000b001";
 const PROJECT = "00000000-0000-4000-8000-00000000b002";
@@ -54,7 +54,7 @@ it.live(
       const state = { head: H1, suite: { status: "in_progress", conclusion: null as string | null, updated_at: "2026-09-29T10:00:00Z" } };
       const services = yield* Layer.build(yield* storeTestCloud({ github: github(state) }));
       // A member of the Organization installed the GitHub App as installation 7.
-      yield* seedStoreOrganization(ORGANIZATION).pipe(Effect.provide(services));
+      yield* Effect.all([seedStoreOrganization(ORGANIZATION), enrollStoreServer(ORGANIZATION)]).pipe(Effect.provide(services));
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
@@ -66,7 +66,7 @@ it.live(
         }],
         domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
       });
-      yield* write({ command: "publish", environment: here, version: null });
+      yield* write({ command: "publish", environment: here, version: null, accept_volume_loss: [] });
 
       const runner: Parameters<typeof createStoreGithubPush>[1] = makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(
         Effect.provide(services))));
