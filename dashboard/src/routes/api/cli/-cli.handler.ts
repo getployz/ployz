@@ -8,6 +8,7 @@ import {
 import { customDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { Uuid } from "#/modules/environment-design/schema";
+import { disconnectGithub, githubBranches, githubConnection } from "#/modules/github/github-cli.server";
 import type { Caller } from "#/modules/identity/actor";
 import { callerOrganizations, resolveCaller } from "#/modules/identity/caller.server";
 import {
@@ -36,7 +37,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, Organization Tokens and signed-in devices,
- * billing). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections, billing). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const config = yield* AppConfig;
@@ -76,6 +77,20 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
     }
     case "POST server-access":
       return yield* provideServerAccess(caller);
+    case "GET github":
+      return yield* githubConnection(caller);
+    case "GET github/:id": {
+      const repository = new URL(request.url).searchParams.get("repository");
+      if (id !== "branches" || repository === null) return yield* new NotFound({ message: "Not found." });
+      return yield* githubBranches(caller, repository);
+    }
+    case "DELETE github/:id": {
+      const installation = Number(id);
+      if (!Number.isSafeInteger(installation) || installation <= 0) {
+        return yield* new NotFound({ message: "No such GitHub installation of yours." });
+      }
+      return yield* disconnectGithub(caller, installation);
+    }
     case "GET billing":
       return { billing: yield* billingSummary(caller) };
     case "POST billing/:id":
