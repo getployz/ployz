@@ -5,6 +5,7 @@ use ployz_core::config::{SavedEnvironmentIntent, parse_environment_intent};
 use ployz_core::{Namespace, RpcError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
@@ -14,7 +15,7 @@ use crate::storage::{Row, Tx};
 /// Which Environment a request addresses. An omitted Project means the
 /// Organization's only Project; an omitted Environment means the Project's
 /// Default Environment.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentRef {
     #[serde(default)]
     pub project: Option<ProjectName>,
@@ -23,7 +24,7 @@ pub struct EnvironmentRef {
 }
 
 /// An Environment as every result names it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentSummary {
     pub id: EnvironmentId,
     pub project: ProjectName,

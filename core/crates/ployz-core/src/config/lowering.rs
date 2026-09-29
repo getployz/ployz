@@ -12,9 +12,9 @@ use super::{
 use crate::{
     ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
     HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions, PortPublication,
-    PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy,
-    ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount,
-    ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
+    PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource, RequestedServiceSpec,
+    RestartPolicy, ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.

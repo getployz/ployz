@@ -5,6 +5,7 @@ use ployz_core::config::{SavedServiceIntent, parse_service_config};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use ts_rs::TS;
 
 use crate::Actor;
 use crate::error;
@@ -13,7 +14,7 @@ use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 
 /// Create a Service that runs `image`. Its name is its Private DNS name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct CreateService {
     pub id: ServiceId,
     #[serde(default)]
@@ -23,7 +24,7 @@ pub struct CreateService {
 }
 
 /// The new Service, staged in Working State until a Deploy.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceCreated {
     pub service: ServiceSummary,
     pub environment: EnvironmentSummary,
@@ -31,7 +32,7 @@ pub struct ServiceCreated {
     pub immediate: Vec<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
     pub id: ServiceId,
     pub name: ServiceName,

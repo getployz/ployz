@@ -315,7 +315,16 @@ async function connect(options) {
   } catch (error) { cleanup(); throw error; }
 }
 
+async function openConfigStore(url) {
+  const store = await withRpcError(native.openConfigStore(url));
+  return {
+    read: (organization, query) => withRpcError(store.read(organization, query)),
+    write: (organization, command) => withRpcError(store.write(organization, command)),
+  };
+}
+
 module.exports = {
+  openConfigStore,
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },

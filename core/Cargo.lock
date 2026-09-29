@@ -3427,6 +3427,7 @@ dependencies = [
  "napi-derive",
  "ployz",
  "ployz-core",
+ "ployz-store",
  "serde",
  "serde_json",
  "tokio",
@@ -3443,6 +3444,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ts-rs",
  "uuid",
 ]
 

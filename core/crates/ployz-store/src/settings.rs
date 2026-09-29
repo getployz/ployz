@@ -5,11 +5,12 @@ use ployz_core::config::{AuthoredServiceConfig, ServiceSource, parse_service_set
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use ts_rs::TS;
 
 use crate::error;
 
 /// Whether a change waits for a Deploy or takes effect at once.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum Apply {
     Staged,
