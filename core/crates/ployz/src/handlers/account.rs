@@ -5,7 +5,7 @@ use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
-use crate::cli::{env, positional, value};
+use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
@@ -120,10 +120,8 @@ pub(super) fn in_cloud<T>(
     work: impl AsyncFnOnce(&CredentialStore, &Credential) -> Result<T, LoginError>,
 ) -> Result<T, Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     runtime()?.block_on(async {
-        let credential = cloud_account::credential(&store, token, cloud).await?;
+        let credential = cloud_account::from_env(&store).await?;
         Ok(work(&store, &credential).await?)
     })
 }
@@ -322,11 +320,9 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let store = CredentialStore::beside(&config_path(matches)?);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     let removal = runtime()?
         .block_on(async {
-            let credential = cloud_account::credential(&store, token, cloud).await?;
+            let credential = cloud_account::from_env(&store).await?;
             cloud_account::remove_organization(&credential, slug).await
         })
         .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;

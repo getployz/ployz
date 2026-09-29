@@ -65,9 +65,7 @@ pub(super) fn clear_build_cache(matches: &ArgMatches) -> Result<(), Error> {
 pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Result<Client, Error> {
     if matches.get_one::<String>("connect").is_none() && context.is_none() {
         let store = CredentialStore::beside(&super::config_path(matches)?);
-        let token = std::env::var(env::TOKEN).ok();
-        let cloud = std::env::var(env::CLOUD_URL).ok();
-        match cloud_account::credential(&store, token, cloud).await {
+        match cloud_account::from_env(&store).await {
             Ok(credential) => return through_cloud(matches, &credential).await,
             Err(LoginError::SignedOut) => {
                 // Signed out with no context or local daemon: the fix is signing in, not a

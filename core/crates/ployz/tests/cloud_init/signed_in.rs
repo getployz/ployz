@@ -195,7 +195,7 @@ async fn pasted_command_returns_at_once_under_json_and_wait_reports_the_joined_s
     );
     assert_eq!(
         stdout_json(&joined),
-        json!({ "status": "joined", "machine_id": "a".repeat(32) })
+        json!({ "server": { "id": "a".repeat(32) }, "status": "joined" })
     );
     assert_eq!(
         cloud.cli_calls().last().map(|call| call.2.clone()),
@@ -236,5 +236,50 @@ async fn cloud_reset_gives_up_the_founding_of_the_signed_in_organization() {
             "session-token".to_owned(),
             json!({ "organizationSlug": "acme", "confirmedFounderStoppedOrErased": true })
         )]
+    );
+}
+
+#[tokio::test]
+async fn cloud_reset_with_ployz_token_acts_in_the_tokens_organization() {
+    let cloud = EnrollListen::script([]).await;
+    cloud.reply_cli(
+        "/api/cli/organizations",
+        [json!({ "organizations": [
+            { "id": "o1", "slug": "acme", "name": "Acme", "current": false },
+            { "id": "o2", "slug": "beta", "name": "Beta", "current": true },
+        ] })],
+    );
+    cloud.reply_cli("/api/cli/cloud/reset", [json!({ "reset": true })]);
+    let directory = tempfile::tempdir().unwrap();
+    // Signed in to acme, but PLOYZ_TOKEN wins, as it does for every Cloud command.
+    let config = sign_in(directory.path(), &cloud.url);
+
+    let output = harness::cli()
+        .env("PLOYZ_TOKEN", "ployz_beta")
+        .env("PLOYZ_CLOUD_URL", &cloud.url)
+        .args([
+            "--ployz-config",
+            &config,
+            "--json",
+            "cloud",
+            "reset",
+            "--yes",
+        ])
+        .output()
+        .await
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        cloud.cli_calls().last(),
+        Some(&(
+            "/api/cli/cloud/reset".to_owned(),
+            "ployz_beta".to_owned(),
+            json!({ "organizationSlug": "beta", "confirmedFounderStoppedOrErased": true })
+        ))
     );
 }
