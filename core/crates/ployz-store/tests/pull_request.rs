@@ -118,6 +118,7 @@ fn facts(open: bool, updated: &str) -> PullRequest {
         commits: 1,
         open,
         merge_commit: None,
+        merge_reached: None,
         updated: updated.into(),
     }
 }
@@ -456,6 +457,7 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
             base: None,
             head: Some("2".repeat(40)),
             changed: None,
+            merged: Vec::new(),
         }),
     );
     assert!(pushed.admitted.is_empty(), "{pushed:?}");
@@ -494,6 +496,7 @@ fn a_kept_open_pull_request_stays_and_a_shut_down_one_stays_off() {
             base: None,
             head: Some("2".repeat(40)),
             changed: None,
+            merged: Vec::new(),
         }),
     );
     assert!(pushed.admitted.is_empty(), "{pushed:?}");

@@ -12,8 +12,8 @@ use ployz_store::{
     Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
     DeploymentSummary, DeploymentView, EnvironmentId, EnvironmentName, EnvironmentRef,
     EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
-    MovePick, MoveQuery, MoveView, Moved, RemoveEnvironment, ServicesQuery, SetDefaultEnvironment,
-    SetupCommand, VolumeName, VolumesQuery,
+    MovePick, MoveQuery, MoveView, Moved, RemoveEnvironment, SaveState, ServicesQuery,
+    SetDefaultEnvironment, SetupCommand, VolumeName, VolumesQuery, When,
 };
 use serde_json::json;
 
@@ -99,16 +99,37 @@ pub(crate) fn command() -> Command {
                     "Fix this failed Deployment of the Parent: copies what it failed to apply",
                 )),
         )
-        .subcommand(moving(
-            Command::new("save")
-                .about("Stage the Branch's changes in its Parent")
-                .long_about(
-                    "Stage the Branch's changes in its Parent's Working State; nothing is \
-                     published or deployed, and nothing in the Parent is deleted. --plan \
-                     lists them and the version to pass back. A secret the Branch added \
-                     moves only when picked `=from`.",
-                ),
-        ))
+        .subcommand(
+            moving(
+                Command::new("save")
+                    .about("Stage the Branch's changes in its Parent")
+                    .long_about(
+                        "Stage the Branch's changes in its Parent's Working State; nothing is \
+                         published or deployed, and nothing in the Parent is deleted. --plan \
+                         lists them and the version to pass back. A secret the Branch added \
+                         moves only when picked `=from`. From a PR Environment it is a \
+                         Conditional Save instead: the changes go live in the Destination \
+                         with the pull request's merge; --withdraw withdraws it. --take ID \
+                         stages a merged pull request's value its Conditional Save left \
+                         beside the Environment's own edit (`ployz diff` lists them), even \
+                         once its PR Environment is gone.",
+                    ),
+            )
+            .arg(value("into", None).value_name("ENV").help(
+                "From a PR Environment: the Destination, when several deploy its target branch",
+            ))
+            .arg(
+                switch("withdraw", None)
+                    .help("From a PR Environment: withdraw its Conditional Save")
+                    .conflicts_with_all(["only", "plan", "version", "take"]),
+            )
+            .arg(
+                value("take", None)
+                    .value_name("ID")
+                    .help("Stage the hints (or --only ROW) of this Conditional Save in --env")
+                    .conflicts_with_all(["plan", "version", "into"]),
+            ),
+        )
         .subcommand(moving(Command::new("update").about(
             "Stage what the Branch's Parent deployed since, in the Branch",
         )))
@@ -561,38 +582,91 @@ fn moving(command: Command) -> Command {
 
 fn save(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let from = Some(store::environment(matches)?);
-    shift(root, "save", MoveQuery { from, into: None })
+    let here = Some(store::environment(matches)?);
+    if matches.get_one::<String>("take").is_some() {
+        return shift(
+            root,
+            "take",
+            MoveQuery {
+                from: None,
+                into: here,
+                when: None,
+            },
+        );
+    }
+    let into = matches
+        .get_one::<String>("into")
+        .map(|name| {
+            Ok::<_, Error>(EnvironmentRef {
+                project: project(matches)?,
+                environment: Some(EnvironmentName::parse(name.as_str())?),
+            })
+        })
+        .transpose()?;
+    let verb = match matches.get_flag("withdraw") {
+        true => "withdraw",
+        false => "save",
+    };
+    shift(
+        root,
+        verb,
+        MoveQuery {
+            from: here,
+            into,
+            when: None,
+        },
+    )
 }
 
 fn update(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let into = Some(store::environment(matches)?);
-    shift(root, "update", MoveQuery { from: None, into })
+    shift(
+        root,
+        "update",
+        MoveQuery {
+            from: None,
+            into,
+            when: None,
+        },
+    )
 }
 
-/// A Save or an Update: with `--plan` its changes, else the Move itself.
+/// A Save, Update, withdrawal or take: with `--plan` its changes, else the Move itself.
 fn shift(root: &ArgMatches, verb: &str, sides: MoveQuery) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
-    let words = ["env", verb];
+    let command = match verb {
+        "update" => "update",
+        _ => "save",
+    };
+    let words = ["env", command];
     if matches.get_flag("plan") {
         let view = store.move_view(&sides).map_err(failed(matches, &words))?;
-        return plan(matches, verb, &view);
+        return plan(matches, command, &view);
     }
-    let picks = matches
-        .get_many::<String>("only")
-        .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
-        .transpose()?;
+    let picks = match verb {
+        "withdraw" => Some(Vec::new()),
+        _ => matches
+            .get_many::<String>("only")
+            .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
+            .transpose()?,
+    };
     let request = Move {
         from: sides.from,
         into: sides.into,
         picks,
         version: matches.get_one::<String>("version").cloned(),
+        when: (verb == "withdraw").then_some(When::AtMerge),
+        take: matches
+            .try_get_one::<String>("take")
+            .ok()
+            .flatten()
+            .cloned(),
     };
     let moved = store
         .move_changes(&request)
-        .map_err(|error| failed(matches, &words)(reviewed(error, matches, verb)))?;
+        .map_err(|error| failed(matches, &words)(reviewed(error, matches, command)))?;
     moved_out(matches, verb, &moved)
 }
 
@@ -664,7 +738,7 @@ fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> 
 }
 
 /// What a Move did: `deploy` of where it landed, and after a Save of a Branch not
-/// kept, the command that closes it.
+/// kept, the command that closes it. A Conditional Save stages nothing.
 fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Error> {
     #[derive(serde::Serialize)]
     struct Out<'a> {
@@ -683,20 +757,36 @@ fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Erro
         shell_words::join(std::iter::once("ployz".to_owned()).chain(words))
     };
     let into: &EnvironmentSummary = &moved.into;
-    let branch = moved.branch.environment.name.as_str();
+    let at_merge = moved
+        .conditional_save
+        .as_ref()
+        .filter(|save| save.state == SaveState::Standing);
+    let close = match (&moved.branch, verb, at_merge) {
+        (Some(branch), "save", None) if !branch.kept => {
+            let name = branch.environment.name.as_str();
+            Some(scoped(&["env", "rm", name, "--confirm", name]))
+        }
+        _ => None,
+    };
     let out = Out {
         moved,
         next: (!moved.staged.is_empty()).then(|| scoped(&["deploy", "--env", into.name.as_str()])),
-        close: (verb == "save" && !moved.branch.kept)
-            .then(|| scoped(&["env", "rm", branch, "--confirm", branch])),
+        close,
     };
     crate::output::finish(&out, || {
-        say!(
-            "Moved {} → {}/{}.",
-            moved.from.name,
-            into.project,
-            into.name
-        );
+        let (from, into) = (&moved.from.name, format!("{}/{}", into.project, into.name));
+        match (verb, at_merge, &moved.conditional_save) {
+            ("withdraw", ..) => say!("Withdrew {from}'s Conditional Save into {into}."),
+            (_, Some(save), _) => say!(
+                "Saved for PR #{}'s merge into {into}: {}.",
+                save.pull_request,
+                save.rows.join(", ")
+            ),
+            ("take", _, Some(save)) => {
+                say!("Took PR #{}'s value into {into}.", save.pull_request);
+            }
+            _ => say!("Moved {from} → {into}."),
+        }
         if !moved.staged.is_empty() {
             say!("Staged: {}", moved.staged.join(", "));
         }

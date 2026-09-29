@@ -59,6 +59,28 @@ pub(super) fn diff(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
         }
+        for hint in &view.hints {
+            match hint.landed {
+                ployz_store::Landed::Hint => say!(
+                    "PR #{} merged {} = {} beside your edit; use it: {}",
+                    hint.pull_request,
+                    hint.row,
+                    hint.value,
+                    next(
+                        matches,
+                        &["env", "save", "--take", &hint.save, "--only", &hint.row]
+                    )
+                ),
+                ployz_store::Landed::Staged => {
+                    say!(
+                        "PR #{} staged {} = {}",
+                        hint.pull_request,
+                        hint.row,
+                        hint.value
+                    );
+                }
+            }
+        }
         if view.published && !view.changes.is_empty() {
             say!(
                 "Published as Saved revision {}.",
