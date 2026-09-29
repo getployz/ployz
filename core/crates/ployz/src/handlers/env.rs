@@ -5,8 +5,8 @@
 //! since, `copy` turns a Live Node into its own copy, and `keep` keeps it after a Save.
 
 use clap::{ArgMatches, Command};
-use ployz_core::ServiceName;
 use ployz_core::RpcErrorCode;
+use ployz_core::ServiceName;
 use ployz_store::{
     Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
     DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentRemoved,
@@ -19,7 +19,7 @@ use super::config::{expect, expected};
 use super::deploy;
 use super::store::{self, Next, Store, failed, mint, project, project_arg, store};
 use super::{Error, leaf_matches, required};
-use crate::cli::{positional, repeated, switch, value};
+use crate::cli::{base, positional, repeated, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
@@ -45,27 +45,27 @@ pub(crate) fn command() -> Command {
                 .arg(positional("name", true))
                 .arg(project_arg()),
         )
-        .subcommand(
-            deploy::following(
-                Command::new("rm")
-                    .about("Remove an Environment: from the Servers first, then from Ployz")
-                    .long_about(
-                        "Remove an Environment. If anything of it ran, a removal Deployment \
+        .subcommand(deploy::following(
+            base(
+                "rm",
+                "Remove an Environment: from the Servers first, then from Ployz",
+            )
+            .long_about(
+                "Remove an Environment. If anything of it ran, a removal Deployment \
                          takes it off the Servers first, deleting its deployed Volumes once \
                          each is accepted by name; then its configuration and history go. \
                          Type its name with --confirm; without it the command fails with \
                          confirmation_required, naming what goes and the exact retry.",
-                    )
-                    .arg(positional("name", true))
-                    .arg(project_arg())
-                    .arg(
-                        value("confirm", None)
-                            .value_name("ENV")
-                            .help("The Environment's name, typed to confirm its removal"),
-                    )
-                    .arg(crate::cli::volume_acceptance()),
-            ),
-        )
+            )
+            .arg(positional("name", true))
+            .arg(project_arg())
+            .arg(
+                value("confirm", None)
+                    .value_name("ENV")
+                    .help("The Environment's name, typed to confirm its removal"),
+            )
+            .arg(crate::cli::volume_acceptance()),
+        ))
         .subcommand(
             Command::new("branch")
                 .about("Make a Branch: copies of the nodes picked, the rest used live")
@@ -351,7 +351,11 @@ fn finish_removal(
                 deployment.number
             );
         }
-        say!("Removed Environment {}/{}.", environment.project, environment.name);
+        say!(
+            "Removed Environment {}/{}.",
+            environment.project,
+            environment.name
+        );
     })
 }
 

@@ -9,13 +9,13 @@ use ployz_store::{
     CreateVolume, DeploymentId, DeploymentQuery, DeploymentSummary, DeploymentView,
     DeploymentsQuery, DeploymentsView, DiffQuery, DiffView, Discard, Discarded, DomainEvidence,
     DomainQuery, DomainStaged, DomainView, DomainsQuery, DomainsView, Edit, Edited,
-    EnvironmentCreated, EnvironmentQuery, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
-    RemoveEnvironment, SetDefaultEnvironment, EnvironmentRef, EnvironmentView, KeepBranch,
-    NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView, ProjectCreated,
-    ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView, RemoveDomain,
-    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
-    ServiceView, ServicesQuery, ServicesView, Start, Trusted, UpdateBranch, VolumeQuery,
-    VolumeStaged, VolumeView, VolumesQuery, VolumesView,
+    EnvironmentCreated, EnvironmentQuery, EnvironmentRef, EnvironmentRemoved, EnvironmentView,
+    EnvironmentsQuery, EnvironmentsView, KeepBranch, NamespaceQuery, NamespaceView, OrganizationId,
+    PlanQuery, PlanView, ProjectCreated, ProjectName, Publish, Published, Query, RemovalsQuery,
+    RemovalsView, RemoveDomain, RemoveEnvironment, RemoveService, RemoveVolume, RenameService,
+    SealingKey, ServiceQuery, ServiceStaged, ServiceView, ServicesQuery, ServicesView,
+    SetDefaultEnvironment, Start, Trusted, UpdateBranch, VolumeQuery, VolumeStaged, VolumeView,
+    VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -344,7 +344,9 @@ impl Store {
         query: &EnvironmentsQuery,
     ) -> Result<EnvironmentsView, StoreCallError> {
         let request = Query::Environments(query.clone());
-        self.call("read", &request, |store, who| store.environments(who, query))
+        self.call("read", &request, |store, who| {
+            store.environments(who, query)
+        })
     }
 
     pub(crate) fn set_default_environment(

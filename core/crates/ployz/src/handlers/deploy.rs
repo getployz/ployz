@@ -213,7 +213,9 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// Open `--events` before queueing anything, so a bad path ships nothing.
-pub(super) fn open_events(matches: &ArgMatches) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
+pub(super) fn open_events(
+    matches: &ArgMatches,
+) -> Result<Option<std::io::BufWriter<std::fs::File>>, Error> {
     Ok(matches
         .get_one::<String>("events")
         .map(std::fs::File::create)
@@ -599,7 +601,11 @@ fn with_retry(
 
 /// A refusal to delete Volume data names `words` again, accepting each Volume the
 /// refusal lists.
-pub(super) fn accepting(error: StoreCallError, matches: &ArgMatches, words: &[&str]) -> StoreCallError {
+pub(super) fn accepting(
+    error: StoreCallError,
+    matches: &ArgMatches,
+    words: &[&str],
+) -> StoreCallError {
     let StoreCallError::Refused(mut error) = error else {
         return error;
     };
