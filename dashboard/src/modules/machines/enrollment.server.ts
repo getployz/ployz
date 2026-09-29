@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
 import type { EnrollmentSnapshot, MachineId, RegisterRequest } from "@ployz/sdk";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
 import {
   enrollmentAllocation,
@@ -25,6 +25,7 @@ import {
   type EnrollmentIdentity,
   type EnrollmentCallback,
   type MintMachineEnrollmentInput,
+  type ReadMachineEnrollmentInput,
   type ResetPendingEnrollmentInput,
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -34,7 +35,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { commitFirstConnectAdmission } from "#/modules/deployments/first-connect.server";
 import { dispatchEnvironmentDeployment } from "#/modules/deployments/runtime-lifecycle.repository.server";
-import { Conflict, Unauthorized, Validation } from "#/server/public-error";
+import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
 
@@ -64,31 +65,81 @@ const authorizeEnrollmentOrganization = Effect.fn(
   return { organization, userId: actor.userId };
 });
 
-export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
-  function* (actor: Actor, input: MintMachineEnrollmentInput) {
+const issueEnrollmentToken = Effect.fn("MachineEnrollment.issue")(
+  function* (actor: Actor, organizationSlug: string) {
     const { drizzle } = yield* Database;
-    const config = yield* AppConfig;
     const authorization = yield* authorizeEnrollmentOrganization(
       actor,
-      input.organizationSlug,
+      organizationSlug,
     );
     const { expiresAt, token } = yield* Effect.sync(() => ({
       expiresAt: enrollmentExpiry(new Date()),
       token: randomSecret(TOKEN_PREFIX),
     }));
 
-    yield* drizzle.insert(schemaMachineEnrollmentToken).values({
+    const [issued] = yield* drizzle.insert(schemaMachineEnrollmentToken).values({
       organizationId: authorization.organization.id,
       createdByUserId: authorization.userId,
       tokenHash: hashEnrollmentToken(token),
       expiresAt,
-    });
+    }).returning({ id: schemaMachineEnrollmentToken.id });
+    if (!issued) return yield* Effect.die("Enrollment token insert returned no row");
+    return { id: issued.id, token, expiresAt };
+  },
+);
 
+export const mintMachineEnrollment = Effect.fn("MachineEnrollment.mint")(
+  function* (actor: Actor, input: MintMachineEnrollmentInput) {
+    const config = yield* AppConfig;
+    const { token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug);
     return mintedEnrollment({
       origin: config.app.url.origin,
       token,
       expiresAt,
     });
+  },
+);
+
+/** The CLI builds its own pasted command, pinned to its own release. */
+export const mintCliMachineEnrollment = Effect.fn("MachineEnrollment.mintForCli")(
+  function* (actor: Actor, input: MintMachineEnrollmentInput) {
+    const { id, token, expiresAt } = yield* issueEnrollmentToken(actor, input.organizationSlug);
+    return { id, token, expiresAt: expiresAt.toISOString() };
+  },
+);
+
+/** Whether a Server has finished enrolling with one enrollment token. */
+export const readMachineEnrollment = Effect.fn("MachineEnrollment.read")(
+  function* (actor: Actor, input: ReadMachineEnrollmentInput) {
+    const { drizzle } = yield* Database;
+    const { organization } = yield* authorizeEnrollmentOrganization(actor, input.organizationSlug);
+    const [row] = yield* drizzle
+      .select({
+        joinedMachineId: schemaMachineEnrollmentToken.joinedMachineId,
+        expiresAt: schemaMachineEnrollmentToken.expiresAt,
+      })
+      .from(schemaMachineEnrollmentToken)
+      .where(and(
+        eq(schemaMachineEnrollmentToken.id, input.id),
+        eq(schemaMachineEnrollmentToken.organizationId, organization.id),
+      ))
+      .limit(1);
+    if (!row) return yield* new NotFound({ message: "Enrollment not found." });
+    if (row.joinedMachineId !== null) return { status: "joined" as const, machineId: row.joinedMachineId };
+    return { status: row.expiresAt.getTime() <= Date.now() ? "expired" as const : "pending" as const };
+  },
+);
+
+/** The first Server to complete enrollment with a token is the one that joined through it. */
+const recordJoined = Effect.fn("MachineEnrollment.recordJoined")(
+  function* (token: string, machineId: MachineId) {
+    const { drizzle } = yield* Database;
+    yield* drizzle.update(schemaMachineEnrollmentToken)
+      .set({ joinedMachineId: machineId, updatedAt: new Date() })
+      .where(and(
+        eq(schemaMachineEnrollmentToken.tokenHash, hashEnrollmentToken(token)),
+        isNull(schemaMachineEnrollmentToken.joinedMachineId),
+      ));
   },
 );
 
@@ -433,6 +484,7 @@ export const completeMachineEnrollment = Effect.fn(
         }
         yield* requireEnrollmentMachine(token.organizationId, current, pairing.secret, machineId);
       }));
+      yield* recordJoined(input.token, machineId);
       return { machineId };
     }
     const deployments = yield* database.transaction(
@@ -452,6 +504,7 @@ export const completeMachineEnrollment = Effect.fn(
       (deployment) => dispatchEnvironmentDeployment(deployment),
       { discard: true },
     );
+    yield* recordJoined(input.token, machineId);
     return { machineId };
   },
 );

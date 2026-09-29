@@ -1,7 +1,7 @@
 //! Fake Cloud enrollment HTTP and shared orchestration event recording.
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU16, Ordering},
@@ -43,7 +43,15 @@ pub struct EnrollListen {
     callback_status: Arc<AtomicU16>,
     publications: Arc<Mutex<Vec<serde_json::Value>>>,
     publication_status: Arc<AtomicU16>,
+    cli: Arc<Mutex<CliReplies>>,
     _server: tokio::task::JoinHandle<()>,
+}
+
+/// Replies to signed-in CLI calls by path; the last reply repeats.
+#[derive(Default)]
+struct CliReplies {
+    replies: HashMap<String, VecDeque<serde_json::Value>>,
+    calls: Vec<(String, String, serde_json::Value)>,
 }
 
 impl EnrollListen {
@@ -98,6 +106,8 @@ impl EnrollListen {
         let recorded_callbacks = Arc::clone(&callbacks);
         let callback_code = Arc::clone(&callback_status);
         let replies = Arc::new(Mutex::new(replies));
+        let cli = Arc::new(Mutex::new(CliReplies::default()));
+        let cli_replies = Arc::clone(&cli);
         let server = tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -116,6 +126,36 @@ impl EnrollListen {
                     .unwrap()
                     .to_owned();
                 recorded_paths.lock().unwrap().push(path.clone());
+                if path.starts_with("/api/cli/") {
+                    let bearer = request
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("authorization: bearer ")
+                                .map(str::to_owned)
+                        })
+                        .unwrap_or_default();
+                    let body = enroll_json_body(raw);
+                    let reply = {
+                        let mut cli = cli_replies.lock().unwrap();
+                        cli.calls.push((path.clone(), bearer, body));
+                        cli.replies.get_mut(&path).and_then(|queue| {
+                            if queue.len() > 1 {
+                                queue.pop_front()
+                            } else {
+                                queue.front().cloned()
+                            }
+                        })
+                    };
+                    match reply {
+                        Some(reply) => {
+                            write_http(&mut stream, 200, "OK", &serde_json::to_vec(&reply).unwrap())
+                                .await
+                        }
+                        None => write_http(&mut stream, 404, "Not Found", &[]).await,
+                    }
+                    continue;
+                }
                 if path.ends_with("/callback") {
                     let body = enroll_json_body(raw);
                     if body.get("stage").and_then(serde_json::Value::as_str) == Some("publish") {
@@ -154,8 +194,23 @@ impl EnrollListen {
             callback_status,
             publications,
             publication_status,
+            cli,
             _server: server,
         }
+    }
+
+    /// Answer the signed-in CLI call at `path` with `bodies` in turn; the last one repeats.
+    pub fn reply_cli(&self, path: &str, bodies: impl IntoIterator<Item = serde_json::Value>) {
+        self.cli
+            .lock()
+            .unwrap()
+            .replies
+            .insert(path.to_owned(), bodies.into_iter().collect());
+    }
+
+    /// Signed-in CLI calls as `(path, lowercased bearer, body)`.
+    pub fn cli_calls(&self) -> Vec<(String, String, serde_json::Value)> {
+        self.cli.lock().unwrap().calls.clone()
     }
 
     pub fn paths(&self) -> Vec<String> {

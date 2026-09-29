@@ -66,7 +66,7 @@ async fn initializes_joins_converges_restarts_and_tears_down() {
 #[tokio::test]
 #[ignore = "informing: requires the privileged Ployz testkit image"]
 async fn join_reaches_participating() {
-    // Cloud enrollment and machine add send the same Join; no pairing reaches the daemon.
+    // Cloud and standalone enrollment send the same Join; no pairing reaches the daemon.
     for run in 1..=2 {
         let plan =
             ClusterPlan::new(&format!("l3-join-startup-{run}-{}", process::id()), 2).unwrap();

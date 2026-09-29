@@ -43,7 +43,7 @@ async fn lost_completion_response_reruns_idempotently_when_cloud_is_ready() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("rerun the same ployz cloud enroll command"),
+        stderr.contains("rerun the same ployz server add command"),
         "{stderr}"
     );
     assert_eq!(
@@ -257,8 +257,9 @@ async fn resumed_founder_converges_before_pairing_and_final_completion() {
         .args([
             "--connect",
             &format!("ssh://root@{machine_addr}"),
-            "cloud",
-            "enroll",
+            "server",
+            "add",
+            "--token",
             TOKEN,
             "--cloud-url",
             &enroll.url,
@@ -325,8 +326,9 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
             .args([
                 "--connect",
                 &format!("ssh://root@{machine_addr}"),
-                "cloud",
-                "enroll",
+                "server",
+                "add",
+                "--token",
                 TOKEN,
                 "--cloud-url",
                 &enroll.url,
@@ -345,7 +347,7 @@ async fn founder_tail_recovers_lost_replies_without_replaying_mutations() {
     let first = command().arg("--reset").output().await.unwrap();
     assert!(!first.status.success());
     assert!(String::from_utf8_lossy(&first.stderr).contains(
-        "rerun the same ployz cloud enroll command without --reset (keep all other options)"
+        "rerun the same ployz server add command without --reset (keep all other options)"
     ));
     assert!(
         String::from_utf8_lossy(&first.stderr).contains("lost Ingress container creation reply")
@@ -413,8 +415,9 @@ async fn founder_recovery_rejects_replaced_identity() {
             .args([
                 "--connect",
                 &format!("ssh://root@{address}"),
-                "cloud",
-                "enroll",
+                "server",
+                "add",
+                "--token",
                 TOKEN,
                 "--cloud-url",
                 &enroll.url,

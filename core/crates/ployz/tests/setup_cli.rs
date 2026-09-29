@@ -28,8 +28,9 @@ fn ssh_setup_with_no_install_skips_the_bootstrap() {
 
     let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
         .args([
-            "machine",
-            "init",
+            "server",
+            "add",
+            "--standalone",
             "deploy@2001:db8::1",
             "--no-install",
             "--yes",
