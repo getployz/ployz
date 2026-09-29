@@ -97,10 +97,8 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("version").cloned(),
     };
     let path_word = path.as_ref().map(ToString::to_string);
-    let words = [Some("discard"), path_word.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    let mut words = vec!["discard"];
+    words.extend(path_word.as_deref());
     let store = store(root)?;
     let discarded = store
         .discard(&discard)
