@@ -7,6 +7,9 @@ import {
 } from "#/modules/environment-design/workspace.queries";
 import type { EnvironmentBySlug } from "#/modules/environment-design/workspace-schemas";
 import { activeBuildTailReads } from "#/modules/deployments/deployment.collection";
+import type { ConfigQuery } from "@ployz/sdk";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { storeViewOptions } from "#/modules/config-store/store-view.queries";
 
 /**
  * Route loaders call only the helpers in this file.
@@ -69,6 +72,12 @@ export async function prefetchActiveBuildTails(context: RouteDataContext, input:
     .then((reads) => prefetchRemote(context, ...reads));
   if (environmentManager.isServer()) await ready;
   else void ready.catch(() => {});
+}
+
+/** `prefetchRemote` for Config Store views, started together. Nothing while the Store is dark. */
+export async function prefetchStoreViews(context: RouteDataContext, organizationSlug: string, ...queries: ConfigQuery[]) {
+  if (!storeEnabled) return;
+  await prefetchRemote(context, ...queries.map((query) => storeViewOptions(organizationSlug, scopeOf(context), query)));
 }
 
 /** `prefetchRemote` for a paged read: its first page. */

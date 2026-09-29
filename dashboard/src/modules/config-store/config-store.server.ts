@@ -1,15 +1,18 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigCommand, ConfigQuery, ConfigStore } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigStore, ConfigView, ConfigWritten } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Effect, Option, Redacted, Schema } from "effect";
 import { GitCommand, gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
+import type { Actor } from "#/modules/identity/actor";
 import { resolveCaller } from "#/modules/identity/caller.server";
+import { getOrganizationForUserBySlug } from "#/modules/environment-design/workspace-repository.server";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
+import type { StoreCall, StoreRefusal, StoreResult } from "./store.contract";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
@@ -78,7 +81,7 @@ function statusFor(code: string) {
   }
 }
 
-function refusal(error: { readonly code: string; readonly message: string; readonly details: unknown }) {
+function refusal(error: StoreRefusal) {
   const { code, message, details } = error;
   return Response.json({ error: { code, message, details } }, {
     status: statusFor(code),
@@ -87,12 +90,43 @@ function refusal(error: { readonly code: string; readonly message: string; reado
 }
 
 /**
+ * One Store read or write as `organizationId`: the answer, or the Store's refusal verbatim. A write first gathers the
+ * trusted GitHub evidence its repository Services need. Anything else (the Store failing to open, a broken binding)
+ * is a defect.
+ */
+export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId: string, call: StoreCall) {
+  const config = yield* AppConfig;
+  const database = yield* Database;
+  const openStore = () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret));
+  const read = (query: ConfigQuery) => openStore().then((store) => store.read(organizationId, query));
+  const trusted = call.operation === "write"
+    ? yield* gatherGitEvidence(organizationId, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(call.command)), read).pipe(
+      Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
+    )
+    : undefined;
+  if (trusted === null) {
+    return { ok: false, refusal: { code: "unavailable", message: "GitHub didn't answer; retry.", details: null } } satisfies StoreResult<never>;
+  }
+  return yield* Effect.tryPromise({
+    try: async (): Promise<StoreResult<ConfigView | ConfigWritten>> => {
+      const store = await openStore();
+      const value = call.operation === "read"
+        ? await store.read(organizationId, call.query)
+        : await store.write(organizationId, call.command, trusted);
+      return { ok: true, value };
+    },
+    catch: (cause) => cause,
+  }).pipe(Effect.catch((cause) => cause instanceof RpcError
+    ? Effect.succeed<StoreResult<never>>({ ok: false, refusal: { code: cause.code, message: cause.message, details: cause.details } })
+    : Effect.die(cause)));
+});
+
+/**
  * `POST /api/config/read` and `/api/config/write`: the Config Store's two public operations, as the calling
  * Organization. Nothing else of the Store is reachable over HTTPS.
  */
 export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (request: Request) {
   const config = yield* AppConfig;
-  const database = yield* Database;
   // TODO(#1275): dark in production until the Config Store cutover.
   if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
   const operation = new URL(request.url).pathname.replace(/^\/api\/config\//, "");
@@ -106,27 +140,23 @@ export const handleConfigRequest = Effect.fn("ConfigStore.handle")(function* (re
     try: () => request.json(),
     catch: () => new Validation({ message: "Expected a JSON body.", userFacing: true }),
   });
-  const organization = caller.organization.id;
-  const openStore = () => storeAt(config.database.url.href, database, Redacted.value(config.encryptionSecret));
-  const read = (query: ConfigQuery) =>
-    openStore().then((store) => store.read(organization, query));
-  const trusted = operation === "write"
-    ? yield* gatherGitEvidence(organization, Option.getOrUndefined(Schema.decodeUnknownOption(GitCommand)(input)), read).pipe(
-      Effect.catchTag("GithubObservationError", () => Effect.succeed(null)),
-    )
-    : undefined;
-  if (trusted === null) return refusal({ code: "unavailable", message: "GitHub didn't answer; retry.", details: null });
-  return yield* Effect.tryPromise({
-    try: async () => {
-      const store = await openStore();
-      // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
-      return operation === "read"
-        ? await store.read(organization, input as ConfigQuery)
-        : await store.write(organization, input as ConfigCommand, trusted);
-    },
-    catch: (cause) => cause,
-  }).pipe(
-    Effect.map((result) => Response.json(result, { headers: { "cache-control": "no-store" } })),
-    Effect.catch((cause) => (cause instanceof RpcError ? Effect.succeed(refusal(cause)) : Effect.die(cause))),
-  );
+  // SAFETY: the Store decodes and validates the body itself, refusing anything else as invalid_argument.
+  const call: StoreCall = operation === "read" ? { operation, query: input as ConfigQuery } : { operation, command: input as ConfigCommand };
+  const result = yield* callStore(caller.organization.id, call);
+  return result.ok ? Response.json(result.value, { headers: { "cache-control": "no-store" } }) : refusal(result.refusal);
+});
+
+/**
+ * The dashboard's way into the Store: one read or write as `actor`, in the Organization named by `organizationSlug`
+ * when the actor is a member of it (the same Organization gate as the Org Store's reads).
+ */
+export const callStoreAsMember = Effect.fn("ConfigStore.callAsMember")(function* (
+  actor: Actor, organizationSlug: string, call: StoreCall,
+) {
+  const config = yield* AppConfig;
+  // TODO(#1275): dark in production until the Config Store cutover.
+  if (config.nodeEnv === "production") return yield* new NotFound({ message: "Not found." });
+  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
+  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  return yield* callStore(organization.id, call);
 });

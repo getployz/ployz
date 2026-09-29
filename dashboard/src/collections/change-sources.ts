@@ -1,10 +1,22 @@
 import * as EffectRecord from "effect/Record";
-import type { ChangeName } from "./read.contract";
+import type { ChangeName, StoreViewName } from "./read.contract";
 import type { ChangeSource } from "#/modules/organization/change-log.sources";
 
 /**
- * The source tables each change stream name reads: an Org Store collection, `organization`, or the
- * change-state projection. A collection's first source is its key table: its rows are keyed by the key
+ * The Config Store's table families, shaped like `changeNameSources`: a family's first source is its key table and
+ * every other source logs that table's key, so a logged key names the Project, Environment or Deployment whose views
+ * changed. A created or deleted row is one a view gains or drops. Which views each family refreshes is
+ * `refreshedBy` in `store-view.queries.ts`.
+ */
+export const storeViewSources = {
+  store_project: ["config_project"],
+  store_environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied"],
+  store_deployment: ["config_deployment"],
+} satisfies Record<StoreViewName, readonly [ChangeSource, ...ChangeSource[]]>;
+
+/**
+ * The source tables each change stream name reads: an Org Store collection, `organization`, the
+ * change-state projection, or a Config Store table family. A collection's first source is its key table: its rows are keyed by the key
  * that table logs, and every other source logs that same key through a foreign key to it.
  */
 export const changeNameSources = {
@@ -26,19 +38,8 @@ export const changeNameSources = {
   organization_enrollment: ["organization_pairing"],
   organization_cluster_domain: ["organization_cluster_domain"],
   organization_build_order: ["organization_build_order"],
+  ...storeViewSources,
 } satisfies Record<ChangeName, readonly [ChangeSource, ...ChangeSource[]]>;
-
-/**
- * The Config Store views each Store table invalidates, shaped like `changeNameSources`: a view's first source is
- * its key table and every other source logs that table's key, so a logged key names the Project or Environment
- * whose view changed; `deployment` also backs an Environment's Deployment list. A created or deleted row is a row the view gains or drops, so the `project` view also
- * serves as the Organization's list of Projects.
- */
-export const storeViewSources = {
-  project: ["config_project"],
-  environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied"],
-  deployment: ["config_deployment"],
-} satisfies Record<string, readonly [ChangeSource, ...ChangeSource[]]>;
 
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
   const tables = new Set(sourceTables);
