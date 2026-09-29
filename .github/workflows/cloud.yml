@@ -137,6 +137,7 @@ jobs:
             const fs = require("node:fs");
             const { parseServiceSetting } = require("@ployz/sdk/config");
             assert.equal(parseServiceSetting("source", { version: 1, type: "empty", rootDir: "/" }).type, "empty");
+            assert.equal(typeof require("@ployz/sdk").openConfigStore, "function");
             for (const file of [".output/server/index.mjs", ".output/worker/index.mjs", "node_modules/drizzle-kit/bin.cjs"]) assert.ok(fs.existsSync(file), file);
             require.resolve("inngest/connect");
           '
