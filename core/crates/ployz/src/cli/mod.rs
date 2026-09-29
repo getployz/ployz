@@ -38,6 +38,7 @@ pub fn command() -> Command {
         .subcommand(handlers::deploy::deployment_command())
         .subcommand(handlers::review::diff_command())
         .subcommand(handlers::review::discard_command())
+        .subcommand(handlers::domain::command())
         .subcommand(handlers::env::command())
         .subcommand(handlers::operator::exec_command())
         .subcommand(handlers::catalog::explain_command())

@@ -4,20 +4,21 @@
 //! cancelling stops one.
 
 use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, ServiceName};
+use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use super::{Command, replayable};
-use crate::Actor;
 use crate::deployment::{self, DeploymentSummary, UploadedSource};
+use crate::domain;
 use crate::error;
 use crate::id::DeploymentId;
 use crate::registry;
 use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
+use crate::{Actor, Trusted};
 
 /// Deploy an Environment: all of it, or only some Services. Or, with `retry`,
 /// ship again exactly what an ended Deployment froze.
@@ -81,12 +82,18 @@ pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
     admit: &Admit,
+    trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     let command = Command::Admit(admit.clone());
-    replayable(tx, who, &command, |tx| admitted(tx, who, admit))
+    replayable(tx, who, &command, |tx| admitted(tx, who, admit, trusted))
 }
 
-fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSummary, RpcError> {
+fn admitted(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    admit: &Admit,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
     if let Some(source) = &admit.retry {
         if admit.environment != EnvironmentRef::default()
             || !admit.services.is_empty()
@@ -102,6 +109,21 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         return deployment::retry(tx, who, &admit.id, source);
     }
     let environment = scope::lock(tx, who, &admit.environment)?;
+    // Cloud reserves the Cluster Domain before admitting a generated domain.
+    let cluster_domain = trusted
+        .domains
+        .cluster_domain
+        .as_ref()
+        .map(|cluster| &cluster.name);
+    if cluster_domain.is_none() && domain::has_generated(&environment.working) {
+        return Err(RpcError {
+            code: RpcErrorCode::Unsupported,
+            message: "Generated domains deploy only through Ployz Cloud, which holds the \
+                      Cluster Domain"
+                .into(),
+            details: json!({}),
+        });
+    }
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
@@ -120,6 +142,7 @@ fn admitted(tx: &mut dyn Tx, who: &Actor, admit: &Admit) -> Result<DeploymentSum
         &review.head.applied,
         &admit.services,
         namespace,
+        cluster_domain,
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     deployment::admit(tx, who, admit, id, saved, &frozen)

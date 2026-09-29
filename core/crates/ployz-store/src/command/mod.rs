@@ -61,6 +61,10 @@ pub enum Command {
     Start(Start),
     /// Cancel a queued or running Deployment.
     Cancel(Cancel),
+    /// Give a Service a generated or custom public domain.
+    AddDomain(crate::AddDomain),
+    /// Take a public domain off its Service.
+    RemoveDomain(crate::RemoveDomain),
 }
 
 impl Command {
@@ -81,7 +85,9 @@ impl Command {
             | Self::Publish(_)
             | Self::Discard(_)
             | Self::Start(_)
-            | Self::Cancel(_) => Vec::new(),
+            | Self::Cancel(_)
+            | Self::AddDomain(_)
+            | Self::RemoveDomain(_) => Vec::new(),
         }
     }
 }
@@ -109,6 +115,8 @@ pub enum Written {
     Discarded(Discarded),
     /// A Deployment admitted, started or cancelled, or what its runner recorded.
     Deployment(crate::DeploymentSummary),
+    /// A public domain was added or removed.
+    Domain(crate::DomainStaged),
 }
 
 pub(crate) fn run(
@@ -136,9 +144,15 @@ pub(crate) fn run(
         Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => self::publish(tx, who, publish).map(Written::Published),
         Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
-        Command::Admit(request) => admit(tx, who, request).map(Written::Deployment),
+        Command::Admit(request) => admit(tx, who, request, trusted).map(Written::Deployment),
         Command::Start(request) => start(tx, who, request).map(Written::Deployment),
         Command::Cancel(request) => cancel(tx, who, request).map(Written::Deployment),
+        Command::AddDomain(add) => {
+            crate::domain::add_domain(tx, who, add, trusted).map(Written::Domain)
+        }
+        Command::RemoveDomain(remove) => {
+            crate::domain::remove_domain(tx, who, remove, trusted).map(Written::Domain)
+        }
     }
 }
 
