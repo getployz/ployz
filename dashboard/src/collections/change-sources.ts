@@ -31,12 +31,13 @@ export const changeNameSources = {
 /**
  * The Config Store views each Store table invalidates, shaped like `changeNameSources`: a view's first source is
  * its key table and every other source logs that table's key, so a logged key names the Project or Environment
- * whose view changed. A created or deleted row is a row the view gains or drops, so the `project` view also
+ * whose view changed; `deployment` also backs an Environment's Deployment list. A created or deleted row is a row the view gains or drops, so the `project` view also
  * serves as the Organization's list of Projects.
  */
 export const storeViewSources = {
   project: ["config_project"],
-  environment: ["config_environment", "config_node_introduction", "config_saved"],
+  environment: ["config_environment", "config_node_introduction", "config_saved", "config_namespace", "config_applied"],
+  deployment: ["config_deployment"],
 } satisfies Record<string, readonly [ChangeSource, ...ChangeSource[]]>;
 
 export function collectionsOf(sourceTables: Iterable<ChangeSource>) {
