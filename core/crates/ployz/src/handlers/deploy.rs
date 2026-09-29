@@ -482,10 +482,12 @@ fn provenance(upload: &UploadedSource) -> String {
 fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
     move |error| {
         let message = format!("Could not read {}: {error}", dir.display());
-        match error {
-            crate::build::Error::Invalid(_) => Error::usage(message),
-            _ if !dir.exists() => Error::not_found(message),
-            _ => Error::coded(RpcErrorCode::Internal, message),
+        if matches!(error, crate::build::Error::Invalid(_)) {
+            Error::usage(message)
+        } else if !dir.exists() {
+            Error::not_found(message)
+        } else {
+            Error::coded(RpcErrorCode::Internal, message)
         }
     }
 }
