@@ -14,7 +14,7 @@ use ployz_core::config::{
     LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVariableProducer, SavedVariableValue, ServiceImageCredentials, ServiceSource, ValuePart,
     ValuePartOwner, branch_changes, canonicalize_environment_intent, compile_environment_intent,
-    live_values, parse_environment_intent, plan_branch,
+    live_values, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -583,7 +583,7 @@ fn insert_branch(
         }
     }
 
-    let into = empty(create.name.as_str());
+    let into = crate::review::empty(create.name.as_str());
     let hostnames = BranchHostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
@@ -1044,12 +1044,10 @@ pub(crate) fn copy_node(
         .cloned()
         .ok_or_else(|| {
             let names: Vec<&str> = branch.live.values().map(String::as_str).collect();
-            error::not_found(
+            error::choices(
                 format!("This Branch uses no node named {} live", copy.node),
-                json!({
-                    "did_you_mean": error::did_you_mean(copy.node.as_str(), names.iter().copied()),
-                    "valid_children": names,
-                }),
+                copy.node.as_str(),
+                names.iter().copied(),
             )
         })?;
     settled(tx, &branch)?;
@@ -1322,11 +1320,10 @@ pub(crate) fn live_names(
             "SELECT working FROM config_environment WHERE id = ?1",
             &[ancestor.as_str().into()],
         )?;
-        let intent = parse(
-            rows.first()
-                .ok_or_else(|| error::corrupt("Environment"))?
-                .text(0)?,
-        )?;
+        let intent = rows
+            .first()
+            .ok_or_else(|| error::corrupt("Environment"))?
+            .intent(0, "Branch")?;
         wanted.retain(|lineage| match name_of(&intent, lineage) {
             Some(name) => {
                 names.insert(lineage.clone(), name);
@@ -1797,8 +1794,7 @@ fn live_producers(
         let Some(namespace) = rows.first() else {
             continue;
         };
-        let namespace =
-            Namespace::parse(namespace.text(0)?).map_err(|_| error::corrupt("Namespace"))?;
+        let namespace = namespace.parse::<Namespace>(0, "Namespace")?;
         let mut provided =
             compile_environment_intent(id.as_str(), owner.applied.clone()).variable_producers;
         if let Some(row) = row(tx, id)? {
@@ -1899,10 +1895,10 @@ pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, Rp
         return Ok(None);
     };
     Ok(Some(Row {
-        parent: EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Branch"))?,
+        parent: row.parse::<EnvironmentId>(0, "Branch")?,
         kept: row.int(1)? != 0,
-        base: parse(row.text(2)?)?,
-        setup: serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("Branch"))?,
+        base: row.intent(2, "Branch")?,
+        setup: row.json(3, "Branch")?,
     }))
 }
 
@@ -2112,22 +2108,6 @@ fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
         .collect()
 }
 
-fn empty(name: &str) -> SavedEnvironmentIntent {
-    SavedEnvironmentIntent {
-        version: 1,
-        environment_slug: name.to_owned(),
-        services: Vec::new(),
-        volumes: Vec::new(),
-    }
-}
-
 fn document(intent: &SavedEnvironmentIntent) -> String {
     serde_json::to_string(intent).expect("Working State is JSON")
-}
-
-fn parse(text: &str) -> Result<SavedEnvironmentIntent, RpcError> {
-    serde_json::from_str(text)
-        .ok()
-        .and_then(|value| parse_environment_intent(value).ok())
-        .ok_or_else(|| error::corrupt("Branch"))
 }

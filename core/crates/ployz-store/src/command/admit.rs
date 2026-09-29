@@ -274,7 +274,7 @@ fn removal(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let empty = review::empty(&environment.working);
+    let empty = review::empty(&environment.working.environment_slug);
     let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
     let losses = removal::review(
         who,

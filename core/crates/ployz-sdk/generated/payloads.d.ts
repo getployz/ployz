@@ -1062,11 +1062,7 @@ export type DomainStaged = { environment: EnvironmentSummary, domain: Domain,
 /**
  * Its Service, when this changed it; empty when it already was so.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type DomainStatus = "ready" | "setting_up" | "needs_attention";
 
@@ -2845,7 +2841,7 @@ order: UpdateOrder | null, monitor_millis: number | null, };
 
 export type UpdateOrder = "start_first" | "stop_first";
 
-export type UploadBase = { commit: string,
+export type UploadBase = { commit: CommitSha,
 /**
  * Whether the directory held changes the commit doesn't.
  */

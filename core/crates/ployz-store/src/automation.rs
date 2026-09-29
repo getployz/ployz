@@ -248,8 +248,7 @@ fn branch_head(
         crate::conditional_save::carried(tx, who, event.repository_id, branch, &event.merged)?;
     let mut automated = Automated::default();
     for row in environments {
-        let environment =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
         let push = Push {
             repository_id: event.repository_id,
             branch,
@@ -316,12 +315,9 @@ fn check_suite(
     )?;
     let mut automated = Automated::default();
     for row in waiting {
-        let environment =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
-        let services: Vec<String> =
-            serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("waiting deploy"))?;
-        let saves: Vec<ConditionalSaveId> =
-            serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("waiting deploy"))?;
+        let environment = row.parse::<EnvironmentId>(0, "Environment ID")?;
+        let services: Vec<String> = row.json(2, "waiting deploy")?;
+        let saves: Vec<ConditionalSaveId> = row.json(3, "waiting deploy")?;
         let branch: BranchName = row.parse(1, "waiting deploy")?;
         let push = Push {
             repository_id: event.repository_id,

@@ -178,6 +178,17 @@ impl Row {
         T::try_from(self.text(index)?.to_owned()).map_err(|_| error::corrupt(what))
     }
 
+    /// A text column that may be NULL, as `T`; text it can't be is `what`, corrupt.
+    pub(crate) fn parse_optional<T: TryFrom<String>>(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<Option<T>, RpcError> {
+        self.optional_text(index)?
+            .map(|text| T::try_from(text.to_owned()).map_err(|_| error::corrupt(what)))
+            .transpose()
+    }
+
     /// An integer column as `T`; one it can't be is `what`, corrupt.
     pub(crate) fn number<T: TryFrom<u64>>(&self, index: usize, what: &str) -> Result<T, RpcError> {
         u64::try_from(self.int(index)?)
@@ -204,6 +215,17 @@ impl Row {
         what: &str,
     ) -> Result<T, RpcError> {
         serde_json::from_str(self.text(index)?).map_err(|_| error::corrupt(what))
+    }
+
+    /// An Environment document column, validated whole; one that isn't is `what`,
+    /// corrupt.
+    pub(crate) fn intent(
+        &self,
+        index: usize,
+        what: &str,
+    ) -> Result<ployz_core::config::SavedEnvironmentIntent, RpcError> {
+        ployz_core::config::parse_environment_intent(self.json(index, what)?)
+            .map_err(|_| error::corrupt(what))
     }
 
     /// A text column that may be NULL.

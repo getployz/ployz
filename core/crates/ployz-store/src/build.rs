@@ -272,11 +272,8 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     .iter()
     .map(|row| {
         Ok(BuildRow {
-            service: ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("build"))?,
-            commit: row
-                .optional_text(1)?
-                .map(|commit| CommitSha::parse(commit).map_err(|_| error::corrupt("build commit")))
-                .transpose()?,
+            service: row.parse::<ServiceName>(0, "build")?,
+            commit: row.parse_optional(1, "build commit")?,
             status: row.variant(2, "build status")?,
             message: row.optional_text(3)?.map(str::to_owned),
             log: row.text(4)?.to_owned(),

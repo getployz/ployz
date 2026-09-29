@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::Actor;
-use crate::error;
 use crate::id::EnvironmentId;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
@@ -238,7 +237,7 @@ pub(crate) fn stored(
         &[environment.as_str().into(), service.into()],
     )?
     .first()
-    .map(|row| serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("Deployment Policy")))
+    .map(|row| row.json(0, "Deployment Policy"))
     .transpose()
 }
 

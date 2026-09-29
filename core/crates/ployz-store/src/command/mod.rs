@@ -261,7 +261,7 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
                     json!({ "id": id }),
                 ));
             }
-            return serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("create result"));
+            return row.json(2, "create result");
         }
     }
     let written = create(tx)?;

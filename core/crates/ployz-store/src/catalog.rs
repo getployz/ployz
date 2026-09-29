@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
-use crate::error;
 use crate::settings::{ServiceSetting, SettingPath, Target};
 use crate::variables;
 
@@ -61,14 +60,7 @@ pub fn explain(path: &str) -> Result<Explained, RpcError> {
     let parsed = SettingPath::parse(path)?;
     let service = parsed.settings_of()?;
     let Some(one) = parsed.target() else {
-        let names = ServiceSetting::ALL.map(ServiceSetting::name);
-        return Err(error::invalid(
-            "Name a Setting: SERVICE.SETTING",
-            json!({
-                "valid_children": names,
-                "example": format!("{service}.replicas"),
-            }),
-        ));
+        return Err(crate::settings::name_a_setting(service));
     };
     Ok(Explained {
         schema: target(one),

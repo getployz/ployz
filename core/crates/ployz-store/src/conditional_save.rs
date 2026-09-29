@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::branch::{self, Carried, MoveRow, MoveView, Moved, Moving, Save, Take, Way, When};
-use crate::id::{ConditionalSaveId, EnvironmentId, ProjectId, Revision};
+use crate::id::{ConditionalSaveId, EnvironmentId, Revision};
 use crate::pull_request::{self, PullRequest, PullRequestRef};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -201,7 +201,7 @@ fn sides(
     };
     let facts = pull_request::facts(tx, who, repository_id, number)?
         .ok_or_else(|| error::corrupt("pull request"))?;
-    let project = project_of(tx, &pr.summary.id)?;
+    let project = scope::project_of(tx, &pr.summary.id)?.id;
     let destinations =
         pull_request::destinations_of(tx, &project, repository_id, &facts.target_branch)?;
     let mut names = Vec::new();
@@ -630,8 +630,8 @@ pub(crate) fn involved(
     )?;
     let mut ids = Vec::new();
     for row in rows {
-        ids.push(environment_id(row.text(0)?)?);
-        ids.push(environment_id(row.text(1)?)?);
+        ids.push(row.parse(0, "Environment ID")?);
+        ids.push(row.parse::<EnvironmentId>(1, "Environment ID")?);
     }
     Ok(ids)
 }
@@ -670,11 +670,11 @@ pub(crate) fn settle(tx: &mut dyn Tx, who: &Actor, event: &PullRequest) -> Resul
     )?;
     let mut frozen = Vec::new();
     for row in rows {
-        let id = save_id(row.text(0)?)?;
-        let pr = environment_id(row.text(1)?)?;
-        let into = environment_id(row.text(2)?)?;
+        let id = row.parse::<ConditionalSaveId>(0, "Conditional Save ID")?;
+        let pr = row.parse::<EnvironmentId>(1, "Environment ID")?;
+        let into = row.parse::<EnvironmentId>(2, "Environment ID")?;
         let environment = scope::lock_id(tx, who, &pr)?;
-        let project = project_of(tx, &pr)?;
+        let project = scope::project_of(tx, &pr)?.id;
         let stands = match &event.merge_commit {
             Some(_) => {
                 u64::try_from(row.int(3)?).ok() == Some(environment.summary.revision.0)
@@ -754,8 +754,7 @@ fn wait_with(
     let Some(row) = rows.first() else {
         return Ok(false);
     };
-    let mut saves: Vec<ConditionalSaveId> =
-        serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("waiting deploy"))?;
+    let mut saves: Vec<ConditionalSaveId> = row.json(0, "waiting deploy")?;
     saves.push(id.clone());
     let [environment, repository, branch, head] = key;
     tx.execute(
@@ -819,9 +818,9 @@ pub(crate) fn carried(
         let commit = row.text(2)?;
         if merged.iter().any(|merged| merged.as_str() == commit) {
             carried
-                .entry(environment_id(row.text(1)?)?)
+                .entry(row.parse::<EnvironmentId>(1, "Environment ID")?)
                 .or_default()
-                .push(save_id(row.text(0)?)?);
+                .push(row.parse(0, "Conditional Save ID")?);
         }
     }
     Ok(carried)
@@ -1035,14 +1034,14 @@ pub(crate) fn hints(
     )?;
     let mut hints = Vec::new();
     for row in rows {
-        let stored = parse(row.text(2)?)?;
+        let stored = row.json::<Stored>(2, "Conditional Save")?;
         if stored.landed != latest {
             continue;
         }
         let number = row.number(1, "Conditional Save")?;
         for saved in stored.rows {
             hints.push(PullRequestHint {
-                save: save_id(row.text(0)?)?,
+                save: row.parse(0, "Conditional Save ID")?,
                 pull_request: number,
                 row: saved.shown.row,
                 value: saved.shown.from,
@@ -1073,9 +1072,9 @@ pub(crate) fn standing_in(
     let stands = u64::try_from(row.int(1)?).ok() == Some(pr.summary.revision.0)
         && target.is_some_and(|target| held == target.as_str());
     Ok(Some((
-        save_id(row.text(0)?)?,
+        row.parse(0, "Conditional Save ID")?,
         stands,
-        parse(row.text(3)?)?.rows.len(),
+        row.json::<Stored>(3, "Conditional Save")?.rows.len(),
     )))
 }
 
@@ -1145,11 +1144,10 @@ fn load(tx: &mut dyn Tx, who: &Actor, id: &ConditionalSaveId) -> Result<Option<F
         return Ok(None);
     };
     Ok(Some(Found {
-        environment: environment_id(row.text(0)?)?,
-        state: serde_json::from_value(json!(row.text(1)?))
-            .map_err(|_| error::corrupt("Conditional Save"))?,
+        environment: row.parse(0, "Environment ID")?,
+        state: row.variant(1, "Conditional Save")?,
         number: row.number(2, "Conditional Save")?,
-        stored: parse(row.text(3)?)?,
+        stored: row.json(3, "Conditional Save")?,
     }))
 }
 
@@ -1169,31 +1167,6 @@ fn delete(tx: &mut dyn Tx, id: &ConditionalSaveId) -> Result<(), RpcError> {
     Ok(())
 }
 
-fn project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<ProjectId, RpcError> {
-    let rows = tx.query(
-        "SELECT project_id FROM config_environment WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
-    ProjectId::parse(
-        rows.first()
-            .ok_or_else(|| error::corrupt("Environment"))?
-            .text(0)?,
-    )
-    .map_err(|_| error::corrupt("Project ID"))
-}
-
-fn save_id(text: &str) -> Result<ConditionalSaveId, RpcError> {
-    ConditionalSaveId::parse(text).map_err(|_| error::corrupt("Conditional Save ID"))
-}
-
-fn environment_id(text: &str) -> Result<EnvironmentId, RpcError> {
-    EnvironmentId::parse(text).map_err(|_| error::corrupt("Environment ID"))
-}
-
 fn document(stored: &Stored) -> String {
     serde_json::to_string(stored).expect("a Conditional Save is JSON")
-}
-
-fn parse(text: &str) -> Result<Stored, RpcError> {
-    serde_json::from_str(text).map_err(|_| error::corrupt("Conditional Save"))
 }

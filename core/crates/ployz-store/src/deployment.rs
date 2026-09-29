@@ -9,8 +9,7 @@ use std::collections::BTreeMap;
 use ployz_core::config::{
     CompiledNodeConfig, EncryptedSecretValue, RuntimeOutcomeProjection, SavedEnvironmentIntent,
     SavedServiceIntent, SavedVolumeIntent, ServiceSource, canonicalize_environment_intent,
-    compile_environment_intent, lower_deployment, parse_environment_intent, parse_runtime_preview,
-    project_runtime_outcome,
+    compile_environment_intent, lower_deployment, parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
@@ -25,13 +24,13 @@ use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
 use crate::error;
 use crate::id::{
-    DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision, RunnerId,
-    ServiceId, VolumeId, VolumeName,
+    CommitSha, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision,
+    RunnerId, ServiceId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
 use crate::review::{self, Head};
-use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
+use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
 use crate::storage::{Row, Tx, name_of};
 use crate::variables;
@@ -139,21 +138,18 @@ pub struct UploadedSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct UploadBase {
-    pub commit: String,
+    pub commit: CommitSha,
     /// Whether the directory held changes the commit doesn't.
     pub changed: bool,
 }
 
 impl UploadedSource {
     pub(crate) fn check(&self) -> Result<(), RpcError> {
-        let base = self.base.as_ref();
-        if ployz_core::is_lower_hex(&self.digest, 64)
-            && base.is_none_or(|base| ployz_core::is_lower_hex(&base.commit, 40))
-        {
+        if ployz_core::is_lower_hex(&self.digest, 64) {
             return Ok(());
         }
         Err(error::invalid(
-            "An upload names a lowercase sha256 digest and a full lowercase Git commit",
+            "An upload names a lowercase sha256 digest",
             json!({ "upload": self }),
         ))
     }
@@ -653,8 +649,7 @@ pub(crate) fn admit(
             )?
             .first()
         {
-            Some(row) => serde_json::from_str(row.text(0)?)
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            Some(row) => row.json(0, "Deployment upload")?,
             None => None,
         },
     };
@@ -845,7 +840,7 @@ pub(crate) fn namespace(
         &[environment.id.as_str().into()],
     )?;
     if let Some(row) = rows.first() {
-        return Namespace::parse(row.text(0)?).map_err(|_| error::corrupt("Namespace"));
+        return row.parse::<Namespace>(0, "Namespace");
     }
     let base = format!("{}-{}", environment.project, environment.name);
     let suffix: String = environment
@@ -1002,8 +997,8 @@ pub(crate) fn receipts(
     .iter()
     .map(|row| {
         Ok((
-            ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?,
-            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?,
+            row.parse::<ServiceName>(0, "receipt")?,
+            row.json(1, "receipt")?,
         ))
     })
     .collect()
@@ -1449,8 +1444,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         });
     };
     let saved = saved_at(tx, id, revision(row.int(1)?)?)?;
-    let nodes: Vec<TargetNode> =
-        serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("Deployment"))?;
+    let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
     let mut intent = applied.clone();
     for node in nodes {
         intent.services.retain(|service| service.id != node.id());
@@ -1530,9 +1524,9 @@ pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, 
     .iter()
     .map(|row| {
         Ok(Unclaimed {
-            organization: parse_stored(row.text(0)?)?,
-            environment: parse_stored(row.text(1)?)?,
-            deployment: parse_stored(row.text(2)?)?,
+            organization: row.parse(0, "identity")?,
+            environment: row.parse(1, "identity")?,
+            deployment: row.parse(2, "identity")?,
             admitted_at: row.int(3)?,
         })
     })
@@ -1545,25 +1539,8 @@ pub(crate) fn view(
     who: &Actor,
     id: &DeploymentId,
 ) -> Result<DeploymentView, RpcError> {
-    let rows = tx.query(
-        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
-        &[id.as_str().into(), who.organization.as_str().into()],
-    )?;
-    let stored = stored(rows.first().ok_or_else(|| missing(id))?)?;
-    let names = tx.query(
-        "SELECT p.name, e.name FROM config_environment e \
-         JOIN config_project p ON p.id = e.project_id WHERE e.id = ?1",
-        &[stored.environment.as_str().into()],
-    )?;
-    let names = names.first().ok_or_else(|| error::corrupt("Environment"))?;
-    let environment = scope::environment(
-        tx,
-        who,
-        &EnvironmentRef {
-            project: Some(parse_stored(names.text(0)?)?),
-            environment: Some(parse_stored(names.text(1)?)?),
-        },
-    )?;
+    let stored = owned(tx, who, id)?;
+    let environment = scope::load_by_id(tx, &stored.environment)?;
     let nodes = stored
         .nodes
         .iter()
@@ -1606,15 +1583,17 @@ pub(crate) fn build_log(
     who: &Actor,
     query: &build::BuildLogQuery,
 ) -> Result<build::BuildLogView, RpcError> {
+    let stored = owned(tx, who, &query.deployment)?;
+    build::log(tx, &stored, &query.service)
+}
+
+/// Deployment `id` of `who`'s Organization.
+fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
     let rows = tx.query(
         &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
-        &[
-            query.deployment.as_str().into(),
-            who.organization.as_str().into(),
-        ],
+        &[id.as_str().into(), who.organization.as_str().into()],
     )?;
-    let stored = stored(rows.first().ok_or_else(|| missing(&query.deployment))?)?;
-    build::log(tx, &stored, &query.service)
+    stored(rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// One page of `environment`'s Deployments, newest first, before `cursor`.
@@ -1651,10 +1630,7 @@ pub(crate) fn page(
 /// of one Environment apply in turn.
 pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
     let environment = load(tx, id)?.environment;
-    tx.execute(
-        "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
-        &[environment.as_str().into()],
-    )?;
+    scope::lock_all(tx, [environment])?;
     // A lapsed lease reads unknown; writing it down keeps the rows saying so too.
     tx.execute(
         "UPDATE config_deployment SET status = 'unknown' \
@@ -1674,9 +1650,6 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
 }
 
 fn stored(row: &Row) -> Result<Stored, RpcError> {
-    let json = |index: usize, what: &str| -> Result<Value, RpcError> {
-        serde_json::from_str(row.text(index)?).map_err(|_| error::corrupt(what))
-    };
     let status: DeploymentStatus = row.variant(3, "Deployment status")?;
     let lease = row.int(12)?;
     // A runner whose lease lapsed is gone: what ran is unknown.
@@ -1691,28 +1664,24 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     };
     Ok(Stored {
         summary: DeploymentSummary {
-            id: parse_stored(row.text(0)?)?,
-            number: u64::try_from(row.int(2)?).map_err(|_| error::corrupt("Deployment"))?,
+            id: row.parse(0, "identity")?,
+            number: row.number(2, "Deployment")?,
             status,
             saved: revision(row.int(4)?)?,
-            services: serde_json::from_value(json(5, "Deployment")?)
-                .map_err(|_| error::corrupt("Deployment"))?,
-            runner: row.optional_text(11)?.map(parse_stored).transpose()?,
-            upload: serde_json::from_value(json(9, "Deployment upload")?)
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            services: row.json(5, "Deployment")?,
+            runner: row.parse_optional(11, "identity")?,
+            upload: row.json(9, "Deployment upload")?,
             remove: revision(row.int(4)?)? == NOTHING,
-            admitted_by: row.optional_text(13)?.map(parse_stored).transpose()?,
+            admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
         },
-        environment: parse_stored(row.text(1)?)?,
-        nodes: serde_json::from_value(json(6, "Deployment")?)
-            .map_err(|_| error::corrupt("Deployment"))?,
-        namespace: Namespace::parse(row.text(7)?).map_err(|_| error::corrupt("Namespace"))?,
-        run: serde_json::from_value(json(8, "Deployment run")?)
-            .map_err(|_| error::corrupt("Deployment run"))?,
-        cluster_domain: row.optional_text(10)?.map(parse_stored).transpose()?,
+        environment: row.parse(1, "identity")?,
+        nodes: row.json(6, "Deployment")?,
+        namespace: row.parse::<Namespace>(7, "Namespace")?,
+        run: row.json(8, "Deployment run")?,
+        cluster_domain: row.parse_optional(10, "identity")?,
         lease,
     })
 }
@@ -1758,7 +1727,8 @@ pub(crate) fn saved_at(
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     if revision == NOTHING {
-        return scope::load_by_id(tx, environment).map(|loaded| review::empty(&loaded.working));
+        return scope::load_by_id(tx, environment)
+            .map(|loaded| review::empty(&loaded.working.environment_slug));
     }
     let rows = tx.query(
         "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
@@ -1768,11 +1738,9 @@ pub(crate) fn saved_at(
         ],
     )?;
     rows.first()
-        .and_then(|row| row.text(0).ok())
-        .and_then(|text| serde_json::from_str(text).ok())
-        .and_then(|value| parse_environment_intent(value).ok())
+        .ok_or_else(|| error::corrupt("Saved State"))?
+        .intent(0, "Saved State")
         .map(canonicalize_environment_intent)
-        .ok_or_else(|| error::corrupt("Saved State"))
 }
 
 fn revision(value: i64) -> Result<Revision, RpcError> {
@@ -1791,18 +1759,6 @@ fn json_text(value: &impl Serialize) -> String {
 
 fn missing(id: &DeploymentId) -> RpcError {
     error::not_found(format!("No Deployment {id}"), json!({}))
-}
-
-/// `not_found` unless Deployment `id` belongs to `who`'s Organization.
-fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<(), RpcError> {
-    let rows = tx.query(
-        "SELECT id FROM config_deployment WHERE id = ?1 AND organization_id = ?2",
-        &[id.as_str().into(), who.organization.as_str().into()],
-    )?;
-    if rows.is_empty() {
-        return Err(missing(id));
-    }
-    Ok(())
 }
 
 fn superseded(id: &DeploymentId) -> RpcError {

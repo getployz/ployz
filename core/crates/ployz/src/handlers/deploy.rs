@@ -461,7 +461,7 @@ fn provenance(upload: &UploadedSource) -> String {
     match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
-            base.commit.get(..7).unwrap_or(&base.commit),
+            base.commit.as_str().get(..7).unwrap_or_default(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
@@ -484,7 +484,7 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
     let base = git(&["rev-parse", "--verify", "HEAD"])
-        .filter(|commit| ployz_core::is_lower_hex(commit, 40))
+        .and_then(|commit| ployz_store::CommitSha::parse(commit).ok())
         .map(|commit| UploadBase {
             commit,
             // ponytail: files Git ignores count as no change; the base is provenance only.

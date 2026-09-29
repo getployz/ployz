@@ -785,3 +785,14 @@ impl From<SettingPath> for String {
         value.to_string()
     }
 }
+
+/// A path that stops at its node: name one of its Settings.
+pub(crate) fn name_a_setting(node: impl std::fmt::Display) -> RpcError {
+    error::invalid(
+        "Name a Setting: SERVICE.SETTING",
+        json!({
+            "valid_children": ServiceSetting::ALL.map(ServiceSetting::name),
+            "example": format!("{node}.replicas"),
+        }),
+    )
+}
