@@ -254,7 +254,11 @@ live: Array<LiveNode>,
 /**
  * The Parent's deployed changes Update would stage, as `NODE[.path]`.
  */
-update: Array<string>, };
+update: Array<string>,
+/**
+ * The pull request it is the PR Environment of; its Save waits for the merge.
+ */
+pull_request: PullRequestRef | null, };
 
 export type Branched = {
 /**
@@ -1792,6 +1796,12 @@ export type ObservationKind = "container" | "volume";
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
 
+export type OpenPullRequest = { number: number,
+/**
+ * Empty until Cloud reports its facts.
+ */
+title: string, author: string, environment: EnvironmentName, };
+
 export type OperationPhase = { "type": "starting" } | { "type": "creating_container" } | { "type": "starting_container" } | { "type": "waiting_for_health", container_id: ContainerId, health: HealthObservation | null, elapsed_ms: number, deadline_ms: number, } | { "type": "waiting_for_hook", container_id: ContainerId, elapsed_ms: number, deadline_ms: number, } | { "type": "stopping_container" } | { "type": "removing_container" } | { "type": "removing_volume" } | { "type": "compensating" };
 
 export type OperationRow = {
@@ -1933,11 +1943,19 @@ deployment: DeploymentSummary | null,
  */
 destinations: Array<Destination>, };
 
-export type PrPlan = { repository: string, enabled: boolean,
+export type PrPlan = { repository: string, repository_id: number,
+/**
+ * The GitHub App installation its Services deploy through.
+ */
+installation_id: number, enabled: boolean,
 /**
  * None until picked, or once that Environment is gone.
  */
-start_from: EnvironmentName | null, copy: Array<string>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean, };
+start_from: EnvironmentName | null, copy: Array<string>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean,
+/**
+ * Its pull requests with a PR Environment in the Project, not being closed.
+ */
+open: Array<OpenPullRequest>, };
 
 export type PrPlansQuery = {
 /**

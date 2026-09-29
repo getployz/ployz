@@ -313,6 +313,19 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     assert_eq!(branch.parent.to_string(), "production");
+    assert_eq!(
+        branch.pull_request.map(|pr| (pr.repository_id, pr.number)),
+        Some((11, 5))
+    );
+    // The plan lists it as open, by the facts Cloud reported.
+    let plans = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let open = &plans.plans[0].open;
+    assert_eq!(plans.plans[0].repository_id, 11);
+    assert_eq!(open.len(), 1);
+    assert_eq!(
+        (open[0].number, open[0].environment.to_string()),
+        (5, "pr-5".into())
+    );
     let services = store
         .services(
             &who,

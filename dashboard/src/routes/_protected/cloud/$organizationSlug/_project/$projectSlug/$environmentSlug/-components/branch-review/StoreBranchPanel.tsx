@@ -24,6 +24,7 @@ import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environme
 import { actionVariant, NewsRow } from "./BranchNews";
 import { ChangeRowItem } from "./ChangeRowItem";
 import { SaveButton, saveInfo, Sheet, SwitchField, useRowPicks } from "./SaveSheet";
+import { StorePullRequestNews, useStorePullRequest } from "./StorePullRequestNews";
 
 type Params = { organizationSlug: string; projectSlug: string; environmentSlug: string };
 
@@ -56,10 +57,12 @@ function BranchPanel({ params, store, branch }: { params: Params; store: Environ
   const saveView = save.ok ? save.value : null;
   const removal = me?.removal ?? null;
   const deletable = !branch.kept && !me?.default;
+  const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
     removal ? <RemovalNews key="removal" lead name={name} status={removal.status} onFinish={() => void closing.close()} /> : null,
-    saveView?.rows.length ? (
+    // A PR Environment saves into each Destination for the merge, not into its Parent now.
+    branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} /> : saveView?.rows.length ? (
       <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`${plural(saveView.rows.length, "change")} to save`}
         detail={nodeNames(saveView)}
         action={<Button size="sm" variant={actionVariant(!removal)} onClick={() => setSaving(true)}>Save to {branch.parent}</Button>}
@@ -111,6 +114,7 @@ function BranchPanel({ params, store, branch }: { params: Params; store: Environ
         <p className="truncate text-sm text-muted-foreground">
           Branch of <Link to={ENVIRONMENT_INDEX_ROUTE_TO} params={{ ...params, environmentSlug: branch.parent }}
             className="underline underline-offset-4">{branch.parent}</Link>
+          {pr?.pull_request ? ` · PR #${pr.pull_request.number} · ${pr.pull_request.title}` : null}
         </p>
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
