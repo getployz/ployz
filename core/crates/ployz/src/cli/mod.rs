@@ -42,6 +42,7 @@ pub fn command() -> Command {
         .subcommand(handlers::catalog::explain_command())
         .subcommand(handlers::config::get_command())
         .subcommand(handlers::link::link_command())
+        .subcommand(handlers::github::command())
         .subcommand(handlers::login::login_command())
         .subcommand(handlers::login::logout_command())
         .subcommand(handlers::account::org_command())

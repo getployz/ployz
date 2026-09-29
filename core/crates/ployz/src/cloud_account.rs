@@ -359,7 +359,7 @@ pub(crate) async fn config_store<T: DeserializeOwned>(
 }
 
 /// Call `/api/cli/<path>`. A 404 on a read means Cloud doesn't offer the CLI surface.
-async fn call<T: DeserializeOwned>(
+pub(crate) async fn call<T: DeserializeOwned>(
     credential: &Credential,
     method: Method,
     path: &str,

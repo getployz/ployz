@@ -1,19 +1,36 @@
 import { testConfigEnvironment } from "#/test/config-environment";
 import { assert, it } from "@effect/vitest";
 import type { ConfigCommand, ConfigQuery, ServiceId } from "@ployz/sdk";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Cause, ConfigProvider, Effect, Exit, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { handleConfigRequest } from "#/modules/config-store/config-store.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { Auth, AuthLive } from "#/server/auth.server";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
+import { member, user } from "#/modules/identity/tables";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
+import { fakeGithubApi } from "#/test/fake-github";
 import { encodePublicError, statusForPublicError } from "#/server/public-error";
 import { postgresTestDatabase } from "#/test/postgres";
 
 const origin = "http://localhost:3000";
+
+/**
+ * GitHub as these tests see it: `acme/web` is private (read through installation 7) with a `dev` branch, `acme/docs`
+ * is public, `acme/secret` is someone else's private repository, and `acme/down` finds GitHub unreachable.
+ */
+const github = fakeGithubApi({
+  "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev": {
+    ref: "refs/heads/dev", object: { type: "commit", sha: "a".repeat(40) },
+  },
+  "https://api.github.com/repos/acme/docs": { id: 12, full_name: "acme/docs", private: false, default_branch: "main" },
+  "https://api.github.com/repos/acme/secret": { id: 13, full_name: "acme/secret", private: true, default_branch: "main" },
+  "https://api.github.com/repos/acme/down": "down",
+});
 
 /** Cloud with the Config Store in its database. */
 const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string } = {}) {
@@ -26,6 +43,7 @@ const cloudLayer = Effect.fn(function* (overrides: { readonly NODE_ENV?: string 
     DatabaseLive.pipe(Layer.provide(configLayer)),
     Layer.succeed(Polar, { mode: "self_hosted" }),
     Layer.succeed(InngestClient, new Inngest({ id: "config-store-test" })),
+    Layer.succeed(GithubApi, github.service),
   );
   return Layer.merge(AuthLive.pipe(Layer.provide(services)), services);
 });
@@ -36,7 +54,8 @@ type Reply = {
   readonly view?: string;
   readonly staged?: ReadonlyArray<string>;
   readonly settings?: ReadonlyArray<{ readonly path: string; readonly value: number; readonly default: number; readonly apply: string }>;
-  readonly error?: { readonly code: string; readonly details: { readonly revision?: number } | null };
+  readonly values?: Readonly<Record<string, string | number>>;
+  readonly error?: { readonly code: string; readonly details: { readonly revision?: number; readonly next?: string } | null };
 };
 
 /** One CLI request; `json` is the Store's result, or its refusal under `error`. */
@@ -67,7 +86,8 @@ const signUp = Effect.fn(function* (name: string) {
 });
 
 /** What the CLI sends, plus one command the Store never takes over HTTPS. */
-type Body = ConfigQuery | ConfigCommand | { readonly command: "claim"; readonly deployment: string };
+type Body = ConfigQuery | ConfigCommand | { readonly command: "claim"; readonly deployment: string }
+  | { readonly command: "create_git_service"; readonly installation_id: number };
 
 const PROJECT = "00000000-0000-4000-8000-000000000001";
 const ENVIRONMENT = "00000000-0000-4000-8000-000000000002";
@@ -182,6 +202,63 @@ it.live(
       yield* Effect.gen(function* () {
         // Not found before any credential is looked at.
         assert.strictEqual((yield* request("read", undefined, get(null))).status, 404);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "a Git-backed Service connects only repositories and branches Cloud checked for the Organization",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        assert.strictEqual((yield* request("write", alice, shop)).status, 200);
+        // Alice installed the GitHub App on acme with acme/web; her Organization reads it through that installation.
+        const database = yield* Database;
+        const [row] = yield* database.drizzle.select({ id: user.id, organization: member.organizationId }).from(user)
+          .innerJoin(member, eq(member.userId, user.id)).where(eq(user.email, "alice@example.test"));
+        const userId = row?.id ?? assert.fail("no user");
+        yield* database.drizzle.insert(githubInstallation).values({ userId, installationId: 7, accountLogin: "acme", accountType: "Organization" });
+        yield* database.drizzle.insert(githubRepositoryCache).values({
+          userId, installationId: 7, repositoryId: 11, name: "web", fullName: "acme/web", defaultBranch: "main",
+          private: true, htmlUrl: "https://github.com/acme/web", repoUpdatedAt: new Date(),
+        });
+        let services = 10;
+        const git = (name: string, repository: string, branch?: string): ConfigCommand => ({
+          command: "create_git_service", id: `00000000-0000-4000-8000-0000000000${(services += 1)}` as ServiceId,
+          environment: here, name, repository, branch: branch ?? null,
+        });
+
+        const created = yield* request("write", alice, git("web", "Acme/Web", "dev"));
+        assert.strictEqual(created.status, 200);
+        assert.include(created.json.staged ?? [], "web.branch");
+        assert.deepInclude(github.calls, { url: "https://api.github.com/repos/acme/web/git/ref/heads%2Fdev", installationId: 7 });
+        const web = yield* request("read", alice, get("web"));
+        assert.deepInclude(web.json.values, { repository: "acme/web", branch: "dev" });
+
+        const secret = yield* request("write", alice, git("docs", "acme/secret"));
+        assert.strictEqual(secret.status, 404);
+        assert.strictEqual(secret.json.error?.details?.next, "ployz github connect");
+        const gone = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.branch", value: "gone" }],
+        });
+        assert.strictEqual(gone.status, 404);
+        assert.strictEqual(gone.json.error?.details?.next, "ployz github ls acme/web");
+
+        // A public repository needs no installation; acme/docs has no dev branch, so web moves to its default.
+        const moved = yield* request("write", alice, {
+          command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.repository", value: "acme/docs" }],
+        });
+        assert.strictEqual(moved.status, 200);
+        assert.deepInclude((yield* request("read", alice, get("web"))).json.values, { repository: "acme/docs", branch: "main" });
+
+        const forged = yield* request("write", alice, { command: "create_git_service", installation_id: 7 });
+        assert.strictEqual(forged.status, 422);
+        const down = yield* request("write", alice, git("api", "acme/down"));
+        assert.strictEqual(down.status, 503);
+        assert.strictEqual(down.json.error?.code, "unavailable");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

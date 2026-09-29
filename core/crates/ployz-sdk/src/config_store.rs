@@ -63,6 +63,7 @@ impl ConfigStore {
     }
 
     /// Apply a `ConfigCommand` as the given Organization, in one transaction.
+    /// `trusted` is evidence Cloud gathered itself (`ConfigTrusted`), never the caller's.
     ///
     /// # Errors
     /// Returns the Store's RPC error, or `unavailable` when it is too busy or slow.
@@ -71,12 +72,19 @@ impl ConfigStore {
         &self,
         organization: String,
         command: serde_json::Value,
+        trusted: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
         let who = actor(organization)?;
         let command: ployz_store::Command = serde_json::from_value(command)
             .map_err(|_| invalid_argument("Expected a Config Store command"))?;
+        let trusted: ployz_store::Trusted = trusted
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| invalid_argument("Expected Config Store evidence"))?
+            .unwrap_or_default();
         let store = Arc::clone(&self.store);
-        self.run(move || store.write(&who, &command)).await
+        self.run(move || store.write_trusted(&who, &command, &trusted))
+            .await
     }
 }
 

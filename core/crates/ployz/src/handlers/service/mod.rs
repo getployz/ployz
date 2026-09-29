@@ -759,30 +759,68 @@ fn service_add() -> Command {
         .arg(positional("name", true).help("Service name, also its Private DNS name"))
         .arg(
             value("image", None)
-                .required(true)
                 .value_name("REF")
                 .help("Container image to run"),
         )
+        .arg(
+            value("repo", None)
+                .value_name("OWNER/REPO[@BRANCH]")
+                .conflicts_with("image")
+                .help("GitHub repository to build; Ployz checks it and the branch (default: its default branch)"),
+        )
+        .group(
+            clap::ArgGroup::new("source")
+                .args(["image", "repo"])
+                .required(true),
+        )
 }
 
-/// Add an image Service to the Config Store's Working State.
+/// Add an image or GitHub repository Service to the Config Store's Working State.
 fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     // Core's name error quotes the value; a rejected value is never echoed.
     let name = ployz_core::ServiceName::parse(required(matches, "name")?).map_err(|_| {
         Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
     })?;
-    let create = ployz_store::CreateService {
-        id: ployz_store::ServiceId::parse(super::store::mint())?,
-        environment: super::store::environment(matches)?,
-        name,
-        image: required(matches, "image")?,
-    };
+    let id = ployz_store::ServiceId::parse(super::store::mint())?;
+    let environment = super::store::environment(matches)?;
     let store = super::store::store(root)?;
-    let created = store.create_service(&create).map_err(super::store::failed(
-        matches,
-        &["service", "add", create.name.as_str(), "--image", "REF"],
-    ))?;
+    let created = match matches.get_one::<String>("repo") {
+        Some(repo) => {
+            let (repository, branch) = match repo.split_once('@') {
+                Some((repository, branch)) => (repository, Some(branch.to_owned())),
+                None => (repo.as_str(), None),
+            };
+            let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
+            let words = words.map(str::to_owned);
+            store
+                .create_git_service(&ployz_store::CreateGitService {
+                    id,
+                    environment,
+                    name,
+                    repository: repository.to_owned(),
+                    branch,
+                })
+                .map_err(super::store::failed(
+                    matches,
+                    &words.each_ref().map(String::as_str),
+                ))
+        }
+        None => {
+            let words = ["service", "add", name.as_str(), "--image", "REF"].map(str::to_owned);
+            store
+                .create_service(&ployz_store::CreateService {
+                    id,
+                    environment,
+                    name,
+                    image: required(matches, "image")?,
+                })
+                .map_err(super::store::failed(
+                    matches,
+                    &words.each_ref().map(String::as_str),
+                ))
+        }
+    }?;
     let hint = Some(super::store::next(matches, &["diff"]));
     output::finish(&super::store::Next::new(&created, hint), || {
         say!(

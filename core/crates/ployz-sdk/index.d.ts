@@ -3,6 +3,7 @@ import type {
   BuildGrantMinted,
   ConfigCommand,
   ConfigQuery,
+  ConfigTrusted,
   ConfigView,
   ConfigWritten,
   CertificateMaterialPublished,
@@ -255,7 +256,8 @@ export declare function allocateEnrollment(request: RegisterRequest, snapshot: E
 /** One Config Store; every call acts in one Organization and rejects with RpcError. */
 export interface ConfigStore {
   read(organization: string, query: ConfigQuery): Promise<ConfigView>;
-  write(organization: string, command: ConfigCommand): Promise<ConfigWritten>;
+  /** `trusted` is evidence Cloud gathered itself, such as readable repositories; never the caller's. */
+  write(organization: string, command: ConfigCommand, trusted?: ConfigTrusted): Promise<ConfigWritten>;
 }
 /**
  * Open the Config Store at `url` (`postgres://…`, or `sqlite:PATH` in tests), migrating it.
