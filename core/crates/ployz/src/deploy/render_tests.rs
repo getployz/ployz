@@ -17,10 +17,6 @@ use super::*;
 fn empty_preview_prints_no_changes_without_a_prompt_body() {
     let preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("app").unwrap());
     assert_eq!(plan_text(&preview, "default"), "No changes.\n");
-    assert_eq!(
-        confirm_prompt("default"),
-        "Proceed with deployment to default? [y/N] "
-    );
 }
 
 #[test]
@@ -256,10 +252,6 @@ fn plan_shows_prune_as_remove_operations_before_confirm() {
     assert!(!text.contains("~ update service debug"), "{text}");
     assert!(!text.contains("would remove"), "{text}");
     assert!(!text.contains("will not remove"), "{text}");
-    assert_eq!(
-        confirm_prompt("default"),
-        "Proceed with deployment to default? [y/N] "
-    );
     assert!(!preview.noop());
 }
 

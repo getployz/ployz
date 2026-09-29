@@ -203,27 +203,18 @@ mod tests {
 
     #[test]
     fn removal_acceptance_requires_explicit_repeatable_volume_flags() {
-        for args in [
-            vec![
-                "ployz",
-                "server",
-                "rm",
-                "worker",
-                "--accept-volume-loss",
-                "data",
-            ],
-            vec![
-                "ployz",
-                "service",
-                "rm",
-                "app/db",
-                "--volumes",
-                "--accept-volume-loss",
-                "data",
-            ],
-        ] {
-            assert!(super::command().try_get_matches_from(args).is_ok());
-        }
+        assert!(
+            super::command()
+                .try_get_matches_from([
+                    "ployz",
+                    "server",
+                    "rm",
+                    "worker",
+                    "--accept-volume-loss",
+                    "data",
+                ])
+                .is_ok()
+        );
         for args in [
             vec![
                 "ployz",
@@ -238,140 +229,6 @@ mod tests {
         ] {
             assert!(super::command().try_get_matches_from(args).is_err());
         }
-    }
-
-    #[test]
-    fn service_rm_volumes_takes_long_data_loss_and_yes() {
-        let matches = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--yes",
-                "--accept-volume-loss",
-                "app_data",
-            ])
-            .unwrap();
-        let rm = rm_matches(&matches);
-        assert_eq!(
-            rm.get_one::<String>("service").map(String::as_str),
-            Some("db")
-        );
-        assert!(rm.get_flag("volumes"));
-        assert!(rm.get_flag("yes"));
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data"]
-        );
-
-        let comma = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data,app_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&comma);
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data,app_logs"]
-        );
-
-        assert!(
-            super::command()
-                .try_get_matches_from([
-                    "ployz",
-                    "service",
-                    "rm",
-                    "db",
-                    "--accept-volume-loss",
-                    "app_data"
-                ])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "service", "start", "db", "--volumes"])
-                .is_err()
-        );
-        assert!(
-            super::command()
-                .try_get_matches_from(["ployz", "service", "rm", "db", "--volumes", "-v"])
-                .is_err()
-        );
-
-        let repeated = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data",
-                "--accept-volume-loss",
-                "app_logs",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&repeated);
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data", "app_logs"]
-        );
-
-        let trailing = super::command()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "db",
-                "--volumes",
-                "--accept-volume-loss",
-                "app_data",
-                "api",
-                "--yes",
-            ])
-            .unwrap();
-        let rm = rm_matches(&trailing);
-        assert_eq!(
-            rm.get_many::<String>("service")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["db", "api"]
-        );
-        assert_eq!(
-            rm.get_many::<String>("accept-volume-loss")
-                .unwrap()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["app_data"]
-        );
-    }
-
-    fn rm_matches(matches: &clap::ArgMatches) -> &clap::ArgMatches {
-        matches
-            .subcommand_matches("service")
-            .unwrap()
-            .subcommand_matches("rm")
-            .unwrap()
     }
 
     #[test]

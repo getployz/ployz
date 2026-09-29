@@ -194,7 +194,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "rename_service" } & RenameService | { "command": "remove_service" } & RemoveService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard | { "command": "admit" } & Admit;
 
 export type ConfigMount = { config_name: string,
 /**
@@ -202,7 +202,7 @@ export type ConfigMount = { config_name: string,
  */
 target: ContainerPath | null, uid: number | null, gid: number | null, mode: number | null, };
 
-export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery;
+export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery | { "query": "plan" } & PlanQuery | { "query": "deployments" } & DeploymentsQuery | { "query": "deployment" } & DeploymentQuery | { "query": "services" } & ServicesQuery | { "query": "service" } & ServiceQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
 
@@ -212,9 +212,9 @@ export type ConfigTrusted = {
  */
 repositories: Array<AuthorizedRepository>, };
 
-export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView;
+export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView | { "view": "plan" } & PlanView | { "view": "deployments" } & DeploymentsView | { "view": "deployment" } & DeploymentView | { "view": "services" } & ServicesView | { "view": "service" } & ServiceView;
 
-export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceCreated | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary;
+export type ConfigWritten = { "written": "project" } & ProjectCreated | { "written": "environment" } & EnvironmentCreated | { "written": "service" } & ServiceStaged | { "written": "service_renamed" } & ServiceStaged | { "written": "service_removed" } & ServiceStaged | { "written": "edited" } & Edited | { "written": "published" } & Published | { "written": "discarded" } & Discarded | { "written": "deployment" } & DeploymentSummary;
 
 export type ConfiguredHealthcheck = { test: HealthcheckCommand, interval_millis: number | null, timeout_millis: number | null, start_period_millis: number | null, start_interval_millis: number | null, retries: number | null, };
 
@@ -326,9 +326,9 @@ environment: EnvironmentRef,
  */
 name: ServiceName,
 /**
- * The container image it runs.
+ * The container image it runs; none creates an empty Service.
  */
-image: string, };
+image?: string | null, };
 
 export type DataLoss = { "kind": "docker_volume", id: DockerVolumeId, };
 
@@ -1200,11 +1200,35 @@ initial_policy: InitialMachinePolicy, name: MachineName, storage: StorageChoice,
 
 export type Registered = { assigned_machine: Machine, visible_peers: Array<Machine>, target_versions: { [key in string]: number }, };
 
+export type RemoveService = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name.
+ */
+service: ServiceName, };
+
 export type RemoveVolumesRequest = { volumes: Array<DockerVolumeId>,
 /**
  * Force-remove an in-use Docker Volume. Defaults to false.
  */
 force: boolean, };
+
+export type RenameService = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its current name.
+ */
+service: ServiceName,
+/**
+ * Its new name, unique in the Environment.
+ */
+name: ServiceName, };
 
 export type ReplacementCompensation<E> = { "type": "old_untouched", stop_new_container: StopAttempt<E>, } | { "type": "old_stopped", stop_new_container: StopAttempt<E> | null, restart_old_container: RestartAttempt<E>, };
 
@@ -1369,24 +1393,6 @@ hostname: ContainerHostname | null,
  */
 extra_hosts: Array<ExtraHost>, cap_add: Array<string>, cap_drop: Array<string>, healthcheck: HealthcheckSpec | null, pull_policy: PullPolicy, init: boolean | null, user: string | null, working_directory: ContainerPath | null, tty: boolean, open_stdin: boolean, privileged: boolean, pid_mode: PidMode | null, log_driver: LogDriver | null, resources: ContainerResources, stop_timeout_secs: number | null, sysctls: { [key in string]: string }, restart: RestartPolicy, };
 
-export type ServiceCreated = {
-/**
- * The Service.
- */
-service: ServiceSummary,
-/**
- * The Environment, at its revision after the create.
- */
-environment: EnvironmentSummary,
-/**
- * Every Setting of the new Service, waiting for a Deploy.
- */
-staged: Array<SettingPath>,
-/**
- * Settings that took effect at once: none for a new Service.
- */
-immediate: Array<SettingPath>, };
-
 export type ServiceDependency = {
 /**
  * Service that the dependent Service requires.
@@ -1410,6 +1416,28 @@ export type ServiceHealthcheck = { "type": "none" } | { "type": "http", path: st
 export type ServiceId = string & { readonly __brand: "ServiceId" };
 
 export type ServiceImageCredentials = { "type": "none" } | { "type": "configured", credentialId: string, };
+
+export type ServiceListing = {
+/**
+ * Where its image comes from.
+ */
+source: SourceKind,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: ServiceId,
+/**
+ * Its name, which Setting paths address it by.
+ */
+name: ServiceName,
+/**
+ * Its Private DNS name, fixed at creation.
+ */
+private_dns: ServiceName, };
 
 export type ServiceManagedHostname = { prefix: string, targetPort: number | null, };
 
@@ -1441,6 +1469,16 @@ export type ServiceName = string;
 
 export type ServiceObservation = { identity: QualifiedService, service_id: ServiceId, containers: Array<ServiceContainer>, hook_containers: Array<HookContainer>, };
 
+export type ServiceQuery = {
+/**
+ * The Environment it is in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name.
+ */
+service: ServiceName, };
+
 export type ServiceRestartPolicy = 'unless-stopped' | 'always' | 'on-failure' | 'no';
 
 export type ServiceRoute = { id: string, hostname: string, targetPort: number | null, };
@@ -1451,6 +1489,25 @@ export type ServiceSettingInput = { "field": "name", "value": string } | { "fiel
 
 export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, access: ServiceGitAccess, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
 
+export type ServiceStaged = {
+/**
+ * The Service, as it is named after the change.
+ */
+service: ServiceSummary,
+/**
+ * The Environment, at its revision after the change.
+ */
+environment: EnvironmentSummary,
+/**
+ * What waits for a Deploy: every Setting of a new Service, or the Service itself
+ * for a rename or removal. Empty when nothing changed.
+ */
+staged: Array<SettingPath>,
+/**
+ * What took effect at once: never anything here.
+ */
+immediate: Array<SettingPath>, };
+
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
 export type ServiceSummary = {
@@ -1459,13 +1516,72 @@ export type ServiceSummary = {
  */
 id: ServiceId,
 /**
- * Its name, also its Private DNS name.
+ * Its name, which Setting paths address it by.
  */
-name: ServiceName, };
+name: ServiceName,
+/**
+ * Its Private DNS name, fixed at creation.
+ */
+private_dns: ServiceName, };
+
+export type ServiceView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * The lineage its Environment copies share.
+ */
+lineage: ServiceId,
+/**
+ * Its Settings as one object, the shape `set --patch` takes. A removed Service
+ * shows what is deployed.
+ */
+values: { [key in string]: JsonValue },
+/**
+ * Its Settings the next Deploy changes.
+ */
+changes: Array<ServiceSettingChange>,
+/**
+ * Where its image comes from.
+ */
+source: SourceKind,
+/**
+ * What the next Deploy does to it; none when it is deployed as it is.
+ */
+change: ReviewLifecycleKind | null,
+/**
+ * Its durable identity.
+ */
+id: ServiceId,
+/**
+ * Its name, which Setting paths address it by.
+ */
+name: ServiceName,
+/**
+ * Its Private DNS name, fixed at creation.
+ */
+private_dns: ServiceName, };
 
 export type ServiceVolume = { reference: ServiceVolumeReference, source: VolumeSource, };
 
 export type ServiceVolumeReference = string;
+
+export type ServicesQuery = {
+/**
+ * The Environment to list.
+ */
+environment: EnvironmentRef, };
+
+export type ServicesView = {
+/**
+ * The Environment, at the revision read.
+ */
+environment: EnvironmentSummary,
+/**
+ * Its Services, by name.
+ */
+services: Array<ServiceListing>, };
 
 export type SetManagementClientResponse = { capability: string | null, };
 
@@ -1488,6 +1604,8 @@ default: JsonValue,
  * Whether a change to it waits for a Deploy.
  */
 apply: Apply, };
+
+export type SourceKind = "empty" | "git" | "image";
 
 export type StopAttempt<E> = { "type": "stopped" } | { "type": "failed", error: E, };
 

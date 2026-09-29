@@ -3,6 +3,7 @@
 //! them with `all`); one Service lists every Setting and its `values` object; one
 //! Setting lists itself.
 
+use ployz_core::config::SavedServiceIntent;
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -73,14 +74,7 @@ pub(crate) fn environment(
     let values = path
         .filter(|path| path.setting().is_none())
         .and_then(|_| services.first())
-        .map(|service| {
-            ServiceSetting::ALL
-                .into_iter()
-                .filter(|setting| setting.applies(&service.config))
-                .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
-                .filter(|(_, value)| !value.is_null())
-                .collect()
-        });
+        .map(|service| values(service));
     let whole = path.is_none() && !query.all;
     let mut settings = Vec::new();
     for service in services {
@@ -107,4 +101,15 @@ pub(crate) fn environment(
         settings,
         values,
     })
+}
+
+/// A Service's Settings as one object, the shape `set --patch` takes. Settings
+/// without a value are left out.
+pub(crate) fn values(service: &SavedServiceIntent) -> Map<String, Value> {
+    ServiceSetting::ALL
+        .into_iter()
+        .filter(|setting| setting.applies(&service.config))
+        .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
+        .filter(|(_, value)| !value.is_null())
+        .collect()
 }

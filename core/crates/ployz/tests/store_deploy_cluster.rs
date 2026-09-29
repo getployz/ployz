@@ -1,5 +1,6 @@
-//! A user Service goes from authoring to running on a real Cluster through the hidden
-//! SQLite Config Store, with the CLI as the Deployment's runner.
+//! A user Service goes from authoring to running, and from a staged removal to gone,
+//! on a real Cluster through the hidden SQLite Config Store, with the CLI as the
+//! Deployment's runner.
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; missing entries must fail the test."
@@ -59,18 +60,43 @@ async fn an_image_service_deploys_through_the_hidden_store() {
     )
     .await
     .unwrap();
+    let web_containers = |live: &ployz_core::LiveServices<ployz_core::RpcError>| {
+        live.services()
+            .iter()
+            .find(|service| service.has_name("web"))
+            .map_or(0, |service| {
+                assert!(service.containers.iter().all(|container| {
+                    container.as_observation().namespace.as_str() == "shop-production"
+                }));
+                service.containers.len()
+            })
+    };
+    wait_for_web(&mut client, &web_containers, 2).await;
+
+    // A staged removal leaves the running Service alone until a Deploy removes it.
+    ployz(&["service", "rm", "web"]);
+    let live = client
+        .live_services(ployz_core::EnvironmentValues::Redacted)
+        .await
+        .unwrap();
+    assert_eq!(web_containers(&live), 2);
+    let removed = ployz(&["deploy"]);
+    assert_eq!(removed["status"], json!("applied"), "{removed}");
+    wait_for_web(&mut client, &web_containers, 0).await;
+}
+
+/// Wait until the Cluster runs `count` containers of `web`.
+async fn wait_for_web(
+    client: &mut ployz::connect::Client,
+    web_containers: &impl Fn(&ployz_core::LiveServices<ployz_core::RpcError>) -> usize,
+    count: usize,
+) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if let Ok(live) = client
                 .live_services(ployz_core::EnvironmentValues::Redacted)
                 .await
-                && live.services().iter().any(|service| {
-                    service.has_name("web")
-                        && service.containers.len() == 2
-                        && service.containers.iter().all(|container| {
-                            container.as_observation().namespace.as_str() == "shop-production"
-                        })
-                })
+                && web_containers(&live) == count
             {
                 return;
             }

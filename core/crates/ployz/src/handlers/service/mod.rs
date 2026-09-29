@@ -1,14 +1,12 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
 use clap::{Arg, ArgAction, ArgMatches, Command};
 
-use crate::cli::{base, env, log_flags, positional, switch, trailing, value, volume_acceptance};
+use crate::cli::{base, log_flags, positional, switch, trailing, value};
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
-    MachineId, MachineObservation, MembershipObservation, ObservedDataLoss, QualifiedService,
-    RemoveVolumesRequest, RpcError, ServiceObservation, ServicePlacementEligibility,
-    ServiceSelector, ServiceSelectorError, VolumeRemoval, VolumeSource, select_service,
+    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthObservation,
+    LiveServices, MachineFailure, MachineId, QualifiedService, RpcError, ServiceObservation,
+    ServiceSelector, select_service,
 };
 use serde::Serialize;
 
@@ -18,111 +16,7 @@ use crate::{
 };
 use ployz_core::EnvironmentValues;
 
-use super::{
-    Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
-    with_client,
-};
-
-/// List the observed Services.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, or serialization error.
-pub fn list(root: &ArgMatches) -> Result<(), Error> {
-    with_client(root, |client| {
-        Box::pin(async move {
-            let mut machines = client.machines().await?;
-            // Storage only feeds replica counts, which warn on unknown eligibility.
-            client.observe_machine_storage(&mut machines).await;
-            let live = client
-                .live_services_from(&machines, EnvironmentValues::Redacted)
-                .await?;
-            print_observation_warning(&live);
-            let services = live.services();
-            output::finish_fanout("services", &services, &Gaps::of(&live.containers), || {
-                say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-                for service in &services {
-                    let counts = service_counts(service, &machines);
-                    say!(
-                        "{}\t{}\t{}\t{}",
-                        service.service_id,
-                        service.identity,
-                        service_count_text(counts),
-                        service.hook_containers.len()
-                    );
-                    if counts.unknown > 0 {
-                        eprintln!(
-                            "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity, counts.unknown
-                        );
-                    }
-                }
-            })
-        })
-    })
-}
-
-fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> ServiceCounts {
-    let running = service
-        .containers
-        .iter()
-        .filter(|container| {
-            matches!(
-                container.as_observation().runtime,
-                ContainerRuntimeObservation::Running { .. }
-            )
-        })
-        .count();
-    let Some(spec) = service.observed_global_slot_spec() else {
-        return ServiceCounts {
-            running,
-            expected: service.containers.len(),
-            unknown: 0,
-        };
-    };
-    let mut eligible = 0;
-    let mut unknown = 0;
-    for machine in machines
-        .iter()
-        .filter(|machine| machine.membership == MembershipObservation::Up)
-    {
-        match spec.placement_eligibility_in_namespace(
-            &service.identity.namespace,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
-            ServicePlacementEligibility::Eligible => eligible += 1,
-            ServicePlacementEligibility::Unknown(_) => unknown += 1,
-            ServicePlacementEligibility::Ineligible(_) => {}
-        }
-    }
-    ServiceCounts {
-        running,
-        expected: eligible,
-        unknown,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ServiceCounts {
-    running: usize,
-    expected: usize,
-    unknown: usize,
-}
-
-fn service_count_text(
-    ServiceCounts {
-        running,
-        expected,
-        unknown,
-    }: ServiceCounts,
-) -> String {
-    if unknown == 0 {
-        format!("{running}/{expected}")
-    } else {
-        format!("{running}/{expected} (+{unknown} unknown)")
-    }
-}
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client};
 
 /// List observed Service and hook Containers.
 ///
@@ -242,30 +136,7 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let selector = ServiceSelector::parse(
-        leaf_matches(root)
-            .get_one::<String>("service")
-            .cloned()
-            .ok_or_else(|| Error::usage("Service selector is required"))?,
-    )?;
-    with_client(root, |client| {
-        Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
-            let services = live.services();
-            let gaps = Gaps::of(&live.containers);
-            let service = match select_service(&services, &selector) {
-                Ok(service) => Some(service),
-                Err(error @ ServiceSelectorError::NotFound { .. }) => gaps.absence(error.into())?,
-                Err(error) => return Err(error.into()),
-            };
-            output::show_fanout("service", &service, &gaps)
-        })
-    })
-}
-
-/// Start, stop, or remove observed Services.
+/// Start or stop observed Services.
 ///
 /// # Errors
 ///
@@ -288,160 +159,6 @@ pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
     })
 }
 
-/// Remove observed Services, and their named Docker Volumes when `--volumes` is set.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, usage, or confirmation error.
-pub fn remove(root: &ArgMatches) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
-    let selectors = change_selectors(leaf)?;
-    let destroy_volumes = leaf.get_flag("volumes");
-    let command = root.clone();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
-            let observed = live.services();
-            let services = select_services(&observed, &selectors)?;
-            let volumes = if destroy_volumes {
-                // Selected volumes come from successful Machine-local container observations.
-                // Unrelated failures cannot conceal another mount on these owners.
-                service_volume_teardown(&services, &observed)?
-            } else {
-                Vec::new()
-            };
-            let data_loss_observed = ObservedDataLoss {
-                data_loss: volumes
-                    .iter()
-                    .map(|id| DataLoss::DockerVolume { id: id.clone() })
-                    .collect(),
-            };
-            let targets = services
-                .iter()
-                .map(|service| service.identity.to_string())
-                .collect::<Vec<_>>();
-            let Some(_confirmation) = data_loss::confirm_removal(
-                &command,
-                client,
-                &data_loss_observed,
-                "Remove Services",
-                &targets,
-                if destroy_volumes {
-                    data_loss::VolumeEffect::Delete
-                } else {
-                    data_loss::VolumeEffect::Preserve
-                },
-            )?
-            else {
-                return Ok(());
-            };
-            let outcome = apply_service_action(
-                client,
-                &live,
-                &services,
-                ContainerAction::Remove,
-                None,
-                None,
-            )
-            .await?;
-            let (volumes, skipped) = volumes_safe_to_remove(volumes, &services, &outcome.affected);
-            let mut removals = Vec::new();
-            let volume_result = if volumes.is_empty() {
-                Ok(())
-            } else {
-                match client
-                    .remove_volumes(RemoveVolumesRequest {
-                        volumes,
-                        force: false,
-                    })
-                    .await
-                {
-                    Ok(removal) => {
-                        removals.clone_from(&removal);
-                        super::volume::refuse_unless_removed(removal)
-                    }
-                    Err(error) => Err(error.into()),
-                }
-            };
-            output::emit(&ServiceActionResult {
-                volumes: Some(&removals),
-                volumes_not_attempted: Some(&skipped),
-                ..outcome.result(&live)
-            })?;
-            combined_teardown_result(
-                combined_teardown_result(
-                    service_action_result(outcome.partial),
-                    skipped_volume_result(&skipped),
-                ),
-                volume_result,
-            )
-        })
-    })
-}
-
-fn service_volume_teardown(
-    selected: &[&ServiceObservation],
-    observed: &[ServiceObservation],
-) -> Result<Vec<DockerVolumeId>, Error> {
-    let mut volumes = BTreeSet::new();
-    for service in selected {
-        volumes.extend(managed_volume_ids(service));
-    }
-    let selected_identities = selected
-        .iter()
-        .map(|service| &service.identity)
-        .collect::<HashSet<_>>();
-    for service in observed {
-        if selected_identities.contains(&service.identity) {
-            continue;
-        }
-        if let Some(id) = docker_volume_ids(service)
-            .into_iter()
-            .find(|id| volumes.contains(id))
-        {
-            return Err(Error::conflict(format!(
-                "Docker Volume {} on {} is still mounted by {}",
-                id.name, id.machine_id, service.identity
-            )));
-        }
-    }
-    Ok(volumes.into_iter().collect())
-}
-
-fn volumes_safe_to_remove(
-    planned: Vec<DockerVolumeId>,
-    selected: &[&ServiceObservation],
-    gone: &HashSet<ContainerId>,
-) -> (Vec<DockerVolumeId>, Vec<DockerVolumeId>) {
-    let still_mounted = selected
-        .iter()
-        .flat_map(|service| service.members())
-        .filter(|member| !gone.contains(&member.as_observation().container_id))
-        .flat_map(|member| {
-            member_volume_ids(member.as_observation(), VolumeSource::docker_volume_name)
-        })
-        .collect::<HashSet<_>>();
-    planned
-        .into_iter()
-        .partition(|id| !still_mounted.contains(id))
-}
-
-fn skipped_volume_result(skipped: &[DockerVolumeId]) -> Result<(), Error> {
-    if skipped.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::usage(format!(
-            "Docker Volume removals not attempted: {}",
-            skipped
-                .iter()
-                .map(|id| format!("{}/{}", id.machine_id, id.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )))
-    }
-}
-
 fn service_action_result(partial: bool) -> Result<(), Error> {
     if partial {
         Err(Error::usage("Service lifecycle completed partially"))
@@ -450,53 +167,7 @@ fn service_action_result(partial: bool) -> Result<(), Error> {
     }
 }
 
-fn combined_teardown_result(
-    action: Result<(), Error>,
-    volumes: Result<(), Error>,
-) -> Result<(), Error> {
-    match (action, volumes) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(action), Err(volumes)) => Err(Error::usage(format!("{action}; {volumes}"))),
-    }
-}
-
-fn managed_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::managed_docker_volume_name)
-}
-
-fn docker_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::docker_volume_name)
-}
-
-fn volume_ids(
-    service: &ServiceObservation,
-    name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
-) -> Vec<DockerVolumeId> {
-    service
-        .members()
-        .flat_map(|member| member_volume_ids(member.as_observation(), name_of))
-        .collect()
-}
-
-fn member_volume_ids(
-    observation: &ContainerObservation,
-    name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
-) -> Vec<DockerVolumeId> {
-    observation
-        .resolved_spec
-        .volume_graph()
-        .mounted_volumes()
-        .filter_map(|volume| name_of(&volume.source))
-        .map(|name| DockerVolumeId {
-            machine_id: observation.machine_id,
-            name: name.clone(),
-        })
-        .collect()
-}
-
 struct ServiceActionOutcome {
-    affected: HashSet<ContainerId>,
     /// One entry per Container the action reached.
     containers: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
@@ -521,7 +192,7 @@ struct ContainerFailure {
     error: RpcError,
 }
 
-/// The `--json` result of start, stop, and rm.
+/// The `--json` result of start and stop.
 #[derive(Serialize)]
 struct ServiceActionResult<'a> {
     containers: &'a [ChangedContainer],
@@ -532,10 +203,6 @@ struct ServiceActionResult<'a> {
     omitted: &'a [MachineId],
     #[serde(skip_serializing_if = "Option::is_none")]
     wait_error: Option<&'a RpcError>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    volumes: Option<&'a [VolumeRemoval]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    volumes_not_attempted: Option<&'a [DockerVolumeId]>,
 }
 
 impl ServiceActionOutcome {
@@ -546,8 +213,6 @@ impl ServiceActionOutcome {
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             wait_error: self.wait_error.as_ref(),
-            volumes: None,
-            volumes_not_attempted: None,
         }
     }
 }
@@ -624,15 +289,12 @@ async fn apply_service_action(
     if let Some(error) = &wait_error {
         eprintln!("WARNING: {action} was not confirmed: {}", error.message);
         partial = true;
-        // Unconfirmed Containers may still mount their volumes.
-        changed.clear();
     }
     if !live.containers.all_targets_succeeded() {
         eprintln!("WARNING: the Service selection came from a partial Live Observation");
         partial = true;
     }
     Ok(ServiceActionOutcome {
-        affected: changed.into_iter().collect(),
         containers: rows,
         container_failures,
         wait_error,
@@ -640,44 +302,11 @@ async fn apply_service_action(
     })
 }
 
-pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let replicas = required(matches, "replicas")?
-        .parse::<u32>()
-        .ok()
-        .and_then(std::num::NonZeroU32::new)
-        .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
-    let selector = ServiceSelector::parse(required(matches, "service")?)?;
-    let context = matches.get_one::<String>("context").map(String::as_str);
-    runtime()?.block_on(async {
-        let mut client = connect_client(root, context).await?;
-        let outcome = crate::deploy::deploy_scale(
-            &mut client,
-            &selector,
-            replicas,
-            matches.get_flag("skip-health"),
-            crate::deploy::ConfirmGate {
-                auto_confirm: matches.get_flag("yes"),
-                context: context.unwrap_or("default"),
-            },
-        )
-        .await;
-        crate::deploy::emit_outcome(outcome)
-    })
-}
-
 fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
-    let namespace = crate::namespace::explicit(matches)?;
     matches
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
-        .map(|selector| {
-            let selector = ServiceSelector::parse(selector.as_str())?;
-            match namespace.as_ref() {
-                Some(namespace) => selector.with_namespace(namespace).map_err(Into::into),
-                None => Ok(selector),
-            }
-        })
+        .map(|selector| ServiceSelector::parse(selector.as_str()).map_err(Into::into))
         .collect()
 }
 
@@ -735,102 +364,24 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
     lines
 }
 
+mod authored;
 #[cfg(test)]
 mod tests;
 
 pub(crate) fn command() -> Command {
     base("service", "Manage services")
         .arg_required_else_help(true)
-        .subcommand(service_add())
+        .subcommand(authored::add_command())
         .subcommand(service_exec())
-        .subcommand(service_inspect())
-        .subcommand(service_ls())
+        .subcommand(authored::inspect_command())
+        .subcommand(authored::ls_command())
         .subcommand(service_logs())
         .subcommand(service_proxy())
         .subcommand(service_ps())
-        .subcommand(service_rm())
-        .subcommand(service_scale())
+        .subcommand(authored::rename_command())
+        .subcommand(authored::rm_command())
         .subcommand(service_start())
         .subcommand(service_stop())
-}
-
-fn service_add() -> Command {
-    super::store::scoped(Command::new("add").about("Add a Service; it is staged until a Deploy"))
-        .arg(positional("name", true).help("Service name, also its Private DNS name"))
-        .arg(
-            value("image", None)
-                .value_name("REF")
-                .help("Container image to run"),
-        )
-        .arg(
-            value("repo", None)
-                .value_name("OWNER/REPO[@BRANCH]")
-                .conflicts_with("image")
-                .help("GitHub repository to build; Ployz checks it and the branch (default: its default branch)"),
-        )
-        .group(
-            clap::ArgGroup::new("source")
-                .args(["image", "repo"])
-                .required(true),
-        )
-}
-
-/// Add an image or GitHub repository Service to the Config Store's Working State.
-fn add(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    // Core's name error quotes the value; a rejected value is never echoed.
-    let name = ployz_core::ServiceName::parse(required(matches, "name")?).map_err(|_| {
-        Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
-    })?;
-    let id = ployz_store::ServiceId::parse(super::store::mint())?;
-    let environment = super::store::environment(matches)?;
-    let store = super::store::store(root)?;
-    let created = match matches.get_one::<String>("repo") {
-        Some(repo) => {
-            let (repository, branch) = match repo.split_once('@') {
-                Some((repository, branch)) => (repository, Some(branch.to_owned())),
-                None => (repo.as_str(), None),
-            };
-            let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
-            let words = words.map(str::to_owned);
-            store
-                .create_git_service(&ployz_store::CreateGitService {
-                    id,
-                    environment,
-                    name,
-                    repository: repository.to_owned(),
-                    branch,
-                })
-                .map_err(super::store::failed(
-                    matches,
-                    &words.each_ref().map(String::as_str),
-                ))
-        }
-        None => {
-            let words = ["service", "add", name.as_str(), "--image", "REF"].map(str::to_owned);
-            store
-                .create_service(&ployz_store::CreateService {
-                    id,
-                    environment,
-                    name,
-                    image: required(matches, "image")?,
-                })
-                .map_err(super::store::failed(
-                    matches,
-                    &words.each_ref().map(String::as_str),
-                ))
-        }
-    }?;
-    let hint = Some(super::store::next(matches, &["diff"]));
-    output::finish(&super::store::Next::new(&created, hint), || {
-        say!(
-            "Staged Service {} in {}/{} (revision {}).",
-            created.service.name,
-            created.environment.project,
-            created.environment.name,
-            created.environment.revision
-        );
-    })
 }
 
 fn service_exec() -> Command {
@@ -840,10 +391,6 @@ fn service_exec() -> Command {
         .arg(switch("no-tty", Some('T')))
         .arg(positional("service", true))
         .arg(trailing("command"))
-}
-
-fn service_inspect() -> Command {
-    base("inspect", "Inspect a service").arg(positional("service", true))
 }
 
 fn service_logs() -> Command {
@@ -869,34 +416,11 @@ fn service_ps() -> Command {
     )
 }
 
-fn service_ls() -> Command {
-    base("ls", "List services")
-}
-
-fn service_rm() -> Command {
-    base("rm", "Remove services")
-        .arg(value("namespace", None))
-        .arg(switch("volumes", None).help(
-            "Also remove this Service's named Docker Volumes after the containers are removed",
-        ))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(volume_acceptance().requires("volumes"))
-        .arg(services())
-}
-
 fn services() -> Arg {
     Arg::new("service")
         .required(true)
         .num_args(1..)
         .action(ArgAction::Append)
-}
-
-fn service_scale() -> Command {
-    base("scale", "Scale a service")
-        .arg(switch("skip-health", None))
-        .arg(switch("yes", Some('y')).env(env::AUTO_CONFIRM))
-        .arg(positional("service", true))
-        .arg(positional("replicas", true))
 }
 
 fn service_start() -> Command {
@@ -913,15 +437,15 @@ fn service_stop() -> Command {
 pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
     use super::Json::{Refused, Supported};
     Some(match path {
-        "add" => (add, Supported),
+        "add" => (authored::add, Supported),
         "exec" => (super::operator::exec, Refused),
-        "inspect" => (inspect, Supported),
+        "inspect" => (authored::inspect, Supported),
         "logs" => (super::operator::service_logs, Supported),
-        "ls" => (list, Supported),
+        "ls" => (authored::list, Supported),
         "proxy" => (super::operator::proxy, Refused),
         "ps" => (processes, Supported),
-        "rm" => (remove, Supported),
-        "scale" => (scale, Supported),
+        "rename" => (authored::rename, Supported),
+        "rm" => (authored::remove, Supported),
         "start" => (|root| change(root, ContainerAction::Start), Supported),
         "stop" => (|root| change(root, ContainerAction::Stop), Supported),
         _ => return None,

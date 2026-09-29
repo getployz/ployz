@@ -49,7 +49,7 @@ fn create_service(id: &str, name: &str, image: &str) -> CreateService {
         id: ServiceId::parse(uuid(id)).unwrap(),
         environment: EnvironmentRef::default(),
         name: ServiceName::parse(name).unwrap(),
-        image: image.into(),
+        image: Some(image.into()),
     }
 }
 
