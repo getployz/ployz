@@ -386,11 +386,11 @@ fn follow(
             let nodes: Vec<String> = view
                 .nodes
                 .iter()
-                .map(|node| format!("{} {}", node.name, json_word(&node.outcome)))
+                .map(|node| format!("{} {}", node.name, super::store::word(&node.outcome)))
                 .collect();
             say!(
                 "{}: {}",
-                json_word(&view.deployment.status),
+                super::store::word(&view.deployment.status),
                 nodes.join(", ")
             );
             if let Some(file) = events.as_mut() {
@@ -405,14 +405,6 @@ fn follow(
         }
         std::thread::sleep(FOLLOW_POLL);
     }
-}
-
-/// A status as its JSON word, such as `not_applied`.
-fn json_word(value: &impl serde::Serialize) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_default()
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
@@ -438,7 +430,11 @@ fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Resu
             say!("No authored changes to deploy in {where_}.");
         }
         for change in &plan.changes {
-            say!("{} ({:?})", change.name, change.lifecycle);
+            say!(
+                "{} ({})",
+                change.name,
+                super::store::word(&change.lifecycle)
+            );
             for row in &change.settings {
                 say!("  {}: {} -> {}", row.path, row.before, row.after);
             }
@@ -821,9 +817,9 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
         }
         for deployment in &page.deployments {
             say!(
-                "#{} {:?} Saved revision {} {}",
+                "#{} {} Saved revision {} {}",
                 deployment.number,
-                deployment.status,
+                super::store::word(&deployment.status),
                 deployment.saved,
                 deployment.id
             );
@@ -956,17 +952,17 @@ pub(super) fn finish_view(view: &DeploymentView, hint: Option<String>) -> Result
 /// A Deployment as human text.
 pub(super) fn say_view(view: &DeploymentView) {
     say!(
-        "Deployment #{} of {}/{}: {:?}",
+        "Deployment #{} of {}/{}: {}",
         view.deployment.number,
         view.environment.project,
         view.environment.name,
-        view.deployment.status
+        super::store::word(&view.deployment.status)
     );
     if let Some(upload) = &view.deployment.upload {
         say!("  {}", provenance(upload));
     }
     for node in &view.nodes {
-        say!("  {}: {:?}", node.name, node.outcome);
+        say!("  {}: {}", node.name, super::store::word(&node.outcome));
     }
     for build in &view.builds {
         let commit = build
@@ -975,9 +971,9 @@ pub(super) fn say_view(view: &DeploymentView) {
             .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
         let reason = build.message.as_deref().unwrap_or_default();
         say!(
-            "  build {} from {commit}: {:?} {reason}",
+            "  build {} from {commit}: {} {reason}",
             build.service,
-            build.status
+            super::store::word(&build.status)
         );
     }
 }

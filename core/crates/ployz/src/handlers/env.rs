@@ -287,11 +287,10 @@ fn print_environments(listed: &EnvironmentsView) {
             notes.push(format!("branch of {parent}"));
         }
         if let Some(removal) = &environment.removal {
-            let status = serde_json::to_value(removal.status).unwrap_or_default();
             notes.push(format!(
                 "removal #{} {}",
                 removal.number,
-                status.as_str().unwrap_or_default()
+                store::word(&removal.status)
             ));
         }
         match notes.is_empty() {
@@ -586,7 +585,7 @@ fn save(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let here = store::environment(matches)?;
     if matches.get_one::<String>("take").is_some() {
-        return shift(root, "take", (EnvironmentRef::default(), Some(here)));
+        return shift(root, Shift::Take, (EnvironmentRef::default(), Some(here)));
     }
     let into = matches
         .get_one::<String>("into")
@@ -597,38 +596,56 @@ fn save(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .transpose()?;
-    let verb = match matches.get_flag("withdraw") {
-        true => "withdraw",
-        false => "save",
+    let shift_as = match matches.get_flag("withdraw") {
+        true => Shift::Withdraw,
+        false => Shift::Save,
     };
-    shift(root, verb, (here, into))
+    shift(root, shift_as, (here, into))
 }
 
 fn update(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let into = Some(store::environment(matches)?);
-    shift(root, "update", (EnvironmentRef::default(), into))
+    shift(root, Shift::Update, (EnvironmentRef::default(), into))
+}
+
+/// What `env save` or `env update` does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shift {
+    Save,
+    Update,
+    /// `env save --withdraw`: withdraw a Conditional Save.
+    Withdraw,
+    /// `env save --take`: take a retained Conditional Save's value.
+    Take,
+}
+
+impl Shift {
+    /// The `env` subcommand it runs as.
+    fn command(self) -> &'static str {
+        match self {
+            Self::Update => "update",
+            Self::Save | Self::Withdraw | Self::Take => "save",
+        }
+    }
 }
 
 /// A Save, Update, withdrawal or take: with `--plan` its changes, else the Move itself.
 fn shift(
     root: &ArgMatches,
-    verb: &str,
+    shift: Shift,
     (from, into): (EnvironmentRef, Option<EnvironmentRef>),
 ) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let store = store(root)?;
-    let command = match verb {
-        "update" => "update",
-        _ => "save",
-    };
+    let command = shift.command();
     let words = ["env", command];
     if matches.get_flag("plan") {
-        let sides = match verb {
-            "update" | "take" => MoveQuery::Update {
+        let sides = match shift {
+            Shift::Update | Shift::Take => MoveQuery::Update {
                 into: into.unwrap_or_default(),
             },
-            _ => MoveQuery::Save {
+            Shift::Save | Shift::Withdraw => MoveQuery::Save {
                 from,
                 into,
                 when: None,
@@ -637,16 +654,16 @@ fn shift(
         let view = store.move_view(&sides).map_err(failed(matches, &words))?;
         return plan(matches, command, &view);
     }
-    let picks = match verb {
-        "withdraw" => Some(Vec::new()),
-        _ => matches
+    let picks = match shift {
+        Shift::Withdraw => Some(Vec::new()),
+        Shift::Save | Shift::Update | Shift::Take => matches
             .get_many::<String>("only")
             .map(|only| only.map(|only| pick(only)).collect::<Result<Vec<_>, _>>())
             .transpose()?,
     };
     let version = matches.get_one::<String>("version").cloned();
-    let request = match verb {
-        "take" => {
+    let request = match shift {
+        Shift::Take => {
             let save = matches
                 .try_get_one::<String>("take")
                 .ok()
@@ -661,23 +678,23 @@ fn shift(
                 version,
             })
         }
-        "update" => Move::Update(Update {
+        Shift::Update => Move::Update(Update {
             into: into.unwrap_or_default(),
             picks,
             version,
         }),
-        _ => Move::Save(Save {
+        Shift::Save | Shift::Withdraw => Move::Save(Save {
             from,
             into,
             picks,
             version,
-            when: (verb == "withdraw").then_some(When::AtMerge),
+            when: (shift == Shift::Withdraw).then_some(When::AtMerge),
         }),
     };
     let moved = store
         .move_changes(&request)
         .map_err(|error| failed(matches, &words)(reviewed(error, matches, command)))?;
-    moved_out(matches, verb, &moved)
+    moved_out(matches, shift, &moved)
 }
 
 /// `--only ROW[=CHOICE]`.
@@ -735,8 +752,7 @@ fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> 
                 notes.push(format!("{} changed it too", view.into.name));
             }
             if let Some(choice) = &row.choice {
-                let default = serde_json::to_value(choice.default).unwrap_or_default();
-                notes.push(format!("lands as {}", default.as_str().unwrap_or_default()));
+                notes.push(format!("lands as {}", store::word(&choice.default)));
             }
             let notes = match notes.is_empty() {
                 true => String::new(),
@@ -749,7 +765,7 @@ fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> 
 
 /// What a Move did: `deploy` of where it landed, and after a Save of a Branch not
 /// kept, the command that closes it. A Conditional Save stages nothing.
-fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Error> {
+fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Error> {
     #[derive(serde::Serialize)]
     struct Out<'a> {
         #[serde(flatten)]
@@ -771,8 +787,8 @@ fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Erro
         .conditional_save
         .as_ref()
         .filter(|save| save.state == SaveState::Standing);
-    let close = match (&moved.branch, verb, at_merge) {
-        (Some(branch), "save", None) if !branch.kept => {
+    let close = match (&moved.branch, shift, at_merge) {
+        (Some(branch), Shift::Save, None) if !branch.kept => {
             let name = branch.environment.name.as_str();
             let typed = format!("{}/{name}", branch.environment.project);
             Some(scoped(&["env", "rm", name, "--confirm", &typed]))
@@ -786,14 +802,14 @@ fn moved_out(matches: &ArgMatches, verb: &str, moved: &Moved) -> Result<(), Erro
     };
     crate::output::finish(&out, || {
         let (from, into) = (&moved.from.name, format!("{}/{}", into.project, into.name));
-        match (verb, at_merge, &moved.conditional_save) {
-            ("withdraw", ..) => say!("Withdrew {from}'s Conditional Save into {into}."),
+        match (shift, at_merge, &moved.conditional_save) {
+            (Shift::Withdraw, ..) => say!("Withdrew {from}'s Conditional Save into {into}."),
             (_, Some(save), _) => say!(
                 "Saved for PR #{}'s merge into {into}: {}.",
                 save.pull_request,
                 save.rows.join(", ")
             ),
-            ("take", _, Some(save)) => {
+            (Shift::Take, _, Some(save)) => {
                 say!("Took PR #{}'s value into {into}.", save.pull_request);
             }
             _ => say!("Moved {from} → {into}."),

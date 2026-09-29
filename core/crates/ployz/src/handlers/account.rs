@@ -4,6 +4,7 @@
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
+use super::store::Next;
 use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
 use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
@@ -327,10 +328,7 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         })
         .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
     let next = (!removal.removed).then_some(retry.as_str());
-    let report = OrganizationRemoved {
-        removal: &removal,
-        next,
-    };
+    let report = Next::new(&removal, next.map(str::to_owned));
     crate::output::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             say!("Unpaired {} Server(s).", removal.servers.confirmed.len());
@@ -348,14 +346,6 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         true => Ok(()),
         false => Err(Error::partial()),
     }
-}
-
-#[derive(Serialize)]
-struct OrganizationRemoved<'a> {
-    #[serde(flatten)]
-    removal: &'a cloud_account::OrganizationRemoval,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<&'a str>,
 }
 
 #[derive(Serialize)]
