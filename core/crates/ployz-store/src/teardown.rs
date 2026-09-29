@@ -1,12 +1,16 @@
-//! An Environment's lifecycle past creation: listing a Project's Environments,
-//! choosing its Default Environment, and removing one.
+//! What outlives creation: listing Projects and a Project's Environments,
+//! choosing its Default Environment, and removing an Environment, a Project, or
+//! an Organization's configuration.
 //!
 //! Removal has one path. An Environment that ever ran is first removed from the
 //! Servers by a removal Deployment (`Admit { remove }`), which ships the empty
 //! Environment under the same destructive review, cancellation and retry as any
 //! Deployment. Once that applied, or if nothing ever ran, [`RemoveEnvironment`]
 //! deletes it from the Store. Neither touches the Default Environment or an
-//! Environment with Branches, and nothing branches from one being removed.
+//! Environment with Branches, and nothing branches from one being removed. A
+//! Project goes the same way, one Environment at a time, Branches before their
+//! Parents and its Default Environment last ([`guard_removal`]); then
+//! [`RemoveProject`] deletes it all at once.
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
@@ -17,7 +21,7 @@ use crate::Actor;
 use crate::command::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
+use crate::id::{EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
 
@@ -69,6 +73,56 @@ pub struct RemoveEnvironment {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct EnvironmentRemoved {
     pub environment: EnvironmentSummary,
+}
+
+/// List the Organization's Projects.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectsQuery {}
+
+/// The Organization's Projects, by name.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProjectsView {
+    pub projects: Vec<ProjectListing>,
+}
+
+/// One Project as `project ls` shows it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProjectListing {
+    pub id: ProjectId,
+    pub name: ProjectName,
+    pub default_environment: EnvironmentName,
+    /// Its Environments, by name.
+    pub environments: Vec<EnvironmentName>,
+}
+
+/// Delete a Project and every Environment of it from the Store. Refused while
+/// any of them may still run on the Servers; `details.environment` names the one
+/// to take off them next.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveProject {
+    pub project: ProjectName,
+}
+
+/// The Project a removal deleted, with its Environments in the order they went.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct ProjectRemoved {
+    pub project: ProjectSummary,
+    pub environments: Vec<EnvironmentName>,
+}
+
+/// Forget an Organization's configuration once it has no Project: what it
+/// created, what Cloud observed of its repositories, and its Build Order. Cloud's own Organization
+/// removal runs it; it isn't reachable over HTTPS.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RemoveOrganization {}
+
+/// The Organization whose configuration the Store forgot.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OrganizationRemoved {
+    pub organization: OrganizationId,
 }
 
 pub(crate) fn environments(
@@ -144,39 +198,199 @@ pub(crate) fn remove(
     let environment = scope::lock(tx, who, &remove.environment)?;
     guard(tx, &environment)?;
     let id = &environment.summary.id;
-    let history = deployment::history(tx, id, i64::MAX)?;
-    if let Some(running) = history
-        .iter()
-        .find(|deployment| deployment.status.in_flight())
-    {
-        return Err(error::conflict(
-            format!(
-                "Deployment #{} of {} hasn't ended: wait for it or cancel it first",
-                running.number, environment.summary.name
-            ),
-            json!({ "deployment": running.id }),
-        ));
-    }
-    // What ran last decides what the Servers may hold: nothing, if nothing ever ran
-    // or the last run was a removal that applied.
-    let ran = history
-        .iter()
-        .find(|deployment| deployment.runner.is_some());
-    if let Some(ran) = ran
-        && !(ran.remove && ran.status == DeploymentStatus::Applied)
-    {
-        return Err(error::conflict(
-            format!(
-                "{} may still run on the Servers: remove it from them first",
-                environment.summary.name
-            ),
-            json!({ "deployed": true, "deployment": ran.id }),
-        ));
+    if let Some(running) = on_servers(tx, id)? {
+        return Err(still_on_servers(&environment.summary.name, &running));
     }
     purge(tx, id)?;
     Ok(EnvironmentRemoved {
         environment: environment.summary,
     })
+}
+
+/// The Deployment through which `environment` may still run on the Servers: one
+/// in flight, or the last that ran unless it was a removal that applied. None
+/// when nothing ever ran or its removal applied.
+fn on_servers(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
+    let history = deployment::history(tx, environment, i64::MAX)?;
+    if let Some(running) = history
+        .iter()
+        .find(|deployment| deployment.status.in_flight())
+    {
+        return Ok(Some(running.clone()));
+    }
+    Ok(history
+        .into_iter()
+        .find(|deployment| deployment.runner.is_some())
+        .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
+}
+
+/// Refuse to delete `name` while `deployment` may run it: `details.deployed` when
+/// a removal Deployment is what it needs next.
+fn still_on_servers(name: &EnvironmentName, deployment: &DeploymentSummary) -> RpcError {
+    if deployment.status.in_flight() {
+        return error::conflict(
+            format!(
+                "Deployment #{} of {name} hasn't ended: wait for it or cancel it first",
+                deployment.number
+            ),
+            json!({ "deployment": deployment.id, "environment": name }),
+        );
+    }
+    error::conflict(
+        format!("{name} may still run on the Servers: remove it from them first"),
+        json!({ "deployed": true, "deployment": deployment.id, "environment": name }),
+    )
+}
+
+/// Refuse to take an Environment off the Servers while a Branch of it may still
+/// run there, using it live; or, for the Default Environment, while any other
+/// Environment of its Project but its Parents may. So the Default comes off last,
+/// when its whole Project goes.
+pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
+    let summary = &environment.summary;
+    let project = project_of(tx, &summary.id)?;
+    let members = members(tx, &project.id)?;
+    let branches = members
+        .iter()
+        .filter(|member| member.parent.as_ref() == Some(&summary.id));
+    let running = still_running(tx, branches)?;
+    if let Some(first) = running.first() {
+        return Err(error::conflict(
+            format!(
+                "{} has Branches that may still run ({}). Remove them first",
+                summary.name,
+                running.join(", ")
+            ),
+            json!({
+                "branches": running,
+                "next": format!("ployz env rm {first} --confirm {first} --project {}", summary.project),
+            }),
+        ));
+    }
+    if summary.id != project.default_environment {
+        return Ok(());
+    }
+    let parents = ancestors(&members, &summary.id);
+    let others = members
+        .iter()
+        .filter(|member| member.id != summary.id && !parents.contains(&member.id));
+    let running = still_running(tx, others)?;
+    if !running.is_empty() {
+        return Err(error::conflict(
+            format!(
+                "{} is the Default Environment: it comes off the Servers only after the rest of \
+                 Project {} ({})",
+                summary.name,
+                summary.project,
+                running.join(", ")
+            ),
+            json!({
+                "environments": running,
+                "next": format!("ployz env default ENV --project {}", summary.project),
+            }),
+        ));
+    }
+    Ok(())
+}
+
+/// The names of `members` that may still run on the Servers.
+fn still_running<'a>(
+    tx: &mut dyn Tx,
+    members: impl Iterator<Item = &'a Member>,
+) -> Result<Vec<String>, RpcError> {
+    let mut running = Vec::new();
+    for member in members {
+        if on_servers(tx, &member.id)?.is_some() {
+            running.push(member.name.to_string());
+        }
+    }
+    Ok(running)
+}
+
+/// One Environment of a Project, as teardown orders them.
+struct Member {
+    id: EnvironmentId,
+    name: EnvironmentName,
+    parent: Option<EnvironmentId>,
+}
+
+fn project_of(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<scope::Project, RpcError> {
+    let rows = tx.query(
+        "SELECT p.id, p.name, p.default_environment_id FROM config_project p \
+         JOIN config_environment e ON e.project_id = p.id WHERE e.id = ?1",
+        &[environment.as_str().into()],
+    )?;
+    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
+    let corrupt = |_| error::corrupt("Project");
+    Ok(scope::Project {
+        id: ProjectId::parse(row.text(0)?).map_err(corrupt)?,
+        name: ProjectName::parse(row.text(1)?).map_err(corrupt)?,
+        default_environment: EnvironmentId::parse(row.text(2)?).map_err(corrupt)?,
+    })
+}
+
+/// A Project's Environments with their Parents, in ID order.
+fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
+    let rows = tx.query(
+        "SELECT e.id, e.name, COALESCE(b.parent_id, '') FROM config_environment e \
+         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
+         WHERE e.project_id = ?1 ORDER BY e.id",
+        &[project.as_str().into()],
+    )?;
+    rows.iter()
+        .map(|row| {
+            let corrupt = |_| error::corrupt("Environment");
+            Ok(Member {
+                id: EnvironmentId::parse(row.text(0)?).map_err(corrupt)?,
+                name: EnvironmentName::parse(row.text(1)?).map_err(corrupt)?,
+                parent: match row.text(2)? {
+                    "" => None,
+                    parent => Some(EnvironmentId::parse(parent).map_err(corrupt)?),
+                },
+            })
+        })
+        .collect()
+}
+
+/// The Parent of `environment`, its Parent's Parent, and so on.
+fn ancestors(members: &[Member], environment: &EnvironmentId) -> Vec<EnvironmentId> {
+    let mut chain = Vec::new();
+    let mut at = environment;
+    while let Some(parent) = members
+        .iter()
+        .find(|member| &member.id == at)
+        .and_then(|member| member.parent.as_ref())
+        .filter(|parent| !chain.contains(*parent))
+    {
+        chain.push(parent.clone());
+        at = parent;
+    }
+    chain
+}
+
+/// The order a Project's Environments come off the Servers and out of the Store:
+/// Branches before their Parents, and the Default Environment after every other
+/// but its own Parents, as [`guard_removal`] requires.
+fn teardown_order<'a>(members: &'a [Member], default: &EnvironmentId) -> Vec<&'a Member> {
+    let parents = ancestors(members, default);
+    let mut order: Vec<&Member> = members.iter().collect();
+    order.sort_by_key(|member| {
+        let class = if &member.id == default {
+            1
+        } else if parents.contains(&member.id) {
+            2
+        } else {
+            0
+        };
+        (
+            class,
+            std::cmp::Reverse(ancestors(members, &member.id).len()),
+        )
+    });
+    order
 }
 
 /// Refuse to remove the Default Environment, or one that has Branches: they use
@@ -295,4 +509,109 @@ pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), 
         &[environment.as_str().into()],
     )?;
     Ok(())
+}
+
+pub(crate) fn projects(tx: &mut dyn Tx, who: &Actor) -> Result<ProjectsView, RpcError> {
+    let rows = tx.query(
+        "SELECT p.id, p.name, d.name, e.name FROM config_project p \
+         JOIN config_environment d ON d.id = p.default_environment_id \
+         JOIN config_environment e ON e.project_id = p.id \
+         WHERE p.organization_id = ?1 ORDER BY p.name, e.name",
+        &[who.organization.as_str().into()],
+    )?;
+    let mut projects: Vec<ProjectListing> = Vec::new();
+    for row in rows {
+        let corrupt = |_| error::corrupt("Project");
+        let id = ProjectId::parse(row.text(0)?).map_err(corrupt)?;
+        let environment = EnvironmentName::parse(row.text(3)?).map_err(corrupt)?;
+        match projects.last_mut() {
+            Some(project) if project.id == id => project.environments.push(environment),
+            _ => projects.push(ProjectListing {
+                id,
+                name: ProjectName::parse(row.text(1)?).map_err(corrupt)?,
+                default_environment: EnvironmentName::parse(row.text(2)?).map_err(corrupt)?,
+                environments: vec![environment],
+            }),
+        }
+    }
+    Ok(ProjectsView { projects })
+}
+
+pub(crate) fn remove_project(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    remove: &RemoveProject,
+) -> Result<ProjectRemoved, RpcError> {
+    let project = scope::project(tx, who, Some(&remove.project))?;
+    let members = members(tx, &project.id)?;
+    // Lock every Environment, in ID order, against a concurrent admission.
+    for member in &members {
+        scope::lock_id(tx, who, &member.id)?;
+    }
+    let order = teardown_order(&members, &project.default_environment);
+    for member in &order {
+        if let Some(running) = on_servers(tx, &member.id)? {
+            return Err(still_on_servers(&member.name, &running));
+        }
+    }
+    for member in &order {
+        purge(tx, &member.id)?;
+    }
+    tx.execute(
+        "DELETE FROM config_pr_plan WHERE project_id = ?1",
+        &[project.id.as_str().into()],
+    )?;
+    tx.execute(
+        "DELETE FROM config_project WHERE id = ?1",
+        &[project.id.as_str().into()],
+    )?;
+    Ok(ProjectRemoved {
+        project: ProjectSummary {
+            id: project.id,
+            name: project.name,
+        },
+        environments: order
+            .into_iter()
+            .map(|member| member.name.clone())
+            .collect(),
+    })
+}
+
+pub(crate) fn remove_organization(
+    tx: &mut dyn Tx,
+    who: &Actor,
+) -> Result<OrganizationRemoved, RpcError> {
+    let projects = projects(tx, who)?.projects;
+    if let Some(first) = projects.first() {
+        let names: Vec<_> = projects
+            .iter()
+            .map(|project| project.name.to_string())
+            .collect();
+        return Err(error::conflict(
+            format!(
+                "This Organization still has Projects ({}). Remove them first",
+                names.join(", ")
+            ),
+            json!({
+                "projects": names,
+                "next": format!("ployz project rm {} --confirm {}", first.name, first.name),
+            }),
+        ));
+    }
+    for table in [
+        "config_create",
+        "config_branch",
+        "config_check_suite",
+        "config_build_order",
+        "config_pull_request",
+        "config_conditional_save",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE organization_id = ?1"),
+            &[who.organization.as_str().into()],
+        )?;
+    }
+    Ok(OrganizationRemoved {
+        organization: who.organization.clone(),
+    })
 }

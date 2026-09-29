@@ -171,6 +171,10 @@ it.live(
         assert.strictEqual(foreign.status, 404);
         assert.strictEqual(foreign.json.error?.code, "not_found");
 
+        // Only Cloud's own Organization removal forgets an Organization's configuration.
+        const forget = yield* request("write", alice, { command: "remove_organization" });
+        assert.strictEqual(forget.json.error?.code, "unsupported");
+
         const invalid = yield* request("write", alice, { command: "claim", deployment: "d1" });
         assert.strictEqual(invalid.status, 422);
         assert.strictEqual(invalid.json.error?.code, "invalid_argument");

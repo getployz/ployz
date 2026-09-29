@@ -231,7 +231,8 @@ export const updateServiceCanvasPosition = Effect.fn(
     readonly y: number;
   },
 ) {
-  yield* requireEnvironmentForActorById(actor, input);
-  // Positions are presentation: a Config Store Service is placed before the Store creates it.
-  return yield* withMutationResult(upsertCanvasPosition(input));
+  // Positions are presentation, kept by Organization: a Config Store Service is placed before the Store creates it, in
+  // an Environment only the Store knows.
+  const organization = yield* requireOrganizationForActor(actor, input.organizationSlug);
+  return yield* withMutationResult(upsertCanvasPosition({ ...input, organizationId: organization.id }));
 });

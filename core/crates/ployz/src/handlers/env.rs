@@ -10,10 +10,10 @@ use ployz_core::RpcErrorCode;
 use ployz_core::ServiceName;
 use ployz_store::{
     Admit, Branched, CopyNode, CreateBranch, CreateEnvironment, DeploymentId, DeploymentStatus,
-    DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef, EnvironmentRemoved,
-    EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move, MovePick, MoveQuery,
-    MoveView, Moved, RemoveEnvironment, SaveState, ServicesQuery, SetDefaultEnvironment,
-    SetupCommand, VolumeName, VolumesQuery, When,
+    DeploymentSummary, DeploymentView, EnvironmentId, EnvironmentName, EnvironmentRef,
+    EnvironmentRemoved, EnvironmentSummary, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
+    MovePick, MoveQuery, MoveView, Moved, RemoveEnvironment, SaveState, ServicesQuery,
+    SetDefaultEnvironment, SetupCommand, VolumeName, VolumesQuery, When,
 };
 use serde_json::json;
 
@@ -322,18 +322,11 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     };
     let store = store(root)?;
     let words = ["env", "rm", name.as_str()];
-    let again = vec!["env", "rm", name.as_str(), "--confirm", name.as_str()];
-    match matches.get_one::<String>("confirm") {
-        Some(typed) if typed == name.as_str() => {}
-        Some(typed) => {
-            return Err(Error::usage(format!(
-                "--confirm {} does not match Environment {name}. No changes made.",
-                typed.escape_debug()
-            ))
-            .with_exit(USAGE_EXIT));
-        }
-        None => return Err(unconfirmed(matches, &store, &at, &again)?),
+    let mut again = vec!["env", "rm", name.as_str(), "--confirm", name.as_str()];
+    if !confirmed(matches, name.as_str(), "Environment")? {
+        return Err(unconfirmed(matches, &store, &at, &again)?);
     }
+    let events = deploy::open_events(matches)?;
     let remove = RemoveEnvironment {
         environment: at.clone(),
     };
@@ -343,201 +336,35 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
             if error.details.get("deployed") == Some(&serde_json::Value::Bool(true)) => {}
         Err(error) => return Err(failed(matches, &words)(error)),
     }
-    let Some(view) = take_off(matches, &store, at, &words, &again)? else {
-        return Ok(());
-    };
+    let accept = accepted(matches)?;
+    let (view, ran) = take_off(matches, &store, &at, &accept, events, &words, &again)?;
+    if view.deployment.status != DeploymentStatus::Applied {
+        // Not removed yet: queued, failed, cancelled, or its outcome is unknown. This
+        // same command finishes it once the removal applied, or queues it again.
+        again.extend(
+            accept
+                .iter()
+                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+        );
+        return unfinished(matches, &view, ran, &again);
+    }
     let removed = store
         .remove_environment(&remove)
         .map_err(failed(matches, &words))?;
     finish_removal(&removed, Some(&view.deployment))
 }
 
-/// Take an Environment off the Servers with a removal Deployment, under the
-/// destructive review, and follow it. None once it reported a removal that didn't
-/// apply (queued, failed, cancelled or unknown), whose retry is `again`.
-fn take_off(
-    matches: &ArgMatches,
-    store: &Store,
-    at: EnvironmentRef,
-    words: &[&str],
-    again: &[&str],
-) -> Result<Option<ployz_store::DeploymentView>, Error> {
-    let accept = matches
-        .get_many::<String>("accept-volume-loss")
-        .into_iter()
-        .flatten()
-        .map(|name| VolumeName::parse(name.as_str()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let events = deploy::open_events(matches)?;
-    // The in-process Store trusts this CLI to observe the Servers; Cloud observes them itself.
-    let volumes = match store.local() {
-        Some(_) => deploy::observe(matches, store, &at, true)?,
-        None => None,
-    };
-    let admitted = store
-        .admit(
-            &Admit {
-                id: DeploymentId::parse(mint())?,
-                environment: at,
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: None,
-                remove: true,
-                accept_volume_loss: accept.clone(),
-            },
-            volumes,
-        )
-        .map_err(|error| failed(matches, words)(deploy::accepting(error, matches, again)))?;
-    let deploy::Shipped { view, ran, .. } =
-        deploy::execute(matches, store, &admitted, None, events, words)?;
-    if view.deployment.status != DeploymentStatus::Applied {
-        // Not removed yet: queued, failed, cancelled, or its outcome is unknown. This
-        // same command finishes it once the removal applied, or queues it again.
-        let mut again: Vec<&str> = again.to_vec();
-        again.extend(
-            accept
-                .iter()
-                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-        );
-        deploy::finish_view(&view, Some(store::next(matches, &again)))?;
-        return ran.and_then(|()| match matches.get_flag("detach") {
-            true => Ok(None),
-            false => Err(Error::partial()),
-        });
+/// Whether `--confirm` typed `name`; a different name is a usage error.
+pub(super) fn confirmed(matches: &ArgMatches, name: &str, what: &str) -> Result<bool, Error> {
+    match matches.get_one::<String>("confirm") {
+        Some(typed) if typed == name => Ok(true),
+        Some(typed) => Err(Error::usage(format!(
+            "--confirm {} does not match {what} {name}. No changes made.",
+            typed.escape_debug()
+        ))
+        .with_exit(USAGE_EXIT)),
+        None => Ok(false),
     }
-    Ok(Some(view))
-}
-
-/// `--setup SERVICE=COMMAND` values.
-fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
-    values
-        .iter()
-        .map(|setup| {
-            setup
-                .split_once('=')
-                .and_then(|(service, command)| {
-                    Some(SetupCommand {
-                        service: ServiceName::parse(service).ok()?,
-                        command: command.to_owned(),
-                    })
-                })
-                .ok_or_else(|| {
-                    Error::usage("Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'")
-                        .with_exit(USAGE_EXIT)
-                })
-        })
-        .collect()
-}
-
-/// Take an Environment off the Servers and keep everything else of it.
-fn shutdown(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let at = EnvironmentRef {
-        project: project(matches)?,
-        environment: Some(name.clone()),
-    };
-    let store = store(root)?;
-    let words = ["env", "shutdown", name.as_str()];
-    let Some(view) = take_off(matches, &store, at, &words, &words)? else {
-        return Ok(());
-    };
-    let on = store::next(matches, &["deploy", "--env", name.as_str()]);
-    deploy::finish_view(&view, Some(on))
-}
-
-/// Show the Project's PR plans, or change one.
-fn pr(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let list = |flag: &str| -> Option<Vec<String>> {
-        matches
-            .get_many::<String>(flag)
-            .map(|values| values.cloned().collect())
-    };
-    let enabled = match (matches.get_flag("on"), matches.get_flag("off")) {
-        (true, _) => Some(true),
-        (_, true) => Some(false),
-        _ => None,
-    };
-    let start_from = matches
-        .get_one::<String>("from")
-        .map(|from| EnvironmentName::parse(from.as_str()))
-        .transpose()?;
-    let setup = list("setup").map(|values| setups(&values)).transpose()?;
-    let mut set = ployz_store::SetPrPlan {
-        project: project(matches)?,
-        repository: matches
-            .get_one::<String>("repository")
-            .cloned()
-            .unwrap_or_default(),
-        enabled,
-        start_from,
-        copy: list("copy"),
-        setup,
-        remove_on_close: matches.get_one::<bool>("remove-on-close").copied(),
-        include_bots: matches.get_one::<bool>("bots").copied(),
-    };
-    let store = store(root)?;
-    let words = ["env", "pr"];
-    let query = ployz_store::PrPlansQuery {
-        project: set.project.clone(),
-    };
-    let changing = set.enabled.is_some()
-        || set.start_from.is_some()
-        || set.copy.is_some()
-        || set.setup.is_some()
-        || set.remove_on_close.is_some()
-        || set.include_bots.is_some();
-    let view = match changing {
-        false => store.pr_plans(&query).map_err(failed(matches, &words))?,
-        true => {
-            if set.repository.is_empty() {
-                let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
-                match plans.plans.as_slice() {
-                    [only] => set.repository.clone_from(&only.repository),
-                    _ => {
-                        return Err(Error::usage(
-                            "Name the repository: `ployz env pr` lists the Project's",
-                        )
-                        .with_exit(USAGE_EXIT));
-                    }
-                }
-            }
-            store.set_pr_plan(&set).map_err(failed(matches, &words))?
-        }
-    };
-    let mut json = serde_json::to_value(&view).expect("PR plans are JSON");
-    if let (true, Some(fields)) = (changing, json.as_object_mut()) {
-        fields.insert("immediate".to_owned(), json!(true));
-    }
-    crate::output::finish(&json, || {
-        say!("PR Environments of Project {}:", view.project.name);
-        if view.plans.is_empty() {
-            say!("  No Service deploys from a GitHub repository through the GitHub App.");
-        }
-        for plan in &view.plans {
-            let mut words = vec![if plan.enabled { "on" } else { "off" }.to_owned()];
-            match &plan.start_from {
-                Some(from) => words.push(format!("from {from}")),
-                None if plan.enabled => words.push("pick --from to start".to_owned()),
-                None => {}
-            }
-            if !plan.copy.is_empty() {
-                words.push(format!("also copies {}", plan.copy.join(", ")));
-            }
-            for setup in &plan.setup {
-                words.push(format!("then {}: {}", setup.service, setup.command));
-            }
-            if !plan.remove_on_close {
-                words.push("kept after close".to_owned());
-            }
-            if plan.include_bots {
-                words.push("bots too".to_owned());
-            }
-            say!("  {}: {}", plan.repository, words.join(" · "));
-        }
-    })
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
@@ -547,6 +374,37 @@ fn unconfirmed(
     at: &EnvironmentRef,
     again: &[&str],
 ) -> Result<Error, Error> {
+    let inventory = inventory(matches, store, at)?;
+    let retry = store::next(matches, again);
+    Ok(Error::detailed(
+        RpcErrorCode::ConfirmationRequired,
+        format!(
+            "Removing Environment {} deletes its configuration, history and every Service \
+             and Volume in it; this can't be undone. No changes made.\nRetry: {retry}",
+            inventory.environment.name
+        ),
+        json!({
+            "environment": inventory.environment,
+            "services": inventory.services,
+            "volumes": inventory.volumes,
+            "next": retry,
+        }),
+    ))
+}
+
+/// What removing an Environment deletes: its Services and Volumes, by name.
+#[derive(serde::Serialize)]
+pub(super) struct Inventory {
+    environment: EnvironmentSummary,
+    services: Vec<ServiceName>,
+    volumes: Vec<serde_json::Value>,
+}
+
+pub(super) fn inventory(
+    matches: &ArgMatches,
+    store: &Store,
+    at: &EnvironmentRef,
+) -> Result<Inventory, Error> {
     let words = ["env", "rm"];
     let services = store
         .services(&ServicesQuery {
@@ -558,24 +416,81 @@ fn unconfirmed(
             environment: at.clone(),
         })
         .map_err(failed(matches, &words))?;
-    let retry = store::next(matches, again);
-    let name = &services.environment.name;
-    Ok(Error::detailed(
-        RpcErrorCode::ConfirmationRequired,
-        format!(
-            "Removing Environment {name} deletes its configuration, history and every Service \
-             and Volume in it; this can't be undone. No changes made.\nRetry: {retry}"
-        ),
-        json!({
-            "environment": services.environment,
-            "services": services.services.iter().map(|listing| &listing.service.name).collect::<Vec<_>>(),
-            "volumes": volumes.volumes.iter().map(|listing| json!({
-                "name": listing.volume.name,
-                "deployed": listing.deployed,
-            })).collect::<Vec<_>>(),
-            "next": retry,
-        }),
-    ))
+    Ok(Inventory {
+        environment: services.environment,
+        services: services
+            .services
+            .into_iter()
+            .map(|listing| listing.service.name)
+            .collect(),
+        volumes: volumes
+            .volumes
+            .iter()
+            .map(|listing| json!({ "name": listing.volume.name, "deployed": listing.deployed }))
+            .collect(),
+    })
+}
+
+/// Every `--accept-volume-loss` name.
+pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
+    Ok(matches
+        .get_many::<String>("accept-volume-loss")
+        .into_iter()
+        .flatten()
+        .map(|name| VolumeName::parse(name.as_str()))
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Take Environment `at` off the Servers: admit a removal Deployment under the
+/// destructive review, accepting the loss of `accept`, then run or follow it as
+/// `deploy` does. `again` is the command that retries the whole removal.
+pub(super) fn take_off(
+    matches: &ArgMatches,
+    store: &Store,
+    at: &EnvironmentRef,
+    accept: &[VolumeName],
+    events: Option<std::io::BufWriter<std::fs::File>>,
+    words: &[&str],
+    again: &[&str],
+) -> Result<(DeploymentView, Result<(), Error>), Error> {
+    // The in-process Store trusts this CLI to observe the Servers; Cloud observes them itself.
+    let volumes = match store.local() {
+        Some(_) => deploy::observe(matches, store, at, true)?,
+        None => None,
+    };
+    let admitted = store
+        .admit(
+            &Admit {
+                id: DeploymentId::parse(mint())?,
+                environment: at.clone(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                retry: None,
+                remove: true,
+                accept_volume_loss: accept.to_vec(),
+            },
+            volumes,
+        )
+        .map_err(|error| failed(matches, words)(deploy::accepting(error, matches, again)))?;
+    let deploy::Shipped { view, ran, .. } =
+        deploy::execute(matches, store, &admitted, None, events, words)?;
+    Ok((view, ran))
+}
+
+/// Report a removal Deployment that didn't apply (yet), naming `again` to finish
+/// it: exit 3, or 0 when `--detach` asked not to wait.
+pub(super) fn unfinished(
+    matches: &ArgMatches,
+    view: &DeploymentView,
+    ran: Result<(), Error>,
+    again: &[&str],
+) -> Result<(), Error> {
+    deploy::finish_view(view, Some(store::next(matches, again)))?;
+    ran.and_then(|()| match matches.get_flag("detach") {
+        true => Ok(()),
+        false => Err(Error::partial()),
+    })
 }
 
 fn finish_removal(
@@ -950,6 +865,146 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
         }
         if !branch.update.is_empty() {
             say!("Its Parent deployed changes: ployz env update.");
+        }
+    })
+}
+
+/// `--setup SERVICE=COMMAND` values.
+fn setups(values: &[String]) -> Result<Vec<SetupCommand>, Error> {
+    values
+        .iter()
+        .map(|setup| {
+            setup
+                .split_once('=')
+                .and_then(|(service, command)| {
+                    Some(SetupCommand {
+                        service: ServiceName::parse(service).ok()?,
+                        command: command.to_owned(),
+                    })
+                })
+                .ok_or_else(|| {
+                    Error::usage("Expected --setup SERVICE=COMMAND, like web='pnpm db:seed'")
+                        .with_exit(USAGE_EXIT)
+                })
+        })
+        .collect()
+}
+
+/// Take an Environment off the Servers and keep everything else of it.
+fn shutdown(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let name = EnvironmentName::parse(required(matches, "name")?)?;
+    let at = EnvironmentRef {
+        project: project(matches)?,
+        environment: Some(name.clone()),
+    };
+    let store = store(root)?;
+    let words = ["env", "shutdown", name.as_str()];
+    let accept = accepted(matches)?;
+    let events = deploy::open_events(matches)?;
+    let (view, ran) = take_off(matches, &store, &at, &accept, events, &words, &words)?;
+    if view.deployment.status != DeploymentStatus::Applied {
+        let mut again: Vec<&str> = words.to_vec();
+        again.extend(
+            accept
+                .iter()
+                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+        );
+        return unfinished(matches, &view, ran, &again);
+    }
+    let on = store::next(matches, &["deploy", "--env", name.as_str()]);
+    deploy::finish_view(&view, Some(on))
+}
+
+/// Show the Project's PR plans, or change one.
+fn pr(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let list = |flag: &str| -> Option<Vec<String>> {
+        matches
+            .get_many::<String>(flag)
+            .map(|values| values.cloned().collect())
+    };
+    let enabled = match (matches.get_flag("on"), matches.get_flag("off")) {
+        (true, _) => Some(true),
+        (_, true) => Some(false),
+        _ => None,
+    };
+    let start_from = matches
+        .get_one::<String>("from")
+        .map(|from| EnvironmentName::parse(from.as_str()))
+        .transpose()?;
+    let setup = list("setup").map(|values| setups(&values)).transpose()?;
+    let mut set = ployz_store::SetPrPlan {
+        project: project(matches)?,
+        repository: matches
+            .get_one::<String>("repository")
+            .cloned()
+            .unwrap_or_default(),
+        enabled,
+        start_from,
+        copy: list("copy"),
+        setup,
+        remove_on_close: matches.get_one::<bool>("remove-on-close").copied(),
+        include_bots: matches.get_one::<bool>("bots").copied(),
+    };
+    let store = store(root)?;
+    let words = ["env", "pr"];
+    let query = ployz_store::PrPlansQuery {
+        project: set.project.clone(),
+    };
+    let changing = set.enabled.is_some()
+        || set.start_from.is_some()
+        || set.copy.is_some()
+        || set.setup.is_some()
+        || set.remove_on_close.is_some()
+        || set.include_bots.is_some();
+    let view = match changing {
+        false => store.pr_plans(&query).map_err(failed(matches, &words))?,
+        true => {
+            if set.repository.is_empty() {
+                let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
+                match plans.plans.as_slice() {
+                    [only] => set.repository.clone_from(&only.repository),
+                    _ => {
+                        return Err(Error::usage(
+                            "Name the repository: `ployz env pr` lists the Project's",
+                        )
+                        .with_exit(USAGE_EXIT));
+                    }
+                }
+            }
+            store.set_pr_plan(&set).map_err(failed(matches, &words))?
+        }
+    };
+    let mut json = serde_json::to_value(&view).expect("PR plans are JSON");
+    if let (true, Some(fields)) = (changing, json.as_object_mut()) {
+        fields.insert("immediate".to_owned(), json!(true));
+    }
+    crate::output::finish(&json, || {
+        say!("PR Environments of Project {}:", view.project.name);
+        if view.plans.is_empty() {
+            say!("  No Service deploys from a GitHub repository through the GitHub App.");
+        }
+        for plan in &view.plans {
+            let mut words = vec![if plan.enabled { "on" } else { "off" }.to_owned()];
+            match &plan.start_from {
+                Some(from) => words.push(format!("from {from}")),
+                None if plan.enabled => words.push("pick --from to start".to_owned()),
+                None => {}
+            }
+            if !plan.copy.is_empty() {
+                words.push(format!("also copies {}", plan.copy.join(", ")));
+            }
+            for setup in &plan.setup {
+                words.push(format!("then {}: {}", setup.service, setup.command));
+            }
+            if !plan.remove_on_close {
+                words.push("kept after close".to_owned());
+            }
+            if plan.include_bots {
+                words.push("bots too".to_owned());
+            }
+            say!("  {}: {}", plan.repository, words.join(" · "));
         }
     })
 }

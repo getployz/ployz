@@ -21,6 +21,8 @@ import {
   provideServerAccess,
   retireCredentialServerAccess,
 } from "#/modules/machines/server-access.server";
+import { refusal } from "#/modules/config-store/config-store.server";
+import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { AppConfig } from "#/server/config.server";
 import { Conflict, NotFound, Validation } from "#/server/public-error";
 
@@ -36,7 +38,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
   );
 
 /**
- * `/api/cli/*`: the `ployz` CLI's account surface (Organizations, Organization Tokens and signed-in devices,
+ * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
  * GitHub connections, billing). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
@@ -51,6 +53,10 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
   switch (route) {
     case "GET organizations":
       return { organizations: yield* callerOrganizations(caller) };
+    case "DELETE organizations/:id": {
+      const removal = yield* removeOrganization(caller, decodeURIComponent(id ?? ""));
+      return removal.ok ? removal.value : refusal(removal.refusal);
+    }
     case "GET tokens":
       return {
         ...(yield* listCredentials(caller)),

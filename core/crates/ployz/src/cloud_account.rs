@@ -369,6 +369,34 @@ async fn store_answer<T: DeserializeOwned>(
     Ok(answer(credential, status, &bytes)?)
 }
 
+/// What `org rm` did: whether the Organization is gone, and which Servers confirmed
+/// clearing Cloud's key and every device key. Until all do, it stays, disabled.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct OrganizationRemoval {
+    pub(crate) organization: String,
+    pub(crate) removed: bool,
+    pub(crate) servers: ServerClears,
+}
+
+/// Remove the credential's Organization, named `slug`, once it has no Project.
+/// Rerun while a Server hasn't confirmed, it retries the Clears.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`conflict` while it has a Project, `invalid_argument`
+/// for another Organization than the credential's), or a Cloud failure.
+pub(crate) async fn remove_organization(
+    credential: &Credential,
+    slug: &str,
+) -> Result<OrganizationRemoval, StoreCallError> {
+    let url = format!("{}/api/cli/organizations/{slug}", credential.cloud());
+    store_answer(
+        credential,
+        send(credential, Method::DELETE, &url, None).await?,
+    )
+    .await
+}
+
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
 /// Deployment `deployment`, which the CLI admits next.
 ///

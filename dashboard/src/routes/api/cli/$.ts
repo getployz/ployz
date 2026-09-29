@@ -5,7 +5,7 @@ import { publicErrorResponse } from "#/server/public-error";
 import { runAppEffect } from "#/server/run.server";
 
 function handle(request: Request) {
-  return runAppEffect(Effect.map(handleCliRequest(request), (body) => Response.json(body)), {
+  return runAppEffect(Effect.map(handleCliRequest(request), (body) => body instanceof Response ? body : Response.json(body)), {
     signal: request.signal,
   }).catch(publicErrorResponse);
 }

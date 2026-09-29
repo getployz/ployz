@@ -1,0 +1,81 @@
+import type { ConfigCommand, ConfigWritten, EnvironmentListing } from "@ployz/sdk";
+import { Option, Schema } from "effect";
+import { StoreRefused } from "./store-write";
+
+/** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
+export function storeEnvironmentTree(environments: readonly EnvironmentListing[]) {
+  const tree: { environment: EnvironmentListing; depth: number }[] = [];
+  const visit = (parent: string | null, depth: number) => {
+    for (const environment of environments) {
+      // A Branch whose Parent isn't listed reads as a root.
+      const under = environment.parent !== null && environments.some((row) => row.name === environment.parent) ? environment.parent : null;
+      if (under !== parent) continue;
+      tree.push({ environment, depth });
+      visit(environment.name, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return tree;
+}
+
+/** A removal from the Servers that hasn't ended. */
+export const removing = (environment: EnvironmentListing) =>
+  environment.removal !== null && ["queued", "running", "cancelling"].includes(environment.removal.status);
+
+/** What an Environment has, in a few words, wherever the tree is listed: "default", "deleting". */
+export function storeEnvironmentNotes(environment: EnvironmentListing) {
+  const removal = environment.removal;
+  return [
+    environment.default && "default",
+    removal && (removing(environment) ? "deleting" : removal.status === "applied" ? "off your servers" : `deletion ${removal.status}`),
+  ].filter((note): note is string => typeof note === "string");
+}
+
+/** What a teardown deletes: one Environment, or a whole Project (`environment` null). */
+export type TeardownTarget = { project: string; environment: string | null };
+
+/** The Volumes whose data the user accepted losing, by Environment: each removal accepts only its own. */
+export type AcceptedLoss = Readonly<Record<string, readonly string[]>>;
+
+/** Done, or waiting on the Deployment taking `environment` off the Servers. */
+export type TeardownStep = { done: true } | { done: false; environment: string; deployment: string };
+
+type Commit = (command: ConfigCommand, handles: readonly string[]) => Promise<ConfigWritten>;
+
+/**
+ * One step of the one teardown path, as `ployz env rm` and `ployz project rm` take it. The Store deletes what never ran
+ * on the Servers at once; otherwise it names the Environment still there, which a removal Deployment takes off (unless
+ * one is already running), and the same step, taken again once that applied, goes on.
+ */
+export async function teardownStep(commit: Commit, target: TeardownTarget, accepted: AcceptedLoss): Promise<TeardownStep> {
+  const remove: ConfigCommand = target.environment === null
+    ? { command: "remove_project", project: target.project }
+    : { command: "remove_environment", environment: { project: target.project, environment: target.environment } };
+  try {
+    await commit(remove, ["conflict"]);
+    return { done: true };
+  } catch (error) {
+    const on = error instanceof StoreRefused ? onServers(error) : null;
+    if (on === null) throw error;
+    if (!on.deployed) return { done: false, environment: on.environment, deployment: on.deployment };
+    const id = crypto.randomUUID();
+    await commit({
+      command: "admit", id, environment: { project: target.project, environment: on.environment },
+      services: [], version: null, remove: true, accept_volume_loss: [...accepted[on.environment] ?? []],
+    }, ["confirmation_required", "invalid_argument"]);
+    return { done: false, environment: on.environment, deployment: id };
+  }
+}
+
+const decodeOnServers = Schema.decodeUnknownOption(Schema.Struct({
+  environment: Schema.String,
+  deployment: Schema.String,
+  deployed: Schema.optional(Schema.Boolean),
+}));
+
+/** The Store's refusal to delete an Environment its Servers may still run: `deployed` when it needs a removal next. */
+function onServers(refusal: StoreRefused) {
+  if (refusal.code !== "conflict") return null;
+  const details = Option.getOrNull(decodeOnServers(refusal.details));
+  return details && { ...details, deployed: details.deployed === true };
+}

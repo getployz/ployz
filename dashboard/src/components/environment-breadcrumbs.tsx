@@ -20,6 +20,9 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { findEnvironment, useWorkspace } from "#/modules/environment-design/workspace.queries";
 import { environmentTree } from "#/modules/project/environment-tree";
 import { useEnvironmentNotes } from "#/modules/project/environment-notes";
+import { storeEnabled } from "#/modules/config-store/store.contract";
+import { environmentsQuery, projectsQuery, useCachedStoreView } from "#/modules/config-store/store-view.queries";
+import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 
 type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
 
@@ -28,6 +31,11 @@ type EnvironmentScope = Extract<DashboardScope, { kind: "environment" }>;
  * `project / parent ⑂ branch`, and its Parent's crumb opens the Parent.
  */
 export function EnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
+  return storeEnabled ? <StoreEnvironmentCrumbs scope={scope} /> : <LegacyEnvironmentCrumbs scope={scope} />;
+}
+
+// TODO(#1275): goes with the dark gate.
+function LegacyEnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
   const section = useDashboardSection();
   const { projects, environments, branches } = useWorkspace(scope.organizationSlug);
   const current = findEnvironment(projects, environments, scope);
@@ -212,6 +220,122 @@ function EnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
                   void navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
                     params: { organizationSlug, projectSlug, environmentSlug }, search: { scope: "project" } });
                 }}>
+                  <Settings2Icon />Manage environments
+                </CommandItem>
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </SwitcherLoading>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** The crumbs over the Config Store: its Projects, and the Environments of this one. */
+function StoreEnvironmentCrumbs({ scope }: { scope: EnvironmentScope }) {
+  const section = useDashboardSection();
+  const environments = useStoreEnvironments(scope);
+  const parent = environments.data.find((row) => row.name === scope.environmentSlug)?.parent;
+  return <Crumbs branchAt={parent ? 2 : undefined} items={[
+    <StoreProjectCrumb key="project" scope={scope} />,
+    ...parent ? [
+      <Link key="parent" {...getDashboardDestination({ ...scope, environmentSlug: parent }, section)}
+        className={cn(buttonVariants({ variant: "ghost", size: "sm" }), "min-w-0")} title={parent} aria-label={`Parent: ${parent}`}>
+        <span className="truncate">{parent}</span>
+      </Link>,
+    ] : [],
+    <StoreEnvironmentCrumb key={`environment:${scope.projectSlug}/${scope.environmentSlug}`} scope={scope} />,
+    ...section === "architecture" ? [] : [<BreadcrumbPage key="place" className="px-1 font-semibold">{getDashboardSectionLabel(section)}</BreadcrumbPage>],
+  ]} />;
+}
+
+/** Chrome never waits on a Store view: pending until it's read, with a retry when it can't be. */
+function useStoreEnvironments(scope: EnvironmentScope) {
+  const result = useCachedStoreView(scope.organizationSlug, environmentsQuery(scope.projectSlug));
+  return { data: result?.ok ? result.value.environments : [], isPending: result === undefined };
+}
+
+function StoreProjectCrumb({ scope }: { scope: EnvironmentScope }) {
+  const result = useCachedStoreView(scope.organizationSlug, projectsQuery());
+  const projects = result?.ok ? result.value.projects : [];
+  const navigate = useNavigate();
+  const section = useDashboardSection();
+  const [open, setOpen] = useState(false);
+  const go = (destination: DashboardDestination) => { setOpen(false); void navigate(destination); };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <CrumbTrigger label="Project" name={scope.projectSlug} className="min-wf-nav:-ml-2.5" />
+      <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
+        <PopoverTitle className="sr-only">Switch project</PopoverTitle>
+        <SwitcherLoading isPending={result === undefined}>
+          <Command tabIndex={0} label="Projects" defaultValue={scope.projectSlug}>
+            <CommandList className="max-h-[min(20rem,45dvh)]">
+              <CommandGroup heading="Projects">
+                {projects.map((candidate) => (
+                  <CommandItem key={candidate.id} value={candidate.name} data-checked={candidate.name === scope.projectSlug}
+                    aria-label={`${candidate.name}, opens ${candidate.default_environment}`}
+                    onSelect={() => go(getDashboardDestination({ ...scope, projectSlug: candidate.name, environmentSlug: candidate.default_environment }, section))}>
+                    <span className="flex-1 truncate">{candidate.name}</span>
+                    <span className="truncate text-muted-foreground">{candidate.default_environment}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+              <CommandSeparator />
+              <CommandGroup>
+                <CommandItem value="all-projects" onSelect={() => go(getDashboardDestination({ kind: "all", organizationSlug: scope.organizationSlug }, "projects"))}>
+                  <LayoutGridIcon />All projects
+                </CommandItem>
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </SwitcherLoading>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function StoreEnvironmentCrumb({ scope }: { scope: EnvironmentScope }) {
+  const { data: environments, isPending } = useStoreEnvironments(scope);
+  const navigate = useNavigate();
+  const section = useDashboardSection();
+  const [open, setOpen] = useState(false);
+  const current = environments.find((row) => row.name === scope.environmentSlug);
+  const { organizationSlug, projectSlug, environmentSlug } = scope;
+  const go = (to: () => Promise<void>) => { setOpen(false); void to(); };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <CrumbTrigger label="Environment" name={scope.environmentSlug} current />
+      <PopoverContent padding="none" align="start" className="w-[min(20rem,calc(100vw-2rem))]">
+        <PopoverTitle className="sr-only">Switch environment</PopoverTitle>
+        <SwitcherLoading isPending={isPending}>
+          <Command tabIndex={0} label="Environments" defaultValue={scope.environmentSlug}>
+            <CommandList className="max-h-[min(20rem,45dvh)]">
+              <CommandGroup heading="Environments">
+                {storeEnvironmentTree(environments).map(({ environment, depth }) => {
+                  const notes = storeEnvironmentNotes(environment);
+                  return (
+                    <CommandItem key={environment.id} value={environment.name} data-checked={environment.name === scope.environmentSlug}
+                      aria-label={[environment.name, environment.parent && `branch of ${environment.parent}`, ...notes].filter(Boolean).join(", ")}
+                      onSelect={() => go(() => navigate(getDashboardDestination({ ...scope, environmentSlug: environment.name }, section)))}>
+                      <BranchIndent depth={depth} />
+                      <span className="flex-1 truncate">{environment.name}</span>
+                      {notes.length > 0 && <span className="shrink-0 text-muted-foreground">{notes.join(" · ")}</span>}
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+              <CommandSeparator />
+              <CommandGroup>
+                {current?.parent && <CommandItem value="review" onSelect={() => go(() => navigate({ to: ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO,
+                  params: { organizationSlug, projectSlug, environmentSlug } }))}>
+                  <GitBranchIcon />Manage {current.name}
+                </CommandItem>}
+                {current && <CommandItem value="new-branch" onSelect={() => go(() => navigate({ to: ENVIRONMENT_NEW_BRANCH_ROUTE_TO,
+                  params: { organizationSlug, projectSlug, environmentSlug } }))}>
+                  <GitBranchPlusIcon />New branch of {current.name}
+                </CommandItem>}
+                <CommandItem value="manage-environments" onSelect={() => go(() => navigate({ to: "/cloud/$organizationSlug/$projectSlug/$environmentSlug/settings",
+                  params: { organizationSlug, projectSlug, environmentSlug }, search: { scope: "project" } }))}>
                   <Settings2Icon />Manage environments
                 </CommandItem>
               </CommandGroup>

@@ -1697,7 +1697,7 @@ pub(crate) fn changes_into(
         parent: None,
         provided: &provided,
         hostnames: &hostnames,
-        from_kept: row.kept,
+        from_kept: false,
         picks: None,
     })?
     .rows

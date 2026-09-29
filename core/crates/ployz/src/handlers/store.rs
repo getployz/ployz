@@ -12,11 +12,11 @@ use ployz_store::{
     DomainsView, Edit, Edited, EnvironmentCreated, EnvironmentQuery, EnvironmentRef,
     EnvironmentRemoved, EnvironmentView, EnvironmentsQuery, EnvironmentsView, KeepBranch, Move,
     MoveQuery, MoveView, Moved, NamespaceQuery, NamespaceView, OrganizationId, PlanQuery, PlanView,
-    ProjectCreated, ProjectName, Publish, Published, Query, RemovalsQuery, RemovalsView,
-    RemoveDomain, RemoveEnvironment, RemoveService, RemoveVolume, RenameService, SealingKey,
-    ServiceQuery, ServiceStaged, ServiceView, ServicesQuery, ServicesView, SetBuildOrder,
-    SetDefaultEnvironment, Start, Trusted, VolumeQuery, VolumeStaged, VolumeView, VolumesQuery,
-    VolumesView,
+    ProjectCreated, ProjectName, ProjectRemoved, ProjectsQuery, ProjectsView, Publish, Published,
+    Query, RemovalsQuery, RemovalsView, RemoveDomain, RemoveEnvironment, RemoveProject,
+    RemoveService, RemoveVolume, RenameService, SealingKey, ServiceQuery, ServiceStaged,
+    ServiceView, ServicesQuery, ServicesView, SetBuildOrder, SetDefaultEnvironment, Start, Trusted,
+    VolumeQuery, VolumeStaged, VolumeView, VolumesQuery, VolumesView,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -387,6 +387,21 @@ impl Store {
         let request = Command::RemoveEnvironment(remove.clone());
         self.call("write", &request, |store, who| {
             store.remove_environment(who, remove)
+        })
+    }
+
+    pub(crate) fn projects(&self) -> Result<ProjectsView, StoreCallError> {
+        let request = Query::Projects(ProjectsQuery {});
+        self.call("read", &request, |store, who| store.projects(who))
+    }
+
+    pub(crate) fn remove_project(
+        &self,
+        remove: &RemoveProject,
+    ) -> Result<ProjectRemoved, StoreCallError> {
+        let request = Command::RemoveProject(remove.clone());
+        self.call("write", &request, |store, who| {
+            store.remove_project(who, remove)
         })
     }
 

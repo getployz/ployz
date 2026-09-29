@@ -3,6 +3,7 @@ import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, Environm
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect } from "effect";
 import { cloudStore } from "#/modules/config-store/config-store.server";
+import { storeTry } from "#/modules/config-store/store-sdk.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
@@ -17,7 +18,7 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 
 const storeCall = <A>(call: () => Promise<A>) =>
-  Effect.tryPromise({ try: call, catch: (cause) => new StoreGithubFailure({ cause }) });
+  storeTry(call).pipe(Effect.mapError((cause) => new StoreGithubFailure({ cause })));
 
 /** What an observation left Cloud to do: runs to dispatch, Branches to take off the Servers, a check to publish. */
 export type StoreOutcome = {
