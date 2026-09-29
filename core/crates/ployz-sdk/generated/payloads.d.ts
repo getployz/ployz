@@ -1314,7 +1314,11 @@ name: string,
  * The nearest Environment the Branch comes from that runs it; none when
  * nothing does, so what reads it deploys empty.
  */
-owner: EnvironmentName | null, };
+owner: EnvironmentName | null,
+/**
+ * It holds its owner's real data: a Volume, or a Service mounting one.
+ */
+data: boolean, };
 
 export type LiveValues = { producers: Array<SavedVariableProducer>, missing: Array<MissingLiveValue>, };
 
