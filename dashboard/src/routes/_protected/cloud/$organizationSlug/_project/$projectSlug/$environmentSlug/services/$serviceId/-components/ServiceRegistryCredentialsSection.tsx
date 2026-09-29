@@ -30,6 +30,7 @@ import { ServiceRegistryCredentialForm } from "#/routes/_protected/cloud/$organi
 import type { ServiceDrawerState } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useServiceDrawerState";
 import { ServiceRegistryCredentialSingleFieldEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceRegistryCredentialSingleFieldEditor";
 import { InfoIcon, KeyRoundIcon, PencilIcon } from "lucide-react";
+import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
 
 function RegistryCredentialSummary({
   providerLabel,
@@ -78,11 +79,13 @@ function RegistryCredentialEmptyState({
   changed,
   actionLabel,
   onAction,
+  onRestore,
 }: {
   description: string;
   changed: boolean;
   actionLabel: string;
   onAction: () => void;
+  onRestore?: () => void;
 }) {
   return (
     <Item state="info" data-changed={changed || undefined}>
@@ -93,6 +96,11 @@ function RegistryCredentialEmptyState({
         <ItemDescription>{description}</ItemDescription>
       </ItemContent>
       <ItemActions>
+        {onRestore ? (
+          <Button type="button" variant="ghost" onClick={onRestore}>
+            Restore
+          </Button>
+        ) : null}
         <Button type="button" variant="outline" onClick={onAction}>
           {actionLabel}
         </Button>
@@ -107,42 +115,74 @@ export function ServiceRegistryCredentialsSection({
   state: ServiceDrawerState;
 }) {
   const { organizationSlug, service, diff } = state;
-  const [mode, setMode] = useState<"create" | "edit" | null>(null);
-
-  const source = service.source.type === "image" ? service.source : null;
-
   const { clearCredentialAction, setCredentialAction } =
     useServiceRegistryCredentialActions({
       organizationSlug,
       environmentId: service.environmentId,
       serviceId: service.id,
     });
-
-  if (!source) {
-    return null;
-  }
-
-  const credentialsDiff = diff.field(
-    SERVICE_DEPLOYMENT_DIFF_PATHS.sourceCredentials,
+  if (service.source.type !== "image") return null;
+  const credentialsDiff = diff.field(SERVICE_DEPLOYMENT_DIFF_PATHS.sourceCredentials);
+  return (
+    <RegistryCredentialsField
+      image={service.source.image}
+      configured={service.source.credentials.type === "configured"}
+      username={service.registryCredentialUsername}
+      changed={credentialsDiff.changed}
+      baselineLabel={credentialsDiff.baselineLabel}
+      baselineValue={credentialsDiff.baselineValue}
+      onSet={setCredentialAction}
+      onClear={clearCredentialAction}
+    />
   );
-  const provider = detectRegistryCredentialProvider(source.image);
+}
+
+/**
+ * A private image's pull credentials: a summary once configured, else a prompt to add them, and the provider's form.
+ * Saving is optimistic; the secret is never read back.
+ */
+export function RegistryCredentialsField({
+  label = "Registry Credentials",
+  image,
+  configured,
+  username,
+  changed,
+  baselineLabel,
+  baselineValue,
+  onSet,
+  onClear,
+  onRestore,
+}: {
+  label?: string;
+  image: string;
+  configured: boolean;
+  /** The saved username, when reads show it. */
+  username: string | null;
+  changed: boolean;
+  baselineLabel?: string;
+  baselineValue?: string;
+  onSet: (value: { username: string | null; secret: string }) => PersistableTransaction;
+  onClear: () => void;
+  /** Turns the stored credentials back on, when there are some to restore. */
+  onRestore?: () => void;
+}) {
+  const [mode, setMode] = useState<"create" | "edit" | null>(null);
+  const provider = detectRegistryCredentialProvider(image);
   const providerLabel = getRegistryCredentialProviderLabel(provider);
   const providerHelp = getRegistryCredentialProviderHelp(provider);
   const fixedUsername = getDefaultRegistryCredentialUsername(provider);
-  const registryHost = getRegistryHostFromImageReference(source.image);
-  const credentialUsername = service.registryCredentialUsername;
-  const hasConfiguredCredential = source.credentials.type === "configured";
+  const registryHost = getRegistryHostFromImageReference(image);
   const usesSingleFieldUpdater =
     providerHelp.usernameLabel == null || fixedUsername != null;
 
-  // Optimistic: the document editor rolls back and toasts if saving fails.
+  // Optimistic: the writer rolls back and toasts if saving fails.
   function handleSubmit(value: { username: string | null; secret: string }) {
-    setCredentialAction(value);
+    onSet(value);
     setMode(null);
   }
 
   function handleDelete() {
-    clearCredentialAction();
+    onClear();
     setMode(null);
   }
 
@@ -151,7 +191,7 @@ export function ServiceRegistryCredentialsSection({
       <Field>
         <div className="flex items-start justify-between gap-3">
           <div className="flex flex-col gap-1">
-            <FieldLabel>Registry Credentials</FieldLabel>
+            <FieldLabel>{label}</FieldLabel>
             <FieldDescription>
               Private Docker Registry credentials used to deploy your Docker
               image.
@@ -160,30 +200,29 @@ export function ServiceRegistryCredentialsSection({
         </div>
 
         {mode == null ? (
-          hasConfiguredCredential ? (
+          configured ? (
             <RegistryCredentialSummary
-              changed={credentialsDiff.changed}
+              changed={changed}
               providerLabel={providerLabel}
               registryHost={registryHost}
-              username={credentialUsername}
+              username={username}
               title={
-                credentialsDiff.changed && credentialsDiff.baselineValue != null
-                  ? `${credentialsDiff.baselineLabel}: ${credentialsDiff.baselineValue}`
+                changed && baselineValue != null
+                  ? `${baselineLabel ?? "Deployed"}: ${baselineValue}`
                   : undefined
               }
               onEdit={() => setMode("edit")}
-              onDelete={() => {
-                handleDelete();
-              }}
+              onDelete={handleDelete}
             />
           ) : (
             <RegistryCredentialEmptyState
-              changed={credentialsDiff.changed}
+              changed={changed}
               description={`Private image? Add your ${providerLabel} credentials.`}
               actionLabel="Add credentials"
               onAction={() => {
                 setMode("create");
               }}
+              onRestore={onRestore}
             />
           )
         ) : (
@@ -193,13 +232,13 @@ export function ServiceRegistryCredentialsSection({
                 schema={registryCredentialSecretSchema}
                 secretLabel={providerHelp.secretLabel}
                 description={providerHelp.description}
-                baselineLabel={credentialsDiff.baselineLabel}
-                baselineValue={credentialsDiff.baselineValue}
-                isChanged={credentialsDiff.changed}
+                baselineLabel={baselineLabel}
+                baselineValue={baselineValue}
+                isChanged={changed}
                 multiline={provider === "gcp-artifact-registry"}
                 rows={provider === "gcp-artifact-registry" ? 8 : undefined}
                 onCommit={(secret) => {
-                  const transaction = setCredentialAction({
+                  const transaction = onSet({
                     username: fixedUsername,
                     secret: secret.trim(),
                   });
@@ -210,20 +249,15 @@ export function ServiceRegistryCredentialsSection({
               />
             ) : (
               <ServiceRegistryCredentialForm
-                key={`${mode}:${credentialUsername ?? ""}`}
+                key={`${mode}:${username ?? ""}`}
                 usernameLabel={providerHelp.usernameLabel ?? "Username"}
                 secretLabel={providerHelp.secretLabel}
                 description={providerHelp.description}
-                initialUsername={credentialUsername ?? ""}
-                baselineLabel={credentialsDiff.baselineLabel}
-                baselineValue={credentialsDiff.baselineValue}
-                isChanged={credentialsDiff.changed}
-                onSubmit={({ username, secret }) =>
-                  handleSubmit({
-                    username,
-                    secret,
-                  })
-                }
+                initialUsername={username ?? ""}
+                baselineLabel={baselineLabel}
+                baselineValue={baselineValue}
+                isChanged={changed}
+                onSubmit={handleSubmit}
                 onClose={() => setMode(null)}
               />
             )}
