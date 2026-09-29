@@ -288,5 +288,10 @@ fn enroll_json_body(raw: &[u8]) -> serde_json::Value {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .expect("HTTP request has a header separator");
-    serde_json::from_slice(raw.get(sep + 4..).expect("body follows headers")).unwrap()
+    let body = raw.get(sep + 4..).expect("body follows headers");
+    // A GET has no body.
+    if body.is_empty() {
+        return serde_json::Value::Null;
+    }
+    serde_json::from_slice(body).unwrap()
 }

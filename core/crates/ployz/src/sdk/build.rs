@@ -51,7 +51,7 @@ pub(super) async fn run(
     )
     .await;
     match result {
-        Ok(builds) => preparation::receipts(&captured.fingerprints, &builds)
+        Ok(builds) => preparation::receipts(&captured.fingerprints, &captured.contents, &builds)
             .into_values()
             .next()
             .map(|receipt| BuildOutcome::Built { receipt })

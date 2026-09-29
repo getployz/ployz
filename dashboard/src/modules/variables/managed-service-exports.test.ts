@@ -26,6 +26,10 @@ describe("managed service exports", () => {
           managed: true,
         }),
         expect.objectContaining({
+          key: "PLOYZ_SERVICE_NAME",
+          value: "api",
+        }),
+        expect.objectContaining({
           key: "PORT",
           value: "3000",
           exported: true,

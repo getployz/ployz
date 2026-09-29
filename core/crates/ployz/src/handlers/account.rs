@@ -4,8 +4,9 @@
 use clap::{ArgMatches, Command};
 use serde::Serialize;
 
-use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
-use crate::cli::{env, positional, value};
+use super::store::Next;
+use super::{Error, Handler, config_path, leaf_matches, login::open_browser, runtime};
+use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
 use crate::cloud_account::{self, BillingPage, Credential, ServerClears};
@@ -86,30 +87,30 @@ pub(crate) fn billing_command() -> Command {
         .subcommand(Command::new("manage").about("Print the billing portal link"))
 }
 
-pub(super) fn token_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn token_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "new" => (token_new, Json::Supported),
-        "ls" => (token_list, Json::Supported),
-        "rm" => (token_remove, Json::Supported),
+        "new" => token_new,
+        "ls" => token_list,
+        "rm" => token_remove,
         _ => return None,
     })
 }
 
-pub(super) fn org_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn org_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "ls" => (org_list, Json::Supported),
-        "use" => (org_use, Json::Supported),
-        "build-order" => (org_build_order, Json::Supported),
-        "rm" => (org_remove, Json::Supported),
+        "ls" => org_list,
+        "use" => org_use,
+        "build-order" => org_build_order,
+        "rm" => org_remove,
         _ => return None,
     })
 }
 
-pub(super) fn billing_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn billing_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "" => (billing, Json::Supported),
-        "upgrade" => (billing_upgrade, Json::Supported),
-        "manage" => (billing_manage, Json::Supported),
+        "" => billing,
+        "upgrade" => billing_upgrade,
+        "manage" => billing_manage,
         _ => return None,
     })
 }
@@ -120,10 +121,8 @@ pub(super) fn in_cloud<T>(
     work: impl AsyncFnOnce(&CredentialStore, &Credential) -> Result<T, LoginError>,
 ) -> Result<T, Error> {
     let store = CredentialStore::beside(&config_path(leaf_matches(root))?);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     runtime()?.block_on(async {
-        let credential = cloud_account::credential(&store, token, cloud).await?;
+        let credential = cloud_account::from_env(&store).await?;
         Ok(work(&store, &credential).await?)
     })
 }
@@ -200,7 +199,17 @@ fn token_remove(root: &ArgMatches) -> Result<(), Error> {
             _ => say!("Revoked token {}.", removed.id),
         }
         say_clears(&servers, next.as_deref());
-    })
+    })?;
+    unconfirmed(&servers)
+}
+
+/// Exit 3 while a Server hasn't confirmed its Clear: the result printed is partial.
+pub(super) fn unconfirmed(servers: &ServerClears) -> Result<(), Error> {
+    if servers.unconfirmed.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::partial())
+    }
 }
 
 #[derive(Serialize)]
@@ -301,7 +310,7 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         .expect("organization is required");
     let again = ["org", "rm", slug.as_str(), "--confirm", slug.as_str()];
     let retry = shell_words::join(std::iter::once("ployz").chain(again));
-    if !super::env::confirmed(matches, slug, "Organization")? {
+    if !super::teardown::confirmed(matches, slug, "Organization")? {
         return Err(Error::detailed(
             RpcErrorCode::ConfirmationRequired,
             format!(
@@ -312,19 +321,14 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let store = CredentialStore::beside(&config_path(matches)?);
-    let token = std::env::var(env::TOKEN).ok();
-    let cloud = std::env::var(env::CLOUD_URL).ok();
     let removal = runtime()?
         .block_on(async {
-            let credential = cloud_account::credential(&store, token, cloud).await?;
+            let credential = cloud_account::from_env(&store).await?;
             cloud_account::remove_organization(&credential, slug).await
         })
         .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
     let next = (!removal.removed).then_some(retry.as_str());
-    let report = OrganizationRemoved {
-        removal: &removal,
-        next,
-    };
+    let report = Next::new(&removal, next.map(str::to_owned));
     crate::output::finish(&report, || {
         if !removal.servers.confirmed.is_empty() {
             say!("Unpaired {} Server(s).", removal.servers.confirmed.len());
@@ -342,14 +346,6 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         true => Ok(()),
         false => Err(Error::partial()),
     }
-}
-
-#[derive(Serialize)]
-struct OrganizationRemoved<'a> {
-    #[serde(flatten)]
-    removal: &'a cloud_account::OrganizationRemoval,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    next: Option<&'a str>,
 }
 
 #[derive(Serialize)]

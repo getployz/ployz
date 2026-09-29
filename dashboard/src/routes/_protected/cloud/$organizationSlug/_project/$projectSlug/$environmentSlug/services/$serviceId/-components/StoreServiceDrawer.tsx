@@ -353,6 +353,15 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   const change = state.changes.get(kind);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
+  if (state.service.source === "uploaded") {
+    return (
+      <Field>
+        <FieldLabel>Source</FieldLabel>
+        <FieldDescription>Uploaded from a directory with <code>ployz up</code>; run it again there to ship new code.</FieldDescription>
+      </Field>
+    );
+  }
+
   if (state.service.source === "empty") {
     return (
       <FieldGroup>

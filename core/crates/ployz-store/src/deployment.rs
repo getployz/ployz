@@ -951,23 +951,29 @@ pub(crate) fn claim(
     }))
 }
 
-/// The latest build receipt of each Service of `environment`, by runtime name.
+/// The latest build receipt of each Service of `environment`, by runtime name. A
+/// Service without one borrows another Environment of its Project's (a Branch copy,
+/// a saved change): preparation reuses it only if its fingerprint matches.
 pub(crate) fn receipts(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<BTreeMap<ServiceName, Value>, RpcError> {
-    tx.query(
-        "SELECT service, receipt FROM config_build_receipt WHERE environment_id = ?1",
+    let mut receipts = BTreeMap::new();
+    // Own receipts first; the first receipt per Service wins.
+    for row in tx.query(
+        "SELECT r.service, r.receipt FROM config_build_receipt r \
+         JOIN config_environment e ON e.id = r.environment_id \
+         WHERE e.project_id = (SELECT project_id FROM config_environment WHERE id = ?1) \
+         ORDER BY CASE WHEN r.environment_id = ?1 THEN 0 ELSE 1 END, r.environment_id",
         &[environment.as_str().into()],
-    )?
-    .iter()
-    .map(|row| {
-        Ok((
-            ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?,
-            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?,
-        ))
-    })
-    .collect()
+    )? {
+        let service = ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?;
+        if let std::collections::btree_map::Entry::Vacant(entry) = receipts.entry(service) {
+            entry
+                .insert(serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?);
+        }
+    }
+    Ok(receipts)
 }
 
 /// Replace `service`'s latest build receipt in `environment`.
