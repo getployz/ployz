@@ -76,6 +76,7 @@ pub(crate) fn environment(
         .map(|service| {
             ServiceSetting::ALL
                 .into_iter()
+                .filter(|setting| setting.applies(&service.config))
                 .map(|setting| (setting.name().to_owned(), setting.value(&service.config)))
                 .filter(|(_, value)| !value.is_null())
                 .collect()
@@ -84,6 +85,9 @@ pub(crate) fn environment(
     let mut settings = Vec::new();
     for service in services {
         for setting in ServiceSetting::ALL {
+            if !setting.applies(&service.config) {
+                continue;
+            }
             let value = setting.value(&service.config);
             let default = setting.default();
             if only.is_none_or(|only| only == setting) && !(whole && value == default) {

@@ -15,7 +15,9 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::error;
+use crate::git::GitSetting;
 use crate::id::EnvironmentName;
+use crate::trusted::Trusted;
 
 /// Whether a change waits for a Deploy or takes effect at once.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -39,11 +41,13 @@ pub(crate) enum ServiceSetting {
     Replicas,
     RestartPolicy,
     StartCommand,
+    /// A Git-backed Service's source and build.
+    Git(GitSetting),
 }
 
 impl ServiceSetting {
     /// Every Setting, in the order `get` lists them.
-    pub(crate) const ALL: [Self; 8] = [
+    pub(crate) const ALL: [Self; 14] = [
         Self::CpuLimit,
         Self::Image,
         Self::MaxRetries,
@@ -52,6 +56,12 @@ impl ServiceSetting {
         Self::Replicas,
         Self::RestartPolicy,
         Self::StartCommand,
+        Self::Git(GitSetting::Repository),
+        Self::Git(GitSetting::Branch),
+        Self::Git(GitSetting::RootDir),
+        Self::Git(GitSetting::BuildMethod),
+        Self::Git(GitSetting::DockerfilePath),
+        Self::Git(GitSetting::BuildCommand),
     ];
 
     pub(crate) const fn name(self) -> &'static str {
@@ -64,6 +74,7 @@ impl ServiceSetting {
             Self::Replicas => "replicas",
             Self::RestartPolicy => "restartPolicy",
             Self::StartCommand => "startCommand",
+            Self::Git(git) => git.name(),
         }
     }
 
@@ -78,6 +89,7 @@ impl ServiceSetting {
             Self::Replicas => "Replicas",
             Self::RestartPolicy => "Restart policy",
             Self::StartCommand => "Start command",
+            Self::Git(git) => git.label(),
         }
     }
 
@@ -93,6 +105,7 @@ impl ServiceSetting {
             Self::Replicas => "How many copies of the Service run.",
             Self::RestartPolicy => "When a stopped replica restarts.",
             Self::StartCommand => "Overrides the image's command. Unset runs the image's own.",
+            Self::Git(git) => git.description(),
         }
     }
 
@@ -100,6 +113,7 @@ impl ServiceSetting {
     pub(crate) const fn field(self) -> &'static str {
         match self {
             Self::Image => "source.image",
+            Self::Git(git) => git.field(),
             Self::CpuLimit
             | Self::MaxRetries
             | Self::MemLimit
@@ -119,7 +133,8 @@ impl ServiceSetting {
             | Self::PreDeployCommand
             | Self::Replicas
             | Self::RestartPolicy
-            | Self::StartCommand => Apply::Staged,
+            | Self::StartCommand
+            | Self::Git(_) => Apply::Staged,
         }
     }
 
@@ -134,6 +149,7 @@ impl ServiceSetting {
             Self::MaxRetries => json!(default_max_retries()),
             Self::Replicas => json!(default_replicas()),
             Self::RestartPolicy => json!("unless-stopped"),
+            Self::Git(git) => git.default(),
         }
     }
 
@@ -152,6 +168,7 @@ impl ServiceSetting {
                 "type": "string",
                 "enum": ["always", "no", "on-failure", "unless-stopped"],
             }),
+            Self::Git(git) => git.expected(),
         }
     }
 
@@ -166,10 +183,30 @@ impl ServiceSetting {
             Self::Replicas => json!([3]),
             Self::RestartPolicy => json!(["on-failure"]),
             Self::StartCommand => json!(["npm start"]),
+            Self::Git(git) => git.examples(),
+        }
+    }
+
+    /// Whether this Setting means anything for a Service with `config`'s source:
+    /// `image` for an image, the source and build Settings for a repository.
+    pub(crate) const fn applies(self, config: &AuthoredServiceConfig) -> bool {
+        match self {
+            Self::Image => matches!(config.source, ServiceSource::Image { .. }),
+            Self::Git(_) => matches!(config.source, ServiceSource::Git { .. }),
+            Self::CpuLimit
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand => true,
         }
     }
 
     pub(crate) fn value(self, config: &AuthoredServiceConfig) -> Value {
+        if let Self::Git(git) = self {
+            return git.value(config);
+        }
         if self == Self::Image {
             return match &config.source {
                 ServiceSource::Image { image, .. } => json!(image),
@@ -184,17 +221,36 @@ impl ServiceSetting {
             .unwrap_or_default()
     }
 
+    /// A change row's value as `get` shows it, never the stored shape.
+    pub(crate) fn shown(self, value: Value) -> Value {
+        match self {
+            Self::Git(git) => git.shown(value),
+            Self::Image
+            | Self::CpuLimit
+            | Self::MaxRetries
+            | Self::MemLimit
+            | Self::PreDeployCommand
+            | Self::Replicas
+            | Self::RestartPolicy
+            | Self::StartCommand => value,
+        }
+    }
+
     /// Validate `value` against this Setting and write it. Text is accepted for any
-    /// type, as `set PATH=VALUE` sends it.
+    /// type, as `set PATH=VALUE` sends it. A repository needs `trusted` evidence.
     pub(crate) fn set(
         self,
         config: &mut AuthoredServiceConfig,
         value: Value,
+        trusted: &Trusted,
     ) -> Result<(), RpcError> {
         if value.is_null() {
             return Err(self.invalid("null never clears a Setting; unset it"));
         }
         let value = self.coerce(value);
+        if let Self::Git(git) = self {
+            return git.set(config, value, trusted);
+        }
         if self == Self::Image {
             let ServiceSource::Image { credentials, .. } = &config.source else {
                 return Err(self.invalid("this Service does not run an image"));
@@ -208,6 +264,9 @@ impl ServiceSetting {
 
     /// Return this Setting to its [`default`](Self::default).
     pub(crate) fn unset(self, config: &mut AuthoredServiceConfig) -> Result<(), RpcError> {
+        if let Self::Git(git) = self {
+            return git.unset(config);
+        }
         if self == Self::Image {
             return Err(self.invalid("an image Service needs an image; set another one"));
         }
@@ -244,12 +303,15 @@ impl ServiceSetting {
             .map_err(|error| self.invalid(&error.message))
     }
 
-    fn decode<T: serde::de::DeserializeOwned>(self, value: Value) -> Result<T, RpcError> {
+    pub(crate) fn decode<T: serde::de::DeserializeOwned>(
+        self,
+        value: Value,
+    ) -> Result<T, RpcError> {
         serde_json::from_value(value).map_err(|_| self.invalid("invalid value"))
     }
 
     /// A refused value: what this Setting expects and an example, never the value sent.
-    fn invalid(self, message: &str) -> RpcError {
+    pub(crate) fn invalid(self, message: &str) -> RpcError {
         error::invalid(
             format!("{}: {message}", self.name()),
             json!({

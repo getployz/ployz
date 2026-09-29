@@ -323,7 +323,7 @@ async function openConfigStore(url) {
   const store = await withRpcError(native.openConfigStore(url));
   return {
     read: (organization, query) => withRpcError(store.read(organization, query)),
-    write: (organization, command) => withRpcError(store.write(organization, command)),
+    write: (organization, command, trusted) => withRpcError(store.write(organization, command, trusted)),
   };
 }
 

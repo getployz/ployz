@@ -7,6 +7,28 @@ export type Apply = "staged" | "immediate";
 
 export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
 
+export type AuthorizedRepository = {
+/**
+ * Its `owner/name`, as GitHub spells it.
+ */
+repository: string,
+/**
+ * GitHub's ID for it.
+ */
+repository_id: number,
+/**
+ * How Cloud reads it: publicly, or through a GitHub installation.
+ */
+access: ServiceGitAccess,
+/**
+ * Its default branch.
+ */
+default_branch: string,
+/**
+ * Other branches Cloud saw exist.
+ */
+branches: Array<string>, };
+
 export type BindPropagation = "private" | "rprivate" | "shared" | "rshared" | "slave" | "rslave";
 
 export type BindRecursive = "disabled" | "writable" | "readonly";
@@ -162,7 +184,7 @@ export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, n
 
 export type CompiledNodeConfig = ServiceConfig | VolumeConfig;
 
-export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard;
+export type ConfigCommand = { "command": "create_project" } & CreateProject | { "command": "create_environment" } & CreateEnvironment | { "command": "create_service" } & CreateService | { "command": "create_git_service" } & CreateGitService | { "command": "edit" } & Edit | { "command": "publish" } & Publish | { "command": "discard" } & Discard;
 
 export type ConfigMount = { config_name: string,
 /**
@@ -173,6 +195,12 @@ target: ContainerPath | null, uid: number | null, gid: number | null, mode: numb
 export type ConfigQuery = { "query": "environment" } & EnvironmentQuery | { "query": "diff" } & DiffQuery;
 
 export type ConfigSpec = { name: string, content: Array<number>, };
+
+export type ConfigTrusted = {
+/**
+ * Repositories the calling Organization may read, with the branches Cloud saw.
+ */
+repositories: Array<AuthorizedRepository>, };
 
 export type ConfigView = { "view": "environment" } & EnvironmentView | { "view": "diff" } & DiffView;
 
@@ -237,6 +265,28 @@ project: ProjectName | null,
  * Its name, unique in the Project.
  */
 name: EnvironmentName, };
+
+export type CreateGitService = {
+/**
+ * The new Service's ID, also its lineage.
+ */
+id: ServiceId,
+/**
+ * The Environment to create it in.
+ */
+environment: EnvironmentRef,
+/**
+ * Its name, unique in the Environment.
+ */
+name: ServiceName,
+/**
+ * The GitHub repository, as `owner/name`.
+ */
+repository: string,
+/**
+ * The branch to build; the repository's default branch when omitted.
+ */
+branch: string | null, };
 
 export type CreateProject = {
 /**

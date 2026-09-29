@@ -1,7 +1,9 @@
 //! Creating Services. A new Service is staged in Working State, and its Node
 //! Introduction is captured in the same transaction and never changes after.
 
-use ployz_core::config::{SavedServiceIntent, ServiceImageCredentials, parse_service_config};
+use ployz_core::config::{
+    SavedServiceIntent, ServiceImageCredentials, ServiceSource, parse_service_config,
+};
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -58,30 +60,43 @@ pub(crate) fn create_service(
     create: &CreateService,
 ) -> Result<ServiceCreated, RpcError> {
     let command = Command::CreateService(create.clone());
-    replayable(tx, who, &command, |tx| insert_service(tx, who, create))
+    replayable(tx, who, &command, |tx| {
+        let source = image_source(create.image.clone(), ServiceImageCredentials::None)?;
+        insert_service(
+            tx,
+            who,
+            &create.id,
+            &create.environment,
+            &create.name,
+            source,
+        )
+    })
 }
 
-fn insert_service(
+/// Stage a new Service running `source` and capture its Node Introduction.
+pub(crate) fn insert_service(
     tx: &mut dyn Tx,
     who: &Actor,
-    create: &CreateService,
+    id: &ServiceId,
+    environment: &EnvironmentRef,
+    name: &ServiceName,
+    source: ServiceSource,
 ) -> Result<ServiceCreated, RpcError> {
-    let mut environment = scope::lock(tx, who, &create.environment)?;
+    let mut environment = scope::lock(tx, who, environment)?;
     if environment
         .working
         .services
         .iter()
-        .any(|service| service.slug == create.name.as_str())
+        .any(|service| service.slug == name.as_str())
     {
         return Err(error::conflict(
             format!(
-                "Environment {} already has a Service named {}",
-                environment.summary.name, create.name
+                "Environment {} already has a Service named {name}",
+                environment.summary.name
             ),
-            json!({ "service": create.name }),
+            json!({ "service": name }),
         ));
     }
-    let source = image_source(create.image.clone(), ServiceImageCredentials::None)?;
     let config = parse_service_config(json!({
         "version": 2,
         "source": source,
@@ -89,20 +104,25 @@ fn insert_service(
         "startCommand": null,
         "healthcheck": { "type": "none" },
         "restartPolicy": "unless-stopped",
-        "privateDns": create.name,
+        "privateDns": name,
     }))
     .map_err(|error| {
         error::invalid(
-            format!("image: {}", error.message),
-            json!({ "setting": "image" }),
+            format!("{}: {}", error.path, error.message),
+            json!({ "setting": error.path }),
         )
     })?
     .settings;
+    let staged = ServiceSetting::ALL
+        .into_iter()
+        .filter(|setting| setting.applies(&config))
+        .map(|setting| SettingPath::of(name.as_str(), setting))
+        .collect::<Result<_, _>>()?;
     let node = SavedServiceIntent {
-        id: create.id.to_string(),
+        id: id.to_string(),
         // A new Service starts its own lineage; Branch copies keep it.
-        lineage_id: create.id.to_string(),
-        slug: create.name.to_string(),
+        lineage_id: id.to_string(),
+        slug: name.to_string(),
         config,
         variables: Vec::new(),
         volume_attachments: Vec::new(),
@@ -115,7 +135,7 @@ fn insert_service(
          VALUES (?1, ?2, ?3, 'service', ?4)",
         &[
             environment.summary.id.as_str().into(),
-            create.id.as_str().into(),
+            id.as_str().into(),
             who.organization.as_str().into(),
             serde_json::to_string(&node)
                 .expect("a Service node is JSON")
@@ -125,14 +145,11 @@ fn insert_service(
     )?;
     Ok(ServiceCreated {
         service: ServiceSummary {
-            id: create.id.clone(),
-            name: create.name.clone(),
+            id: id.clone(),
+            name: name.clone(),
         },
         environment: environment.summary,
-        staged: ServiceSetting::ALL
-            .into_iter()
-            .map(|setting| SettingPath::of(create.name.as_str(), setting))
-            .collect::<Result<_, _>>()?,
+        staged,
         immediate: Vec::new(),
     })
 }

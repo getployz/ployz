@@ -208,7 +208,10 @@ mod tests {
 
     #[test]
     fn completion_follows_the_service_name() {
-        assert_eq!(complete("web.re"), ["web.replicas", "web.restartPolicy"]);
+        assert_eq!(
+            complete("web.re"),
+            ["web.replicas", "web.restartPolicy", "web.repository"]
+        );
         assert!(complete("web").is_empty());
     }
 }

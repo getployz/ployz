@@ -6,21 +6,25 @@
 pub mod catalog;
 mod command;
 mod error;
+mod git;
 mod id;
 mod query;
 mod review;
 mod scope;
 mod settings;
 mod storage;
+mod trusted;
 
 use ployz_core::RpcError;
 
 pub use command::*;
+pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
 pub use query::*;
 pub use review::{DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use settings::{Apply, SettingPath};
+pub use trusted::Trusted;
 
 /// Who is asking, and in which Organization. Every read and write is scoped to it.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,7 +65,22 @@ impl ConfigStore {
     /// Returns an RPC error: `invalid_argument`, `not_found`, `ambiguous` or `conflict`
     /// for what the command asks, or a storage error.
     pub fn write(&self, who: &Actor, command: &Command) -> Result<Written, RpcError> {
-        self.storage.write(|tx| command::run(tx, who, command))
+        self.write_trusted(who, command, &Trusted::default())
+    }
+
+    /// [`write`](Self::write) with evidence Cloud gathered itself, such as which
+    /// repositories the Organization may read. Never pass caller-supplied evidence.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write).
+    pub fn write_trusted(
+        &self,
+        who: &Actor,
+        command: &Command,
+        trusted: &Trusted,
+    ) -> Result<Written, RpcError> {
+        self.storage
+            .write(|tx| command::run(tx, who, command, trusted))
     }
 
     /// [`Query::Environment`]: an Environment's Settings.
@@ -120,7 +139,23 @@ impl ConfigStore {
     /// # Errors
     /// As [`write`](Self::write).
     pub fn edit(&self, who: &Actor, edit: &Edit) -> Result<Edited, RpcError> {
-        self.storage.write(|tx| command::edit(tx, who, edit))
+        self.storage
+            .write(|tx| command::edit(tx, who, edit, &Trusted::default()))
+    }
+
+    /// [`Command::CreateGitService`], with the repository evidence Cloud gathered.
+    ///
+    /// # Errors
+    /// As [`write`](Self::write); `not_found` when `trusted` doesn't vouch for the
+    /// repository or branch.
+    pub fn create_git_service(
+        &self,
+        who: &Actor,
+        create: &CreateGitService,
+        trusted: &Trusted,
+    ) -> Result<ServiceCreated, RpcError> {
+        self.storage
+            .write(|tx| git::create_git_service(tx, who, create, trusted))
     }
 
     /// [`Query::Diff`]: an Environment's changes and the version to act on them by.
