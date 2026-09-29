@@ -1,7 +1,6 @@
 //! Operating the selected Environment: `ps`, `exec` and `service start|stop|restart`
 //! map a bare Service name to the Environment's Namespace, which the hidden
 //! in-process Config Store (`PLOYZ_STORE`) fixes.
-
 #![expect(
     clippy::indexing_slicing,
     reason = "Fixed JSON results use indexing; a missing entry must fail the test."

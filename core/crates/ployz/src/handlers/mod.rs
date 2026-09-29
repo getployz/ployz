@@ -246,8 +246,8 @@ where
 
 pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-/// Whether a command prints a `--json` result. Refused: a terminal session, a
-/// tunnel, shell code, or the Cloud runner's own fixed JSON.
+/// Whether a command prints a `--json` result. Refused: a terminal session, shell
+/// code, or the Cloud runner's own fixed JSON.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Json {
     Supported,

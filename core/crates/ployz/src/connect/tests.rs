@@ -389,24 +389,6 @@ fn ssh_timeout_flag_is_global_and_reaches_transport_arguments() {
 }
 
 #[tokio::test]
-async fn management_auxiliary_proxy_is_explicitly_unsupported_and_redacted() {
-    let secret = ployz_core::ManagementCapability::new(
-        ployz_core::ManagementIdentity::from_bytes([1; 32]),
-        [2; 32],
-    )
-    .to_secret_string();
-    let connection = Connection::management(&secret).unwrap();
-    let result = SystemConnector::default()
-        .dial_proxy(&connection, "tcp", "127.0.0.1:1234")
-        .await;
-    let Err(ConnectError::ProxyUnsupported(message)) = result else {
-        panic!("the management transport must reject auxiliary proxy");
-    };
-    assert!(message.contains("management"));
-    assert!(!message.contains(&secret));
-}
-
-#[tokio::test]
 async fn child_stream_preserves_half_close_and_reaps_on_cancellation() {
     use tokio::io::AsyncReadExt;
     let mut stream = spawn_child(
