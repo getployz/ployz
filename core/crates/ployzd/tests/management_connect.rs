@@ -432,6 +432,33 @@ async fn contract() {
     };
     assert_eq!(replaced.code, RpcErrorCode::Unauthenticated);
     assert_eq!(replaced.details, serde_json::Value::Null);
+    // Cloud provisions a device's own slot, and a Clear of it leaves Cloud's slot alone.
+    let device_label = ManagementClientLabel::parse("cli-device").unwrap();
+    let device = session
+        .set_management_client(device_label.clone())
+        .await
+        .unwrap();
+    let device_session =
+        ployz::sdk::connect_connections(vec![connection(&device)], connector.clone())
+            .await
+            .unwrap();
+    let device_connection = observed.recv().await.unwrap();
+    device_session.inspect().await.unwrap();
+    session.clear_management_client(device_label).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), device_connection.closed())
+        .await
+        .unwrap();
+    drop(device_session);
+    let error =
+        match ployz::sdk::connect_connections(vec![connection(&device)], connector.clone()).await {
+            Ok(_) => panic!("a cleared device capability must be refused"),
+            Err(error) => error,
+        };
+    assert_eq!(
+        error.details,
+        serde_json::json!({ "management_client": "cleared" })
+    );
+    session.inspect().await.unwrap();
     // Clearing its own slot, the caller receives the response before the Machine
     // revokes the connection the session still holds open.
     session.clear_management_client(cloud()).await.unwrap();
