@@ -4,7 +4,7 @@ use crate::{
     connect::Client,
     deploy::{
         DeployOperation, DeployOutcome, DeployPlan, ExecutionError, FailedOperation, HookFailure,
-        ReplacementCompensation, ReplacementOperation,
+        ReplacementCompensation, ReplacementOperation, StopAttempt,
     },
 };
 use ployz_core::{
@@ -264,7 +264,7 @@ async fn assert_replacement_health_compensation(
 
         let DeployOutcome::Failed {
             failed:
-                FailedOperation::ReplacementHealth {
+                FailedOperation::Replacement {
                     error: ExecutionError::Health { container_id, .. },
                     compensation,
                     ..
@@ -286,7 +286,12 @@ async fn assert_replacement_health_compensation(
                     stop_new_container,
                     restart_old_container,
                 },
-            ) => stop_new_container.stopped() && restart_old_container.restarted(),
+            ) => {
+                stop_new_container
+                    .as_ref()
+                    .is_some_and(StopAttempt::stopped)
+                    && restart_old_container.restarted()
+            }
             _ => false,
         });
         assert_eq!(unexecuted, operations.get(1..).unwrap());

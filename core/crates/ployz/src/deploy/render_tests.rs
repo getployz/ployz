@@ -754,7 +754,7 @@ fn replacement_health_prints_compensation_facts() {
     };
     let outcome = DeployOutcome::Failed {
         completed: Vec::new(),
-        failed: FailedOperation::ReplacementHealth {
+        failed: FailedOperation::Replacement {
             operation,
             error: health_timeout(ContainerId::parse("c".repeat(64)).unwrap()),
             compensation: ReplacementCompensation::StartFirst {
@@ -799,7 +799,7 @@ fn stop_first_replacement_prints_restart_facts() {
     let machine_id = MachineId::parse("d".repeat(32)).unwrap();
     let outcome = DeployOutcome::Failed {
         completed: Vec::new(),
-        failed: FailedOperation::ReplacementHealth {
+        failed: FailedOperation::Replacement {
             operation: ReplacementOperation {
                 machine_id,
                 old_container_id: ContainerId::parse("f".repeat(64)).unwrap(),
@@ -808,7 +808,7 @@ fn stop_first_replacement_prints_restart_facts() {
             },
             error: health_timeout(ContainerId::parse("c".repeat(64)).unwrap()),
             compensation: ReplacementCompensation::StopFirst {
-                stop_new_container: StopAttempt::Stopped,
+                stop_new_container: Some(StopAttempt::Stopped),
                 restart_old_container: RestartAttempt::NotAttempted,
             },
         },

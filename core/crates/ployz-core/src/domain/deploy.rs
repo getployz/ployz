@@ -234,23 +234,25 @@ pub enum FailedOperation<E> {
         operation: DeployOperation,
         error: E,
     },
-    /// Replacement started; health failed; `compensation` is what ran next.
-    ReplacementHealth {
+    /// Replacement failed its health check, or failed at any step after a stop-first stop;
+    /// `compensation` is what ran next.
+    Replacement {
         operation: ReplacementOperation,
         error: E,
         compensation: ReplacementCompensation<E>,
     },
 }
 
-/// Compensation after a replacement health failure.
+/// Compensation after a failed replacement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReplacementCompensation<E> {
     /// New container started first; `stop_new_container` is that stop attempt.
     StartFirst { stop_new_container: StopAttempt<E> },
     /// Old container stopped first; `restart_old_container` is that restart attempt.
+    /// `stop_new_container` is `None` when the new container never started.
     StopFirst {
-        stop_new_container: StopAttempt<E>,
+        stop_new_container: Option<StopAttempt<E>>,
         restart_old_container: RestartAttempt<E>,
     },
 }
@@ -288,7 +290,7 @@ impl<E> From<Result<(), E>> for StopAttempt<E> {
 pub enum RestartAttempt<E> {
     /// Restart was not attempted.
     NotAttempted,
-    /// The old container restarted.
+    /// The old container restarted and serves again.
     Restarted,
     /// The restart returned `error`.
     Failed { error: E },

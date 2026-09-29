@@ -260,7 +260,7 @@ pub(crate) fn paint_closing(
         failed_row.subject.name()
     );
     let _ = writeln!(out, "  {}", ink.paint(Role::Fail, &cause.english()));
-    if let FailedOperation::ReplacementHealth { compensation, .. } = failed {
+    if let FailedOperation::Replacement { compensation, .. } = failed {
         for fact in compensation_facts(compensation) {
             let _ = writeln!(out, "  {}", compensation_line(&fact));
         }
@@ -459,7 +459,7 @@ pub(super) fn visible_row_name(row: &OperationRow) -> String {
 fn task_from_failed(failed: &FailedOperation<ExecutionError>) -> TaskView {
     let (operation, error) = match failed {
         FailedOperation::Operation { operation, error } => (operation.clone(), error),
-        FailedOperation::ReplacementHealth {
+        FailedOperation::Replacement {
             operation, error, ..
         } => (DeployOperation::ReplaceContainer(operation.clone()), error),
     };
@@ -501,7 +501,7 @@ fn failed_row_index(
 fn row_matches_failed(row: &OperationRow, failed: &FailedOperation<ExecutionError>) -> bool {
     match failed {
         FailedOperation::Operation { operation, .. } => row.operation == *operation,
-        FailedOperation::ReplacementHealth { operation, .. } => {
+        FailedOperation::Replacement { operation, .. } => {
             matches!(
                 &row.operation,
                 DeployOperation::ReplaceContainer(existing) if existing == operation
@@ -764,10 +764,11 @@ fn compensation_facts(
         ReplacementCompensation::StopFirst {
             stop_new_container,
             restart_old_container,
-        } => vec![
-            stop_fact(stop_new_container),
-            restart_fact(restart_old_container),
-        ],
+        } => stop_new_container
+            .iter()
+            .map(stop_fact)
+            .chain([restart_fact(restart_old_container)])
+            .collect(),
     }
 }
 
