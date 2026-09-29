@@ -75,9 +75,9 @@ pub struct CheckSuite {
     /// GitHub's conclusion once completed.
     #[serde(default)]
     pub conclusion: Option<String>,
-    /// GitHub's `updated_at`, in Unix milliseconds: an older result never replaces a newer one.
-    #[ts(type = "number")]
-    pub updated: u64,
+    /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: an older result never
+    /// replaces a newer one.
+    pub updated: String,
 }
 
 /// What an event made the Store do.
@@ -251,8 +251,25 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
     let repository_id = repository(event.repository_id)?;
     let suite = i64::try_from(event.suite)
         .map_err(|_| error::invalid("Expected a check suite ID", json!({})))?;
-    let updated = i64::try_from(event.updated)
-        .map_err(|_| error::invalid("Expected a Unix time in milliseconds", json!({})))?;
+    // GitHub's fixed-width UTC timestamps order as text.
+    let timestamp = event.updated.len() == 20
+        && event
+            .updated
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => byte == b'-',
+                10 => byte == b'T',
+                13 | 16 => byte == b':',
+                19 => byte == b'Z',
+                _ => byte.is_ascii_digit(),
+            });
+    if !timestamp {
+        return Err(error::invalid(
+            "Expected GitHub's updated_at, like 2026-09-29T10:00:00Z",
+            json!({}),
+        ));
+    }
     let text_ok = |text: &str| text.len() <= 64 && !text.chars().any(char::is_control);
     if !text_ok(&event.status) || !event.conclusion.as_deref().is_none_or(text_ok) {
         return Err(error::invalid(
@@ -275,7 +292,7 @@ fn check_suite(tx: &mut dyn Tx, who: &Actor, event: &CheckSuite) -> Result<Autom
             event.head.as_str().into(),
             event.status.as_str().into(),
             event.conclusion.as_deref().unwrap_or_default().into(),
-            updated.into(),
+            event.updated.as_str().into(),
         ],
     )?;
     let waiting = tx.query(

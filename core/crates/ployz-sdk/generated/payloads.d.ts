@@ -284,9 +284,10 @@ status: string,
  */
 conclusion: string | null,
 /**
- * GitHub's `updated_at`, in Unix milliseconds: an older result never replaces a newer one.
+ * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: an older result never
+ * replaces a newer one.
  */
-updated: number, };
+updated: string, };
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 

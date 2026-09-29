@@ -27,7 +27,7 @@ CREATE TABLE config_check_suite (
     head TEXT NOT NULL,
     status TEXT NOT NULL,
     conclusion TEXT NOT NULL,
-    updated BIGINT NOT NULL,
+    updated TEXT NOT NULL,
     PRIMARY KEY (organization_id, repository_id, suite)
 );
 
