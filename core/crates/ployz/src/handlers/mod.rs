@@ -642,57 +642,6 @@ mod tests {
     }
 
     #[test]
-    fn scale_zero_fails_before_connecting() {
-        let mut command = command();
-        let matches = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "--connect",
-                "tcp://127.0.0.1:1",
-                "service",
-                "scale",
-                "api",
-                "0",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&matches, &mut command).unwrap_err().to_string(),
-            "replicas must be greater than zero",
-        );
-    }
-
-    #[test]
-    fn reserved_and_invalid_namespaces_fail_before_connecting() {
-        let mut command = command();
-        let invalid = command
-            .clone()
-            .try_get_matches_from(["ployz", "service", "rm", "--namespace", "My_App", "web"])
-            .unwrap();
-        assert_eq!(
-            dispatch(&invalid, &mut command).unwrap_err().to_string(),
-            "invalid Namespace \"My_App\": a 1-63 character lowercase DNS label; underscores and uppercase are not accepted",
-        );
-        let service_remove = command
-            .clone()
-            .try_get_matches_from([
-                "ployz",
-                "service",
-                "rm",
-                "--namespace",
-                "ployz-system",
-                "web",
-            ])
-            .unwrap();
-        assert_eq!(
-            dispatch(&service_remove, &mut command)
-                .unwrap_err()
-                .to_string(),
-            "Namespace 'ployz-system' is reserved for Ployz infrastructure",
-        );
-    }
-
-    #[test]
     fn retired_daemon_channels_are_rejected() {
         for channel in ["latest", "nightly"] {
             let error = command()

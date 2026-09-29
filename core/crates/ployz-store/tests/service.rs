@@ -1,3 +1,7 @@
+#![expect(
+    clippy::indexing_slicing,
+    reason = "Fixed test fixtures use indexing; missing entries must fail the test."
+)]
 //! A Service's authored lifecycle: empty Services, rename, staged removal, and the
 //! `service ls`/`service inspect` views, through the Store's interface only, on
 //! SQLite and on Postgres (see `backend`).

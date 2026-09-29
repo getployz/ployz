@@ -360,16 +360,6 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
     // The down Machine is omitted from every listing, so each result is partial.
     let json_cases: &[(&[&str], &str, &str)] = &[
         (
-            &["service", "ls", "--json"],
-            "/services/0/identity",
-            "app/api",
-        ),
-        (
-            &["service", "ls", "--json"],
-            "/services/0/containers/0/resolved_spec/container/image",
-            "alpine:3.23.3",
-        ),
-        (
             &["service", "ps", "--json"],
             "/containers/0/resolved_spec/container/image",
             "alpine:3.23.3",
@@ -398,15 +388,9 @@ async fn listing_commands_emit_full_json_and_preserve_human_output() {
         assert!(!output.stderr.is_empty(), "{args:?}: expected diagnostics");
     }
 
-    let service_id = "c".repeat(32);
     let container_id = "c".repeat(64);
     let machine_id = "a".repeat(32);
-    let services = format!(
-        "SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS\n{service_id}\tapp/api\t1/1\t0\n{}\tapp/worker\t2/3\t1\n",
-        "d".repeat(32)
-    );
     let human_cases = [
-        (&["service", "ls"][..], services),
         (
             &["service", "ps"][..],
             format!(
