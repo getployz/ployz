@@ -15,6 +15,8 @@ import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
 import { NotFound, Validation } from "#/server/public-error";
+import { cancelGithubRun } from "#/modules/github/github-build.server";
+import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { StoreCall, StoreRefusal, StoreResult } from "./store.contract";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
@@ -77,6 +79,24 @@ export const cloudStore = Effect.gen(function* () {
 });
 
 /**
+ * Stop a Deployment's builds still on GitHub: end their Build Grants, fail them, cancel their runs. Idempotent. Its
+ * cancellation, and a worker that gave up on it, call it.
+ */
+export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (organizationId: string, deploymentId: string) {
+  const store = yield* cloudStore;
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  const connections = loaded.kind === "ready" ? loaded.connections : [];
+  const builds = yield* Effect.tryPromise({
+    try: () => store.githubCancel(deploymentId, connections),
+    catch: (cause) => new ConfigStoreOpenFailure({ cause }),
+  });
+  yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
+    Effect.ignore,
+  ), { concurrency: 4, discard: true });
+  return builds.length;
+});
+
+/**
  * Hand an admitted or started Deployment to Cloud's worker; the refusal to answer instead when it can't. A replayed
  * admission sends the same event, which Inngest drops, so a retried request starts one run. A start always sends.
  */
@@ -98,6 +118,10 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
     })),
   );
 });
+
+/** The Store's refusal in `cause`, if it is one. */
+export const storeRefusal = (cause: unknown): StoreRefusal | null =>
+  cause instanceof RpcError ? { code: cause.code, message: cause.message, details: cause.details } : null;
 
 /** A Store refusal travels to the CLI verbatim: the RPC error vocabulary, never the rejected value. */
 function statusFor(code: string) {
@@ -163,16 +187,22 @@ export const callStore = Effect.fn("ConfigStore.call")(function* (organizationId
     catch: (cause) => cause,
   }).pipe(
     // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
-    Effect.flatMap((result) => {
-      if (!result.ok || call.operation !== "write") return Effect.succeed(result);
-      const { command } = call.command;
-      if (command !== "admit" && command !== "start") return Effect.succeed(result);
+    Effect.flatMap((result) => Effect.gen(function* () {
+      if (!result.ok || call.operation !== "write") return result;
+      const command = call.command;
+      if (command.command === "cancel") {
+        // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
+        yield* cancelStoreGithubBuilds(organizationId, command.deployment).pipe(
+          Effect.catch((error) => Effect.logWarning("Could not stop a cancelled Deployment's GitHub builds.", error)),
+        );
+        return result;
+      }
+      if (command.command !== "admit" && command.command !== "start") return result;
       // SAFETY: a write answers what it wrote.
       const written = result.value as ConfigWritten;
-      return dispatchAdmitted(organizationId, written, read, command === "start").pipe(
-        Effect.map((refused): StoreResult<ConfigView | ConfigWritten> => refused === undefined ? result : { ok: false, refusal: refused }),
-      );
-    }),
+      const refused = yield* dispatchAdmitted(organizationId, written, read, command.command === "start");
+      return refused === undefined ? result : { ok: false, refusal: refused } satisfies StoreResult<never>;
+    })),
     Effect.catch((cause) => cause instanceof RpcError
       ? Effect.succeed<StoreResult<never>>({ ok: false, refusal: { code: cause.code, message: cause.message, details: cause.details } })
       : Effect.die(cause)),

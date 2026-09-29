@@ -26,6 +26,7 @@ const refreshedBy = {
   // Whether a domain is deployed follows Deployments; its certificate and DNS are Cloud's observations, read afresh.
   domains: ["store_environment", "store_deployment"],
   domain: ["store_environment", "store_deployment"],
+  build_order: ["store_organization"],
 } satisfies Record<ConfigQuery["query"], readonly StoreViewName[]>;
 
 export const storeViewPrefix = (organizationSlug: string) => ["store-view", organizationSlug] as const;
