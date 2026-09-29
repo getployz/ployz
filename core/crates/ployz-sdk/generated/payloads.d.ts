@@ -148,11 +148,11 @@ from: EnvironmentRef,
 /**
  * The nodes the Branch is for, by name: what a preset plans around.
  */
-focus: Array<string>,
+focus: Array<NodeName>,
 /**
  * The nodes to copy, by name, as [`CreateBranch::copy`]; ignored with a preset.
  */
-copy: Array<string>,
+copy: Array<NodeName>,
 /**
  * Plan what a preset copies around `focus` instead.
  */
@@ -236,9 +236,9 @@ export type Branched = {
  */
 branch: BranchView,
 /**
- * Nodes staged in its Working State: Services by name, Volumes as `volumes.NAME`.
+ * Nodes staged in its Working State.
  */
-staged: Array<string>,
+staged: Array<NodeName>,
 /**
  * What changed at once.
  */
@@ -554,11 +554,11 @@ name: EnvironmentName,
  * The Parent's Services and Volumes to copy, by name. With `fix` and none
  * named, the Services the failed Deployment didn't apply.
  */
-copy: Array<string>,
+copy: Array<NodeName>,
 /**
  * Nodes the Branch must use live, by name: refused unless the plan agrees.
  */
-live: Array<string>,
+live: Array<NodeName>,
 /**
  * Commands to run in an Own Copy before it first deploys, such as seeding the
  * copy of a database.
@@ -1715,9 +1715,9 @@ from: EnvironmentSummary,
  */
 into: EnvironmentSummary,
 /**
- * Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
+ * Nodes staged in `into`'s Working State.
  */
-staged: Array<string>,
+staged: Array<NodeName>,
 /**
  * The Branch now; none for a take.
  */
@@ -1760,6 +1760,8 @@ settings: Array<ServiceSettingChange>,
  * removes, `kept` for a Service that stops mounting a Volume that stays.
  */
 data: DataEffect | null, type: EnvironmentNodeType, id: string, };
+
+export type NodeName = string;
 
 export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
@@ -1876,7 +1878,7 @@ export type PlannedNode = {
 /**
  * Its name where the Branch comes from.
  */
-name: string, kind: EnvironmentNodeType,
+name: NodeName, kind: EnvironmentNodeType,
 /**
  * `own`: the Branch gets its own copy; `live`: it uses the running one;
  * `left_out`: it has none.
@@ -1921,7 +1923,7 @@ installation_id: number, enabled: boolean,
 /**
  * None until picked, or once that Environment is gone.
  */
-start_from: EnvironmentName | null, copy: Array<string>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean,
+start_from: EnvironmentName | null, copy: Array<NodeName>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean,
 /**
  * Its pull requests with a PR Environment in the Project, not being closed.
  */
@@ -2643,7 +2645,7 @@ start_from: EnvironmentName | null,
 /**
  * What else each copies from it, by name; the repository's Services always are.
  */
-copy: Array<string> | null,
+copy: Array<NodeName> | null,
 /**
  * Commands to run in its Own Copies before they first deploy.
  */
@@ -2946,11 +2948,11 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
  * gained or lost as `SERVICE.mounts.NAME`.
  */
-staged: Array<string>,
+staged: Array<SettingPath>,
 /**
  * What took effect at once: never anything here.
  */
-immediate: Array<string>, };
+immediate: Array<SettingPath>, };
 
 export type VolumeSummary = {
 /**

@@ -80,6 +80,13 @@ impl ServiceSetting {
         Self::Policy(PolicySetting::PreferredBuilder),
     ];
 
+    /// The Setting a core change row at `field` writes, if one does.
+    pub(crate) fn of_field(field: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|setting| setting.field() == field)
+    }
+
     pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::CpuLimit => "cpuLimit",
@@ -315,6 +322,7 @@ impl ServiceSetting {
             // Never the stored credential reference: only whether one is on.
             Self::RegistryCredential => match value.get("type").and_then(Value::as_str) {
                 Some("configured") => json!({ "secret": true }),
+                _ if value == Value::Bool(true) => json!({ "secret": true }),
                 _ => Value::Null,
             },
             // Off reads as none; on, its path and timeout.
@@ -521,6 +529,19 @@ impl ServiceSetting {
     }
 }
 
+/// A core change row's value at `field` as reads show it: never a secret, a
+/// credential or a repository ID. A variable shows its text or `{"secret": true}`.
+pub(crate) fn shown(field: &str, value: Value) -> Value {
+    if field.starts_with("env.") || field.starts_with("variables.") {
+        return match value.get("kind").and_then(Value::as_str) {
+            Some("secret") => json!({ "secret": true }),
+            Some(_) => value.get("value").cloned().unwrap_or_default(),
+            None => value,
+        };
+    }
+    ServiceSetting::of_field(field).map_or(value.clone(), |setting| setting.shown(value))
+}
+
 /// An image Service's source, checked by core's field rules.
 pub(crate) fn image_source(
     image: String,
@@ -719,6 +740,11 @@ impl SettingPath {
     /// The path of `service` as a whole.
     pub(crate) fn whole(service: &ServiceName) -> Self {
         Self(Addressed::Service(service.clone(), None))
+    }
+
+    /// The path of Volume `volume` as a whole.
+    pub(crate) fn volume(volume: &VolumeName) -> Self {
+        Self(Addressed::Volume(volume.clone()))
     }
 
     /// The path of one Setting of `service`.

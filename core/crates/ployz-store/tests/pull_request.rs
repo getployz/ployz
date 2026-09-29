@@ -18,6 +18,11 @@ use serde_json::json;
 
 mod backend;
 
+/// A node by its name: `SERVICE`, or `volumes.VOLUME`.
+fn node(name: &str) -> ployz_store::NodeName {
+    ployz_store::NodeName::parse(name).unwrap()
+}
+
 const HEAD: &str = "1111111111111111111111111111111111111111";
 const DAY: i64 = 24 * 60 * 60;
 
@@ -532,7 +537,7 @@ fn idle_branches_close_after_a_week_unless_kept() {
                     id: EnvironmentId::parse(uuid(n)).unwrap(),
                     from: EnvironmentRef::default(),
                     name: EnvironmentName::parse(name).unwrap(),
-                    copy: vec!["web".into()],
+                    copy: vec![node("web")],
                     live: Vec::new(),
                     setup: Vec::new(),
                     keep,

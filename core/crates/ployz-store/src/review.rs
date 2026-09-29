@@ -20,7 +20,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::ServiceSetting;
+use crate::settings::{ServiceSetting, shown};
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -142,10 +142,6 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
-                        if row.path.starts_with("env.") {
-                            row.before = shown_env(row.before);
-                            row.after = shown_env(row.after);
-                        }
                         if let Some(volume) = row.path.strip_prefix("mounts.") {
                             row.path = format!(
                                 "{name}.mounts.{}",
@@ -159,15 +155,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             row.path = format!("volumes.{name}.{}", row.path);
                             return row;
                         }
-                        row.path = match ServiceSetting::ALL
-                            .into_iter()
-                            .find(|setting| setting.field() == row.path)
-                        {
-                            Some(setting) => {
-                                row.before = setting.shown(row.before);
-                                row.after = setting.shown(row.after);
-                                format!("{name}.{}", setting.name())
-                            }
+                        row.before = shown(&row.path, row.before);
+                        row.after = shown(&row.path, row.after);
+                        row.path = match ServiceSetting::of_field(&row.path) {
+                            Some(setting) => format!("{name}.{}", setting.name()),
                             None => format!("{name}.{}", row.path),
                         };
                         row
@@ -264,15 +255,6 @@ fn data_effect(
                     .any(|service| service.id == node.id && !service.volume_attachments.is_empty());
             (detached || removed_with_mounts).then_some(DataEffect::Kept)
         }
-    }
-}
-
-/// A variable change as `get` shows values: text, or `{"secret": true}`.
-fn shown_env(value: serde_json::Value) -> serde_json::Value {
-    match value.get("kind").and_then(serde_json::Value::as_str) {
-        Some("secret") => json!({ "secret": true }),
-        Some(_) => value.get("value").cloned().unwrap_or_default(),
-        None => value,
     }
 }
 
