@@ -84,10 +84,10 @@ fn dispatch(matches: &ArgMatches, command: &mut Command) -> Result<(), Error> {
     }
     let path = command_path(matches);
     // Every leaf has a handler, so a missing one means a group without its subcommand.
-    let (handler, json) = handler_for(&path).ok_or_else(|| {
+    let handler = handler_for(&path).ok_or_else(|| {
         Error::usage(format!("ployz {path} requires a subcommand")).with_exit(USAGE_EXIT)
     })?;
-    if json == Json::Refused && matches.get_flag("json") {
+    if json_refused(&path) && matches.get_flag("json") {
         return Err(Error::usage(format!(
             "ployz {path} does not support --json"
         )));
@@ -248,51 +248,48 @@ where
 
 pub(crate) type Handler = fn(&ArgMatches) -> Result<(), Error>;
 
-/// Whether a command prints a `--json` result. Refused: a terminal session, shell
-/// code, or the Cloud runner's own fixed JSON.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Json {
-    Supported,
-    Refused,
+/// Commands that print no `--json` result: a terminal session, shell code, or the
+/// Cloud runner's own fixed JSON.
+pub(crate) fn json_refused(path: &str) -> bool {
+    matches!(path, "build" | "completion" | "exec")
 }
 
-/// Each command's handler and its `--json` support: each group module declares
-/// its own subcommands.
-fn handler_for(path: &str) -> Option<(Handler, Json)> {
+/// Each command's handler: each group module declares its own subcommands.
+fn handler_for(path: &str) -> Option<Handler> {
     let (group, rest) = path.split_once(' ').unwrap_or((path, ""));
     match (group, rest) {
         ("billing", rest) => account::billing_handler(rest),
-        ("build", "") => Some((build::build, Json::Refused)),
-        ("completion", "") => Some((completion, Json::Refused)),
+        ("build", "") => Some(build::build),
+        ("completion", "") => Some(completion),
         ("cloud", rest) => cloud::handler(rest),
         ("ctx", rest) => context::handler(rest),
-        ("deploy", "") => Some((deploy::deploy, Json::Supported)),
+        ("deploy", "") => Some(deploy::deploy),
         ("deployment", rest) => deploy::deployment_handler(rest),
-        ("diff", "") => Some((review::diff, Json::Supported)),
-        ("discard", "") => Some((review::discard, Json::Supported)),
+        ("diff", "") => Some(review::diff),
+        ("discard", "") => Some(review::discard),
         ("domain", rest) => domain::handler(rest),
         ("env", rest) => env::handler(rest),
-        ("exec", "") => Some((operator::exec, Json::Refused)),
-        ("explain", "") => Some((catalog::explain, Json::Supported)),
-        ("get", "") => Some((config::get, Json::Supported)),
-        ("link", "") => Some((link::link, Json::Supported)),
+        ("exec", "") => Some(operator::exec),
+        ("explain", "") => Some(catalog::explain),
+        ("get", "") => Some(config::get),
+        ("link", "") => Some(link::link),
         ("github", rest) => github::handler(rest),
-        ("login", "") => Some((login::login, Json::Supported)),
-        ("logout", "") => Some((login::logout, Json::Supported)),
-        ("logs", "") => Some((operator::logs, Json::Supported)),
+        ("login", "") => Some(login::login),
+        ("logout", "") => Some(login::logout),
+        ("logs", "") => Some(operator::logs),
         ("org", rest) => account::org_handler(rest),
         ("project", rest) => project::handler(rest),
-        ("ps", "") => Some((service::processes, Json::Supported)),
-        ("publish", "") => Some((review::publish, Json::Supported)),
-        ("schema", "") => Some((catalog::schema, Json::Supported)),
+        ("ps", "") => Some(service::processes),
+        ("publish", "") => Some(review::publish),
+        ("schema", "") => Some(catalog::schema),
         ("server", rest) => server::handler(rest),
         ("service", rest) => service::handler(rest),
         ("setup", rest) => setup::handler(rest),
-        ("set", "") => Some((config::set, Json::Supported)),
-        ("status", "") => Some((link::status, Json::Supported)),
+        ("set", "") => Some(config::set),
+        ("status", "") => Some(link::status),
         ("token", rest) => account::token_handler(rest),
-        ("unset", "") => Some((config::unset, Json::Supported)),
-        ("up", "") => Some((up::up, Json::Supported)),
+        ("unset", "") => Some(config::unset),
+        ("up", "") => Some(up::up),
         ("volume", rest) => volume::handler(rest),
         _ => None,
     }

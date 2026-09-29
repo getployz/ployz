@@ -20,7 +20,6 @@ use super::deploy::{Request, open_events, say_view, upload_and_ship};
 use super::store::{failed, mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
-use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
 use crate::output::say;
 
@@ -172,7 +171,7 @@ fn add_server(
     let add = crate::cli::command()
         .try_get_matches_from(args)
         .map_err(|error| Error::usage(error.render().to_string()).with_exit(USAGE_EXIT))?;
-    let (handler, _) = super::handler_for("server add").expect("server add has a handler");
+    let handler = super::handler_for("server add").expect("server add has a handler");
     let (added, server) = crate::output::captured(|| handler(&add));
     added?;
     Ok(server)
@@ -190,15 +189,12 @@ fn found_project(
         name: ProjectName::parse(name.as_str().to_owned())?,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.create_project(&create).map_err(|mut error| {
-        if let StoreCallError::Refused(refusal) = &mut error
-            && refusal.code == RpcErrorCode::Conflict
-            && let Some(details) = refusal.details.as_object_mut()
-        {
-            let next = shell_words::join(["ployz", "up", "--project", name.as_str()]);
-            details.insert("next".into(), json!(next));
-        }
-        Error::from(error)
+    let created = store.create_project(&create).map_err(|error| {
+        Error::from(super::store::with_next(
+            error,
+            |refusal| refusal.code == RpcErrorCode::Conflict,
+            || shell_words::join(["ployz", "up", "--project", name.as_str()]),
+        ))
     })?;
     say!("Created Project {}.", created.project.name);
     Ok(EnvironmentRef {

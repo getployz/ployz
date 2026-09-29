@@ -5,7 +5,7 @@ use clap::{ArgMatches, Command};
 use serde::Serialize;
 
 use super::store::Next;
-use super::{Error, Handler, Json, config_path, leaf_matches, login::open_browser, runtime};
+use super::{Error, Handler, config_path, leaf_matches, login::open_browser, runtime};
 use crate::cli::{positional, value};
 use ployz_core::RpcErrorCode;
 
@@ -87,30 +87,30 @@ pub(crate) fn billing_command() -> Command {
         .subcommand(Command::new("manage").about("Print the billing portal link"))
 }
 
-pub(super) fn token_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn token_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "new" => (token_new, Json::Supported),
-        "ls" => (token_list, Json::Supported),
-        "rm" => (token_remove, Json::Supported),
+        "new" => token_new,
+        "ls" => token_list,
+        "rm" => token_remove,
         _ => return None,
     })
 }
 
-pub(super) fn org_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn org_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "ls" => (org_list, Json::Supported),
-        "use" => (org_use, Json::Supported),
-        "build-order" => (org_build_order, Json::Supported),
-        "rm" => (org_remove, Json::Supported),
+        "ls" => org_list,
+        "use" => org_use,
+        "build-order" => org_build_order,
+        "rm" => org_remove,
         _ => return None,
     })
 }
 
-pub(super) fn billing_handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn billing_handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "" => (billing, Json::Supported),
-        "upgrade" => (billing_upgrade, Json::Supported),
-        "manage" => (billing_manage, Json::Supported),
+        "" => billing,
+        "upgrade" => billing_upgrade,
+        "manage" => billing_manage,
         _ => return None,
     })
 }

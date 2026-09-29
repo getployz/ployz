@@ -470,24 +470,17 @@ fn stop_flags(command: Command) -> Command {
         .arg(value("timeout", Some('t')).default_value("10"))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "add" => (authored::add, Supported),
-        "inspect" => (authored::inspect, Supported),
-        "ls" => (authored::list, Supported),
-        "port-forward" => (super::operator::port_forward, Supported),
-        "rename" => (authored::rename, Supported),
-        "restart" => (restart, Supported),
-        "rm" => (authored::remove, Supported),
-        "start" => (
-            |root| lifecycle(root, "start", &[ContainerAction::Start]),
-            Supported,
-        ),
-        "stop" => (
-            |root| lifecycle(root, "stop", &[ContainerAction::Stop]),
-            Supported,
-        ),
+        "add" => authored::add,
+        "inspect" => authored::inspect,
+        "ls" => authored::list,
+        "port-forward" => super::operator::port_forward,
+        "rename" => authored::rename,
+        "restart" => restart,
+        "rm" => authored::remove,
+        "start" => |root| lifecycle(root, "start", &[ContainerAction::Start]),
+        "stop" => |root| lifecycle(root, "stop", &[ContainerAction::Stop]),
         _ => return None,
     })
 }

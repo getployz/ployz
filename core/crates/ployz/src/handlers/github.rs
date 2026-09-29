@@ -13,7 +13,7 @@ use serde_json::json;
 use super::account::in_cloud;
 use super::login::open_browser;
 use super::store::Next;
-use super::{Error, Handler, Json, leaf_matches};
+use super::{Error, Handler, leaf_matches};
 use crate::cli::{positional, switch};
 use crate::cloud_account::{self, Credential};
 use crate::cloud_login::LoginError;
@@ -49,11 +49,11 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(Handler, Json)> {
+pub(super) fn handler(path: &str) -> Option<Handler> {
     Some(match path {
-        "connect" => (connect, Json::Supported),
-        "ls" => (list, Json::Supported),
-        "disconnect" => (disconnect, Json::Supported),
+        "connect" => connect,
+        "ls" => list,
+        "disconnect" => disconnect,
         _ => return None,
     })
 }

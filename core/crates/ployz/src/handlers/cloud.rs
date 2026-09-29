@@ -616,10 +616,9 @@ pub(crate) fn command() -> Command {
         )
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "reset" => (reset, Supported),
+        "reset" => reset,
         _ => return None,
     })
 }

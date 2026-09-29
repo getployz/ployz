@@ -244,13 +244,12 @@ pub(crate) fn command() -> Command {
         .subcommand(base("rm", "Remove a local context").arg(positional("context-name", true)))
 }
 
-pub(super) fn handler(path: &str) -> Option<(super::Handler, super::Json)> {
-    use super::Json::Supported;
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
-        "" => (super::link::show, Supported),
-        "ls" => (list, Supported),
-        "rm" => (remove, Supported),
-        "use" => (select, Supported),
+        "" => super::link::show,
+        "ls" => list,
+        "rm" => remove,
+        "use" => select,
         _ => return None,
     })
 }
