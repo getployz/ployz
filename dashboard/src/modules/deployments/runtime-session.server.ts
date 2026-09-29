@@ -103,8 +103,7 @@ export function connectedRuntime(organizationId: string, machineId?: MachineId) 
 
 /** The one-Service target an Image Build gets: the whole frozen target narrowed to it, so its fingerprint matches deploy's. */
 export const oneServiceDeployment = (context: DeploymentContext, serviceId: string) => compileRuntimeIntent(context).pipe(
-  // Ordering between Services is deploy's concern.
-  Effect.map((intent) => ({ ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === serviceId), dependencies: {} })),
+  Effect.map((intent) => ({ ...intent, snapshots: intent.snapshots.filter((candidate) => candidate.serviceId === serviceId) })),
 );
 
 /** Poll failure is fatal: a quiet operation must never outlive its cancellation observer. */

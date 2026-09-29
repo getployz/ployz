@@ -206,3 +206,76 @@ fn setup_commands_follow_pre_deploy_command_rules() {
         );
     }
 }
+
+/// Snapshots whose `PORT` references name other Services by lineage; each Service owns one producer.
+fn referencing(edges: &[(&str, &[&str])]) -> Value {
+    let snapshots: Vec<Value> = edges
+        .iter()
+        .map(|(name, references)| {
+            let env: serde_json::Map<String, Value> = references
+                .iter()
+                .enumerate()
+                .map(|(index, dependency)| {
+                    (format!("REF_{index}"), json!({"kind":"literal","value":"display-only","parts":[
+                        {"kind":"ref","owner":{"scope":"service","lineageId":format!("lineage-{dependency}")},"key":"PORT"}
+                    ]}))
+                })
+                .collect();
+            json!({"serviceId":format!("id-{name}"),"resolvedEnv":{"PORT":"3000"},"config":{
+                "version":2,"privateDns":name,
+                "source":{"version":1,"type":"image","image":"nginx:stable","credentials":{"type":"none"}},
+                "healthcheck":{"type":"none"},"restartPolicy":"unless-stopped","env":env
+            }})
+        })
+        .collect();
+    let lineages: serde_json::Map<String, Value> = edges
+        .iter()
+        .map(|(name, _)| (format!("lineage-{name}"), json!(format!("id-{name}"))))
+        .collect();
+    json!({"projectName":"production","snapshots":snapshots,"lineages":lineages})
+}
+
+fn dependencies(value: &Value) -> Value {
+    config_request(json!({"operation":"lower_deployment","value":value})).unwrap()["dependencies"]
+        .clone()
+}
+
+#[test]
+fn frozen_references_order_the_deploy_by_identity_not_display_text() {
+    let mut input = referencing(&[
+        ("app", &["postgres", "postgres", "app", "absent"]),
+        ("postgres", &[]),
+    ]);
+    input["snapshots"][0]["config"]["env"]["LITERAL"] =
+        json!({"kind":"literal","value":"${{postgres.PORT}}"});
+    assert_eq!(
+        dependencies(&input),
+        json!({"app":[{"service":"postgres","condition":"service_started"}]})
+    );
+    input["snapshots"][1]["config"]["healthcheck"] =
+        json!({"type":"http","path":"/health","timeoutSeconds":10});
+    assert_eq!(
+        dependencies(&input)["app"],
+        json!([{"service":"postgres","condition":"service_healthy"}])
+    );
+    input["snapshots"][1]["config"]["source"] = json!({"version":1,"type":"empty","rootDir":"/"});
+    assert_eq!(dependencies(&input), json!({}));
+}
+
+#[test]
+fn reference_cycles_drop_only_their_own_edges() {
+    let input = referencing(&[
+        ("app", &["a"]),
+        ("a", &["b", "db"]),
+        ("b", &["c"]),
+        ("c", &["a"]),
+        ("db", &[]),
+    ]);
+    assert_eq!(
+        dependencies(&input),
+        json!({
+            "app":[{"service":"a","condition":"service_started"}],
+            "a":[{"service":"db","condition":"service_started"}]
+        })
+    );
+}

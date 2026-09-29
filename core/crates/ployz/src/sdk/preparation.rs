@@ -310,15 +310,17 @@ mod flow_tests;
 mod tests {
     use super::*;
     #[test]
-    fn capture_preserves_cloud_dependencies() {
+    fn capture_orders_by_cloud_references() {
         let deployment = json!({
             "projectName": "app",
-            "snapshots": (["web", "db"].map(|name| json!({"config": {
+            "snapshots": (["web", "db"].map(|name| json!({"serviceId": name, "config": {
                 "version": 2, "privateDns": name,
+                "env": if name == "web" { json!({"DB": {"kind": "literal", "value": "", "parts": [
+                    {"kind": "ref", "owner": {"scope": "service", "lineageId": "db-lineage"}, "key": "PORT"}]}}) } else { json!({}) },
                 "healthcheck": {"type":"none"}, "restartPolicy":"on-failure",
                 "source": {"type": "image", "version": 1, "image": "nginx:latest", "credentials": {"type": "none"}}
             }}))),
-            "dependencies": {"web": [{"service": "db", "condition": "service_started"}]}
+            "lineages": {"db-lineage": "db"}
         });
         let captured = capture(PreparationInput {
             deployment,

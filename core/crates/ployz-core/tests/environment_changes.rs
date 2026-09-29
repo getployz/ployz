@@ -95,3 +95,27 @@ fn lifecycle_and_settings_compare_against_submitted_or_applied_state() {
         assert_eq!(result["totalCount"], 0);
     }
 }
+
+#[test]
+fn secret_changes_are_listed_once_without_their_fingerprints() {
+    let secret = |fingerprint: &str| {
+        let mut config = service(1);
+        config["env"] = json!({"TOKEN":{"kind":"secret","fingerprint":fingerprint}});
+        config
+    };
+    let result = project(input(
+        "service",
+        &Value::Null,
+        secret("private-after"),
+        secret("private-before"),
+        None,
+    ));
+    let paths: Vec<_> = result["groups"][0]["settings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["path"].clone())
+        .collect();
+    assert_eq!(paths, vec![json!("env.TOKEN")]);
+    assert!(!result.to_string().contains("private-"));
+}
