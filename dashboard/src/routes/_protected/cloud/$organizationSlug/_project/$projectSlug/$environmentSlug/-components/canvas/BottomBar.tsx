@@ -51,7 +51,11 @@ type BottomBarProps = {
   onDiscardRow: (group: CanvasEnvironmentChangeGroup, path: string) => void;
   /** Over the Config Store: its in-flight Deployments, newest first, whoever admitted them. Null reads the legacy attempts. */
   storeActive?: DeploymentSummary[] | null;
+  /** Over the Config Store: Details' notes from merged pull requests. None reads the legacy ones. */
+  storeNotes?: Pick<ReviewProps, "noteFor" | "after"> | null;
 };
+
+type ReviewProps = Parameters<typeof EnvironmentChangesReview>[0];
 
 /**
  * The bottom bar holds this Environment's own changes and nothing else, in one row like Railway's: changes to deploy
@@ -73,6 +77,7 @@ export function BottomBar({
   onDiscardNode,
   onDiscardRow,
   storeActive = null,
+  storeNotes = null,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
@@ -163,15 +168,10 @@ export function BottomBar({
     </Row>
   ) : shownStore ? <StoreAttemptState deployment={shownStore} />
     : shown ? <AttemptState environmentId={environmentId} deploymentId={shown.id} />
-    : waiting.length ? <WaitingState saves={waiting} /> : null;
+    : waiting.length && !storeNotes ? <WaitingState saves={waiting} /> : null;
   const bar = row ? <div role="group" aria-label="Bottom bar" className="bottom-bar">{row}</div> : null;
 
-  const reviewProps = {
-    groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
-    onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
-    onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
-    onDiscardAll: () => void discardAll(), discarding,
-    onDiscardNode, onDiscardRow,
+  const legacyNotes = {
     noteFor: (group: CanvasEnvironmentChangeGroup, path: string) => {
       const note = landed.notes.find((candidate) => candidate.nodeId === group.nodeId && candidate.path === path);
       return note ? <LandedNote note={note} /> : null;
@@ -186,6 +186,14 @@ export function BottomBar({
     ),
   };
 
+  const reviewProps = {
+    groups, totalChanges, canDeploy: deployable, canSave: canSaveWithoutDeploying, commitMessage,
+    onClose: () => setOpen(false), onCommitMessageChange, onDeploy: deploy,
+    onSave: () => { setOpen(false); onSaveWithoutDeploying(); },
+    onDiscardAll: () => void discardAll(), discarding,
+    onDiscardNode, onDiscardRow,
+    ...storeNotes ?? legacyNotes,
+  };
   return (
     <>
       {bar && slot ? createPortal(bar, slot) : null}

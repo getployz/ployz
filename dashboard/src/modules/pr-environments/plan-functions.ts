@@ -1,8 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
-import { listMissingPrEnvironmentGrants } from "./grants.server";
+import { listMissingPrEnvironmentGrants, listMissingStorePrGrants } from "./grants.server";
 import { setPrEnvironmentPlan } from "./plan-operations.server";
-import { ListPrEnvironmentGrants, SetPrEnvironmentPlan } from "./plan-schemas";
+import { ListPrEnvironmentGrants, ListStorePrGrants, SetPrEnvironmentPlan } from "./plan-schemas";
 
 const middleware = [publicErrorMiddleware, actorMiddleware] as const;
 
@@ -15,3 +15,8 @@ export const listMissingPrEnvironmentGrantsServerFn = createServerFn({ method: "
   .middleware(middleware)
   .validator(strictValidator(ListPrEnvironmentGrants))
   .handler(({ context, data }) => runActor(context, listMissingPrEnvironmentGrants(context.actor, data)));
+
+export const listMissingStorePrGrantsServerFn = createServerFn({ method: "GET" })
+  .middleware(middleware)
+  .validator(strictValidator(ListStorePrGrants))
+  .handler(({ context, data }) => runActor(context, listMissingStorePrGrants(context.actor, data)));
