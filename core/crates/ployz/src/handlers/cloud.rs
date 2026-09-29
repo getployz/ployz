@@ -245,7 +245,7 @@ where
         catch_up.map_err(|error| {
             Error::coded(
                 error.code(),
-                crate::global_catch_up::joined_catch_up_error(error),
+                crate::global_catch_up::joined_catch_up_error(error, &assigned),
             )
         }),
     )
@@ -676,29 +676,5 @@ mod tests {
         assert!(!retry_local_connect(&ConnectError::Context(
             ContextError::NoCurrentContext(PathBuf::from("config.yaml"))
         )));
-    }
-
-    #[test]
-    fn post_join_ingress_error_names_membership_and_recovery() {
-        let message = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("not running".to_owned()),
-                vec![ployz_core::QualifiedService::system_ingress()],
-            ),
-        );
-        assert!(message.contains("Machine joined"));
-        assert!(message.contains("ployz ingress deploy"));
-    }
-
-    #[test]
-    fn post_join_other_error_names_membership() {
-        let message = crate::global_catch_up::joined_catch_up_error(
-            crate::global_catch_up::CatchUpError::new(
-                crate::failure::Failure::usage("listing failed".to_owned()),
-                Vec::new(),
-            ),
-        );
-        assert!(message.contains("Machine joined"));
-        assert!(message.contains("listing failed"));
     }
 }

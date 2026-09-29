@@ -115,8 +115,16 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
         say!("Switched context to '{current_context}'");
     }
     say!("Initialised Server {} ({})", machine.name, machine.id);
-    let ingress_recovery =
-        super::super::recovery_command(matches, &context_name, &["ingress", "deploy"]);
+    let ingress_recovery = super::super::recovery_command(
+        matches,
+        &context_name,
+        &[
+            "server",
+            "set",
+            machine.id.as_str(),
+            "--accepts-ingress=true",
+        ],
+    );
     let inspect_recovery = super::super::recovery_command(
         matches,
         &context_name,
