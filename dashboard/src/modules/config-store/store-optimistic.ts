@@ -102,6 +102,15 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         ...view, environments: view.environments.map((environment) => ({ ...environment, default: environment.name === command.environment.environment })),
       });
       return;
+    case "add_domain": {
+      // A custom domain names its host; a generated one is the Service's Private DNS under the Cluster Domain.
+      const service = command.service;
+      const domain: DomainsView["domains"][number] = command.hostname === null
+        ? { kind: "generated", prefix: service, hostname: null, status: "setting_up", reason: null, action: null, service, port: command.port }
+        : { kind: "custom", hostname: command.hostname, status: "setting_up", reason: null, action: null, service, port: command.port };
+      views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [...view.domains, domain] }));
+      return;
+    }
     case "remove_domain":
       views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: view.domains.filter((domain) =>
         domain.kind === "custom" ? domain.hostname !== command.domain : domain.prefix !== command.domain && domain.hostname !== command.domain) }));
