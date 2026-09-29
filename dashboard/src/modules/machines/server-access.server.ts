@@ -76,14 +76,14 @@ export const provideServerAccess = Effect.fn("ServerAccess.provide")(function* (
 });
 
 /** A row's credential still authorizes it: unexpired, and its user still a member of the row's Organization. */
-const stillAuthorized = sql`exists (select 1 from ${member}
+const stillAuthorized = sql`(exists (select 1 from ${member}
     where ${member.userId} = ${serverAccess.userId} and ${member.organizationId} = ${serverAccess.organizationId})
   and ((${serverAccess.credentialKind} = 'session' and exists (select 1 from ${session}
       where ${session.id} = ${serverAccess.credentialId} and ${session.expiresAt} > now()))
     or (${serverAccess.credentialKind} = 'token' and exists (select 1 from ${organizationToken}
       where ${organizationToken.id} = ${serverAccess.credentialId}
         and ${organizationToken.organizationId} = ${serverAccess.organizationId}
-        and ${organizationToken.expiresAt} > now())))`;
+        and ${organizationToken.expiresAt} > now()))))`;
 
 /**
  * Revoke every holder in `scope` whose credential no longer authorizes it (logout, deletion, expiry, membership
