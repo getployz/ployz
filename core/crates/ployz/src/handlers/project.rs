@@ -45,7 +45,8 @@ pub(crate) fn command() -> Command {
                     .value_name("PROJECT")
                     .help("The Project's name, typed to confirm its removal"),
             )
-            .arg(crate::cli::volume_acceptance()),
+            .arg(crate::cli::volume_acceptance())
+            .arg(crate::cli::reviewed_version()),
         ))
 }
 

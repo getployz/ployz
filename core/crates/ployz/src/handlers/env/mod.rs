@@ -82,7 +82,8 @@ pub(crate) fn command() -> Command {
                     .value_name("PROJECT/ENV")
                     .help("PROJECT/ENV, typed to confirm the Environment's removal"),
             )
-            .arg(crate::cli::volume_acceptance()),
+            .arg(crate::cli::volume_acceptance())
+            .arg(crate::cli::reviewed_version()),
         ))
         .subcommand(
             Command::new("branch")
@@ -174,7 +175,8 @@ pub(crate) fn command() -> Command {
             )
             .arg(positional("name", true))
             .arg(project_arg())
-            .arg(crate::cli::volume_acceptance()),
+            .arg(crate::cli::volume_acceptance())
+            .arg(crate::cli::reviewed_version()),
         ))
         .subcommand(
             Command::new("pr")
