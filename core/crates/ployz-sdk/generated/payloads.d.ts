@@ -1049,6 +1049,24 @@ total_count: number,
  */
 hints: Array<PullRequestHint>, };
 
+export type DifferRow = {
+/**
+ * `NODE.path`.
+ */
+row: string,
+/**
+ * Why it stays.
+ */
+why: BranchReason,
+/**
+ * The value on the side changes come from.
+ */
+from: JsonValue,
+/**
+ * The receiver's value.
+ */
+into: JsonValue, };
+
 export type Discard = {
 /**
  * The Environment to discard in.
@@ -1791,7 +1809,12 @@ version: string,
 /**
  * Each change that moves.
  */
-rows: Array<MoveRow>, };
+rows: Array<MoveRow>,
+/**
+ * Each setting that differs and stays: sizing, domains and the Git branch
+ * belong to each Environment, so a Move never carries them.
+ */
+differ: Array<DifferRow>, };
 
 export type Moved = {
 /**
