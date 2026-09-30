@@ -206,6 +206,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         totalChanges={diff.total_count}
         canPublish={diff.total_count > 0 && !diff.published}
         onDeploy={actions.deploy}
+        admitting={actions.admitting}
         onPublish={actions.publish}
         onDiscardAll={() => actions.discard(null)}
         onDiscardNode={(group) => actions.discard(group.nodeName)}

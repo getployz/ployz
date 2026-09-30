@@ -165,7 +165,8 @@ export function blurClickedNodeLink(event: Pick<MouseEvent, "detail" | "target">
 
 /**
  * Keeps the canvas focus in view beside the inspector pane: the selected node, else the nodes an open Deployment Page
- * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes.
+ * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes; closing a node's
+ * drawer fits the whole canvas again.
  */
 export function useCanvasNavigation(
   selectedNodeId: string | null,
@@ -196,10 +197,10 @@ export function useCanvasNavigation(
       return;
     }
 
-    if (selectedNodeId === null) {
-      if (previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
-        void flow.setViewport(flow.getViewport(), { duration: 0 });
-      }
+    // A closed drawer gives the canvas back whole: undo the pan that opening it caused, and show every node again.
+    // A Deployment Page or the New branch panel opening instead keeps its own focus.
+    if (selectedNodeId === null && !pageOpen && previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
+      void flow.fitView({ duration: prefersReducedMotion() ? 0 : 360 });
     }
     previousSelectedNodeId.current = selectedNodeId;
 
@@ -217,7 +218,7 @@ export function useCanvasNavigation(
         };
       }),
     );
-  }, [flow, flowReady, nodesInitialized, selectedNodeId]);
+  }, [flow, flowReady, nodesInitialized, selectedNodeId, pageOpen]);
 
   useEffect(() => {
     if (!flowReady) {

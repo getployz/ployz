@@ -5,13 +5,14 @@ import { createPortal } from "react-dom";
 import { Link, useParams } from "@tanstack/react-router";
 import { GitPullRequestIcon, MoreVerticalIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
+import { ConfirmDialog } from "#/components/confirm-dialog";
 import { buttonVariants } from "#/components/ui/button-variants";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "#/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
 import { deploymentStatusIcons, deploymentStatusLabels, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
-import { plural } from "#/lib/plural";
+import { listNames, plural } from "#/lib/plural";
 import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
@@ -28,7 +29,10 @@ type BottomBarProps = {
   groups: ChangeGroup[];
   totalChanges: number;
   canPublish: boolean;
-  onDeploy: () => void;
+  /** Deploys, with the user's Deploy message (blank for none). */
+  onDeploy: (message: string) => void;
+  /** A Deploy is being admitted: Deploy waits, so a double click admits one. */
+  admitting?: boolean;
   onPublish: () => void;
   onDiscardAll: () => void;
   onDiscardNode: (group: ChangeGroup) => void;
@@ -64,11 +68,14 @@ export function BottomBar({
   notes,
   waiting = [],
   noServers = false,
+  admitting = false,
 }: BottomBarProps) {
   const slot = useContext(BottomBarSlot);
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const viewedId = useCanvasInspectorSelection().deploymentId;
   const [open, setOpen] = useState(false);
+  const [message, setMessage] = useState("");
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const wasOpen = useRef(false);
@@ -79,13 +86,23 @@ export function BottomBar({
   const shown = hasChanges ? undefined : active.find((deployment) => deployment.id !== viewedId);
 
   function deploy() {
+    if (admitting) return;
     setOpen(false);
-    onDeploy();
+    onDeploy(message);
+    setMessage("");
   }
+
+  // New Services and Volumes go for good with a Discard: name them and ask first.
+  const created = groups.filter((group) => group.lifecycle === "create" && group.canDiscard).map((group) => group.nodeName);
 
   // Discard shows at once and saves in the background, so the review closes with it.
   function discardAll() {
     setOpen(false);
+    if (created.length > 0 && !confirmingDiscard) {
+      setConfirmingDiscard(true);
+      return;
+    }
+    setConfirmingDiscard(false);
     onDiscardAll();
   }
 
@@ -123,7 +140,7 @@ export function BottomBar({
           Add a server
         </Link>
       ) : <Tooltip>
-        <TooltipTrigger render={<Button variant="intent" disabled={!deployable} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
+        <TooltipTrigger render={<Button variant="intent" disabled={!deployable || admitting} aria-keyshortcuts="Shift+Enter" onClick={deploy} />}>
           {active.length > 0 ? "Deploy next" : "Deploy"}
         </TooltipTrigger>
         <TooltipContent>⇧+Enter</TooltipContent>
@@ -155,7 +172,7 @@ export function BottomBar({
 
   const reviewProps = {
     groups, totalChanges, canDeploy: deployable, canPublish,
-    onClose: () => setOpen(false), onDeploy: deploy,
+    onClose: () => setOpen(false), onDeploy: deploy, message, onMessageChange: setMessage, admitting,
     onPublish: () => { setOpen(false); onPublish(); },
     onDiscardAll: discardAll,
     onDiscardNode, onDiscardRow,
@@ -165,6 +182,9 @@ export function BottomBar({
     <>
       {bar && slot ? createPortal(bar, slot) : null}
       {open ? <EnvironmentChangesReview {...reviewProps} /> : null}
+      <ConfirmDialog open={confirmingDiscard} onOpenChange={setConfirmingDiscard} title="Discard all changes?"
+        description={`${listNames(created)} ${created.length === 1 ? "is" : "are"} new and will be deleted. Everything else goes back to how it is deployed.`}
+        actionLabel="Discard all" variant="destructive" onConfirm={discardAll} />
     </>
   );
 }

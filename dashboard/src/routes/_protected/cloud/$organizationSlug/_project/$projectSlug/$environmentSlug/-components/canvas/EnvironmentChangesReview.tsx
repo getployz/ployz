@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "#/components/ui/dialog";
 import { Button } from "#/components/ui/button";
+import { InputGroup, InputGroupInput } from "#/components/ui/input-group";
 import type { ChangeGroup } from "#/modules/config-store/store-deployments";
 import { ApplyChangeGroupCard } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/ApplyChangeGroupCard";
 
@@ -14,6 +15,11 @@ export type EnvironmentChangesReviewProps = {
   onDiscardAll: () => void;
   onClose: () => void;
   onDeploy: () => void;
+  /** What the next Deploy ships, in the user's words; shown on its Deployment. */
+  message: string;
+  onMessageChange: (message: string) => void;
+  /** A Deploy is being admitted: Deploy waits. */
+  admitting?: boolean;
   onDiscardNode: (group: ChangeGroup) => void;
   onDiscardRow: (group: ChangeGroup, path: string) => void;
   /** A merged pull request's note beside a change: its tag, or its value with Use. */
@@ -42,7 +48,7 @@ export function EnvironmentChangesReview(props: EnvironmentChangesReviewProps) {
   );
 }
 
-/** The staged-changes review itself: the changes, Discard, Publish and Deploy. */
+/** The staged-changes review itself: the Deploy message, the changes, Discard, Publish and Deploy. */
 function StagedChanges({
   groups,
   totalChanges,
@@ -52,6 +58,9 @@ function StagedChanges({
   onDiscardAll,
   onClose,
   onDeploy,
+  message,
+  onMessageChange,
+  admitting = false,
   onDiscardNode,
   onDiscardRow,
   noteFor,
@@ -59,6 +68,14 @@ function StagedChanges({
 }: EnvironmentChangesReviewProps) {
   return (
     <>
+      {canDeploy ? (
+        <div className="shrink-0 border-b px-6 py-3">
+          <InputGroup>
+            <InputGroupInput aria-label="Deploy message" placeholder="Deploy message (optional)" maxLength={500} value={message}
+              onChange={(event) => onMessageChange(event.target.value)} />
+          </InputGroup>
+        </div>
+      ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <div className="flex flex-col gap-3">
             {groups.map((group) => (
@@ -80,7 +97,7 @@ function StagedChanges({
       <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t px-6 py-4">
         {groups.some(group => group.canDiscard) ? <Button variant="ghost" className="mr-auto" onClick={onDiscardAll}>Discard all changes</Button> : null}
         <Button variant="outline" disabled={!canPublish} onClick={onPublish}>Publish</Button>
-        {canDeploy ? <Button onClick={onDeploy}>Deploy changes</Button> : null}
+        {canDeploy ? <Button disabled={admitting} onClick={onDeploy}>Deploy changes</Button> : null}
       </div>
     </>
   );
