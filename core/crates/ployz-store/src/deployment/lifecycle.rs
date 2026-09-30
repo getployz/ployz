@@ -710,6 +710,53 @@ pub(super) fn node_outcomes(
         .collect()
 }
 
+/// A running Deployment's Node Outcomes its recorded Deploy Preview already
+/// settles: a Service it plans nothing for is Unchanged, and so is a kept Volume
+/// Applied State already holds that no planned target Service mounts. The rest wait.
+pub(super) fn planned_outcomes(
+    nodes: &[TargetNode],
+    saved: &SavedEnvironmentIntent,
+    applied: &SavedEnvironmentIntent,
+    preview: &Value,
+) -> Result<BTreeMap<String, NodeStatus>, RpcError> {
+    let preview: DeployPreview =
+        serde_json::from_value(preview.clone()).map_err(|_| error::corrupt("Deploy Preview"))?;
+    let planned = |name: &ServiceName| {
+        preview.operations.iter().any(|row| {
+            row.service_name
+                .as_ref()
+                .or_else(|| row.operation.service_name())
+                == Some(name)
+        })
+    };
+    let unchanged = |node: &TargetNode| match node {
+        TargetNode::Service { runtime, .. } => !planned(runtime),
+        TargetNode::Volume {
+            id, deletes: None, ..
+        } => saved
+            .volumes
+            .iter()
+            .find(|volume| volume.resource_id == id.as_str())
+            .is_some_and(|volume| {
+                applied.volumes.contains(volume)
+                    && !saved.services.iter().any(|service| {
+                        nodes.iter().any(|node| node.id() == service.id)
+                            && planned(&service.config.private_dns)
+                            && service
+                                .volume_attachments
+                                .iter()
+                                .any(|mount| mount.volume_resource_id == volume.resource_id)
+                    })
+            }),
+        TargetNode::Volume { .. } => false,
+    };
+    Ok(nodes
+        .iter()
+        .filter(|node| unchanged(node))
+        .map(|node| (node.id().to_owned(), NodeStatus::Unchanged))
+        .collect())
+}
+
 pub(super) fn finish(
     tx: &mut dyn Tx,
     mut stored: Stored,

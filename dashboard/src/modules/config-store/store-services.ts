@@ -28,14 +28,35 @@ export function dnsLabelError(name: string): string | null {
 export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });
 
 /**
- * A new Service's name: a DNS label from its repository or image, numbered until no Service here has it as a name or
- * Private DNS. The Store refuses a name taken meanwhile.
+ * A new Service's name: a DNS label from its repository or image, with a random suffix when a Service here has it as a
+ * name or Private DNS. The Store refuses a name taken meanwhile.
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
-  const taken = new Set(services.flatMap((service) => [service.name, service.private_dns]));
-  const base = slugifySegment(sourceName(source)).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
+  return serviceName(sourceName(source), services);
+}
+
+/** `wanted` as a new Service's name: a random suffix when a Service here has it as a name or Private DNS. */
+export function serviceName(wanted: string, services: readonly ServiceListing[]) {
+  return uniqueName(wanted, services.flatMap((service) => [service.name, service.private_dns]));
+}
+
+// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for names and a 32-letter password.
+/** `length` random characters of `alphabet`. */
+export function randomText(alphabet: string, length: number) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => alphabet[byte % alphabet.length]).join("");
+}
+
+const SUFFIX = "abcdefghijklmnopqrstuvwxyz0123456789";
+
+/** `wanted` as a DNS label, given a random suffix (`postgres-x7kd`) until it is none of `taken`. */
+export function uniqueName(wanted: string, taken: Iterable<string>) {
+  const used = new Set(taken);
+  const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
+  const stem = base.slice(0, MAX_NAME - 5).replace(/-+$/u, "");
   let name = base;
-  for (let n = 2; taken.has(name); n += 1) name = `${base.slice(0, MAX_NAME - String(n).length - 1).replace(/-+$/u, "")}-${n}`;
+  while (used.has(name)) {
+    name = `${stem}-${randomText(SUFFIX, 4)}`;
+  }
   return name;
 }
 

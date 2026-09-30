@@ -29,6 +29,20 @@ export type StoreEdit = {
 /** Commands that read or write an Environment besides the one they name. */
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
 
+/** The Environment a command names; a Batch's is its first command's. */
+function commandEnvironment(command: ConfigCommand): EnvironmentRef | null {
+  // ponytail: one Environment per Batch is assumed, not checked (the Store doesn't either).
+  const named = command.command === "batch" ? command.commands[0] : command;
+  return named && "environment" in named && named.environment ? named.environment : null;
+}
+
+/** The Environment revision a write produced; a Batch's is its last command's. */
+function writtenRevision(written: ConfigWritten): number | null {
+  const last = written.written === "batch" ? written.results.at(-1) : written;
+  return last?.written === "service" || last?.written === "volume" || last?.written === "edited"
+    ? last.environment.revision : null;
+}
+
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
 /** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
 const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
@@ -114,9 +128,15 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * a destructive confirmation, an external service) is a listed command in the boundary test.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
-      const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
+      const environment = commandEnvironment(command);
+      const key = environment ? environmentKey(environment) : "";
       applyOptimistic(queryClient, organizationSlug, command);
-      const save = () => send(command);
+      const save = async () => {
+        const written = await send(command);
+        const revision = writtenRevision(written);
+        if (revision !== null) committed.set(key, revision);
+        return written;
+      };
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
       const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return save(); } : save;
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,

@@ -20,21 +20,28 @@ import {
   ImageSelector,
 } from "#/components/service-source-selector";
 import {
-  type CreateMenuItemId,
+  type CreateMenuItem,
+  type CreatePanel,
   getCreateMenuItems,
 } from "#/components/create-menu-items";
+import { DATABASE_LOGOS } from "#/components/icons/database-logos";
 import { Spinner } from "#/components/ui/spinner";
 import {
   ENVIRONMENT_INDEX_ROUTE_TO,
   ENVIRONMENT_SERVICE_ROUTE_TO,
 } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/environment-route-paths";
-import { useCreateStoreService } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
+import {
+  type NewServicePlacement,
+  useCreateStoreDatabase,
+  useCreateStoreService,
+} from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator";
+import { DATABASE_PRESETS, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { randomName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { environmentsQuery, requireView, storeViewOptions } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
-type InitialPanel = "root" | "git" | "image";
+type InitialPanel = CreatePanel;
 type Panel = { kind: InitialPanel };
 type CreateMode = "project" | "service";
 
@@ -44,6 +51,13 @@ function pickerPresentation(panel: Panel, mode: CreateMode) {
       title: "GitHub Repository",
       ariaLabel: "Search GitHub repositories",
       placeholder: "Search repositories or paste a GitHub URL…",
+    };
+  }
+  if (panel.kind === "database") {
+    return {
+      title: "Database",
+      ariaLabel: "Choose a database",
+      placeholder: "Choose a database…",
     };
   }
   return {
@@ -80,7 +94,7 @@ type ServiceCreateCommandProps = ProjectCommandProps | ServiceCommandProps;
 
 type RootPanelProps = {
   mode: CreateMode;
-  onSelectItem: (itemId: CreateMenuItemId) => void;
+  onSelectItem: (item: CreateMenuItem) => void;
   isPending: boolean;
 };
 
@@ -100,35 +114,35 @@ type GitPanelProps = GitPanelReposProps;
 
 function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
   const { queryClient, sessionId, userId } = useCollectionScope();
-  const [chosen, setChosen] = useState<CreateMenuItemId | null>(null);
+  const [chosen, setChosen] = useState<CreateMenuItem["id"] | null>(null);
   // "GitHub repository" is one tap away: its picker opens with repositories already read.
   useEffect(() => {
     preloadGithubRepos({ queryClient, sessionId, userId });
   }, [queryClient, sessionId, userId]);
-  const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id }) =>
-    mode === "service" || id === "git-repository" || id === "container-image" || id === "empty-project",
+  const items = getCreateMenuItems({ includeEmptyProject: mode === "project" }).filter(({ id, panel }) =>
+    mode === "service" || panel || id === "empty-project",
   );
   return (
     <CommandGroup>
       {items.map(
-        ({ id, icon: Icon, label }) => (
+        (item) => (
           <CommandItem
-            key={id}
-            value={label}
+            key={item.id}
+            value={item.label}
             keywords={["create", mode]}
             disabled={isPending}
             onSelect={() => {
-              setChosen(id);
-              onSelectItem(id);
+              setChosen(item.id);
+              onSelectItem(item);
             }}
           >
-            <Icon />
-            <span>{label}</span>
-            {id === "git-repository" || id === "container-image" ? (
+            <item.icon />
+            <span>{item.label}</span>
+            {item.panel ? (
               <CommandShortcut>
                 <ChevronRightIcon />
               </CommandShortcut>
-            ) : isPending && id === chosen ? (
+            ) : isPending && item.id === chosen ? (
               <CommandShortcut>
                 <Spinner />
               </CommandShortcut>
@@ -142,6 +156,22 @@ function RootPanel({ mode, onSelectItem, isPending }: RootPanelProps) {
 
 function GitPanel(props: GitPanelProps) {
   return <GitRepoSelector {...props} />;
+}
+
+function DatabasePanel({ disabled, onSelectPreset }: { disabled: boolean; onSelectPreset: (preset: DatabasePreset) => void }) {
+  return (
+    <CommandGroup>
+      {DATABASE_PRESETS.map((preset) => {
+        const Logo = DATABASE_LOGOS[preset.id];
+        return (
+          <CommandItem key={preset.id} value={preset.label} disabled={disabled} onSelect={() => onSelectPreset(preset)}>
+            <Logo />
+            <span>{preset.label}</span>
+          </CommandItem>
+        );
+      })}
+    </CommandGroup>
+  );
 }
 
 type CreationTarget = {
@@ -164,6 +194,7 @@ function useServiceCreateActions({
   const navigate = useNavigate();
   const markHere = useStillHere();
   const createStoreService = useCreateStoreService(props.organizationSlug);
+  const createStoreDatabase = useCreateStoreDatabase(props.organizationSlug);
   // Holds the project a failed command already created, so any retry, from any panel, reuses it.
   const createdProjectRef = useRef<CreationTarget | null>(null);
   const storeWriter = useStoreWriter(props.organizationSlug);
@@ -239,15 +270,15 @@ function useServiceCreateActions({
     });
   }
 
-  const createServiceFromSource = (source: NewServiceSource) =>
+  const createInTarget = (create: (placement: NewServicePlacement) => ReturnType<typeof createStoreService>) =>
     whileCreating(async () => {
       const stillHere = markHere();
       const target = props.mode === "service" ? await serviceModeTarget(props) : await createProjectTarget();
-      const created = createStoreService({
+      const created = create({
         store: { project: target.projectSlug, environment: target.environmentSlug },
         environmentId: target.environmentId,
         position: target.canvasPosition,
-      }, source);
+      });
       if (props.mode === "service") {
         // Someone who navigated away while it saved stays there; the service still lands on the canvas.
         await props.onCreated?.(created, stillHere());
@@ -263,20 +294,21 @@ function useServiceCreateActions({
       });
     });
 
-  function selectCreateItem(itemId: CreateMenuItemId) {
-    if (itemId === "git-repository") {
-      setActivePanel("git");
+  const createServiceFromSource = (source: NewServiceSource) =>
+    createInTarget((placement) => createStoreService(placement, source));
+  const createDatabase = (preset: DatabasePreset) =>
+    createInTarget((placement) => createStoreDatabase(placement, preset));
+
+  function selectCreateItem({ id, panel }: CreateMenuItem) {
+    if (panel) {
+      setActivePanel(panel);
       return;
     }
-    if (itemId === "container-image") {
-      setActivePanel("image");
-      return;
-    }
-    if (itemId === "empty-service") {
+    if (id === "empty-service") {
       void createServiceFromSource({ type: "empty" });
       return;
     }
-    if (itemId === "volume") {
+    if (id === "volume") {
       // Only the canvas offers a Volume, and it places one itself.
       if (props.mode === "service") props.onCreateVolume?.();
       return;
@@ -291,6 +323,7 @@ function useServiceCreateActions({
     selectCreateItem,
     setActivePanel,
     createServiceFromSource,
+    createDatabase,
   };
 }
 
@@ -305,6 +338,7 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
     selectCreateItem,
     setActivePanel,
     createServiceFromSource,
+    createDatabase,
   } = useServiceCreateActions({ props, setPanel, setQuery });
 
   return (
@@ -347,10 +381,10 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
         />
       ) : (
       <SourcePickerLayout title={presentation.title}>
-      <Command key={panel.kind} shouldFilter={panel.kind === "root"}>
+      <Command key={panel.kind} shouldFilter={panel.kind === "root" || panel.kind === "database"}>
         <SourcePickerInput
             onBack={
-              panel.kind === "git"
+              panel.kind !== "root"
                 ? () => setActivePanel("root")
                 : undefined
             }
@@ -382,6 +416,9 @@ export function ServiceCreateCommand(props: ServiceCreateCommandProps) {
                 void createServiceFromSource({ type: "git", repository: fullName, branch: defaultBranch });
               }}
             />
+          ) : null}
+          {panel.kind === "database" ? (
+            <DatabasePanel disabled={isPending} onSelectPreset={(preset) => void createDatabase(preset)} />
           ) : null}
         </CommandList>
       </Command>
