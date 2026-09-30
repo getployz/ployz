@@ -16,7 +16,7 @@ import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStora
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { DNS_LABEL_RULE, isDnsLabel, settingText } from "#/modules/config-store/store-services";
+import { dnsLabelError, settingText } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -45,8 +45,8 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
   // A DNS label no other Volume here has.
-  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => !isDnsLabel(name) ? DNS_LABEL_RULE
-    : volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined));
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
+    ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
 
   return (
     <div className="flex h-full min-h-0 flex-col">

@@ -8,7 +8,7 @@ import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
-import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
+import { dnsLabelError } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -159,7 +159,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
 function nameProblem(name: string, taken: ReadonlySet<string>) {
   if (!name) return "Name the branch.";
   if (taken.has(name)) return `${name} is taken in this project.`;
-  return isDnsLabel(name) ? null : DNS_LABEL_RULE;
+  return dnsLabelError(name);
 }
 
 /** The first free name: `base`, then `base-2`, `base-3`… */

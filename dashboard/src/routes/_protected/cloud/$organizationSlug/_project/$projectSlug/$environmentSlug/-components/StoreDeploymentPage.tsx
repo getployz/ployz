@@ -162,7 +162,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
               {volumes.map((node) => (
                 <Item key={node.id} variant="outline" size="sm">
                   <ItemContent className="min-w-0"><ItemTitle><span className="truncate">{node.name}</span></ItemTitle></ItemContent>
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>{nodeStatusLabels[node.outcome]}</Badge>
+                  {/* A removed Volume's data is gone: say so. */}
+                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>
+                    {node.outcome === "removed" ? "Deleted" : nodeStatusLabels[node.outcome]}
+                  </Badge>
                 </Item>
               ))}
             </ItemGroup>

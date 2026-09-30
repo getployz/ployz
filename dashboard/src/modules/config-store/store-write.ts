@@ -30,6 +30,8 @@ export type StoreEdit = {
 const SPANS: ReadonlySet<ConfigCommand["command"]> = new Set(["move", "create_branch", "copy_node"]);
 
 const CONFLICT = "Changed elsewhere, so this edit was undone. You're seeing the latest now.";
+/** A write that never got an answer (offline, Cloud restarting): the browser's words ("Failed to fetch") mean nothing here. */
+const UNREACHABLE = "Couldn't reach Ployz Cloud, so this change was undone. Check your connection and try again.";
 
 /**
  * The one way the dashboard writes to the Config Store.
@@ -82,7 +84,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
         // `confirmation_required` is a question for the caller to put to the user, not a failure; so is any refusal
         // the caller says it handles.
         if (!(error instanceof StoreRefused && (error.code === "confirmation_required" || handled.includes(error.code)))) {
-          toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT : error.message);
+          toast.error(expects && error instanceof StoreRefused && error.code === "conflict" ? CONFLICT
+            : error instanceof TypeError ? UNREACHABLE : error.message);
         }
         // What the write was refused against shows: the rollback, or a Move's fresh review.
         await refresh();
