@@ -16,7 +16,9 @@ const isText = Schema.is(Schema.String);
  * One Service's variables from its Setting rows (`serviceSettingRows`), sorted by key. A secret reads as
  * `{"secret": true}` and shows sealed; an unset one (null, pending removal) is gone.
  */
-export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceId: string): VariableRecord[] {
+export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceId: string,
+  /** What the next Deploy changes, by Setting (`env.KEY`): those rows are pink. */
+  changes: ReadonlyMap<string, unknown> = new Map()): VariableRecord[] {
   return [...rows].flatMap(([name, row]) => {
     const key = VARIABLE.exec(name)?.[1];
     if (key === undefined || row.value === null) return [];
@@ -26,6 +28,7 @@ export function serviceVariables(rows: ReadonlyMap<string, SettingRow>, serviceI
       exported: rows.get(`${name}.exported`)?.value === true,
       value: isText(value) ? { type: "plain" as const, value } : { type: "sealed" as const, hasValue: true as const, fingerprint: "sealed" },
       createdAt: NEVER, updatedAt: NEVER,
+      changed: changes.has(name) || changes.has(`${name}.exported`),
     }];
   }).sort((a, b) => a.key.localeCompare(b.key));
 }

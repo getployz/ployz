@@ -82,8 +82,10 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
     case "discard": {
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // What goes from the review: every node, one node, or one Setting of one node.
-      const whole = (change: NodeChange) => path === null || (setting.length === 0 && change.name === node);
+      // What goes from the review: every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
+      const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
+      const whole = (change: NodeChange) => path === null
+        || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
       let reverted: NodeChange["settings"] = [];
       let dropped = new Set<string>();
       views<DiffView>("diff", command.environment, (view) => {
@@ -91,7 +93,7 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) {
             reverted = [...reverted, ...change.settings];
-            dropped = new Set([...dropped, change.name]);
+            dropped = new Set([...dropped, `${change.type}:${change.name}`]);
             removed += change.settings.length + (change.lifecycle === "update" ? 0 : 1);
             return [];
           }
@@ -107,8 +109,9 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         const deployed = reverted.find((change) => change.path === row.path);
         return deployed ? { ...row, value: deployed.before } : row;
       }) }));
-      views<ServicesView>("services", command.environment, (view) => ({ ...view, services: unstage(view.services, dropped) }));
-      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: unstage(view.volumes, dropped) }));
+      const of = (type: NodeChange["type"]) => new Set([...dropped].flatMap((key) => key.startsWith(`${type}:`) ? [key.slice(type.length + 1)] : []));
+      views<ServicesView>("services", command.environment, (view) => ({ ...view, services: unstage(view.services, of("service")) }));
+      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: unstage(view.volumes, of("volume")) }));
       return;
     }
     case "keep_branch":

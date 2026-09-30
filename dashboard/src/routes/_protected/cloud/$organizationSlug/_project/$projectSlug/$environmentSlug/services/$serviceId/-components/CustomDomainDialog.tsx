@@ -19,13 +19,18 @@ import {
 import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
 
+/** A public DNS name with a dot: labels of letters, digits and inner hyphens. The Store checks the rest. */
+const HOSTNAME = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/u;
+
 /** A custom domain as the dialog edits it: a blank port follows the container's PORT. */
 export type CustomDomain = { hostname: string; targetPort: number | null };
 
 const customDomainFormSchema = Schema.toStandardSchemaV1(
   Schema.Struct({
     hostname: Schema.Trim.check(
-      Schema.isNonEmpty({ message: "Enter a hostname." })
+      Schema.isNonEmpty({ message: "Enter a hostname." }),
+      Schema.makeFilter<string>((hostname) => HOSTNAME.test(hostname.toLowerCase())
+        ? undefined : "Enter a domain you own, like api.example.com."),
     ),
     port: domainPortSchema,
   }).pipe(
@@ -59,12 +64,15 @@ const customDomainFormOptions = appFormOptions.strictSchema({
 
 export function CustomDomainDialog({
   route,
+  initial,
   hostnameFixed = false,
   defaultTargetPort,
   onClose,
   onSubmit,
 }: {
   route?: CustomDomain;
+  /** A new domain's typed values, as before the Store refused them. */
+  initial?: CustomDomain;
   /** Editing changes only the port: a Store domain is addressed by its hostname. */
   hostnameFixed?: boolean;
   defaultTargetPort: number | null;
@@ -74,8 +82,8 @@ export function CustomDomainDialog({
   const form = useAppForm({
     ...customDomainFormOptions,
     defaultValues: {
-      hostname: route?.hostname ?? "",
-      port: route?.targetPort == null ? "" : String(route.targetPort),
+      hostname: (route ?? initial)?.hostname ?? "",
+      port: (route ?? initial)?.targetPort == null ? "" : String((route ?? initial)?.targetPort),
     },
     // Saving happens in the background and toasts on failure.
     onSubmit: ({ schemaOutputs }) => {

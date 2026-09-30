@@ -25,16 +25,18 @@ import type { RawEditorDiff } from "#/modules/variables/variable-raw-editor";
 import { ServiceVariablesRawEditor } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditor";
 
 /** A Config Store Service's variables: each edit is one optimistic write of `SERVICE.env.KEY`; a secret never reads back. */
-export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings }: {
+export function StoreServiceVariablesTab({ organizationSlug, environment, service, services, settings, changes }: {
   organizationSlug: string;
   environment: EnvironmentRef;
   service: ServiceListing;
   services: readonly ServiceListing[];
   /** The Environment's Settings, with this tab's pending edits over them. */
   settings: EnvironmentView;
+  /** What the next Deploy changes in it, by Setting. */
+  changes: ReadonlyMap<string, unknown>;
 }) {
   const store = useStoreWriter(organizationSlug);
-  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id);
+  const variables = serviceVariables(serviceSettingRows(settings, service.name), service.id, changes);
   const writer = storeVariableWriter(store, environment, service.name, variables);
   const set = (key: string, value: JsonValue) =>
     store.edit({ environment, changes: [{ op: "set", path: `${service.name}.env.${key}`, value }] });

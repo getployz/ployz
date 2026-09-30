@@ -112,7 +112,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
       <Suspense fallback={null}>
-        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes}
+        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} version={diff.version}
           privateDns={settingText(rows.get("privateDns")?.value) || service.private_dns}
           validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
             ?? (services.some((other) => other.id !== service.id && (other.name === raw || other.private_dns === raw))
@@ -191,7 +191,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
               </div>
             </div>
           </TabsContent>
-          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} />
+          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} />
         </Tabs>
       </div>
     </div>
