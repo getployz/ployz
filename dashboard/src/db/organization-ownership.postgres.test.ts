@@ -33,6 +33,7 @@ const notOrganizationOwned = {
   deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
   upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
   config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
+  config_volume_storage: "Storage fixed when a Deployment first targets a Volume; no Cloud view reads it, so it needs no change log.",
   config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
   config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
   config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
