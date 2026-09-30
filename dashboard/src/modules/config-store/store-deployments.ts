@@ -1,5 +1,6 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DiffView, JsonValue, NodeChange, NodeStatus, Outcome, ServiceListing, UploadedSource,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, ServiceListing,
+  UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
 import { settingTitle } from "./catalog";
@@ -109,7 +110,7 @@ export const IN_FLIGHT = ["queued", "running", "cancelling"] as const satisfies 
 export const isInFlight = (status: DeploymentStatus): status is (typeof IN_FLIGHT)[number] =>
   IN_FLIGHT.some((inFlight) => inFlight === status);
 
-export const deploymentStatusLabels = {
+const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
@@ -122,10 +123,6 @@ export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "
 
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
-
-export const nodeLightLabels = {
-  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not applied",
-} satisfies Record<NodeLight, string>;
 
 /** Each status in the icons' vocabulary. */
 export const deploymentStatusIcons = {
@@ -151,9 +148,32 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
   return "not_applied";
 }
 
-/** "every service", or the Services a targeted Deploy named. */
-export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>
-  deployment.services.length === 0 ? "every service" : deployment.services.join(", ");
+/**
+ * A node's outcome in words: the glossary's Node Outcome once it has one; until then Queued or Deploying, as its
+ * Deployment reads, and Not attempted once that ended without it.
+ */
+export function nodeOutcomeLabel(outcome: NodeStatus, deployment: DeploymentStatus) {
+  if (outcome !== "pending") return nodeStatusLabels[outcome];
+  if (deployment === "queued") return deploymentStatusLabels.queued;
+  return isInFlight(deployment) ? deploymentStatusLabels.running : nodeStatusLabels.not_attempted;
+}
+
+/**
+ * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
+ * Coming off the servers, then Off the servers.
+ */
+export function deploymentStatusLabel({ status, remove }: Pick<DeploymentSummary, "status" | "remove">) {
+  if (remove && status === "running") return "Coming off the servers";
+  if (remove && status === "applied") return "Off the servers";
+  return deploymentStatusLabels[status];
+}
+
+/**
+ * What a Deployment ships, for its row: "Deploys every service", or the Services a targeted Deploy named; nothing for one
+ * that takes its Environment off the Servers.
+ */
+export const deploysLabel = ({ services, remove }: Pick<DeploymentSummary, "services" | "remove">) =>
+  remove ? null : `Deploys ${services.length === 0 ? "every service" : services.join(", ")}`;
 
 const time = (seconds: number | null) => seconds === null ? null : new Date(seconds * 1000);
 
@@ -167,36 +187,65 @@ export function admission(deployment: DeploymentSummary) {
   };
 }
 
-/** How long something ran, whole seconds: "45s", "1m 12s", "2h 5m". */
-export function formatDuration(seconds: number) {
-  const whole = Math.max(0, Math.floor(seconds));
-  if (whole < 60) return `${whole}s`;
-  if (whole < 3600) return `${Math.floor(whole / 60)}m ${whole % 60}s`;
-  return `${Math.floor(whole / 3600)}h ${Math.floor((whole % 3600) / 60)}m`;
-}
-
-/** Where an upload came from: "Uploaded by nick · abc1234 + changes". */
-export function uploadLabel(upload: UploadedSource) {
+/** Where an upload came from: "Uploaded by nick · abc1234 + changes"; it names no uploader who is `starter`. */
+export function uploadLabel(upload: UploadedSource, starter?: string | null) {
   const base = upload.base ? ` · ${upload.base.commit.slice(0, 7)}${upload.base.changed ? " + changes" : ""}` : "";
-  return `Uploaded${upload.uploader ? ` by ${upload.uploader}` : ""}${base}`;
+  return `Uploaded${upload.uploader && upload.uploader !== starter ? ` by ${upload.uploader}` : ""}${base}`;
 }
 
-/** What the user can do with a Deployment: retry an ended one that didn't apply, start a queued one, cancel one before it ends. */
-export function deploymentActions(status: DeploymentStatus) {
-  return {
-    retry: status === "failed" || status === "unknown" || status === "cancelled",
-    start: status === "queued",
-    cancel: status === "queued" || status === "running",
-  };
+/**
+ * Who started a Deployment and what it ships: the `service`'s pinned commit, else the first pinned one, else its
+ * upload. "by nick · 8a7ed6e".
+ */
+export function deploymentByline(deployment: DeploymentView, service: string | undefined) {
+  const commit = deployment.builds.find((build) => build.service === service)?.commit ?? deployment.builds.find((build) => build.commit)?.commit;
+  const by = deployment.admitted_by;
+  return [
+    by ? `by ${by}` : null,
+    commit ? commit.slice(0, 7) : deployment.upload ? uploadLabel(deployment.upload, by) : null,
+  ].filter(Boolean).join(" · ");
 }
 
-/** Why a Deployment didn't run, and the Services that had nothing to run (each needs an image or a repository). */
-export function notExecuted(outcome: Outcome | null) {
-  if (outcome?.type !== "not_executed") return null;
-  return { reason: outcome.reason, needsSource: outcome.needs_upload };
+/** The Service a Deployment page opens on: the picked one, else the one that failed, else one it didn't apply, else the first. */
+export function focusedService(deployment: DeploymentView, picked: string | undefined) {
+  const services = deployment.nodes.filter((node) => node.type === "service");
+  return services.find((node) => node.id === picked) ?? services.find((node) => node.outcome === "failed")
+    ?? services.find((node) => !nodeApplied(node.outcome)) ?? services[0];
 }
 
-/** Why a Deployment failed, as the Store words it for users: nothing ran, or what stopped its execution. */
-export function failureReason(outcome: Outcome | null) {
-  return outcome?.reason ?? null;
+/**
+ * Whether a failed Deployment's `node` can be fixed on a Branch: the Deployment ran and `node` didn't apply. With no
+ * Server the failure is having none, and adding one is the way on.
+ */
+export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
+  !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
+
+/**
+ * Why `node` has no deploy logs in the Deployment: nothing of it ran, its turn never came, or it was removed. Null when it
+ * may have some.
+ */
+export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome) {
+  if (deployment.started_at === null || deployment.outcome?.type === "not_executed") return "Not started";
+  return node.outcome === "not_attempted" || node.outcome === "removed" ? nodeStatusLabels[node.outcome] : null;
+}
+
+/** The one action a Deployment page shows by itself. */
+export type DeploymentAction = "add_server" | "retry" | "start" | "cancel";
+
+/**
+ * Retry an ended Deployment that didn't apply, start a queued one, cancel one before it ends; with no Server, adding
+ * one comes first.
+ */
+function primaryAction(status: DeploymentStatus, noServers: boolean): DeploymentAction | null {
+  const retry = status === "failed" || status === "unknown" || status === "cancelled";
+  if (noServers && (retry || status === "queued")) return "add_server";
+  if (retry) return "retry";
+  if (status === "queued") return "start";
+  return status === "running" ? "cancel" : null;
+}
+
+/** The action a Deployment page shows, and whether Cancel waits in its menu beside another one. */
+export function deploymentActions(status: DeploymentStatus, noServers: boolean) {
+  const primary = primaryAction(status, noServers);
+  return { primary, cancelInMenu: (status === "queued" || status === "running") && primary !== "cancel" };
 }

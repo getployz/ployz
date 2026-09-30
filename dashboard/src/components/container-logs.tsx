@@ -5,7 +5,6 @@ import { LatestButton, LOG_TIME_COLUMN, LogEmpty, LogHeader, LogSkeleton, useLog
 import { cn } from "#/lib/utils";
 import { logTimestamp, useTimeZone } from "#/utils/time-zone";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { type ContainerLogRow } from "#/modules/runtime/container-log.collection";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from "#/components/ui/select";
@@ -20,13 +19,13 @@ export type { ContainerLogSelection } from "#/modules/runtime/container-log.stre
 const looksLikeError = (row: { channel: string; message: string }) =>
   row.channel === "stderr" && /\b(error|err|fatal|panic|exception|failed|traceback)\b/iu.test(row.message);
 
-export function ContainerLogs({ selection, lifecycle = [] }: { selection: ContainerLogSelection; lifecycle?: readonly ContainerLogRow[] }) {
+export function ContainerLogs({ selection }: { selection: ContainerLogSelection }) {
   const scope = useCollectionScope();
   const key = JSON.stringify([scope.sessionId, scope.userId, selection]);
-  return <LogViewer key={key} selection={selection} lifecycle={lifecycle} />;
+  return <LogViewer key={key} selection={selection} />;
 }
 
-function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection; lifecycle: readonly ContainerLogRow[] }) {
+function LogViewer({ selection }: { selection: ContainerLogSelection }) {
   const scope = useCollectionScope();
   const stream = getContainerLogStream(selection, scope);
   const { collection } = stream;
@@ -36,8 +35,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   const [search, setSearch] = useState("");
   const [machine, setMachine] = useState("");
   const [service, setService] = useState("");
-  const all = [...loaded, ...lifecycle];
-  const rows = all.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
+  const rows = loaded.filter(row => (!machine || row.machineId === machine) && (!service || row.serviceName === service) && row.message.toLowerCase().includes(search.toLowerCase())).sort((a, b) => {
     const difference = BigInt(a.timestamp) - BigInt(b.timestamp);
     return difference < 0n ? -1 : difference > 0n ? 1 : a.id.localeCompare(b.id);
   });
@@ -55,20 +53,20 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
   const services = [...new Set(loaded.map(row => row.serviceName))];
   // A line names its service and server only where they vary; a filter shows only with something to pick.
-  const byService = !selection.serviceId && services.length > 1;
-  const byMachine = machines.size > 1;
+  const servicesVary = !selection.serviceId && services.length > 1;
+  const machinesVary = machines.size > 1;
   const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className="underline underline-offset-4">Check your servers</Link>;
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
     : refused ? <LogEmpty title="Couldn’t load logs">Trying again…</LogEmpty>
     : !opened ? <LogSkeleton label="Loading logs" time={LOG_TIME_COLUMN.container} />
-    : all.length ? <LogEmpty title="No logs match your filters" />
+    : loaded.length ? <LogEmpty title="No logs match your filters" />
     : <LogEmpty title="No logs yet">Output shows up here as soon as the service writes any.</LogEmpty>;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
-      {byService ? <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} /> : null}
-      {byMachine ? <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} /> : null}
+      {servicesVary ? <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} /> : null}
+      {machinesVary ? <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} /> : null}
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
@@ -94,10 +92,11 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
             {virtual.getVirtualItems().map(item => {
               const row = rows[item.index];
               if (!row) return null;
-              return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6" style={{ transform: `translateY(${item.start}px)` }}>
-                <time className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
+              // A phone stacks the time over its line, which keeps the width.
+              return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6 max-sm:flex-col max-sm:gap-0" style={{ transform: `translateY(${item.start}px)` }}>
+                <time className={cn("shrink-0 text-muted-foreground max-sm:w-auto", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
                 <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", looksLikeError(row) && "text-destructive")}>
-                  {byService || byMachine ? <span className="mr-3 text-muted-foreground">{[byService && row.serviceName, byMachine && row.machineName].filter(Boolean).join(" · ")}</span> : null}{row.message}
+                  {servicesVary || machinesVary ? <span className="mr-3 text-muted-foreground">{[servicesVary && row.serviceName, machinesVary && row.machineName].filter(Boolean).join(" · ")}</span> : null}{row.message}
                 </span>
               </div>;
             })}
