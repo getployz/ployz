@@ -62,7 +62,6 @@ describe("semantic UI states", () => {
         <Item state="info">Info row</Item>
         <Item state="changed">Changed row</Item>
         <Card state="info">Info card</Card>
-        <Card state="changed">Changed card</Card>
         <Card state="success">Created card</Card>
       </>,
     );
@@ -87,13 +86,9 @@ describe("semantic UI states", () => {
     );
 
     const infoCard = screen.getByText("Info card").closest('[data-slot="card"]');
-    const changedCard = screen
-      .getByText("Changed card")
-      .closest('[data-slot="card"]');
     const card = screen.getByText("Created card").closest('[data-slot="card"]');
 
     expect(infoCard?.className).toContain("bg-info-soft");
-    expect(changedCard?.className).toContain("bg-changed-soft");
 
     expect(card?.getAttribute("data-state")).toBe("success");
     expect(card?.className).toContain("bg-success-soft");

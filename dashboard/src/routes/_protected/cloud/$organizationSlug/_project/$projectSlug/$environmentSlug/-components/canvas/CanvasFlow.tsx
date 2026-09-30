@@ -26,7 +26,6 @@ import { usePickingView } from "../new-branch/branch-picking";
 import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useInFlightDeployments, useSavesInto } from "#/modules/config-store/store-view.queries";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { changeGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
@@ -199,7 +198,6 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const waiting = useSavesInto(params.organizationSlug, params.projectSlug, diff.environment.name);
-  const { noServers } = useRuntimeLens(params.organizationSlug);
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
@@ -216,7 +214,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         active={inFlight}
         notes={storeHintNotes(diff, groups)}
         waiting={waiting}
-        noServers={noServers}
+        noServers={store.runtimeLens.noServers}
       />
       {actions.dialog}
     </>

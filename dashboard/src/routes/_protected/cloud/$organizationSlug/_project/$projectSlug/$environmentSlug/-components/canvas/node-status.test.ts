@@ -1,13 +1,16 @@
 import type { DomainRow, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
   ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
-const seen = { lens: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false, desiredReplicas: null, deploying: false } as const;
+const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false };
+const seen = { lens: observed, desiredReplicas: null, deploying: false };
+/** The Runtime Watch saying something other than `observed`. */
+const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, ...lens } });
 
 describe("runtimeLine", () => {
   it("says what runs now in one word", () => {
@@ -23,23 +26,23 @@ describe("runtimeLine", () => {
 
   it("says Not running once the Servers' whole evidence has none of it, and Deployed while a Server is missing from it", () => {
     expect(runtimeLine(service, null, seen)).toMatchObject({ word: "Not running", down: true });
-    expect(runtimeLine(service, null, { ...seen, incomplete: true })).toMatchObject({ word: "Deployed", down: false });
+    expect(runtimeLine(service, null, watch({ incomplete: true }))).toMatchObject({ word: "Deployed", down: false });
   });
 
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
-    const since = new Date(seen.observedAt);
-    expect(runtimeLine(service, null, { ...seen, lens: "connecting" }).tone).toBe("pending");
-    expect(runtimeLine(service, runtime(container("exited")), { ...seen, lens: "unavailable" })).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, { ...seen, lens: "unavailable" })).toEqual({ word: "Not running", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, { ...seen, lens: "unavailable", observedAt: null }).tone).toBe("pending");
-    expect(runtimeLine(service, null, { ...seen, lens: "unreachable" })).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
-    expect(runtimeLine(service, null, { ...seen, noServers: true })).toMatchObject({ word: "Needs a server", down: false });
+    const since = new Date("2026-09-30T10:00:00Z");
+    expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
+    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
+    expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since });
+    expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null })).tone).toBe("pending");
+    expect(runtimeLine(service, null, watch({ status: "unreachable" }))).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
+    expect(runtimeLine(service, null, watch({ status: "no_connection", noServers: true }))).toMatchObject({ word: "Needs a server", down: false });
   });
 
   it("says Not deployed for a new Service and No source for an empty one, whatever runs", () => {
     expect(runtimeLine({ ...service, change: "create" }, null, seen).word).toBe("Not deployed");
     expect(runtimeLine({ ...service, source: "empty" }, null, seen).word).toBe("No source");
-    expect(runtimeLine({ ...service, change: "create" }, null, { ...seen, lens: "unreachable" }).word).toBe("Not deployed");
+    expect(runtimeLine({ ...service, change: "create" }, null, watch({ status: "unreachable" })).word).toBe("Not deployed");
   });
 
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them", () => {
@@ -60,9 +63,10 @@ describe("nodeIssues", () => {
       .toEqual({ count: 1, tone: "warn" });
   });
 
-  it("counts nothing for a healthy, starting, new or empty Service", () => {
+  it("counts nothing for a healthy, starting, new or empty Service, nor a grey word", () => {
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")])).toBeNull();
     expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [])).toBeNull();
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [])).toBeNull();
     expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [])).toBeNull();
   });
 });

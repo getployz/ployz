@@ -10,7 +10,7 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { NOT_MOUNTED, stagedChip, stagedSurface } from "./node-status";
-import { DeployChip, StatusLine } from "./node-status-view";
+import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
 /** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
@@ -33,7 +33,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
         <CardHeader>
           <div className="flex items-start gap-3">
             <Avatar><AvatarFallback><HardDriveIcon /></AvatarFallback></Avatar>
-            <CardTitle className={cn("min-w-0 flex-1 truncate", surface === "destructive" && "line-through")}>{volume.name}</CardTitle>
+            <CardTitle className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</CardTitle>
             <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>

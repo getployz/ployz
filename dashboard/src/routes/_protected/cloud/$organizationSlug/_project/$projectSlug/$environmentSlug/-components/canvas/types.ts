@@ -1,5 +1,6 @@
 import type { DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { Node } from "@xyflow/react";
+import type { RuntimeLens } from "./node-status";
 
 export type CanvasResourceType = "service" | "volume";
 
@@ -22,6 +23,7 @@ export type StoreCanvasService = {
 export type MountedVolume = { volume: VolumeListing; sharedWith: string[] };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
+  runtimeLens: RuntimeLens;
   resourceType: "service";
   resourceId: string;
   environmentId: string;
@@ -58,6 +60,8 @@ export type StoreCanvas = {
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
   diff: DiffView;
+  /** What the Runtime Watch says of the Servers, read once for every card and the bottom bar. */
+  runtimeLens: RuntimeLens;
 };
 
 export type CanvasResourceNode =

@@ -10,36 +10,34 @@ import { ServiceContextMenu } from "./ServiceContextMenu";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
-import { DeployChip, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
+import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
 import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
 import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { useRuntimeService } from "#/providers/runtime-provider";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, selected, compact = false, className }:
-  StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, runtimeLens, selected, compact = false, className }:
+  StoreCanvasService & { runtimeLens: RuntimeLens; selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
-  const { status: lens, incomplete, observedAt, noServers } = useRuntimeLens(params.organizationSlug);
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
   const chip = deployChip(service, changeCount, inFlight);
-  const status = runtimeLine(service, runtime, { lens, incomplete, observedAt, noServers, desiredReplicas, deploying: chip?.kind === "deploying" });
+  const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
   const issues = nodeIssues(status, domains);
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
-  const title = <CardTitle className={cn("truncate", surface === "destructive" && "line-through")}>{service.name}</CardTitle>;
+  const title = <CardTitle className={cn("truncate", surface && STAGED_CLASSES[surface].name)}>{service.name}</CardTitle>;
   const subtitle = domain ? <CardDescription className={cn("truncate", domain.live && "text-foreground")}>{domain.hostname}</CardDescription> : null;
   const chipBadge = <DeployChip light={light} chip={chip} />;
 
@@ -80,7 +78,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-export function StoreServiceNode({ data }: { data: StoreCanvasService }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService & { runtimeLens: RuntimeLens } }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const trays = <ServiceTrays trays={data.trays} selectedNodeId={selectedNodeId} />;

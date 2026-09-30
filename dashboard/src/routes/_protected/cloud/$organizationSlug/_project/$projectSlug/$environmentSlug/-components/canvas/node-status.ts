@@ -1,6 +1,7 @@
 import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
-import type { RuntimeLensStatus, RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import type { Lit } from "../deployment-page";
 
@@ -36,34 +37,32 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
 }
 
 /**
+ * What the Runtime Watch says of the Servers, as `useRuntimeLens` reads it once for the canvas: its status, whether a
+ * Server is missing from its evidence, when that was current, and whether there is no Server at all.
+ */
+export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "incomplete" | "observedAt" | "noServers">;
+
+/**
  * A Service's status line: what runs now, from runtime evidence. Staged work and Deploys never replace it, and it never
  * guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
- * `lens`, `incomplete` and `observedAt`: the Runtime Watch's status, whether a Server is missing from its evidence, and
- * when that was current. `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while
- * a Deploy rolls them.
+ * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
  */
 export function runtimeLine(
   service: Pick<ServiceListing, "change" | "source">,
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
-  { lens, incomplete, observedAt, noServers, desiredReplicas, deploying }:
-    { lens: RuntimeLensStatus; incomplete: boolean; observedAt: string | null; noServers: boolean; desiredReplicas: number | null; deploying: boolean },
+  { lens, desiredReplicas, deploying }: { lens: RuntimeLens; desiredReplicas: number | null; deploying: boolean },
 ): RuntimeLine {
   if (service.change === "create") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
-  if (noServers) return line("Needs a server", "idle");
-  switch (lens) {
-    case "unreachable":
-      return line("Can't reach servers", "unreachable");
-    case "unavailable":
-      // The connection dropped: the last evidence, grey, from when it was current; none seen yet, it waits.
-      return observedAt === null ? line("Checking", "pending")
-        : { ...evidenceLine(runtime, !incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(observedAt) };
-    case "observed":
-      return evidenceLine(runtime, !incomplete, desiredReplicas, deploying);
-    case "connecting":
-    case "no_connection": // `noServers`, above
-      return line("Checking", "pending");
+  if (lens.noServers) return line("Needs a server", "idle");
+  if (lens.status === "unreachable") return line("Can't reach servers", "unreachable");
+  if (lens.status === "observed") return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
+  // The connection dropped: the last evidence, grey, from when it was current.
+  if (lens.status === "unavailable" && lens.observedAt !== null) {
+    return { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
   }
+  // Connecting, or no evidence was ever seen: it waits.
+  return line("Checking", "pending");
 }
 
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
@@ -71,9 +70,8 @@ export type NodeIssues = { count: number; tone: "bad" | "warn" };
 
 /** What on a node the user can fix: a Service that's down or struggling, and domains that need them. */
 export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status">[]): NodeIssues | null {
-  const down = status.tone === "bad" || status.tone === "crashed";
-  const count = (down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length;
-  return count === 0 ? null : { count, tone: down ? "bad" : "warn" };
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length;
+  return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
 }
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */
@@ -83,7 +81,7 @@ export function publicDomain(domains: readonly DomainRow[]) {
 }
 
 /** What the next Deploy does to a node, in colour: green when it creates it, blue when it changes it, red when it removes it. */
-type StagedColour = "success" | "info" | "destructive";
+export type StagedColour = "success" | "info" | "destructive";
 
 const stagedColour = (change: ReviewLifecycleKind): StagedColour =>
   change === "create" ? "success" : change === "delete" ? "destructive" : "info";

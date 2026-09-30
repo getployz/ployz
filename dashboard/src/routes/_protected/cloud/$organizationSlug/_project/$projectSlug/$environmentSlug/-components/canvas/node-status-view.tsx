@@ -6,7 +6,17 @@ import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import type { Lit } from "../deployment-page";
-import type { DeployChipState, NodeIssues, RuntimeLine, Tone } from "./node-status";
+import type { DeployChipState, NodeIssues, RuntimeLine, StagedColour, Tone } from "./node-status";
+
+/**
+ * How a node shows what the next Deploy does to it, beyond a card's own state: a tray's green, blue or red surface, and
+ * its name struck when the Deploy removes it.
+ */
+export const STAGED_CLASSES = {
+  success: { surface: "border-success-border bg-success-soft text-success", name: "" },
+  info: { surface: "border-info-border bg-info-soft text-info", name: "" },
+  destructive: { surface: "border-destructive-border bg-destructive-soft text-destructive", name: "line-through" },
+} satisfies Record<StagedColour, { surface: string; name: string }>;
 
 /** A crash: an explosion off the ground, like the one Railway draws. */
 function CrashedIcon({ className }: { className?: string }) {

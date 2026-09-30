@@ -7,6 +7,7 @@ import { useNodeLighting } from "../deployment-page";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { stagedSurface } from "./node-status";
+import { STAGED_CLASSES } from "./node-status-view";
 import type { MountedVolume } from "./types";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
@@ -15,13 +16,6 @@ const LitVolume = createContext<[string | null, (id: string | null) => void]>([n
 export function LitVolumeProvider({ children }: { children: ReactNode }) {
   return <LitVolume value={useState<string | null>(null)}>{children}</LitVolume>;
 }
-
-/** A tray's staged surface, as the card's: green when the next Deploy creates it, blue when it changes it, red when it removes it. */
-const SURFACES = {
-  success: "border-success-border bg-success-soft text-success",
-  info: "border-info-border bg-info-soft text-info",
-  destructive: "border-destructive-border bg-destructive-soft text-destructive",
-};
 
 /**
  * A Volume as a tray tucked under a Service that mounts it: its name, and only what must be said, green or blue when
@@ -35,11 +29,10 @@ export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: M
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
   const surface = stagedSurface(lighting, volume.change);
-  const removing = surface === "destructive";
   const alsoMounted = sharedWith.length > 0 ? `Also mounted by ${listNames(sharedWith)}` : undefined;
   const className = cn(
     "relative -mt-3 mx-1.5 flex h-13 items-end gap-2 rounded-b-xl border border-t-0 bg-muted px-4 pb-2.5 text-xs text-muted-foreground",
-    surface && SURFACES[surface],
+    surface && STAGED_CLASSES[surface].surface,
     lighting === null && "opacity-40",
     alsoMounted && litVolumeId === volume.id && "border-foreground text-foreground",
     selected && "ring-2 ring-foreground",
@@ -49,9 +42,9 @@ export function VolumeTray({ tray: { volume, sharedWith }, selected }: { tray: M
   );
   const content = <>
     <HardDriveIcon className="size-3.5 shrink-0" />
-    <span className={cn("min-w-0 flex-1 truncate", removing && "line-through")}>{volume.name}</span>
+    <span className={cn("min-w-0 flex-1 truncate", surface && STAGED_CLASSES[surface].name)}>{volume.name}</span>
     {pick ? <span className="truncate">{pick.label}</span>
-      : removing ? <span>Removing</span>
+      : surface === "destructive" ? <span>Removing</span>
       : alsoMounted ? <LinkIcon className="size-3.5 shrink-0" aria-label={alsoMounted} /> : null}
   </>;
   const hover = { onMouseEnter: () => setLitVolumeId(volume.id), onMouseLeave: () => setLitVolumeId(null) };

@@ -60,7 +60,7 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
  * a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "runtimeLens"> & { live?: StoreLiveNode[] },
   canvasPositions: CanvasPosition[],
   environmentId: string,
 ): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
@@ -88,7 +88,7 @@ export function buildStoreNodes(
         id: service.service.id,
         type: "storeService",
         position: place("service", service.service.id),
-        data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
+        data: { ...service, runtimeLens: store.runtimeLens, resourceType: "service", resourceId: service.service.id, environmentId },
       } satisfies CanvasStoreServiceNode;
     }),
     ...store.unmountedVolumes.map((volume) => ({
