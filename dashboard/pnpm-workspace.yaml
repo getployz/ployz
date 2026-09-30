@@ -1,5 +1,6 @@
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
+  # CVE-2026-102989 patch (#1312), published 2026-09-30; drop once past 2026-10-02.
   - "@tanstack/*"
   # Polar API 2026-10 clients, requested before they aged in; drop once past 2026-10-02.
   - "@polar-sh/sdk@1.0.0"
