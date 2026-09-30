@@ -174,7 +174,7 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
                 "{}\t{}\trevoked; not yet cleared on {}\t-",
                 revoking.kind,
                 revoking.id,
-                revoking.unconfirmed.join(", ")
+                joined(&revoking.unconfirmed)
             );
         }
     })
@@ -194,9 +194,9 @@ fn token_remove(root: &ArgMatches) -> Result<(), Error> {
         next: next.as_deref(),
     };
     crate::output::finish(&report, || {
-        match removed.kind.as_str() {
-            "device" => say!("Signed out device {}.", removed.id),
-            _ => say!("Revoked token {}.", removed.id),
+        match removed.kind {
+            cloud_account::CredentialKind::Device => say!("Signed out device {}.", removed.id),
+            cloud_account::CredentialKind::Token => say!("Revoked token {}.", removed.id),
         }
         say_clears(&servers, next.as_deref());
     })?;
@@ -232,7 +232,7 @@ pub(super) fn say_clears(servers: &ServerClears, next: Option<&str>) {
     if let Some(next) = next {
         say!(
             "Not yet confirmed on Server(s) {}; Cloud already refuses it. Retry: {next}",
-            servers.unconfirmed.join(", ")
+            joined(&servers.unconfirmed)
         );
     }
 }
@@ -321,12 +321,10 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
         ));
     }
     let store = CredentialStore::beside(&config_path(matches)?);
-    let removal = runtime()?
-        .block_on(async {
-            let credential = cloud_account::from_env(&store).await?;
-            cloud_account::remove_organization(&credential, slug).await
-        })
-        .map_err(super::store::failed(matches, &["org", "rm", slug.as_str()]))?;
+    let removal = runtime()?.block_on(async {
+        let credential = cloud_account::from_env(&store).await?;
+        cloud_account::remove_organization(&credential, slug).await
+    })?;
     let next = (!removal.removed).then_some(retry.as_str());
     let report = Next::new(&removal, next.map(str::to_owned));
     crate::output::finish(&report, || {
@@ -338,7 +336,7 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             Some(next) => say!(
                 "Organization {} is disabled but stays until Server(s) {} confirm unpairing. Retry: {next}",
                 removal.organization,
-                removal.servers.unconfirmed.join(", ")
+                joined(&removal.servers.unconfirmed)
             ),
         }
     })?;
@@ -359,19 +357,11 @@ fn billing(root: &ArgMatches) -> Result<(), Error> {
     let billing = in_cloud(root, async |_, credential| {
         cloud_account::billing(credential).await
     })?;
-    let next = match (billing.self_hosted, billing.pro) {
-        (true, _) => None,
-        (false, true) => Some("ployz billing manage"),
-        (false, false) => Some("ployz billing upgrade"),
-    };
+    let next = billing.plan.next();
     let report = BillingReport { billing, next };
     crate::output::finish(&report, || {
         let billing = &report.billing;
-        let plan = match (billing.self_hosted, billing.pro) {
-            (true, _) => "self-hosted, no billing",
-            (false, true) => "Pro",
-            (false, false) => "no plan",
-        };
+        let plan = billing.plan.label();
         let domains = if billing.custom_domains {
             "allowed"
         } else {
@@ -405,4 +395,9 @@ fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
             open_browser(&url);
         }
     })
+}
+
+/// Server IDs as one line of text.
+fn joined(machines: &[ployz_core::MachineId]) -> String {
+    super::env::joined(machines)
 }

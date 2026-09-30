@@ -291,8 +291,9 @@ pub struct Claimed {
     pub intent: DeployIntent,
     /// The lowering input `intent` came from: what SDK preparation takes.
     pub input: Value,
-    /// The latest build receipt of each Service, by runtime name: hints preparation verifies.
-    pub receipts: BTreeMap<ServiceName, Value>,
+    /// Every build receipt of each Service, by runtime name, its Environment's own
+    /// first: hints preparation verifies.
+    pub receipts: BTreeMap<ServiceName, Vec<Value>>,
     /// The Git Services it builds, each with its pinned commit, if any.
     pub sources: Vec<GitSource>,
     /// The Docker Volumes to delete once the Deploy succeeds: exactly those whose

@@ -169,13 +169,6 @@ pub(super) fn config_path(matches: &ArgMatches) -> Result<std::path::PathBuf, Er
         .ok_or_else(|| Error::usage("Ployz config path is required"))
 }
 
-async fn connect_client(
-    matches: &ArgMatches,
-    context: Option<&str>,
-) -> Result<crate::connect::Client, Error> {
-    server::connect(matches, context).await
-}
-
 /// The explicit connection, the selected context, or the local daemon; never Cloud.
 async fn connect_context(
     matches: &ArgMatches,
@@ -242,7 +235,7 @@ where
     let leaf = leaf_matches(root);
     let context = leaf.get_one::<String>("context").map(String::as_str);
     runtime()?.block_on(async {
-        let mut client = connect_client(leaf, context).await?;
+        let mut client = server::connect(leaf, context).await?;
         work(&mut client).await
     })
 }

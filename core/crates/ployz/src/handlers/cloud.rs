@@ -227,7 +227,7 @@ where
         wait_phase(
             matches,
             LocalMachinePhase::Participating,
-            "joined Machine did not become ready",
+            "the joined Server did not become ready",
         )
         .await?
     };
@@ -238,7 +238,7 @@ where
     // A committed join remains enrolled even when Global catch-up needs a separate retry.
     cloud_enroll::publish(callback_url, assigned.id, &pairing.secret, &capability).await?;
     cloud_enroll::callback(callback_url, assigned.id, &pairing.secret).await?;
-    crate::output::say!("Joined Machine {} ({})", assigned.name, assigned.id);
+    crate::output::say!("Joined Server {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
     crate::output::emit_committed(
         serde_json::json!({ "server": assigned, "founded": false }),
@@ -343,7 +343,7 @@ where
             let ready = wait_phase(
                 matches,
                 LocalMachinePhase::Participating,
-                "initial Machine did not become ready",
+                "the first Server did not become ready",
             )
             .await?;
             (initialized.machine, ready)
@@ -356,12 +356,12 @@ where
         // An interrupted Apply may have completed mutations. Do not replay it.
         let _ingress = crate::deploy::apply_requested(&mut ready, &requested, false, false, "default").await.map_err(|error| {
             let error: Error = error.into();
-            error.reworded(format!("Machine initialized; Ingress deployment incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options) to reconcile the observed state"))
+            error.reworded(format!("Server initialized; Ingress deployment incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options) to reconcile the observed state"))
         })?;
     }
     // Repeated Set stages a fresh capability; its first operational RPC completes rotation.
     let capability = set_cloud_management_client(matches, &mut ready).await
-        .map_err(|error| error.reworded(format!("Machine initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options)")))?;
+        .map_err(|error| error.reworded(format!("Server initialized; Cloud Pairing publication incomplete: {error}; rerun the same ployz server add command without --reset (keep all other options)")))?;
     cloud_enroll::publish(
         &cloud_enroll::callback_url(cloud_url, token),
         machine.id,
@@ -421,7 +421,7 @@ where
     }
     if !installs_here(matches, &client) {
         return Err(Error::usage(format!(
-            "zfs storage preparation requires running ployz server add on the Machine itself; connected through {}",
+            "zfs storage preparation requires running ployz server add on the Server itself; connected through {}",
             client.connection()
         )));
     }
@@ -446,7 +446,7 @@ where
     }
     if !installs_here(matches, &client) {
         return Err(Error::usage(format!(
-            "daemon version synchronization requires running ployz server add on the Machine itself; connected through {}",
+            "daemon version synchronization requires running ployz server add on the Server itself; connected through {}",
             client.connection()
         )));
     }
@@ -545,16 +545,16 @@ async fn ensure_uninitialized(
     }
     if !reset {
         return Err(Error::conflict(
-            "Machine is already initialised; rerun with --reset to reset it before enrollment"
+            "This Server is already initialised; rerun with --reset to reset it before enrollment"
                 .to_owned(),
         ));
     }
-    crate::handlers::server::confirm(yes, "Reset the Machine before joining this Cluster?")?;
+    crate::handlers::server::confirm(yes, "Reset this Server before joining the Cluster?")?;
     crate::handlers::server::reset(&mut client).await?;
     wait_phase(
         matches,
         LocalMachinePhase::Uninitialized,
-        "Machine did not reset",
+        "The Server did not reset",
     )
     .await
 }

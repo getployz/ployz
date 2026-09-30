@@ -213,7 +213,7 @@ fn stored_paths() -> Vec<String> {
         let config = std::env::var(crate::cli::env::CONFIG)
             .unwrap_or_else(|_| "~/.config/ployz/config.yaml".to_owned());
         let config = crate::context::expand_home(std::path::Path::new(&config));
-        let store = super::store::store_at(&config).ok()?;
+        let store = super::store::backend_at(&config).ok()??;
         let environment = super::link::scope_from_env(&config).ok()?.at();
         let query = EnvironmentQuery {
             environment,
