@@ -58,18 +58,6 @@ pub trait Tell: Serialize {
     fn written(written: Written) -> Result<Self::Written, RpcError>;
 }
 
-/// `CreateProject` as serde names it: `create_project`.
-pub(crate) fn snake(name: &str) -> String {
-    let mut snake = String::with_capacity(name.len() + 4);
-    for (index, letter) in name.char_indices() {
-        if letter.is_ascii_uppercase() && index > 0 {
-            snake.push('_');
-        }
-        snake.push(letter.to_ascii_lowercase());
-    }
-    snake
-}
-
 /// Register every command. A row reads:
 /// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS]] => CALL;`
 /// where `keyed` lists the caller-minted IDs a create replays by, and `CALL` runs it
@@ -135,11 +123,7 @@ macro_rules! commands {
                 }
 
                 fn to_command(&self) -> Value {
-                    let mut command = serde_json::to_value(self).expect("commands are JSON");
-                    if let Some(fields) = command.as_object_mut() {
-                        fields.insert("command".to_owned(), snake(stringify!($variant)).into());
-                    }
-                    command
+                    serde_json::to_value(Command::$variant(self.clone())).expect("commands are JSON")
                 }
 
                 fn written(written: Written) -> Result<$answer, RpcError> {
