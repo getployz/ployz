@@ -275,7 +275,7 @@ fn removal(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let empty = review::empty(&environment.working.environment_slug);
+    let empty = crate::scope::empty(&environment.working.environment_slug);
     let losses = if forget {
         Vec::new()
     } else {

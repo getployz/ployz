@@ -39,7 +39,7 @@ pub use automation::{AutoDeployed, Automated, BranchHead, CheckSuite, Skipped, S
 pub use branch::{
     BranchPlanQuery, BranchPlanView, BranchQuery, BranchView, Branched, CopyNode, CreateBranch,
     KeepBranch, LiveNode, Move, MoveChoice, MovePick, MoveQuery, MoveRow, MoveView, Moved,
-    PickChoice, PlannedNode, PlannedRole, Save, SetupCommand, Take, Update, When,
+    PickChoice, PlannedNode, PlannedRole, Save, SetBranchSetup, SetupCommand, Take, Update, When,
 };
 pub use build::{
     BuildLogQuery, BuildLogView, BuildReport, BuildStatus, BuildView, GitSource, GithubBuild,
@@ -72,7 +72,7 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveProject, SetBranchSetup, SetDefaultEnvironment, Teardown,
+    RemoveEnvironment, RemoveProject, SetDefaultEnvironment, Teardown,
 };
 pub use trusted::{Trusted, VolumeObservation};
 
