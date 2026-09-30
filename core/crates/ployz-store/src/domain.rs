@@ -1116,6 +1116,7 @@ mod tests {
             ),
             ingress_addresses: vec!["203.0.113.7".into()],
             lookups: Vec::new(),
+            published: Vec::new(),
         }
     }
 
