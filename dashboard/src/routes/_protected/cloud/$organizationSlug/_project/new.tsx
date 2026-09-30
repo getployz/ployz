@@ -18,7 +18,7 @@ function RouteComponent() {
   const { organizationSlug } = Route.useParams();
 
   return (
-    <main className="relative flex min-h-svh items-center justify-center overflow-hidden p-4">
+    <div className="relative flex h-full items-center justify-center overflow-hidden p-4">
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         <ReactFlowProvider>
           <ReactFlow
@@ -37,6 +37,6 @@ function RouteComponent() {
       <div className="relative w-full max-w-md">
         <ServiceCreateCommand organizationSlug={organizationSlug} />
       </div>
-    </main>
+    </div>
   );
 }
