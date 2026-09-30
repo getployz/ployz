@@ -25,6 +25,7 @@ const refreshedBy = {
   services: ["store_environment", "store_deployment"],
   deployments: ["store_deployment"],
   deployment: ["store_deployment"],
+  numbered_deployment: ["store_deployment"],
   build_log: ["store_deployment"],
   // Admission fixes an Environment's Namespace.
   namespace: ["store_environment", "store_deployment"],
