@@ -1116,6 +1116,8 @@ port: number | null, } & ({ "kind": "generated", prefix: string, hostname: strin
 
 export type DomainAction = { "type": "deploy" } | { "type": "add_server" } | { "type": "dns", records: Array<DnsRecord>, };
 
+export type DomainPrefix = string;
+
 export type DomainQuery = { environment: EnvironmentRef,
 /**
  * Its hostname, or a generated domain's prefix.
@@ -2785,10 +2787,15 @@ export type SetDefaultEnvironment = { environment: EnvironmentRef, };
 
 export type SetGeneratedDomain = { environment: EnvironmentRef, service: ServiceName,
 /**
- * One DNS label, unique among the Organization's generated domains and the
- * hostnames other Namespaces publish.
+ * Unique among the Organization's generated domains and the hostnames other
+ * Namespaces publish.
  */
-prefix: string, };
+prefix: DomainPrefix,
+/**
+ * The container port it reaches: omitted keeps it, `null` follows the
+ * container's `PORT`.
+ */
+port?: number | null, };
 
 export type SetManagementClientResponse = { capability: string | null, };
 

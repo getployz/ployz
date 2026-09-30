@@ -455,8 +455,8 @@ fn an_agent_adds_checks_and_removes_domains() {
         ok(store, &["domain", "add", "api"]);
         let taken = error(store, &["domain", "set", "api", "shop"]);
         assert_eq!(taken["code"], json!("conflict"));
-        let label = error(store, &["domain", "set", "api", "not.one-label"]);
-        assert_eq!(label["code"], json!("invalid_argument"));
+        let label = failed(store, &["domain", "set", "api", "not.one-label"], 2);
+        assert!(!label["message"].as_str().unwrap().contains("not.one-label"));
         ok(store, &["domain", "set", "web", "web"]);
 
         // The hidden Store stands for a self-hosted Cloud; hosted Cloud needs Pro.

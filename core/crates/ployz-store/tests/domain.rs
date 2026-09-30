@@ -432,7 +432,8 @@ fn set_prefix(environment: Option<&str>, prefix: &str) -> SetGeneratedDomain {
     SetGeneratedDomain {
         environment: at(environment),
         service: ServiceName::parse("web").unwrap(),
-        prefix: prefix.into(),
+        prefix: ployz_core::DomainPrefix::parse(prefix).unwrap(),
+        port: None,
     }
 }
 
@@ -450,7 +451,7 @@ fn a_generated_prefix_changes_to_a_free_dns_label() {
     store.write_trusted(&who, &staging, &trusted).unwrap();
 
     let set = store
-        .write_trusted(&who, &set_prefix(None, "Shop"), &trusted)
+        .write_trusted(&who, &set_prefix(None, "shop"), &trusted)
         .unwrap();
     assert_eq!(set.domain.shown(), "shop.acme.ployz.app");
     assert_eq!(set.staged.len(), 1);
@@ -459,10 +460,13 @@ fn a_generated_prefix_changes_to_a_free_dns_label() {
             .write_trusted(&who, &set_prefix(Some("staging"), prefix), trusted)
             .unwrap_err()
     };
-    assert_eq!(
-        refused("-shop", &trusted).code,
-        RpcErrorCode::InvalidArgument
-    );
+    // A prefix is one lowercase DNS label, checked as it is read.
+    for invalid in ["-shop", "Shop", "a.b"] {
+        assert!(
+            ployz_core::DomainPrefix::parse(invalid).is_err(),
+            "{invalid}"
+        );
+    }
     // Unique in the Organization, and against what another Namespace publishes.
     assert_eq!(refused("shop", &trusted).code, RpcErrorCode::Conflict);
     let orphan = refused(
@@ -481,6 +485,24 @@ fn a_generated_prefix_changes_to_a_free_dns_label() {
             .staged
             .is_empty()
     );
+    // One edit sets the port too; leaving it out keeps it, and clearing it keeps
+    // the prefix.
+    let port = |port| SetGeneratedDomain {
+        port: Some(port),
+        ..set_prefix(None, "shop")
+    };
+    let set = store
+        .write_trusted(&who, &port(Some(8080)), &trusted)
+        .unwrap();
+    assert_eq!(set.domain.port, Some(8080));
+    let kept = store
+        .write_trusted(&who, &set_prefix(None, "shop"), &trusted)
+        .unwrap();
+    assert_eq!((kept.domain.port, kept.staged.len()), (Some(8080), 0));
+    let cleared = store.write_trusted(&who, &port(None), &trusted).unwrap();
+    assert_eq!(cleared.staged.len(), 1);
+    assert_eq!(cleared.domain.port, None);
+    assert_eq!(cleared.domain.shown(), "shop.acme.ployz.app");
 }
 
 #[test]
