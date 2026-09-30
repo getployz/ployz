@@ -99,7 +99,7 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
     if (!next) return setError("Enter a valid storage limit of at least 0.001 GB.");
     if (!changed) return;
     writer.commit({ command: "set_volume_storage", environment: state.environment,
-      volume: state.volume.name, storage: next, expect: null });
+      volume: state.volume.name, storage: next });
   }
 
   return <section aria-labelledby="volume-storage-heading" className="flex flex-col gap-4">

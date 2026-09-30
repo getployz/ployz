@@ -24,14 +24,14 @@ use std::collections::BTreeSet;
 use ployz_core::config::{
     SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
 };
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::command::ProjectSummary;
+use crate::project::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
@@ -522,15 +522,7 @@ fn open(
         match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, event)) {
             Ok(Some(deployed)) => automated.admitted.push(deployed),
             Ok(None) => {}
-            Err(error)
-                if matches!(
-                    error.code,
-                    RpcErrorCode::InvalidArgument
-                        | RpcErrorCode::Unsupported
-                        | RpcErrorCode::NotFound
-                        | RpcErrorCode::Conflict
-                ) =>
-            {
+            Err(error) if crate::automation::skippable(&error) => {
                 // The plan can't make one: nothing to retry until someone changes it.
                 automated.skipped.push(Skipped {
                     environment: start.summary.id.clone(),
@@ -590,16 +582,7 @@ fn create(
     // Deploy. Refused before anything is written: a PR Environment that can't deploy
     // isn't made.
     let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
-    if cluster_domain.is_none() && crate::domain::has_generated(working) {
-        return Err(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: format!(
-                "Deploy {} once first: generated domains need the Cluster Domain Cloud reserves at a Deploy",
-                start.summary.name
-            ),
-            details: json!({}),
-        });
-    }
+    crate::deployment::admit::needs_cluster_domain(start, working, cluster_domain.as_ref())?;
     let name = free_name(tx, start, event.number)?;
     let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
     let from = EnvironmentRef {

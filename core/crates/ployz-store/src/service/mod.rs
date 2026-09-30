@@ -14,7 +14,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -72,8 +71,6 @@ pub struct ServiceStaged {
     /// What waits for a Deploy: every Setting of a new Service, or the Service itself
     /// for a rename or removal. Empty when nothing changed.
     pub staged: Vec<SettingPath>,
-    /// What took effect at once: never anything here.
-    pub immediate: Vec<SettingPath>,
 }
 
 /// A Service as results name it.
@@ -92,24 +89,21 @@ pub(crate) fn create_service(
     who: &Actor,
     create: &CreateService,
 ) -> Result<ServiceStaged, RpcError> {
-    let command = Command::CreateService(create.clone());
-    replayable(tx, who, &command, |tx| {
-        let source = match &create.image {
-            Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
-            None => ServiceSource::Empty {
-                version: 1,
-                root_dir: "/".to_owned(),
-            },
-        };
-        insert_service(
-            tx,
-            who,
-            &create.id,
-            &create.environment,
-            &create.name,
-            source,
-        )
-    })
+    let source = match &create.image {
+        Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
+        None => ServiceSource::Empty {
+            version: 1,
+            root_dir: "/".to_owned(),
+        },
+    };
+    insert_service(
+        tx,
+        who,
+        &create.id,
+        &create.environment,
+        &create.name,
+        source,
+    )
 }
 
 /// Stage a new Service running `source` and capture its Node Introduction.
@@ -165,7 +159,6 @@ pub(crate) fn insert_service(
         service: summary(&node)?,
         environment: environment.summary,
         staged,
-        immediate: Vec::new(),
     })
 }
 
@@ -187,7 +180,6 @@ pub(crate) fn rename_service(
         staged: staged(changed, &service.name),
         service,
         environment: environment.summary,
-        immediate: Vec::new(),
     })
 }
 
@@ -207,7 +199,6 @@ pub(crate) fn remove_service(
         staged: staged(true, &service.name),
         service,
         environment: environment.summary,
-        immediate: Vec::new(),
     })
 }
 

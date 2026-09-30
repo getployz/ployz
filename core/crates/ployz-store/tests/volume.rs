@@ -15,7 +15,7 @@ use ployz_store::{
     Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
-    SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
+    RenameVolume, SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
     VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
@@ -218,30 +218,23 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         serde_json::from_value(json!({ "id": VOLUME, "name": "data" })).unwrap();
     assert_eq!(create.storage, VolumeKind::managed_default());
     let (store, who) = shop();
-    let set = |storage, expect| {
+    let set = |storage| {
         store.write(
             &who,
             &SetVolumeStorage {
                 environment: EnvironmentRef::default(),
                 volume: VolumeName::parse("data").unwrap(),
                 storage,
-                expect,
             },
         )
     };
-    let changed = set(VolumeKind::managed_default(), None).unwrap();
+    let changed = set(VolumeKind::managed_default()).unwrap();
     assert_eq!(texts(&changed.staged), ["volumes.data"]);
     assert!(!listed(&store, &who)[0].storage_locked);
-    let stale = changed.environment.revision;
-    set(VolumeKind::Local {}, Some(stale)).unwrap();
-    assert_eq!(
-        code(set(VolumeKind::managed_default(), Some(stale))),
-        RpcErrorCode::Conflict
-    );
     let managed = VolumeKind::Provisioned {
         maximum_bytes: 7_000_000_000.try_into().unwrap(),
     };
-    set(managed, None).unwrap();
+    set(managed).unwrap();
     admit(&store, &who, 1, &[], None).unwrap();
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id(1), &runner).unwrap();
@@ -276,11 +269,11 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     );
     assert!(listed(&store, &who)[0].storage_locked);
     for storage in [VolumeKind::Local {}, VolumeKind::managed_default()] {
-        let refused = set(storage, None).unwrap_err();
+        let refused = set(storage).unwrap_err();
         assert_eq!(refused.code, RpcErrorCode::Conflict);
         assert_eq!(refused.details["storage_locked"], true);
     }
-    assert!(set(managed, None).unwrap().staged.is_empty());
+    assert!(set(managed).unwrap().staged.is_empty());
     assert_eq!(listed(&store, &who)[0].volume.storage, managed);
 }
 
@@ -711,4 +704,100 @@ fn a_renamed_volume_keeps_its_mounts_and_refuses_a_taken_name() {
     assert_eq!(listed(&store, &who)[0].mounts[0].path, "/data");
     let gone = rename("other").unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_deployed_volume_rename_discards_by_its_row() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RenameVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                name: VolumeName::parse("files").unwrap(),
+            },
+        )
+        .unwrap();
+    let changes = diff(&store, &who).changes;
+    let row = &changes[0].settings[0];
+    assert_eq!(row.path, "volumes.files.name");
+    assert!(row.can_restore);
+    store
+        .write(
+            &who,
+            &Discard {
+                environment: EnvironmentRef::default(),
+                path: Some(path(&row.path)),
+                version: None,
+            },
+        )
+        .unwrap();
+    assert!(diff(&store, &who).changes.is_empty());
+    assert_eq!(texts(&[listed(&store, &who)[0].volume.name.clone()]), ["data"]);
+}
+
+#[test]
+fn an_unmounted_volume_deploys_only_with_a_deploy_that_succeeded() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                storage: ployz_core::config::VolumeKind::Local {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("spare").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": operation, "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let failed: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
+        "type": "failed", "completed": [],
+        "failed": {"type": "operation", "operation": operation, "error": {
+            "type": "machine", "action": "RemoveContainer",
+            "error": {"code": "internal", "message": "busy", "details": {}}
+        }},
+        "unexecuted": []
+    }))
+    .unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Executed {
+                outcome: Box::new(failed),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let outcomes: Vec<(String, NodeStatus)> = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect();
+    assert!(
+        outcomes.contains(&("spare".to_owned(), NodeStatus::NotAttempted)),
+        "{outcomes:?}"
+    );
 }

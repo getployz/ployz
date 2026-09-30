@@ -55,7 +55,7 @@ pub use deployment::{
 pub use domain::{
     AddDomain, ClusterDomain, ClusterDomainStatus, DnsLookup, DnsRecord, DnsRecordKind, Domain,
     DomainAction, DomainEvidence, DomainName, DomainQuery, DomainRow, DomainStaged, DomainStatus,
-    DomainView, DomainsQuery, DomainsView, RemoveDomain,
+    DomainView, DomainsQuery, DomainsView, PublishedHostname, RemoveDomain, SetGeneratedDomain,
 };
 pub use git::{AuthorizedRepository, CreateGitService};
 pub use id::*;
@@ -137,10 +137,14 @@ impl ConfigStore {
         query: &Q,
         trusted: &Trusted,
     ) -> Result<Q::View, RpcError> {
-        let query = query.clone().query();
-        self.storage
-            .read(|tx| query::run(tx, who, &query, trusted))
-            .and_then(Q::view)
+        self.storage.read(|tx| {
+            query.answer(&mut Call {
+                tx,
+                who,
+                sealing: &self.sealing,
+                trusted,
+            })
+        })
     }
 
     /// Apply `command` — a [`Command`], or one of its payloads for its own result —
@@ -164,10 +168,14 @@ impl ConfigStore {
         command: &C,
         trusted: &Trusted,
     ) -> Result<C::Written, RpcError> {
-        let command = command.clone().command();
-        self.storage
-            .write(|tx| command::run(tx, who, &self.sealing, &command, trusted))
-            .and_then(C::written)
+        self.storage.write(|tx| {
+            command.apply(&mut Call {
+                tx,
+                who,
+                sealing: &self.sealing,
+                trusted,
+            })
+        })
     }
 
     /// Bind a queued Deployment to `runner` and return its frozen Deploy Intent, with

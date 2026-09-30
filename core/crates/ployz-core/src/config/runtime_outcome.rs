@@ -201,20 +201,19 @@ pub fn project_runtime_outcome(
         return Err(invalid());
     }
     let mut matched = vec![false; preview.operations.len()];
-    // Per Service: whether every operation completed, and whether any ran at all.
-    let mut services: BTreeMap<ServiceName, (bool, bool)> = BTreeMap::new();
-    for (mut operation, (completed, ran)) in completed
+    let mut services: BTreeMap<ServiceName, Progress> = BTreeMap::new();
+    for (mut operation, progress) in completed
         .into_iter()
-        .map(|operation| (operation, (true, true)))
+        .map(|operation| (operation, Progress::Completed))
         .chain(
             failed
                 .into_iter()
-                .map(|operation| (operation, (false, true))),
+                .map(|operation| (operation, Progress::Failed)),
         )
         .chain(
             pending
                 .into_iter()
-                .map(|operation| (operation, (false, false))),
+                .map(|operation| (operation, Progress::Unattempted)),
         )
     {
         redact_operation(&mut operation)?;
@@ -242,9 +241,8 @@ pub fn project_runtime_outcome(
             .or_else(|| operation.service_name());
         match service {
             Some(service) => {
-                let entry = services.entry(service.clone()).or_insert((true, false));
-                entry.0 &= completed;
-                entry.1 |= ran;
+                let entry = services.entry(service.clone()).or_insert(progress);
+                *entry = entry.merge(progress);
             }
             None if matches!(
                 operation,
@@ -253,17 +251,39 @@ pub fn project_runtime_outcome(
             None => return Err(invalid()),
         }
     }
-    let named = |wanted: fn(bool, bool) -> bool| {
+    let named = |wanted: Progress| {
         services
             .iter()
-            .filter(|(_, (complete, ran))| wanted(*complete, *ran))
+            .filter(|(_, progress)| **progress == wanted)
             .map(|(service, _)| service.clone())
             .collect()
     };
     Ok(RuntimeOutcomeProjection {
         summary,
-        confirmed_services: named(|complete, _| complete),
-        failed_services: named(|complete, ran| !complete && ran),
-        unattempted_services: named(|complete, ran| !complete && !ran),
+        confirmed_services: named(Progress::Completed),
+        failed_services: named(Progress::Failed),
+        unattempted_services: named(Progress::Unattempted),
     })
+}
+
+/// How far a Service's planned operations got.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Progress {
+    /// Every one completed.
+    Completed,
+    /// Some ran, not all completed.
+    Failed,
+    /// None ran.
+    Unattempted,
+}
+
+impl Progress {
+    /// The Service's progress with one more operation's.
+    const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Completed, Self::Completed) => Self::Completed,
+            (Self::Unattempted, Self::Unattempted) => Self::Unattempted,
+            _ => Self::Failed,
+        }
+    }
 }

@@ -2,17 +2,8 @@
 
 use super::*;
 
-pub(crate) fn create_branch(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateBranch,
-) -> Result<Branched, RpcError> {
-    replayable(tx, who, &Command::CreateBranch(create.clone()), |tx| {
-        insert_branch(tx, who, create)
-    })
-}
 
-pub(super) fn insert_branch(
+pub(crate) fn create_branch(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateBranch,
