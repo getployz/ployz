@@ -16,6 +16,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
 
 /// Create a Volume, optionally mounted into Services.
@@ -84,9 +85,9 @@ pub struct VolumeStaged {
     pub environment: EnvironmentSummary,
     /// What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
     /// gained or lost as `SERVICE.mounts.NAME`.
-    pub staged: Vec<String>,
+    pub staged: Vec<SettingPath>,
     /// What took effect at once: never anything here.
-    pub immediate: Vec<String>,
+    pub immediate: Vec<SettingPath>,
 }
 
 /// A Volume as results name it.
@@ -125,27 +126,17 @@ pub(crate) fn create_volume(
             storage: create.storage,
         };
         environment.working.volumes.push(node.clone());
-        let mut staged = vec![whole(&create.name)];
+        let mut staged = vec![SettingPath::volume(&create.name)];
         for mount in &create.mounts {
             if attach(&mut environment, &mount.service, &create.name, &mount.path)? {
-                staged.push(path(&mount.service, &create.name));
+                staged.push(SettingPath::at(
+                    &mount.service,
+                    Target::Mount(create.name.clone()),
+                ));
             }
         }
         scope::save_working(tx, &mut environment)?;
-        tx.execute(
-            "INSERT INTO config_node_introduction \
-             (environment_id, node_id, organization_id, node_type, node) \
-             VALUES (?1, ?2, ?3, 'volume', ?4)",
-            &[
-                environment.summary.id.as_str().into(),
-                create.id.as_str().into(),
-                who.organization.as_str().into(),
-                serde_json::to_string(&node)
-                    .expect("a Volume node is JSON")
-                    .as_str()
-                    .into(),
-            ],
-        )?;
+        scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
         Ok(VolumeStaged {
             volume: VolumeSummary {
                 id: create.id.clone(),
@@ -183,7 +174,7 @@ pub(crate) fn set_storage(
         volume: summary(environment.volume(&set.volume)?)?,
         environment: environment.summary,
         staged: if changed {
-            vec![format!("volumes.{}.storage", set.volume)]
+            vec![SettingPath::volume(&set.volume)]
         } else {
             Vec::new()
         },
@@ -206,12 +197,10 @@ pub(crate) fn locked_storage(
     )?;
     let mut locked = BTreeMap::new();
     for row in rows {
-        let saved: SavedEnvironmentIntent = serde_json::from_str(row.text(0)?)
-            .map_err(|_| error::corrupt("Saved Volume storage"))?;
-        let nodes: Vec<crate::deployment::TargetNode> =
-            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("Deployment nodes"))?;
+        let saved = row.intent(0, "Saved Volume storage")?;
+        let nodes: Vec<crate::deployment::TargetNode> = row.json(1, "Deployment nodes")?;
         for volume in saved.volumes {
-            if nodes.iter().any(|node| node.id == volume.resource_id) {
+            if nodes.iter().any(|node| node.id() == volume.resource_id) {
                 locked.entry(volume.resource_id).or_insert(volume.storage);
             }
         }
@@ -252,14 +241,16 @@ pub(crate) fn remove_volume(
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &remove.environment)?;
     let volume = summary(environment.volume(&remove.volume)?)?;
-    let mut staged = vec![whole(&volume.name)];
+    let mut staged = vec![SettingPath::volume(&volume.name)];
     for service in &mut environment.working.services {
         let before = service.volume_attachments.len();
         service
             .volume_attachments
             .retain(|mount| mount.volume_resource_id != volume.id.as_str());
         if service.volume_attachments.len() != before {
-            staged.push(format!("{}.mounts.{}", service.slug, volume.name));
+            let name =
+                ServiceName::parse(service.slug.as_str()).map_err(|_| error::corrupt("Service"))?;
+            staged.push(SettingPath::at(&name, Target::Mount(volume.name.clone())));
         }
     }
     environment
@@ -325,12 +316,4 @@ pub(crate) fn summary(node: &SavedVolumeIntent) -> Result<VolumeSummary, RpcErro
         name: VolumeName::parse(node.name.as_str()).map_err(|_| error::corrupt("Volume name"))?,
         storage: node.storage,
     })
-}
-
-fn whole(volume: &VolumeName) -> String {
-    format!("volumes.{volume}")
-}
-
-fn path(service: &ServiceName, volume: &VolumeName) -> String {
-    format!("{service}.mounts.{volume}")
 }

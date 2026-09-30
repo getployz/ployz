@@ -50,8 +50,8 @@ pub(super) fn branch(root: &ArgMatches) -> Result<(), Error> {
             environment: from,
         },
         name,
-        copy: nodes("copy"),
-        live: nodes("live"),
+        copy: super::node_names(&nodes("copy"))?,
+        live: super::node_names(&nodes("live"))?,
         setup,
         keep: matches.get_flag("keep"),
         fix,
@@ -306,7 +306,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
             _ => say!("Moved {from} → {into}."),
         }
         if !moved.staged.is_empty() {
-            say!("Staged: {}", moved.staged.join(", "));
+            say!("Staged: {}", super::joined(&moved.staged));
         }
         if let Some(close) = &out.close {
             say!("Close the Branch when done: {close}");
@@ -373,7 +373,7 @@ fn finish(result: &Branched, deploy: Option<String>, what: &str) -> Result<(), E
             branch.parent
         );
         if !result.staged.is_empty() {
-            say!("Staged: {}", result.staged.join(", "));
+            say!("Staged: {}", super::joined(&result.staged));
         }
         for live in &branch.live {
             match &live.owner {

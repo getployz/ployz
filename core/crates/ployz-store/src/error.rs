@@ -63,13 +63,19 @@ pub(crate) fn choices<'a>(
     input: &str,
     names: impl IntoIterator<Item = &'a str> + Clone,
 ) -> RpcError {
-    not_found(
-        message,
-        serde_json::json!({
-            "did_you_mean": did_you_mean(input, names.clone()),
-            "valid_children": names.into_iter().collect::<Vec<_>>(),
-        }),
-    )
+    not_found(message, suggest(input, names))
+}
+
+/// Details for a mistyped name: the closest of `names`, if one is close, and every
+/// one there is.
+pub(crate) fn suggest<'a>(
+    input: &str,
+    names: impl IntoIterator<Item = &'a str> + Clone,
+) -> serde_json::Value {
+    serde_json::json!({
+        "did_you_mean": did_you_mean(input, names.clone()),
+        "valid_children": names.into_iter().collect::<Vec<_>>(),
+    })
 }
 
 /// Levenshtein distance.

@@ -11,39 +11,7 @@ hostname: Hostname | null,
  */
 port: number | null, };
 
-export type Admit = { id: DeploymentId, environment: EnvironmentRef,
-/**
- * Deploy only these Services; none deploys every Service.
- */
-services: Array<ServiceName>,
-/**
- * Refuse with `conflict` unless this is still the latest `diff` version.
- */
-version: string | null,
-/**
- * A new upload for Services without a source of their own; none keeps the
- * Environment's latest.
- */
-upload?: UploadedSource | null,
-/**
- * Retry this failed, unknown or cancelled Deployment: its Saved revision,
- * targets and Namespace, whatever was saved since. It names the Environment,
- * so `environment`, `services`, `version` and `upload` stay empty.
- */
-retry?: DeploymentId | null,
-/**
- * Remove the Environment from the Servers: ship it empty, deleting its deployed
- * Volumes, without touching Working or Saved State. `services`, `upload` and
- * `retry` stay empty. `RemoveEnvironment` then deletes it.
- */
-remove: boolean,
-/**
- * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
- * deletes data, or publishes a removal that will, refuses with
- * `confirmation_required` unless it names each one and passes the `version`
- * that refusal handed back.
- */
-accept_volume_loss: Array<VolumeName>, };
+export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retry | { "admit": "remove" } & Removal;
 
 export type AdvertisedEndpoint = string;
 
@@ -55,11 +23,11 @@ export type AuthorizedRepository = {
 /**
  * Its `owner/name`, as GitHub spells it.
  */
-repository: string,
+repository: RepositoryName,
 /**
  * GitHub's ID for it.
  */
-repository_id: number,
+repository_id: RepositoryId,
 /**
  * How Cloud reads it: publicly, or through a GitHub installation.
  */
@@ -67,11 +35,11 @@ access: ServiceGitAccess,
 /**
  * Its default branch.
  */
-default_branch: string,
+default_branch: BranchName,
 /**
  * Other branches Cloud saw exist.
  */
-branches: Array<string>, };
+branches: Array<BranchName>, };
 
 export type AutoDeployed = { environment: EnvironmentId, deployment: DeploymentSummary, };
 
@@ -132,16 +100,16 @@ picks?: Array<BranchPick>, };
 
 export type BranchChoice = { default: BranchOption, options: Array<BranchOption>, secret: boolean, };
 
-export type BranchHead = { repository_id: number, branch: string,
+export type BranchHead = { repository_id: RepositoryId, branch: BranchName,
 /**
  * The head Cloud compared from: the Store's, as [`crate::ConfigStore::branch_head`]
  * read it. Anything else is `conflict`: read it again and compare again.
  */
-base: string | null,
+base: CommitSha | null,
 /**
  * The head now; none once the branch was deleted.
  */
-head: string | null,
+head: CommitSha | null,
 /**
  * The paths `base..head` changed, when `head` is ahead of `base` and GitHub
  * listed every one. None (a force-push, diverged or long history) deploys every
@@ -152,9 +120,11 @@ changed: Array<string> | null,
  * The merge commits of frozen Conditional Saves ([`crate::PendingSaves::merged`])
  * Cloud found `head` is or descends from: this push carries those saves.
  */
-merged: Array<string>, };
+merged: Array<CommitSha>, };
 
 export type BranchHostnames = { from: string, into: string, };
+
+export type BranchName = string;
 
 export type BranchNewValue = { value: SavedVariableValue, valueFingerprint: string, };
 
@@ -180,11 +150,11 @@ from: EnvironmentRef,
 /**
  * The nodes the Branch is for, by name: what a preset plans around.
  */
-focus: Array<string>,
+focus: Array<NodeName>,
 /**
  * The nodes to copy, by name, as [`CreateBranch::copy`]; ignored with a preset.
  */
-copy: Array<string>,
+copy: Array<NodeName>,
 /**
  * Plan what a preset copies around `focus` instead.
  */
@@ -268,9 +238,9 @@ export type Branched = {
  */
 branch: BranchView,
 /**
- * Nodes staged in its Working State: Services by name, Volumes as `volumes.NAME`.
+ * Nodes staged in its Working State.
  */
-staged: Array<string>,
+staged: Array<NodeName>,
 /**
  * What changed at once.
  */
@@ -321,7 +291,7 @@ service: string,
 /**
  * The commit it builds; none when it builds from the Deployment's upload.
  */
-commit: string | null, status: BuildStatus,
+commit: CommitSha | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -349,7 +319,7 @@ service: string,
 /**
  * The commit it builds; none when it builds from the Deployment's upload.
  */
-commit: string | null, status: BuildStatus,
+commit: CommitSha | null, status: BuildStatus,
 /**
  * Why it failed.
  */
@@ -407,11 +377,11 @@ export type ChangeKind = "add" | "update" | "remove";
 
 export type ChangeSetInput = { working: ReviewStateProjection, applied: ReviewStateProjection, saved: ReviewStateProjection | null, submitted: ReviewStateProjection | null, nodeIntroductions: ReviewStateProjection, };
 
-export type CheckSuite = { repository_id: number, suite: number,
+export type CheckSuite = { repository_id: RepositoryId, suite: number,
 /**
  * The commit it checks.
  */
-head: string,
+head: CommitSha,
 /**
  * GitHub's status: `queued`, `in_progress`, `completed`, ….
  */
@@ -432,6 +402,8 @@ export type ClusterDomainStatus = { "kind": "setting_up" } | { "kind": "ready" }
 
 export type ClusterTeardown = { destroyed_namespaces: Array<Namespace>, machines: PartialResult<LocalMachineRemoved, RpcError>, pairing_revoked: boolean, };
 
+export type CommitSha = string;
+
 export type CompiledEnvironmentIntent = { nodeSnapshots: Array<CompiledEnvironmentNode>, variableProducers: Array<SavedVariableProducer>, };
 
 export type CompiledEnvironmentNode = { environmentId: string, nodeId: string, nodeLineageId: string, encryptedRegistryUsername?: EncryptedSecretValue, encryptedRegistrySecret?: EncryptedSecretValue, nodeType: EnvironmentNodeType, configVersion: number, config: CompiledNodeConfig, };
@@ -442,7 +414,7 @@ export type ConditionalSave = {
 /**
  * Pass to [`Take::from`] to use a hint it left.
  */
-id: ConditionalSaveId, pull_request: number,
+id: ConditionalSaveId, pull_request: PullRequestNumber,
 /**
  * The rows it holds.
  */
@@ -586,11 +558,11 @@ name: EnvironmentName,
  * The Parent's Services and Volumes to copy, by name. With `fix` and none
  * named, the Services the failed Deployment didn't apply.
  */
-copy: Array<string>,
+copy: Array<NodeName>,
 /**
  * Nodes the Branch must use live, by name: refused unless the plan agrees.
  */
-live: Array<string>,
+live: Array<NodeName>,
 /**
  * Commands to run in an Own Copy before it first deploys, such as seeding the
  * copy of a database.
@@ -625,7 +597,7 @@ export type CreateGitService = {
 /**
  * The new Service's ID, also its lineage.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * The Environment to create it in.
  */
@@ -637,11 +609,11 @@ name: ServiceName,
 /**
  * The GitHub repository, as `owner/name`.
  */
-repository: string,
+repository: RepositoryName,
 /**
  * The branch to build; the repository's default branch when omitted.
  */
-branch: string | null, };
+branch: BranchName | null, };
 
 export type CreateProject = {
 /**
@@ -661,7 +633,7 @@ export type CreateService = {
 /**
  * The new Service's ID, also its lineage.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * The Environment to create it in.
  */
@@ -706,6 +678,33 @@ export type DataLossConfirmation = { confirmed: Array<DataLoss>, };
 export type DependencyCondition = "service_started" | "service_healthy";
 
 export type DependencyHealthFailure = { "type": "cancelled" } | { "type": "no_containers" } | { "type": "observation", error: RpcError, } | { "type": "container", container_id: ContainerId, failure: HealthFailure, };
+
+export type Deploy = { id: DeploymentId, environment: EnvironmentRef,
+/**
+ * Deploy only these Services; none deploys every Service.
+ */
+services?: Array<ServiceName>,
+/**
+ * Refuse with `conflict` unless this is still the latest `diff` version, or the
+ * version a refusal to delete data handed back.
+ */
+version?: string | null,
+/**
+ * A new upload for Services without a source of their own; none keeps the
+ * Environment's latest.
+ */
+upload?: UploadedSource | null,
+/**
+ * Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
+ * deletes data, or publishes a removal that will, refuses with
+ * `confirmation_required` unless it names each one and passes the `version`
+ * that refusal handed back.
+ */
+accept_volume_loss?: Array<VolumeName>,
+/**
+ * What this Deploy ships, in the admitter's words; shown on the Deployment.
+ */
+message?: string | null, };
 
 export type DeployEvent = { "type": "progress", completed: number, total: number, rows: Array<OperationRow>, } | { "type": "outcome", outcome: DeployOutcome<ExecutionError>, } | { "type": "images_pruned", report: ImageCleanupReport, };
 
@@ -840,7 +839,11 @@ started_at: number | null,
  * When it ended, in Unix seconds: its outcome recorded, or cancelled before
  * it ran.
  */
-ended_at: number | null, };
+ended_at: number | null,
+/**
+ * What whoever admitted it said it ships.
+ */
+message: string | null, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -901,7 +904,11 @@ started_at: number | null,
  * When it ended, in Unix seconds: its outcome recorded, or cancelled before
  * it ran.
  */
-ended_at: number | null, };
+ended_at: number | null,
+/**
+ * What whoever admitted it said it ships.
+ */
+message: string | null, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**
@@ -1007,15 +1014,13 @@ saved: Revision | null, };
 
 export type DnsLookup = { hostname: Hostname, cname: string | null, addresses: Array<string>, };
 
-export type DnsRecord = {
-/**
- * `CNAME`, `A` or `AAAA`.
- */
-type: string,
+export type DnsRecord = { type: DnsRecordKind,
 /**
  * Relative to the registrable domain; `@` is its apex.
  */
 name: string, value: string, };
+
+export type DnsRecordKind = "CNAME" | "A" | "AAAA";
 
 export type DockerVolume = { id: DockerVolumeId, options: { [key in string]: string }, labels: { [key in string]: string },
 /**
@@ -1073,11 +1078,7 @@ export type DomainStaged = { environment: EnvironmentSummary, domain: Domain,
 /**
  * Its Service, when this changed it; empty when it already was so.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type DomainStatus = "ready" | "setting_up" | "needs_attention";
 
@@ -1258,11 +1259,11 @@ service: ServiceName,
 /**
  * The GitHub repository, as `owner/name`.
  */
-repository: string,
+repository: RepositoryName,
 /**
  * GitHub's ID for it.
  */
-repository_id: number,
+repository_id: RepositoryId,
 /**
  * How Cloud reads it.
  */
@@ -1270,7 +1271,7 @@ access: ServiceGitAccess,
 /**
  * The branch it follows; none once it was disconnected.
  */
-branch: string | null,
+branch: BranchName | null,
 /**
  * The directory it builds from, inside the repository.
  */
@@ -1282,7 +1283,7 @@ dockerfile_path: string | null,
 /**
  * The commit it builds; none until pinned.
  */
-commit: string | null,
+commit: CommitSha | null,
 /**
  * The Builders its build tries, in turn: its Preferred Builder, then the
  * Organization's Build Order.
@@ -1305,7 +1306,7 @@ export type GithubBuild = { id: GithubBuildId,
 /**
  * The Organization whose Servers receive its image.
  */
-organization: string, status: BuildStatus, run: GithubRun,
+organization: OrganizationId, status: BuildStatus, run: GithubRun,
 /**
  * Set once the run checked in.
  */
@@ -1315,9 +1316,9 @@ grant: GithubGrant | null,
  */
 checked_in_at: number | null,
 /**
- * The platforms it built, once its final report came; empty: it failed.
+ * How it ended, once its final report came.
  */
-platforms: Array<string> | null, };
+ended: RunEnd | null, };
 
 export type GithubBuildId = string;
 
@@ -1345,7 +1346,7 @@ workflow_ref: string,
 /**
  * The repository, as `owner/name` when dispatched.
  */
-repository: string, installation_id: number, };
+repository: RepositoryName, installation_id: number, };
 
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
@@ -1732,9 +1733,9 @@ from: EnvironmentSummary,
  */
 into: EnvironmentSummary,
 /**
- * Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
+ * Nodes staged in `into`'s Working State.
  */
-staged: Array<string>,
+staged: Array<NodeName>,
 /**
  * The Branch now; none for a take.
  */
@@ -1783,19 +1784,9 @@ settings: Array<ServiceSettingChange>,
  */
 data: DataEffect | null, type: EnvironmentNodeType, id: string, };
 
-export type NodeOutcome = {
-/**
- * Whether it is a Service or a Volume.
- */
-type: EnvironmentNodeType,
-/**
- * The node's entity ID.
- */
-id: string,
-/**
- * The node's name when admitted.
- */
-name: string, outcome: NodeStatus, };
+export type NodeName = string;
+
+export type NodeOutcome = { outcome: NodeStatus, } & ({ "type": "service", id: ServiceLineageId, name: ServiceName, } | { "type": "volume", id: VolumeId, name: VolumeName, });
 
 export type NodeStatus = "pending" | "deployed" | "removed" | "failed" | "not_attempted" | "unchanged" | "unknown";
 
@@ -1803,7 +1794,7 @@ export type ObservationKind = "container" | "volume";
 
 export type ObservedDataLoss = { data_loss: Array<DataLoss>, };
 
-export type OpenPullRequest = { number: number,
+export type OpenPullRequest = { number: PullRequestNumber,
 /**
  * Empty until Cloud reports its facts.
  */
@@ -1910,7 +1901,7 @@ export type PlannedNode = {
 /**
  * Its name where the Branch comes from.
  */
-name: string, kind: EnvironmentNodeType,
+name: NodeName, kind: EnvironmentNodeType,
 /**
  * `own`: the Branch gets its own copy; `live`: it uses the running one;
  * `left_out`: it has none.
@@ -1947,7 +1938,7 @@ deployment: DeploymentSummary | null,
  */
 destinations: Array<Destination>, };
 
-export type PrPlan = { repository: string, repository_id: number,
+export type PrPlan = { repository: RepositoryName, repository_id: RepositoryId,
 /**
  * The GitHub App installation its Services deploy through.
  */
@@ -1955,7 +1946,7 @@ installation_id: number, enabled: boolean,
 /**
  * None until picked, or once that Environment is gone.
  */
-start_from: EnvironmentName | null, copy: Array<string>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean,
+start_from: EnvironmentName | null, copy: Array<NodeName>, setup: Array<SetupCommand>, remove_on_close: boolean, include_bots: boolean,
 /**
  * Its pull requests with a PR Environment in the Project, not being closed.
  */
@@ -2048,7 +2039,7 @@ version: string | null,
  * deletes their data. Publishing one refuses with `confirmation_required` unless
  * it names each one and passes the `version` that refusal handed back.
  */
-accept_volume_loss: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>, };
 
 export type PublishCertificateMaterialRequest = { hostname: CertificateHost, change: CertificateMaterialChange, };
 
@@ -2068,7 +2059,7 @@ created: boolean, };
 
 export type PullPolicy = "always" | "missing" | "never";
 
-export type PullRequest = { repository_id: number, number: number, title: string,
+export type PullRequest = { repository_id: RepositoryId, number: PullRequestNumber, title: string,
 /**
  * Its author's login.
  */
@@ -2080,25 +2071,25 @@ bot: boolean,
 /**
  * The branch it merges from.
  */
-head_branch: string,
+head_branch: BranchName,
 /**
  * That branch's head commit.
  */
-head: string,
+head: CommitSha,
 /**
  * The branch it merges into.
  */
-target_branch: string, commits: number, open: boolean,
+target_branch: BranchName, commits: number, open: boolean,
 /**
  * Its merge commit, once merged.
  */
-merge_commit: string | null,
+merge_commit: CommitSha | null,
 /**
  * Once merged: the target branch's head as the Store last saw it
  * ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
  * already. Its Conditional Saves then land with what that push deployed.
  */
-merge_reached: string | null,
+merge_reached: CommitSha | null,
 /**
  * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
  */
@@ -2108,7 +2099,7 @@ export type PullRequestHint = {
 /**
  * The Conditional Save: pass to [`Take::from`].
  */
-save: ConditionalSaveId, pull_request: number,
+save: ConditionalSaveId, pull_request: PullRequestNumber,
 /**
  * `NODE.path`, as a Move names it.
  */
@@ -2118,9 +2109,11 @@ row: string,
  */
 value: JsonValue, landed: Landed, };
 
-export type PullRequestQuery = { repository_id: number, number: number, };
+export type PullRequestNumber = number;
 
-export type PullRequestRef = { repository_id: number, number: number, };
+export type PullRequestQuery = { repository_id: RepositoryId, number: PullRequestNumber, };
+
+export type PullRequestRef = { repository_id: RepositoryId, number: PullRequestNumber, };
 
 export type PullRequestView = {
 /**
@@ -2165,6 +2158,16 @@ export type RegistryAuth = { username?: string,
  * The password or access token.
  */
 password: string, };
+
+export type Removal = { id: DeploymentId, environment: EnvironmentRef,
+/**
+ * As [`Deploy::version`].
+ */
+version?: string | null,
+/**
+ * As [`Deploy::accept_volume_loss`].
+ */
+accept_volume_loss?: Array<VolumeName>, };
 
 export type RemovalsQuery = {
 /**
@@ -2263,6 +2266,10 @@ spec: ResolvedServiceSpec,
  */
 skip_health_monitor: boolean, };
 
+export type RepositoryId = number;
+
+export type RepositoryName = string;
+
 export type RequestedServiceSpec = { name: ServiceName, mode: ServiceMode, container: ServiceContainerSpec, placement: Placement, ports: Array<PortPublication>, volumes: Array<ServiceVolume>, mounts: Array<ServiceMount>, configs: Array<ConfigSpec>, pre_deploy: PreDeployHook | null, update: UpdateConfig, };
 
 export type ResolveVariablesInput = { parts: Array<ValuePart>, selfOwnerId: string, producers: Array<VariableProducer>, };
@@ -2282,6 +2289,12 @@ export type ResolverValue = { "kind": "literal", value: string, } | { "kind": "s
 export type RestartAttempt<E> = { "type": "restarted" } | { "type": "failed", error: E, };
 
 export type RestartPolicy = { "name": "no" } | { "name": "always" } | { "name": "unless-stopped" } | { "name": "on-failure", maximum_retry_count: number | null, };
+
+export type Retry = { id: DeploymentId,
+/**
+ * The Deployment it ships again.
+ */
+deployment: DeploymentId, };
 
 export type ReviewChangeSet = { groups: Array<ReviewNodeChange>, totalCount: number,
 /**
@@ -2314,6 +2327,8 @@ export type RpcErrorCode = "invalid_argument" | "not_found" | "ambiguous" | "uns
 export type RttObservation = { peer_id: string, address: string, machine: MachineIdentity | null, statistics: RttStatistics, };
 
 export type RttStatistics = { median_ns: number, population_stddev_ns: number, };
+
+export type RunEnd = { "end": "built", platforms: Array<string>, } | { "end": "failed" };
 
 export type RunnerId = string;
 
@@ -2467,6 +2482,8 @@ export type ServiceId = string & { readonly __brand: "ServiceId" };
 
 export type ServiceImageCredentials = { "type": "none" } | { "type": "configured", credentialId: string, };
 
+export type ServiceLineageId = string;
+
 export type ServiceListing = {
 /**
  * Where its image comes from.
@@ -2479,7 +2496,7 @@ change: ReviewLifecycleKind | null,
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -2564,7 +2581,7 @@ export type ServiceSummary = {
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -2582,7 +2599,7 @@ environment: EnvironmentSummary,
 /**
  * The lineage its Environment copies share.
  */
-lineage: ServiceId,
+lineage: ServiceLineageId,
 /**
  * Its Settings as one object, the shape `set --patch` takes. A removed Service
  * shows what is deployed.
@@ -2603,7 +2620,7 @@ change: ReviewLifecycleKind | null,
 /**
  * Its durable identity.
  */
-id: ServiceId,
+id: ServiceLineageId,
 /**
  * Its name, which Setting paths address it by.
  */
@@ -2647,7 +2664,7 @@ project: ProjectName | null,
 /**
  * The repository, like `acme/app`: one some Service of the Project deploys from.
  */
-repository: string,
+repository: RepositoryName,
 /**
  * Whether its pull requests get PR Environments.
  */
@@ -2659,7 +2676,7 @@ start_from: EnvironmentName | null,
 /**
  * What else each copies from it, by name; the repository's Services always are.
  */
-copy: Array<string> | null,
+copy: Array<NodeName> | null,
 /**
  * Commands to run in its Own Copies before they first deploy.
  */
@@ -2865,7 +2882,7 @@ order: UpdateOrder | null, monitor_millis: number | null, };
 
 export type UpdateOrder = "start_first" | "stop_first";
 
-export type UploadBase = { commit: string,
+export type UploadBase = { commit: CommitSha,
 /**
  * Whether the directory held changes the commit doesn't.
  */
@@ -2990,11 +3007,11 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
  * gained or lost as `SERVICE.mounts.NAME`.
  */
-staged: Array<string>,
+staged: Array<SettingPath>,
 /**
  * What took effect at once: never anything here.
  */
-immediate: Array<string>, };
+immediate: Array<SettingPath>, };
 
 export type VolumeSummary = {
 /**

@@ -92,16 +92,12 @@ pub(super) fn take_off(
     };
     let admitted = store
         .admit(
-            &Admit {
+            &Admit::Remove(ployz_store::Removal {
                 id: DeploymentId::parse(mint())?,
                 environment: at.clone(),
-                services: Vec::new(),
                 version: None,
-                upload: None,
-                retry: None,
-                remove: true,
                 accept_volume_loss: accept.to_vec(),
-            },
+            }),
             volumes,
         )
         .map_err(|error| failed(matches, words)(deploy::accepting(error, matches, again)))?;

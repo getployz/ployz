@@ -8,6 +8,7 @@
 //! name a repository but never claim an installation. Without evidence (the hidden
 //! SQLite Store) no repository can be connected.
 
+use crate::id::{BranchName, RepositoryId, RepositoryName};
 use ployz_core::config::{
     AuthoredServiceConfig, BRANCH_MAX, BuildMethod, COMMAND_MAX, DOCKERFILE_PATH_MAX,
     REPOSITORY_MAX, SavedEnvironmentIntent, ServiceGitAccess, ServiceGitBranch, ServiceSource,
@@ -20,7 +21,7 @@ use ts_rs::TS;
 
 use super::command::{Command, replayable};
 use crate::error;
-use crate::id::ServiceId;
+use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
 use crate::settings::ServiceSetting;
 use crate::storage::Tx;
@@ -31,22 +32,22 @@ use crate::{Actor, ServiceStaged, Trusted};
 #[serde(deny_unknown_fields)]
 pub struct AuthorizedRepository {
     /// Its `owner/name`, as GitHub spells it.
-    pub repository: String,
+    pub repository: RepositoryName,
     /// GitHub's ID for it.
-    #[ts(type = "number")]
-    pub repository_id: u64,
+    pub repository_id: RepositoryId,
     /// How Cloud reads it: publicly, or through a GitHub installation.
     pub access: ServiceGitAccess,
     /// Its default branch.
-    pub default_branch: String,
+    pub default_branch: BranchName,
     /// Other branches Cloud saw exist.
     #[serde(default)]
-    pub branches: Vec<String>,
+    pub branches: Vec<BranchName>,
 }
 
 impl AuthorizedRepository {
     fn has_branch(&self, branch: &str) -> bool {
-        self.default_branch == branch || self.branches.iter().any(|name| name == branch)
+        self.default_branch.as_str() == branch
+            || self.branches.iter().any(|name| name.as_str() == branch)
     }
 }
 
@@ -54,7 +55,7 @@ impl Trusted {
     fn repository(&self, name: &str) -> Option<&AuthorizedRepository> {
         self.repositories
             .iter()
-            .find(|found| found.repository.eq_ignore_ascii_case(name.trim()))
+            .find(|found| found.repository.as_str().eq_ignore_ascii_case(name.trim()))
     }
 }
 
@@ -63,17 +64,17 @@ impl Trusted {
 #[serde(deny_unknown_fields)]
 pub struct CreateGitService {
     /// The new Service's ID, also its lineage.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Its name, unique in the Environment.
     pub name: ServiceName,
     /// The GitHub repository, as `owner/name`.
-    pub repository: String,
+    pub repository: RepositoryName,
     /// The branch to build; the repository's default branch when omitted.
     #[serde(default)]
-    pub branch: Option<String>,
+    pub branch: Option<BranchName>,
 }
 
 pub(crate) fn create_git_service(
@@ -84,21 +85,20 @@ pub(crate) fn create_git_service(
 ) -> Result<ServiceStaged, RpcError> {
     let command = Command::CreateGitService(create.clone());
     replayable(tx, who, &command, |tx| {
-        let found = authorized(trusted, &create.repository)?;
-        let branch = match &create.branch {
-            Some(branch) => valid_branch(branch)?,
-            None => found.default_branch.clone(),
-        };
-        if !found.has_branch(&branch) {
-            return Err(no_branch(&found.repository, create.name.as_str()));
+        let found = authorized(trusted, create.repository.as_str())?;
+        let branch = create.branch.as_ref().unwrap_or(&found.default_branch);
+        if !found.has_branch(branch.as_str()) {
+            return Err(no_branch(found.repository.as_str(), create.name.as_str()));
         }
         let source = ServiceSource::Git {
             version: 2,
-            repository: found.repository.clone(),
-            repository_id: found.repository_id,
+            repository: found.repository.to_string(),
+            repository_id: found.repository_id.get(),
             access: found.access.clone(),
             root_dir: "/".into(),
-            branch: ServiceGitBranch::Connected { name: branch },
+            branch: ServiceGitBranch::Connected {
+                name: branch.to_string(),
+            },
         };
         super::command::insert_service(
             tx,
@@ -243,6 +243,10 @@ impl GitSetting {
                 .or_else(|| value.get("previousName"))
                 .cloned()
                 .unwrap_or(Value::Null),
+            // Never its ID or access: only its name.
+            Self::Repository if value.is_object() => {
+                value.get("repository").cloned().unwrap_or(Value::Null)
+            }
             Self::Repository
             | Self::RootDir
             | Self::BuildMethod
@@ -276,6 +280,21 @@ impl GitSetting {
                 validate_build(config, self)
             }
             Self::Repository => {
+                // An empty Service starts building the repository's default branch.
+                if let ServiceSource::Empty { root_dir, .. } = &config.source {
+                    let found = authorized(trusted, &text)?;
+                    config.source = ServiceSource::Git {
+                        version: 2,
+                        repository: found.repository.to_string(),
+                        repository_id: found.repository_id.get(),
+                        access: found.access.clone(),
+                        root_dir: root_dir.clone(),
+                        branch: ServiceGitBranch::Connected {
+                            name: found.default_branch.to_string(),
+                        },
+                    };
+                    return Ok(());
+                }
                 let ServiceSource::Git {
                     repository,
                     repository_id,
@@ -284,7 +303,7 @@ impl GitSetting {
                     ..
                 } = &mut config.source
                 else {
-                    return Err(not_git(setting));
+                    return Err(setting.invalid("this Service runs an image; unset it first"));
                 };
                 if repository.eq_ignore_ascii_case(text.trim()) {
                     return Ok(());
@@ -294,11 +313,11 @@ impl GitSetting {
                     ServiceGitBranch::Connected { name } if found.has_branch(name));
                 if !keeps_branch {
                     *branch = ServiceGitBranch::Connected {
-                        name: found.default_branch.clone(),
+                        name: found.default_branch.to_string(),
                     };
                 }
-                repository.clone_from(&found.repository);
-                *repository_id = found.repository_id;
+                *repository = found.repository.to_string();
+                *repository_id = found.repository_id.get();
                 *access = found.access.clone();
                 Ok(())
             }
@@ -307,7 +326,7 @@ impl GitSetting {
                     return Err(not_git(setting));
                 };
                 *branch = ServiceGitBranch::Connected {
-                    name: valid_branch(&text)?,
+                    name: branch_named(&text)?.to_string(),
                 };
                 Ok(())
             }
@@ -327,9 +346,20 @@ impl GitSetting {
     pub(crate) fn unset(self, config: &mut AuthoredServiceConfig) -> Result<(), RpcError> {
         let setting = ServiceSetting::Git(self);
         match self {
-            Self::Repository | Self::Branch => Err(setting.invalid(
-                "a repository Service always builds a repository and branch; set another one",
-            )),
+            // Disconnected, the Service is empty until it gets a source again.
+            Self::Repository => match &config.source {
+                ServiceSource::Git { root_dir, .. } => {
+                    config.source = ServiceSource::Empty {
+                        version: 1,
+                        root_dir: root_dir.clone(),
+                    };
+                    Ok(())
+                }
+                ServiceSource::Empty { .. } | ServiceSource::Image { .. } => Err(not_git(setting)),
+            },
+            Self::Branch => {
+                Err(setting.invalid("a repository Service always builds a branch; set another one"))
+            }
             Self::RootDir => match &mut config.source {
                 ServiceSource::Git { root_dir, .. } => {
                     "/".clone_into(root_dir);
@@ -351,6 +381,19 @@ impl GitSetting {
             }
         }
     }
+}
+
+/// Whether `service` builds `branch` of repository `repository_id`.
+pub(crate) fn tracks(
+    service: &ployz_core::config::SavedServiceIntent,
+    repository_id: RepositoryId,
+    branch: &BranchName,
+) -> bool {
+    matches!(
+        &service.config.source,
+        ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
+            if *at == repository_id.get() && name == branch.as_str()
+    )
 }
 
 /// Refuse any Git source in `after` whose repository, access or branch changed from
@@ -392,7 +435,7 @@ pub(crate) fn check_sources(
             continue;
         };
         let vouched = trusted.repositories.iter().any(|found| {
-            found.repository_id == *repository_id
+            found.repository_id.get() == *repository_id
                 && found.access == *access
                 && found.has_branch(name)
         });
@@ -424,7 +467,7 @@ fn authorized<'a>(
     trusted: &'a Trusted,
     repository: &str,
 ) -> Result<&'a AuthorizedRepository, RpcError> {
-    if !valid_repository(repository) {
+    if RepositoryName::parse(repository.trim()).is_err() {
         return Err(ServiceSetting::Git(GitSetting::Repository).invalid("expected owner/name"));
     }
     trusted.repository(repository).ok_or_else(|| {
@@ -435,38 +478,10 @@ fn authorized<'a>(
     })
 }
 
-fn valid_repository(name: &str) -> bool {
-    let name = name.trim();
-    let Some((owner, repository)) = name.split_once('/') else {
-        return false;
-    };
-    let fits = |part: &str, extra: &[u8]| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'-' || extra.contains(&c))
-    };
-    name.len() <= REPOSITORY_MAX
-        && fits(owner, b"")
-        && fits(repository, b"_.")
-        && !matches!(repository, "." | "..")
-}
-
-pub(crate) fn valid_branch(branch: &str) -> Result<String, RpcError> {
-    let branch = branch.trim();
-    let valid = !branch.is_empty()
-        && branch.chars().count() <= BRANCH_MAX
-        && !branch.contains("..")
-        && !branch.starts_with(['-', '/'])
-        && !branch.ends_with(['/', '.'])
-        && branch
-            .chars()
-            .all(|c| !c.is_whitespace() && !c.is_control() && !"~^:?*[\\".contains(c));
-    if valid {
-        Ok(branch.to_owned())
-    } else {
-        Err(ServiceSetting::Git(GitSetting::Branch).invalid("expected a Git branch name"))
-    }
+/// The branch `text` names, trimmed, or why it names none.
+fn branch_named(text: &str) -> Result<BranchName, RpcError> {
+    BranchName::parse(text.trim())
+        .map_err(|_| ServiceSetting::Git(GitSetting::Branch).invalid("expected a Git branch name"))
 }
 
 fn validate_build(config: &mut AuthoredServiceConfig, setting: GitSetting) -> Result<(), RpcError> {

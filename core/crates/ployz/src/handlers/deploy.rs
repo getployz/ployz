@@ -12,9 +12,9 @@ use std::time::Duration;
 use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
-    Admit, Cancel, ConfigStore, DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentView,
-    DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunnerId, Start, UploadBase,
-    UploadedSource, VolumeName, VolumeObservation,
+    Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunnerId, Start,
+    UploadBase, UploadedSource, VolumeName, VolumeObservation,
 };
 
 use super::store::{
@@ -45,6 +45,11 @@ pub(crate) fn deploy_command() -> Command {
             value("expect-version", None)
                 .value_name("VERSION")
                 .help("Refuse unless this is still the latest `ployz diff` version"),
+        )
+        .arg(
+            value("message", None)
+                .value_name("TEXT")
+                .help("Say what this Deploy ships; shown on the Deployment"),
         ),
     )
     .arg(
@@ -164,6 +169,7 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
         accept,
+        message: matches.get_one::<String>("message").cloned(),
     };
     upload_and_ship(matches, &store, request, events)?.finish()
 }
@@ -175,6 +181,7 @@ pub(super) struct Request {
     pub(super) version: Option<String>,
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
+    pub(super) message: Option<String>,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -190,6 +197,7 @@ pub(super) fn upload_and_ship(
         version,
         source,
         accept,
+        message,
     } = request;
     let upload = source.as_deref().map(uploaded_source).transpose()?;
     // The in-process Store trusts this CLI to observe the Servers; Cloud observes
@@ -207,16 +215,15 @@ pub(super) fn upload_and_ship(
     }
     let admitted = store
         .admit(
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id,
                 environment,
                 services: services.clone(),
                 version,
                 upload,
-                retry: None,
-                remove: false,
                 accept_volume_loss: accept,
-            },
+                message,
+            }),
             volumes,
         )
         .map_err(|error| {
@@ -407,7 +414,7 @@ fn follow(
             let nodes: Vec<String> = view
                 .nodes
                 .iter()
-                .map(|node| format!("{} {}", node.name, super::store::word(&node.outcome)))
+                .map(|node| format!("{} {}", node.node.name(), super::store::word(&node.outcome)))
                 .collect();
             say!(
                 "{}: {}",
@@ -480,7 +487,7 @@ fn provenance(upload: &UploadedSource) -> String {
     match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
-            base.commit.get(..7).unwrap_or(&base.commit),
+            base.commit.as_str().get(..7).unwrap_or_default(),
             if base.changed { " + changes" } else { "" }
         ),
         None => format!("uploaded by {who}, sha256 {digest}"),
@@ -517,7 +524,7 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
     let base = git(&["rev-parse", "--verify", "HEAD"])
-        .filter(|commit| ployz_core::is_lower_hex(commit, 40))
+        .and_then(|commit| ployz_store::CommitSha::parse(commit).ok())
         .map(|commit| UploadBase {
             commit,
             // ponytail: files Git ignores count as no change; the base is provenance only.
@@ -723,16 +730,10 @@ fn retry(root: &ArgMatches) -> Result<(), Error> {
     let words = ["deployment", "retry"];
     let admitted = store
         .admit(
-            &Admit {
+            &Admit::Retry(ployz_store::Retry {
                 id: DeploymentId::parse(mint())?,
-                environment: ployz_store::EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(source.clone()),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: source.clone(),
+            }),
             None,
         )
         .map_err(refused(matches, &source, &words))?;
@@ -796,13 +797,16 @@ pub(super) fn say_view(view: &DeploymentView) {
         say!("  {}", provenance(upload));
     }
     for node in &view.nodes {
-        say!("  {}: {}", node.name, super::store::word(&node.outcome));
+        say!(
+            "  {}: {}",
+            node.node.name(),
+            super::store::word(&node.outcome)
+        );
     }
     for build in &view.builds {
-        let commit = build
-            .commit
-            .as_deref()
-            .map_or("the upload", |commit| commit.get(..7).unwrap_or(commit));
+        let commit = build.commit.as_ref().map_or("the upload", |commit| {
+            commit.as_str().get(..7).unwrap_or(commit.as_str())
+        });
         let reason = build.message.as_deref().unwrap_or_default();
         say!(
             "  build {} from {commit}: {} {reason}",

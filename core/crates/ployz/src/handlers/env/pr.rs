@@ -56,45 +56,55 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         .map(|from| EnvironmentName::parse(from.as_str()))
         .transpose()?;
     let setup = list("setup").map(|values| setups(&values)).transpose()?;
-    let mut set = ployz_store::SetPrPlan {
-        project: project(matches)?,
-        repository: matches
-            .get_one::<String>("repository")
-            .cloned()
-            .unwrap_or_default(),
-        enabled,
-        start_from,
-        copy: list("copy"),
-        setup,
-        remove_on_close: matches.get_one::<bool>("remove-on-close").copied(),
-        include_bots: matches.get_one::<bool>("bots").copied(),
-    };
+    let repository = matches
+        .get_one::<String>("repository")
+        .map(|name| ployz_store::RepositoryName::parse(name.as_str()))
+        .transpose()?;
+    let project = project(matches)?;
+    let copy = list("copy")
+        .map(|names| super::node_names(&names))
+        .transpose()?;
+    let remove_on_close = matches.get_one::<bool>("remove-on-close").copied();
+    let include_bots = matches.get_one::<bool>("bots").copied();
     let store = store(root)?;
     let words = ["env", "pr"];
     let query = ployz_store::PrPlansQuery {
-        project: set.project.clone(),
+        project: project.clone(),
     };
-    let changing = set.enabled.is_some()
-        || set.start_from.is_some()
-        || set.copy.is_some()
-        || set.setup.is_some()
-        || set.remove_on_close.is_some()
-        || set.include_bots.is_some();
+    let changing = enabled.is_some()
+        || start_from.is_some()
+        || copy.is_some()
+        || setup.is_some()
+        || remove_on_close.is_some()
+        || include_bots.is_some();
     let view = match changing {
         false => store.pr_plans(&query).map_err(failed(matches, &words))?,
         true => {
-            if set.repository.is_empty() {
-                let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
-                match plans.plans.as_slice() {
-                    [only] => set.repository.clone_from(&only.repository),
-                    _ => {
-                        return Err(Error::usage(
-                            "Name the repository: `ployz env pr` lists the Project's",
-                        )
-                        .with_exit(USAGE_EXIT));
+            let repository = match repository {
+                Some(repository) => repository,
+                None => {
+                    let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
+                    match plans.plans.as_slice() {
+                        [only] => only.repository.clone(),
+                        _ => {
+                            return Err(Error::usage(
+                                "Name the repository: `ployz env pr` lists the Project's",
+                            )
+                            .with_exit(USAGE_EXIT));
+                        }
                     }
                 }
-            }
+            };
+            let set = ployz_store::SetPrPlan {
+                project,
+                repository,
+                enabled,
+                start_from,
+                copy,
+                setup,
+                remove_on_close,
+                include_bots,
+            };
             store.set_pr_plan(&set).map_err(failed(matches, &words))?
         }
     };
@@ -115,7 +125,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 None => {}
             }
             if !plan.copy.is_empty() {
-                words.push(format!("also copies {}", plan.copy.join(", ")));
+                words.push(format!("also copies {}", super::joined(&plan.copy)));
             }
             for setup in &plan.setup {
                 words.push(format!("then {}: {}", setup.service, setup.command));

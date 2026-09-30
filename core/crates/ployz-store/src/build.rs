@@ -3,6 +3,7 @@
 //! builds the same commit. Services without a source of their own build from the
 //! Deployment's upload. The runner reports each build's progress and log here.
 
+use crate::id::{BranchName, CommitSha, OrganizationId, RepositoryId, RepositoryName};
 use std::collections::BTreeMap;
 
 use ployz_core::config::{BuildMethod, ServiceGitAccess, ServiceGitBranch, ServiceSource};
@@ -15,7 +16,7 @@ use crate::builders::{self, Builder};
 use crate::deployment::{self, Stored};
 use crate::error;
 use crate::id::DeploymentId;
-use crate::storage::Tx;
+use crate::storage::{Tx, name_of};
 
 /// The most log a build keeps; older output goes first.
 const LOG_LIMIT: usize = 256 * 1024;
@@ -26,20 +27,19 @@ pub struct GitSource {
     /// Its runtime Service name.
     pub service: ServiceName,
     /// The GitHub repository, as `owner/name`.
-    pub repository: String,
+    pub repository: RepositoryName,
     /// GitHub's ID for it.
-    #[ts(type = "number")]
-    pub repository_id: u64,
+    pub repository_id: RepositoryId,
     /// How Cloud reads it.
     pub access: ServiceGitAccess,
     /// The branch it follows; none once it was disconnected.
-    pub branch: Option<String>,
+    pub branch: Option<BranchName>,
     /// The directory it builds from, inside the repository.
     pub root_dir: String,
     /// Its Dockerfile, relative to `root_dir`, when it builds from one.
     pub dockerfile_path: Option<String>,
     /// The commit it builds; none until pinned.
-    pub commit: Option<String>,
+    pub commit: Option<CommitSha>,
     /// The Builders its build tries, in turn: its Preferred Builder, then the
     /// Organization's Build Order.
     pub builders: Vec<Builder>,
@@ -64,26 +64,6 @@ pub enum BuildStatus {
     Failed,
 }
 
-impl BuildStatus {
-    const ALL: [Self; 5] = [
-        Self::Pending,
-        Self::Building,
-        Self::Built,
-        Self::Reused,
-        Self::Failed,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::Building => "building",
-            Self::Built => "built",
-            Self::Reused => "reused",
-            Self::Failed => "failed",
-        }
-    }
-}
-
 /// A runner's report on one build: where it is now, and its log output since the
 /// last report.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -102,7 +82,7 @@ pub struct BuildView {
     /// The Service's name when admitted.
     pub service: String,
     /// The commit it builds; none when it builds from the Deployment's upload.
-    pub commit: Option<String>,
+    pub commit: Option<CommitSha>,
     pub status: BuildStatus,
     /// Why it failed.
     pub message: Option<String>,
@@ -137,7 +117,7 @@ pub(crate) fn sources(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<GitSourc
 pub(crate) fn pin(
     tx: &mut dyn Tx,
     id: &DeploymentId,
-    commits: &BTreeMap<ServiceName, String>,
+    commits: &BTreeMap<ServiceName, CommitSha>,
 ) -> Result<Vec<GitSource>, RpcError> {
     let stored = deployment::locked(tx, id)?;
     if !stored.summary.status.in_flight() {
@@ -154,16 +134,10 @@ pub(crate) fn pin(
                 json!({ "services": sources.iter().map(|source| &source.service).collect::<Vec<_>>() }),
             ));
         }
-        if !ployz_core::is_lower_hex(commit, 40) {
-            return Err(error::invalid(
-                "A pin is a full lowercase Git commit",
-                json!({ "service": service }),
-            ));
-        }
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, ?3, 'pending', '', '' \
+             SELECT id, ?2, organization_id, ?3, 'pending', NULL, '' \
              FROM config_deployment WHERE id = ?1 \
              ON CONFLICT (deployment_id, service) DO NOTHING",
             &[
@@ -188,7 +162,7 @@ pub(crate) fn record(
         tx.execute(
             "INSERT INTO config_build \
              (deployment_id, service, organization_id, commit_sha, status, message, log) \
-             SELECT id, ?2, organization_id, '', 'pending', '', '' \
+             SELECT id, ?2, organization_id, NULL, 'pending', NULL, '' \
              FROM config_deployment WHERE id = ?1 \
              ON CONFLICT (deployment_id, service) DO NOTHING",
             &[id.as_str().into(), report.service.as_str().into()],
@@ -205,15 +179,15 @@ pub(crate) fn record(
     };
     let mut log = row.log;
     append(&mut log, &report.log);
-    let message = trimmed(report.message.as_deref());
+    let message = report.message.as_deref().map(trimmed);
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5 \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
             id.as_str().into(),
             report.service.as_str().into(),
-            report.status.as_str().into(),
-            message.as_str().into(),
+            name_of(report.status).as_str().into(),
+            message.as_deref().into(),
             log.as_str().into(),
         ],
     )?;
@@ -255,13 +229,14 @@ pub(crate) fn log(
 
 struct BuildRow {
     service: ServiceName,
-    commit: String,
+    /// None when it builds from the Deployment's upload.
+    commit: Option<CommitSha>,
     status: BuildStatus,
-    message: String,
+    message: Option<String>,
     log: String,
     /// The GitHub run it was handed to, if any.
     github: Option<GithubState>,
-    organization: String,
+    organization: OrganizationId,
 }
 
 impl BuildRow {
@@ -270,11 +245,19 @@ impl BuildRow {
             service: stored
                 .nodes
                 .iter()
-                .find(|node| node.service.as_ref() == Some(&self.service))
-                .map_or_else(|| self.service.to_string(), |node| node.name.clone()),
-            commit: (!self.commit.is_empty()).then(|| self.commit.clone()),
+                .find_map(|node| match node {
+                    crate::deployment::TargetNode::Service { name, runtime, .. }
+                        if *runtime == self.service =>
+                    {
+                        Some(name.to_string())
+                    }
+                    crate::deployment::TargetNode::Service { .. }
+                    | crate::deployment::TargetNode::Volume { .. } => None,
+                })
+                .unwrap_or_else(|| self.service.to_string()),
+            commit: self.commit.clone(),
             status: self.status,
-            message: (!self.message.is_empty()).then(|| self.message.clone()),
+            message: self.message.clone(),
         }
     }
 }
@@ -288,23 +271,19 @@ fn rows(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Vec<BuildRow>, RpcError> {
     )?
     .iter()
     .map(|row| {
-        let status = row.text(2)?;
         Ok(BuildRow {
-            service: ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("build"))?,
-            commit: row.text(1)?.to_owned(),
-            status: BuildStatus::ALL
-                .into_iter()
-                .find(|known| known.as_str() == status)
-                .ok_or_else(|| error::corrupt("build status"))?,
-            message: row.text(3)?.to_owned(),
+            service: row.parse::<ServiceName>(0, "build")?,
+            commit: row.parse_optional(1, "build commit")?,
+            status: row.variant(2, "build status")?,
+            message: row.optional_text(3)?.map(str::to_owned),
             log: row.text(4)?.to_owned(),
-            github: match row.text(5)? {
-                "" => None,
-                github => {
-                    Some(serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))?)
-                }
-            },
-            organization: row.text(6)?.to_owned(),
+            github: row
+                .optional_text(5)?
+                .map(|github| {
+                    serde_json::from_str(github).map_err(|_| error::corrupt("GitHub build"))
+                })
+                .transpose()?,
+            organization: row.parse(6, "build")?,
         })
     })
     .collect()
@@ -317,7 +296,7 @@ pub(crate) fn uploads_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<Service
     Ok(saved
         .services
         .iter()
-        .filter(|service| stored.nodes.iter().any(|node| node.id == service.id))
+        .filter(|service| stored.nodes.iter().any(|node| node.id() == service.id))
         .filter(|service| matches!(service.config.source, ServiceSource::Empty { .. }))
         .map(|service| service.config.private_dns.clone())
         .collect())
@@ -329,7 +308,7 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
     let organization = organization(tx, &stored.summary.id)?;
     let mut sources = Vec::new();
     for service in &saved.services {
-        if !stored.nodes.iter().any(|node| node.id == service.id) {
+        if !stored.nodes.iter().any(|node| node.id() == service.id) {
             continue;
         }
         let row = rows
@@ -339,7 +318,7 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
             continue;
         };
         (source.builders, source.preferred_machine) =
-            builders::walk(tx, &organization, &stored.environment, &service.id)?;
+            builders::walk(tx, organization.as_str(), &stored.environment, &service.id)?;
         sources.push(source);
     }
     Ok(sources)
@@ -363,11 +342,11 @@ fn source_of(
     };
     Some(GitSource {
         service: config.private_dns.clone(),
-        repository: repository.clone(),
-        repository_id: *repository_id,
+        repository: RepositoryName::parse(repository.as_str()).ok()?,
+        repository_id: RepositoryId::parse(*repository_id).ok()?,
         access: access.clone(),
         branch: match branch {
-            ServiceGitBranch::Connected { name } => Some(name.clone()),
+            ServiceGitBranch::Connected { name } => BranchName::parse(name.as_str()).ok(),
             ServiceGitBranch::Disconnected { .. } => None,
         },
         root_dir: root_dir.clone(),
@@ -378,28 +357,22 @@ fn source_of(
                 .clone()
                 .unwrap_or_else(|| "Dockerfile".into())
         }),
-        commit: row
-            .filter(|row| !row.commit.is_empty())
-            .map(|row| row.commit.clone()),
+        commit: row.and_then(|row| row.commit.clone()),
         builders: Vec::new(),
         preferred_machine: None,
         status: row.map(|row| row.status),
-        message: row
-            .filter(|row| !row.message.is_empty())
-            .map(|row| row.message.clone()),
+        message: row.and_then(|row| row.message.clone()),
     })
 }
 
-pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<String, RpcError> {
-    Ok(tx
-        .query(
-            "SELECT organization_id FROM config_deployment WHERE id = ?1",
-            &[id.as_str().into()],
-        )?
-        .first()
-        .ok_or_else(|| error::corrupt("Deployment"))?
-        .text(0)?
-        .to_owned())
+pub(crate) fn organization(tx: &mut dyn Tx, id: &DeploymentId) -> Result<OrganizationId, RpcError> {
+    tx.query(
+        "SELECT organization_id FROM config_deployment WHERE id = ?1",
+        &[id.as_str().into()],
+    )?
+    .first()
+    .ok_or_else(|| error::corrupt("Deployment"))?
+    .parse(0, "Deployment")
 }
 
 fn append(log: &mut String, more: &str) {
@@ -413,8 +386,8 @@ fn append(log: &mut String, more: &str) {
     }
 }
 
-fn trimmed(message: Option<&str>) -> String {
-    message.unwrap_or_default().chars().take(500).collect()
+fn trimmed(message: &str) -> String {
+    message.chars().take(500).collect()
 }
 
 /// A Git build as its GitHub workflow names it: `DEPLOYMENT.SERVICE`.
@@ -469,7 +442,7 @@ pub struct GithubRun {
     /// The workflow and branch its OIDC token must name.
     pub workflow_ref: String,
     /// The repository, as `owner/name` when dispatched.
-    pub repository: String,
+    pub repository: RepositoryName,
     #[ts(type = "number")]
     pub installation_id: u64,
 }
@@ -492,8 +465,18 @@ struct GithubState {
     checked_in_at: Option<u64>,
     /// How many `ployz build --events` lines it took.
     received: u64,
-    /// The platforms it built, once its final report came; empty: it failed.
-    platforms: Option<Vec<String>>,
+    /// How it ended, once its final report came.
+    ended: Option<RunEnd>,
+}
+
+/// How a GitHub run ended, as its final report says.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "end", rename_all = "snake_case")]
+pub enum RunEnd {
+    /// It built the image for these platforms.
+    Built { platforms: Vec<String> },
+    /// Its build failed.
+    Failed,
 }
 
 /// A Git build handed to GitHub, as Cloud follows it.
@@ -501,7 +484,7 @@ struct GithubState {
 pub struct GithubBuild {
     pub id: GithubBuildId,
     /// The Organization whose Servers receive its image.
-    pub organization: String,
+    pub organization: OrganizationId,
     pub status: BuildStatus,
     pub run: GithubRun,
     /// Set once the run checked in.
@@ -509,8 +492,8 @@ pub struct GithubBuild {
     /// When it checked in, in Unix seconds.
     #[ts(type = "number | null")]
     pub checked_in_at: Option<u64>,
-    /// The platforms it built, once its final report came; empty: it failed.
-    pub platforms: Option<Vec<String>>,
+    /// How it ended, once its final report came.
+    pub ended: Option<RunEnd>,
 }
 
 /// The claims of a GitHub Actions OIDC token Cloud verified, as GitHub sends them.
@@ -523,12 +506,12 @@ pub struct GithubClaims {
 }
 
 /// One batch of a run's log lines, starting at line `from`, and once its build
-/// ended, the platforms it built (empty: it failed).
+/// ended, how.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct GithubReport {
     pub from: u64,
     pub lines: Vec<String>,
-    pub platforms: Option<Vec<String>>,
+    pub ended: Option<RunEnd>,
 }
 
 /// How a GitHub build ended.
@@ -568,23 +551,22 @@ fn save_github(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     status: BuildStatus,
-    message: &str,
+    message: Option<&str>,
     log: &str,
     github: Option<&GithubState>,
 ) -> Result<(), RpcError> {
-    let github = github.map_or_else(String::new, |github| {
-        serde_json::to_string(github).expect("a GitHub build is JSON")
-    });
+    let github =
+        github.map(|github| serde_json::to_string(github).expect("a GitHub build is JSON"));
     tx.execute(
         "UPDATE config_build SET status = ?3, message = ?4, log = ?5, github = ?6 \
          WHERE deployment_id = ?1 AND service = ?2",
         &[
             id.deployment.as_str().into(),
             id.service.as_str().into(),
-            status.as_str().into(),
+            name_of(status).as_str().into(),
             message.into(),
             log.into(),
-            github.as_str().into(),
+            github.as_deref().into(),
         ],
     )?;
     Ok(())
@@ -600,7 +582,7 @@ impl BuildRow {
             run: github.run.clone(),
             grant: github.grant.clone(),
             checked_in_at: github.checked_in_at,
-            platforms: github.platforms.clone(),
+            ended: github.ended.clone(),
         })
     }
 
@@ -640,9 +622,9 @@ pub(crate) fn github_dispatched(
         grant: None,
         checked_in_at: None,
         received: 0,
-        platforms: None,
+        ended: None,
     };
-    save_github(tx, id, BuildStatus::Building, "", &log, Some(&github))
+    save_github(tx, id, BuildStatus::Building, None, &log, Some(&github))
 }
 
 /// The GitHub build `id`.
@@ -696,12 +678,15 @@ pub(crate) fn github_input(
     tx: &mut dyn Tx,
     id: &GithubBuildId,
     sealing: &crate::SealingKey,
-) -> Result<(serde_json::Value, String, Option<serde_json::Value>), RpcError> {
+) -> Result<(serde_json::Value, CommitSha, Option<serde_json::Value>), RpcError> {
     let stored = deployment::load(tx, &id.deployment)?;
     let row = github_row(tx, &stored, id)?;
+    let commit = row
+        .commit
+        .ok_or_else(|| error::corrupt("GitHub build commit"))?;
     let input = deployment::input(tx, &stored, sealing)?;
     let receipt = deployment::receipts(tx, &stored.environment)?.remove(&id.service);
-    Ok((input, row.commit, receipt))
+    Ok((input, commit, receipt))
 }
 
 /// Run `run_id` checked in and got `grant`: the build starts. Accepted once, while
@@ -727,7 +712,14 @@ pub(crate) fn github_check_in(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs()),
     );
-    save_github(tx, id, row.status, &row.message, &row.log, Some(&github))
+    save_github(
+        tx,
+        id,
+        row.status,
+        row.message.as_deref(),
+        &row.log,
+        Some(&github),
+    )
 }
 
 /// Take a batch of run `run_id`'s log after it checked in, until its final report.
@@ -746,7 +738,7 @@ pub(crate) fn github_report(
     if github.grant.is_none() {
         return Err(error::conflict("This build has not checked in", json!({})));
     }
-    if github.platforms.is_some() {
+    if github.ended.is_some() {
         return Err(error::conflict("This build already ended", json!({})));
     }
     if report.from > github.received {
@@ -765,8 +757,15 @@ pub(crate) fn github_report(
     }
     let mut github = github.clone();
     github.received = github.received.max(report.from + report.lines.len() as u64);
-    github.platforms.clone_from(&report.platforms);
-    save_github(tx, id, row.status, &row.message, &log, Some(&github))?;
+    github.ended.clone_from(&report.ended);
+    save_github(
+        tx,
+        id,
+        row.status,
+        row.message.as_deref(),
+        &log,
+        Some(&github),
+    )?;
     Ok(github.received)
 }
 
@@ -800,23 +799,23 @@ pub(crate) fn github_end(
             } else {
                 BuildStatus::Reused
             };
-            (status, String::new(), row.github.as_ref())
+            (status, None, row.github.as_ref())
         }
         GithubEnd::Failed { message } => {
             append(&mut log, &format!("GitHub: {message}\n"));
             (
                 BuildStatus::Failed,
-                trimmed(Some(message)),
+                Some(trimmed(message)),
                 row.github.as_ref(),
             )
         }
         // The next Builder starts it afresh.
         GithubEnd::Skipped { message } | GithubEnd::Unstarted { message } => {
             append(&mut log, &format!("GitHub skipped: {message}\n"));
-            (BuildStatus::Pending, trimmed(Some(message)), None)
+            (BuildStatus::Pending, Some(trimmed(message)), None)
         }
     };
-    save_github(tx, id, status, &message, &log, github)?;
+    save_github(tx, id, status, message.as_deref(), &log, github)?;
     Ok(status)
 }
 

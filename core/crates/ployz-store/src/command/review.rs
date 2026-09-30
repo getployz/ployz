@@ -35,6 +35,7 @@ pub struct Publish {
     /// deletes their data. Publishing one refuses with `confirmation_required` unless
     /// it names each one and passes the `version` that refusal handed back.
     #[serde(default)]
+    #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
 }
 

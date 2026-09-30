@@ -10,7 +10,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
-    ProjectId, ProjectName, Publish, ServiceId, SettingPath, SystemEvent, Trusted, Written,
+    ProjectId, ProjectName, Publish, ServiceLineageId, SettingPath, SystemEvent, Trusted, Written,
 };
 use serde_json::{Value, json};
 
@@ -29,7 +29,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(org());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -41,24 +41,24 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
         ..Trusted::default()
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
-                    repository: "acme/web".into(),
+                    repository: backend::repo_name("acme/web"),
                     branch: None,
                 },
                 &evidence,
@@ -99,10 +99,10 @@ fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) -> Written {
 
 fn push(base: Option<&str>, head: Option<&str>, changed: Option<&[&str]>) -> SystemEvent {
     SystemEvent::BranchHead(BranchHead {
-        repository_id: 11,
-        branch: "main".into(),
-        base: base.map(Into::into),
-        head: head.map(Into::into),
+        repository_id: backend::repo_id(11),
+        branch: backend::git_branch("main"),
+        base: base.map(backend::sha),
+        head: head.map(backend::sha),
         changed: changed.map(|paths| paths.iter().map(|path| (*path).to_owned()).collect()),
         merged: Vec::new(),
     })
@@ -110,9 +110,9 @@ fn push(base: Option<&str>, head: Option<&str>, changed: Option<&[&str]>) -> Sys
 
 fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8) -> SystemEvent {
     SystemEvent::CheckSuite(CheckSuite {
-        repository_id: 11,
+        repository_id: backend::repo_id(11),
         suite: id,
-        head: head.into(),
+        head: backend::sha(head),
         status: status.into(),
         conclusion: conclusion.map(Into::into),
         updated: format!("2026-09-29T10:{minute:02}:00Z"),
@@ -134,7 +134,14 @@ fn deployed(store: &ConfigStore, who: &Actor, automated: &Automated) -> Vec<(Vec
         .iter()
         .map(|admitted| {
             let summary = &admitted.deployment;
-            let view = store.deployment(who, &summary.id).unwrap();
+            let view = store
+                .read(
+                    who,
+                    &ployz_store::DeploymentQuery {
+                        id: summary.id.clone(),
+                    },
+                )
+                .unwrap();
             let sources = store.sources(&summary.id).unwrap();
             let names = summary.services.iter().map(ToString::to_string).collect();
             for source in sources
@@ -156,6 +163,7 @@ fn pinned(store: &ConfigStore, automated: &Automated, service: &str) -> Option<S
         .into_iter()
         .find(|source| source.service.as_str() == service)
         .and_then(|source| source.commit)
+        .map(String::from)
 }
 
 #[test]
@@ -189,8 +197,10 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(error.details["head"], H2);
     assert_eq!(
-        store.branch_head(&org(), 11, "main").unwrap().as_deref(),
-        Some(H2)
+        store
+            .branch_head(&org(), backend::repo_id(11), &backend::git_branch("main"))
+            .unwrap(),
+        Some(backend::sha(H2))
     );
 
     // Deleting the branch forgets its head: the next push deploys everything.
@@ -198,20 +208,23 @@ fn a_push_deploys_saved_state_only_and_a_replay_changes_nothing() {
         system(&store, &push(Some(H2), None, None)),
         Automated::default()
     );
-    assert_eq!(store.branch_head(&org(), 11, "main").unwrap(), None);
+    assert_eq!(
+        store
+            .branch_head(&org(), backend::repo_id(11), &backend::git_branch("main"))
+            .unwrap(),
+        None
+    );
     let automated = system(&store, &push(None, Some(H3), Some(&["nothing.md"])));
     assert_eq!(automated.admitted.len(), 1);
     assert_eq!(automated.admitted[0].deployment.services.len(), 2);
 
-    // Malformed observations are refused without echoing them.
-    let error = store
-        .system(
-            &org(),
-            &push(Some(H3), Some("nope"), None),
-            &Trusted::default(),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    // Malformed observations are refused without echoing them: a commit isn't one
+    // unless it parses, and a changed path must be the repository's.
+    let error = serde_json::from_value::<SystemEvent>(serde_json::json!({
+        "event": "branch_head", "repository_id": 11, "branch": "main", "head": "nope",
+    }))
+    .unwrap_err();
+    assert!(!error.to_string().contains("nope"), "{error}");
     let error = store
         .system(
             &org(),

@@ -3,7 +3,7 @@
 
 use clap::{ArgMatches, Command};
 use ployz_store::{
-    CreateGitService, CreateService, RemoveService, RenameService, ServiceId, ServiceQuery,
+    CreateGitService, CreateService, RemoveService, RenameService, ServiceLineageId, ServiceQuery,
     ServiceStaged, ServicesQuery,
 };
 
@@ -56,13 +56,15 @@ pub(super) fn rm_command() -> Command {
 /// Add an image, GitHub repository or empty Service to Working State.
 pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let id = ServiceId::parse(store::mint())?;
+    let id = ServiceLineageId::parse(store::mint())?;
     let environment = store::environment(matches)?;
     let name = service_name(matches, "name")?;
     let store = store::store(root)?;
     let created = if let Some(repo) = matches.get_one::<String>("repo") {
         let (repository, branch) = match repo.split_once('@') {
-            Some((repository, branch)) => (repository, Some(branch.to_owned())),
+            Some((repository, branch)) => {
+                (repository, Some(ployz_store::BranchName::parse(branch)?))
+            }
             None => (repo.as_str(), None),
         };
         let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
@@ -71,7 +73,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
                 id,
                 environment,
                 name: name.clone(),
-                repository: repository.to_owned(),
+                repository: ployz_store::RepositoryName::parse(repository)?,
                 branch,
             })
             .map_err(store::failed(matches, &words))?

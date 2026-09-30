@@ -4,9 +4,10 @@
 use ployz_core::config::{ReviewComparisonRole, ReviewLifecycleKind};
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use ployz_store::{
-    Actor, Change, ConfigStore, CreateProject, CreateService, DiffQuery, DiffView, Discard,
-    Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId,
-    ProjectName, Publish, Published, Revision, ServiceId, SettingPath, Trusted,
+    Actor, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DiffQuery, DiffView,
+    Discard, Discarded, Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, Mount,
+    OrganizationId, ProjectId, ProjectName, Publish, Published, Revision, ServiceLineageId,
+    SettingPath, Trusted, VolumeId, VolumeName,
 };
 use serde_json::{Value, json};
 
@@ -20,7 +21,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(PROJECT).unwrap(),
@@ -31,10 +32,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, name, image) in [(3, "web", "nginx:1"), (4, "api", "caddy:2")] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
@@ -48,7 +49,7 @@ fn shop() -> (ConfigStore, Actor) {
 
 fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -63,7 +64,7 @@ fn set(store: &ConfigStore, who: &Actor, path: &str, value: Value) {
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    store.diff(who, &DiffQuery::default()).unwrap()
+    store.read(who, &DiffQuery::default()).unwrap()
 }
 
 /// Every Setting value in Working State, by path.
@@ -72,7 +73,7 @@ fn working(store: &ConfigStore, who: &Actor) -> Vec<(String, Value)> {
         all: true,
         ..EnvironmentQuery::default()
     };
-    let view = store.environment(who, &query).unwrap();
+    let view = store.read(who, &query).unwrap();
     view.settings
         .into_iter()
         .map(|row| (row.path.to_string(), row.value))
@@ -87,7 +88,7 @@ fn value(store: &ConfigStore, who: &Actor, path: &str) -> Option<Value> {
 }
 
 fn publish(store: &ConfigStore, who: &Actor, version: Option<&str>) -> Result<Published, RpcError> {
-    store.publish(
+    store.write_trusted(
         who,
         &Publish {
             environment: EnvironmentRef::default(),
@@ -104,7 +105,7 @@ fn discard(
     path: Option<&str>,
     version: Option<&str>,
 ) -> Result<Discarded, RpcError> {
-    store.discard(
+    store.write(
         who,
         &Discard {
             environment: EnvironmentRef::default(),
@@ -295,4 +296,84 @@ fn discard_names_what_it_cannot_find() {
         error.details,
         json!({ "did_you_mean": "web", "valid_children": ["web", "api"] })
     );
+}
+
+#[test]
+fn simultaneous_publishers_save_one_revision() {
+    let dir = tempfile::tempdir().unwrap();
+    let url = backend::fresh_url(&dir);
+    let who = Actor::system(OrganizationId::parse("org").unwrap());
+    let store = ConfigStore::open(&url, backend::key()).unwrap();
+    store
+        .write(
+            &who,
+            &CreateProject {
+                id: ProjectId::parse(PROJECT).unwrap(),
+                name: ProjectName::parse("shop").unwrap(),
+                default_environment: EnvironmentId::parse(ENVIRONMENT).unwrap(),
+            },
+        )
+        .unwrap();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+            },
+        )
+        .unwrap();
+    let version = diff(&store, &who).version;
+    let published: Vec<Result<Published, RpcError>> = std::thread::scope(|threads| {
+        let publishers: Vec<_> = (0..2)
+            .map(|_| {
+                let (url, who, version) = (&url, &who, &version);
+                threads.spawn(move || {
+                    let store = ConfigStore::open(url, backend::key()).unwrap();
+                    publish(&store, who, Some(version))
+                })
+            })
+            .collect();
+        publishers
+            .into_iter()
+            .map(|one| one.join().unwrap())
+            .collect()
+    });
+    // They take turns: one saves what it reviewed; the other's review is stale.
+    let [first, second] = published.try_into().unwrap();
+    let (saved, refused) = match (first, second) {
+        (Ok(saved), Err(refused)) | (Err(refused), Ok(saved)) => (saved, refused),
+        other => panic!("one publisher wins: {other:?}"),
+    };
+    assert_eq!((saved.saved, saved.created), (Revision(1), true));
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+}
+
+#[test]
+fn discard_keeps_mounts_it_does_not_name() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("data").unwrap(),
+                mounts: vec![Mount {
+                    service: ServiceName::parse("web").unwrap(),
+                    path: "/data".into(),
+                }],
+                storage: ployz_core::config::VolumeKind::managed_default(),
+            },
+        )
+        .unwrap();
+    publish(&store, &who, None).unwrap();
+    set(&store, &who, "web.replicas", json!(3));
+    discard(&store, &who, Some("web.replicas"), None).unwrap();
+    assert_eq!(value(&store, &who, "web.mounts.data"), Some(json!("/data")));
+    // web was introduced before it mounted data: discarding the mount takes it out.
+    discard(&store, &who, Some("web.mounts.data"), None).unwrap();
+    assert_eq!(value(&store, &who, "web.mounts.data"), None);
 }

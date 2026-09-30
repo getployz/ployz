@@ -173,3 +173,66 @@ pub(crate) fn run(
         }
     }
 }
+
+/// A [`Query`], or one of its payloads, and the view it answers with.
+pub trait Ask: Clone {
+    type View;
+    fn query(self) -> Query;
+    /// The answer, as this asker's view.
+    ///
+    /// # Errors
+    /// `internal` for a view of another query.
+    fn view(view: View) -> Result<Self::View, RpcError>;
+}
+
+impl Ask for Query {
+    type View = View;
+    fn query(self) -> Query {
+        self
+    }
+    fn view(view: View) -> Result<View, RpcError> {
+        Ok(view)
+    }
+}
+
+macro_rules! asks {
+    ($($query:ty => $variant:ident($answer:ty) $(as $unbox:tt)?),* $(,)?) => {$(
+        impl Ask for $query {
+            type View = $answer;
+            fn query(self) -> Query {
+                Query::$variant(self)
+            }
+            fn view(view: View) -> Result<$answer, RpcError> {
+                match view {
+                    View::$variant(answer) => Ok($($unbox)? answer),
+                    _ => Err(crate::error::internal("The Store answered another query")),
+                }
+            }
+        }
+    )*};
+}
+
+asks!(
+    EnvironmentQuery => Environment(EnvironmentView),
+    DiffQuery => Diff(crate::DiffView),
+    PlanQuery => Plan(PlanView),
+    DeploymentsQuery => Deployments(DeploymentsView),
+    DeploymentQuery => Deployment(crate::DeploymentView) as *,
+    crate::BuildLogQuery => BuildLog(crate::BuildLogView),
+    ServicesQuery => Services(ServicesView),
+    ServiceQuery => Service(ServiceView),
+    NamespaceQuery => Namespace(NamespaceView),
+    crate::DomainsQuery => Domains(crate::DomainsView),
+    crate::DomainQuery => Domain(crate::DomainView),
+    VolumesQuery => Volumes(VolumesView),
+    VolumeQuery => Volume(VolumeView),
+    RemovalsQuery => Removals(RemovalsView),
+    crate::BranchQuery => Branch(crate::BranchView),
+    crate::BranchPlanQuery => BranchPlan(crate::BranchPlanView),
+    crate::BuildOrderQuery => BuildOrder(crate::BuildOrderView),
+    crate::MoveQuery => Move(crate::MoveView),
+    crate::EnvironmentsQuery => Environments(crate::EnvironmentsView),
+    crate::ProjectsQuery => Projects(crate::ProjectsView),
+    crate::PrPlansQuery => PrPlans(crate::PrPlansView),
+    crate::PullRequestQuery => PullRequest(crate::PullRequestView),
+);

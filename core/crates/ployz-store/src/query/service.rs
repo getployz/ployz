@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::command::{ServiceSummary, summary};
-use crate::id::ServiceId;
+use crate::id::ServiceLineageId;
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -82,7 +82,7 @@ pub struct ServiceView {
     #[serde(flatten)]
     pub service: ServiceListing,
     /// The lineage its Environment copies share.
-    pub lineage: ServiceId,
+    pub lineage: ServiceLineageId,
     /// Its Settings as one object, the shape `set --patch` takes. A removed Service
     /// shows what is deployed.
     pub values: Map<String, Value>,
@@ -127,7 +127,7 @@ pub(crate) fn service(
     let values = super::environment::values(tx, &environment, &listed.node)?;
     Ok(ServiceView {
         environment: environment.summary,
-        lineage: ServiceId::parse(listed.node.lineage_id.as_str())
+        lineage: ServiceLineageId::parse(listed.node.lineage_id.as_str())
             .map_err(|_| crate::error::corrupt("Service lineage"))?,
         values,
         changes: listed.changes,

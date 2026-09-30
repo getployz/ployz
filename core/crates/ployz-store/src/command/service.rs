@@ -14,7 +14,7 @@ use ts_rs::TS;
 use super::{Command, replayable};
 use crate::Actor;
 use crate::error;
-use crate::id::ServiceId;
+use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{Apply, ServiceSetting, SettingPath, image_source};
 use crate::storage::Tx;
@@ -25,7 +25,7 @@ use crate::storage::Tx;
 #[serde(deny_unknown_fields)]
 pub struct CreateService {
     /// The new Service's ID, also its lineage.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// The Environment to create it in.
     #[serde(default)]
     pub environment: EnvironmentRef,
@@ -78,7 +78,7 @@ pub struct ServiceStaged {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceSummary {
     /// Its durable identity.
-    pub id: ServiceId,
+    pub id: ServiceLineageId,
     /// Its name, which Setting paths address it by.
     pub name: ServiceName,
     /// Its Private DNS name, fixed at creation.
@@ -114,7 +114,7 @@ pub(crate) fn create_service(
 pub(crate) fn insert_service(
     tx: &mut dyn Tx,
     who: &Actor,
-    id: &ServiceId,
+    id: &ServiceLineageId,
     environment: &EnvironmentRef,
     name: &ServiceName,
     source: ServiceSource,
@@ -153,19 +153,11 @@ pub(crate) fn insert_service(
     };
     environment.working.services.push(node.clone());
     scope::save_working(tx, &mut environment)?;
-    tx.execute(
-        "INSERT INTO config_node_introduction \
-         (environment_id, node_id, organization_id, node_type, node) \
-         VALUES (?1, ?2, ?3, 'service', ?4)",
-        &[
-            environment.summary.id.as_str().into(),
-            id.as_str().into(),
-            who.organization.as_str().into(),
-            serde_json::to_string(&node)
-                .expect("a Service node is JSON")
-                .as_str()
-                .into(),
-        ],
+    scope::introduce(
+        tx,
+        who,
+        &environment.summary.id,
+        scope::Node::Service(&node),
     )?;
     Ok(ServiceStaged {
         service: summary(&node)?,
@@ -219,7 +211,7 @@ pub(crate) fn remove_service(
 
 /// A name is taken by another Service's name or Private DNS name: either would make
 /// `name` address two Services. `volumes` is never free.
-fn refuse_taken(
+pub(crate) fn refuse_taken(
     environment: &scope::Environment,
     name: &ServiceName,
     except: Option<&str>,
@@ -257,7 +249,7 @@ fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
 
 pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {
     Ok(ServiceSummary {
-        id: ServiceId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
+        id: ServiceLineageId::parse(node.id.as_str()).map_err(|_| error::corrupt("Service ID"))?,
         name: ServiceName::parse(node.slug.as_str()).map_err(|_| error::corrupt("Service name"))?,
         private_dns: node.config.private_dns.clone(),
     })
@@ -269,7 +261,7 @@ mod tests {
 
     use crate::{
         Actor, Change, ConfigStore, CreateProject, CreateService, Edit, EnvironmentId,
-        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceId, SettingPath,
+        EnvironmentRef, OrganizationId, ProjectId, ProjectName, ServiceLineageId, SettingPath,
     };
 
     /// Node Introductions have no read yet (Discard uses them), so this reads the row.
@@ -280,7 +272,7 @@ mod tests {
         let who = Actor::system(OrganizationId::parse("org").unwrap());
         let uuid = |n: u8| format!("00000000-0000-4000-8000-00000000000{n}");
         store
-            .create_project(
+            .write(
                 &who,
                 &CreateProject {
                     id: ProjectId::parse(uuid(1)).unwrap(),
@@ -290,10 +282,10 @@ mod tests {
             )
             .unwrap();
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(3)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(3)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse("web").unwrap(),
                     image: Some("nginx:1".into()),
@@ -301,7 +293,7 @@ mod tests {
             )
             .unwrap();
         store
-            .edit(
+            .write(
                 &who,
                 &Edit {
                     environment: EnvironmentRef::default(),

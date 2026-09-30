@@ -20,41 +20,91 @@ use crate::storage::Tx;
 use crate::{Actor, Trusted};
 use crate::{removal, review};
 
-/// Deploy an Environment: all of it, or only some Services. Or, with `retry`,
-/// ship again exactly what an ended Deployment froze.
+/// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
+/// the removal of an Environment from the Servers.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "admit", rename_all = "snake_case")]
+pub enum Admit {
+    /// Publish Working State if needed, then deploy all of it or some Services.
+    Deploy(Deploy),
+    /// Ship again exactly what an ended Deployment froze.
+    Retry(Retry),
+    /// Take an Environment off the Servers.
+    Remove(Removal),
+}
+
+impl Admit {
+    /// The new Deployment's ID.
+    #[must_use]
+    pub const fn id(&self) -> &DeploymentId {
+        match self {
+            Self::Deploy(deploy) => &deploy.id,
+            Self::Retry(retry) => &retry.id,
+            Self::Remove(removal) => &removal.id,
+        }
+    }
+}
+
+/// Deploy an Environment: all of it, or only some Services.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
-pub struct Admit {
+pub struct Deploy {
     pub id: DeploymentId,
     #[serde(default)]
     pub environment: EnvironmentRef,
     /// Deploy only these Services; none deploys every Service.
     #[serde(default)]
+    #[ts(as = "Option<Vec<ServiceName>>", optional)]
     pub services: Vec<ServiceName>,
-    /// Refuse with `conflict` unless this is still the latest `diff` version.
+    /// Refuse with `conflict` unless this is still the latest `diff` version, or the
+    /// version a refusal to delete data handed back.
     #[serde(default)]
+    #[ts(optional = nullable)]
     pub version: Option<String>,
     /// A new upload for Services without a source of their own; none keeps the
     /// Environment's latest.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub upload: Option<UploadedSource>,
-    /// Retry this failed, unknown or cancelled Deployment: its Saved revision,
-    /// targets and Namespace, whatever was saved since. It names the Environment,
-    /// so `environment`, `services`, `version` and `upload` stay empty.
-    #[serde(default)]
-    #[ts(optional = nullable)]
-    pub retry: Option<DeploymentId>,
-    /// Remove the Environment from the Servers: ship it empty, deleting its deployed
-    /// Volumes, without touching Working or Saved State. `services`, `upload` and
-    /// `retry` stay empty. `RemoveEnvironment` then deletes it.
-    #[serde(default)]
-    pub remove: bool,
     /// Deployed Volumes whose data this Deploy may delete, by name. A Deploy that
     /// deletes data, or publishes a removal that will, refuses with
     /// `confirmation_required` unless it names each one and passes the `version`
     /// that refusal handed back.
     #[serde(default)]
+    #[ts(as = "Option<Vec<VolumeName>>", optional)]
+    pub accept_volume_loss: Vec<VolumeName>,
+    /// What this Deploy ships, in the admitter's words; shown on the Deployment.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub message: Option<String>,
+}
+
+/// Retry a failed, unknown or cancelled Deployment: its Saved revision, targets,
+/// Namespace, credentials and upload, whatever was saved since.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Retry {
+    pub id: DeploymentId,
+    /// The Deployment it ships again.
+    pub deployment: DeploymentId,
+}
+
+/// Remove an Environment from the Servers: ship it empty, deleting its deployed
+/// Volumes, without touching Working or Saved State. `RemoveEnvironment` then
+/// deletes it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Removal {
+    pub id: DeploymentId,
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// As [`Deploy::version`].
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub version: Option<String>,
+    /// As [`Deploy::accept_volume_loss`].
+    #[serde(default)]
+    #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
 }
 
@@ -106,27 +156,21 @@ fn admitted(
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
     trusted.runnable()?;
-    if let Some(source) = &admit.retry {
-        if admit.environment != EnvironmentRef::default()
-            || admit.remove
-            || !admit.services.is_empty()
-            || admit.version.is_some()
-            || admit.upload.is_some()
-            || !admit.accept_volume_loss.is_empty()
-        {
-            return Err(error::invalid(
-                "A retry ships what its Deployment froze: leave environment, remove, services, \
-                 version, upload and accept_volume_loss empty",
-                json!({}),
-            ));
-        }
+    match admit {
         // The retry deletes exactly the Docker Volumes its source's review accepted,
         // which the copied target nodes carry: nothing new, so no new review.
-        return deployment::retry(tx, who, &admit.id, source);
+        Admit::Retry(retry) => deployment::retry(tx, who, &retry.id, &retry.deployment),
+        Admit::Remove(removal) => self::removal(tx, who, removal, trusted),
+        Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
-    if admit.remove {
-        return removal(tx, who, admit, trusted);
-    }
+}
+
+fn deploy(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    admit: &Deploy,
+    trusted: &Trusted,
+) -> Result<DeploymentSummary, RpcError> {
     let environment = scope::lock(tx, who, &admit.environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
     let cluster_domain = trusted
@@ -190,11 +234,18 @@ fn admitted(
     )?;
     frozen.credentials = registry::freeze(tx, id, &saved_intent, &frozen)?;
     // Only Cloud's authentication names an uploader, never the caller.
-    let mut admit = admit.clone();
-    if let Some(upload) = &mut admit.upload {
-        upload.uploader.clone_from(&who.principal);
-    }
-    deployment::admit(tx, who, &admit, id, saved, &frozen)
+    let upload = admit.upload.clone().map(|upload| UploadedSource {
+        uploader: who.principal.clone(),
+        ..upload
+    });
+    deployment::admit(
+        tx,
+        who,
+        (&admit.id, &admit.services, upload, admit.message.clone()),
+        id,
+        saved,
+        &frozen,
+    )
 }
 
 /// Queue the Deployment that removes an Environment from the Servers: the empty
@@ -204,15 +255,9 @@ fn admitted(
 fn removal(
     tx: &mut dyn Tx,
     who: &Actor,
-    admit: &Admit,
+    admit: &Removal,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
-    if !admit.services.is_empty() || admit.upload.is_some() {
-        return Err(error::invalid(
-            "A removal ships nothing: leave services and upload empty",
-            json!({}),
-        ));
-    }
     let environment = scope::lock(tx, who, &admit.environment)?;
     crate::teardown::guard_removal(tx, &environment)?;
     let id = &environment.summary.id;
@@ -233,7 +278,7 @@ fn removal(
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
-    let empty = review::empty(&environment.working);
+    let empty = review::empty(&environment.working.environment_slug);
     let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
     let losses = removal::review(
         who,
@@ -252,5 +297,12 @@ fn removal(
         None,
         &losses,
     )?;
-    deployment::admit(tx, who, admit, id, deployment::NOTHING, &frozen)
+    deployment::admit(
+        tx,
+        who,
+        (&admit.id, &[], None, None),
+        id,
+        deployment::NOTHING,
+        &frozen,
+    )
 }

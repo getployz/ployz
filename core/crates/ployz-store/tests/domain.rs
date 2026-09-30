@@ -10,10 +10,10 @@
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, AddDomain, Admit, Cancel, ClusterDomain, ClusterDomainStatus, Command, ConfigStore,
-    CreateEnvironment, CreateProject, CreateService, DeploymentId, DnsLookup, DomainAction,
+    CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId, DnsLookup, DomainAction,
     DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId,
     EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    Query, RemoveDomain, RunEvidence, RunnerId, ServiceId, Trusted, View, Written,
+    Query, RemoveDomain, Retry, RunEvidence, RunnerId, ServiceLineageId, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -28,7 +28,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -38,7 +38,7 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     store
-        .create_environment(
+        .write(
             &who,
             &CreateEnvironment {
                 id: EnvironmentId::parse(uuid(3)).unwrap(),
@@ -49,10 +49,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, environment) in [(4, None), (5, Some("staging"))] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: at(environment),
                     name: ServiceName::parse("web").unwrap(),
                     image: Some("nginx:1".into()),
@@ -102,7 +102,7 @@ fn cloud(pro: bool) -> Trusted {
 
 fn rows(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Vec<DomainRow> {
     store
-        .domains(who, &DomainsQuery::default(), trusted)
+        .read_trusted(who, &DomainsQuery::default(), trusted)
         .unwrap()
         .domains
 }
@@ -111,24 +111,24 @@ fn rows(store: &ConfigStore, who: &Actor, trusted: &Trusted) -> Vec<DomainRow> {
 fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
     let (store, who) = shop();
     let added = store
-        .add_domain(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud(false))
         .unwrap();
     assert_eq!(added.domain.shown(), "web.acme.ployz.app");
     assert_eq!(added.staged.len(), 1);
     // Adding it again keeps it; a port retargets it.
     let again = store
-        .add_domain(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud(false))
         .unwrap();
     assert!(again.staged.is_empty());
     assert_eq!(again.environment.revision, added.environment.revision);
     let retargeted = store
-        .add_domain(&who, &add(None, Some(8080)), &cloud(false))
+        .write_trusted(&who, &add(None, Some(8080)), &cloud(false))
         .unwrap();
     assert_eq!(retargeted.domain.port, Some(8080));
 
     // Staging's web shares the Cluster Domain, so it takes the next prefix.
     let staging = store
-        .add_domain(
+        .write_trusted(
             &who,
             &AddDomain {
                 environment: at(Some("staging")),
@@ -148,22 +148,22 @@ fn a_generated_domain_is_one_per_service_and_unique_in_the_organization() {
 fn custom_domains_need_the_capability_to_add_or_retarget() {
     let (store, who) = shop();
     let refused = store
-        .add_domain(&who, &add(Some("app.example.com"), None), &cloud(false))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(false))
         .unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Unsupported);
     assert_eq!(refused.details["next"], "ployz billing upgrade");
 
     let added = store
-        .add_domain(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
         .unwrap();
     assert_eq!(added.domain.shown(), "app.example.com");
     // The same domain again needs nothing; a new port is a retarget, which does.
     let same = store
-        .add_domain(&who, &add(Some("app.example.com"), None), &cloud(false))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(false))
         .unwrap();
     assert!(same.staged.is_empty());
     let retarget = store
-        .add_domain(
+        .write_trusted(
             &who,
             &add(Some("app.example.com"), Some(3000)),
             &cloud(false),
@@ -173,7 +173,7 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
 
     // Another Service, in any Environment, can't take it.
     let taken = store
-        .add_domain(
+        .write_trusted(
             &who,
             &AddDomain {
                 environment: at(Some("staging")),
@@ -189,13 +189,13 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
 fn a_domain_is_removed_by_hostname_or_prefix() {
     let (store, who) = shop();
     store
-        .add_domain(&who, &add(None, None), &cloud(true))
+        .write_trusted(&who, &add(None, None), &cloud(true))
         .unwrap();
     store
-        .add_domain(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
         .unwrap();
     let remove = |domain: &str, trusted: &Trusted| {
-        store.remove_domain(
+        store.write_trusted(
             &who,
             &RemoveDomain {
                 environment: EnvironmentRef::default(),
@@ -230,16 +230,15 @@ fn admit(
 ) -> Result<Written, ployz_core::RpcError> {
     store.write_trusted(
         who,
-        &Command::Admit(Admit {
+        &Command::Admit(Admit::Deploy(Deploy {
             id: deployment(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
-            retry: None,
-            remove: false,
             upload: None,
             accept_volume_loss: Vec::new(),
-        }),
+            message: None,
+        })),
         trusted,
     )
 }
@@ -278,10 +277,10 @@ fn apply(store: &ConfigStore, n: u8) -> ployz_core::DeployIntent {
 fn a_generated_domain_deploys_under_the_cluster_domain_frozen_at_admission() {
     let (store, who) = shop();
     store
-        .add_domain(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud(false))
         .unwrap();
     // A plan checks everything but the Cluster Domain, which only Cloud holds.
-    store.plan(&who, &PlanQuery::default()).unwrap();
+    store.read(&who, &PlanQuery::default()).unwrap();
     let refused = admit(&store, &who, 1, &Trusted::default()).unwrap_err();
     assert_eq!(refused.code, RpcErrorCode::Unsupported);
 
@@ -308,7 +307,7 @@ fn a_check_sees_fixed_dns_before_the_certificate_retries() {
     let staged = rows(&store, &who, &cloud(true));
     assert!(staged.is_empty());
     store
-        .add_domain(&who, &add(Some("app.example.com"), None), &cloud(true))
+        .write_trusted(&who, &add(Some("app.example.com"), None), &cloud(true))
         .unwrap();
     let before = &rows(&store, &who, &cloud(true))[0];
     assert_eq!(
@@ -360,11 +359,11 @@ fn a_check_sees_fixed_dns_before_the_certificate_retries() {
 fn a_retry_ships_the_cluster_domain_its_source_froze() {
     let (store, who) = shop();
     store
-        .add_domain(&who, &add(None, None), &cloud(false))
+        .write_trusted(&who, &add(None, None), &cloud(false))
         .unwrap();
     admit(&store, &who, 1, &cloud(false)).unwrap();
     store
-        .cancel(
+        .write(
             &who,
             &Cancel {
                 deployment: deployment(1),
@@ -375,16 +374,10 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
     store
         .write_trusted(
             &who,
-            &Command::Admit(Admit {
+            &Command::Admit(Admit::Retry(Retry {
                 id: deployment(2),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                retry: Some(deployment(1)),
-                remove: false,
-                upload: None,
-                accept_volume_loss: Vec::new(),
-            }),
+                deployment: deployment(1),
+            })),
             &Trusted::default(),
         )
         .unwrap();

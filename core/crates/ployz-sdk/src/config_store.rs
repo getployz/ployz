@@ -164,7 +164,7 @@ impl ConfigStore {
         let (deployment, runner) = ids(deployment, runner)?;
         // Only a Deployment of this Organization runs here.
         let owned = deployment.clone();
-        self.run(move |store| store.deployment(&who, &owned))
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
             .await?;
         let connections = connections_of(connections)?;
         let sources: Sources = sources
@@ -263,7 +263,7 @@ impl ConfigStore {
         branch: String,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let repository_id = repository(repository_id)?;
+        let (repository_id, branch) = github_branch(repository_id, &branch)?;
         self.run(move |store| store.branch_head(&who.organization, repository_id, &branch))
             .await
     }
@@ -281,7 +281,7 @@ impl ConfigStore {
         branch: String,
     ) -> Result<serde_json::Value> {
         let who = actor(organization, None)?;
-        let repository_id = repository(repository_id)?;
+        let (repository_id, branch) = github_branch(repository_id, &branch)?;
         self.run(move |store| store.pending_saves(&who.organization, repository_id, &branch))
             .await
     }
@@ -464,6 +464,17 @@ fn actor(organization: String, principal: Option<String>) -> Result<Actor> {
             .transpose()
             .map_err(rpc_to_napi)?,
     })
+}
+
+/// A GitHub repository's ID and one of its branches, as JavaScript hands them over.
+fn github_branch(
+    repository_id: i64,
+    branch: &str,
+) -> Result<(ployz_store::RepositoryId, ployz_store::BranchName)> {
+    Ok((
+        ployz_store::RepositoryId::parse(repository(repository_id)?).map_err(rpc_to_napi)?,
+        ployz_store::BranchName::parse(branch).map_err(rpc_to_napi)?,
+    ))
 }
 
 fn ids(deployment: String, runner: String) -> Result<(DeploymentId, RunnerId)> {

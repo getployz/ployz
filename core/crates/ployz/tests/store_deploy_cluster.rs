@@ -342,9 +342,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     use ployz_core::config::ServiceGitAccess;
     use ployz_store::{
         Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildStatus, Change, ConfigStore,
-        CreateGitService, CreateProject, DeploymentId, DeploymentStatus, Edit, EnvironmentId,
-        EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId, SealingKey, ServiceId,
-        SettingPath, Trusted,
+        CreateGitService, CreateProject, Deploy, DeploymentId, DeploymentStatus, Edit,
+        EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RunnerId,
+        SealingKey, ServiceLineageId, SettingPath, Trusted,
     };
 
     let plan = ClusterPlan::new(&format!("l3-store-git-{}", std::process::id()), 1).unwrap();
@@ -356,7 +356,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -372,10 +372,10 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             .iter()
             .zip(11..)
             .map(|(name, repository_id)| AuthorizedRepository {
-                repository: format!("acme/{name}"),
-                repository_id,
+                repository: ployz_store::RepositoryName::parse(format!("acme/{name}")).unwrap(),
+                repository_id: ployz_store::RepositoryId::parse(repository_id).unwrap(),
                 access: ServiceGitAccess::Public,
-                default_branch: "main".into(),
+                default_branch: ployz_store::BranchName::parse("main").unwrap(),
                 branches: Vec::new(),
             })
             .collect(),
@@ -385,14 +385,14 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     let sources = tempfile::tempdir().unwrap();
     for (n, name) in names.iter().enumerate() {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000001{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(*name).unwrap(),
-                    repository: format!("acme/{name}"),
+                    repository: ployz_store::RepositoryName::parse(format!("acme/{name}")).unwrap(),
                     branch: None,
                 },
                 &evidence,
@@ -412,7 +412,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     dockerfile("web", "echo built-web");
     dockerfile("api", "echo broken-api && exit 1");
     store
-        .edit(
+        .write(
             &who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -436,24 +436,28 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             let id =
                 DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
             store
-                .admit(
+                .write_trusted(
                     &who,
-                    &Admit {
+                    &Admit::Deploy(Deploy {
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
                         version: None,
                         upload: None,
-                        retry: None,
-                        remove: false,
                         accept_volume_loss: Vec::new(),
-                    },
+                        message: None,
+                    }),
                     &ployz_store::Trusted::default(),
                 )
                 .unwrap();
             let pins = names
                 .iter()
-                .map(|name| (ServiceName::parse(*name).unwrap(), commit.clone()))
+                .map(|name| {
+                    (
+                        ServiceName::parse(*name).unwrap(),
+                        ployz_store::CommitSha::parse(commit.as_str()).unwrap(),
+                    )
+                })
                 .collect();
             store.pin(&id, &pins).unwrap();
             ployz::sdk::run_deployment(
@@ -468,7 +472,9 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
             )
             .await
             .unwrap();
-            store.deployment(&who, &id).unwrap()
+            store
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+                .unwrap()
         }
     };
     let statuses = |view: &ployz_store::DeploymentView| {
@@ -492,7 +498,7 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
         ])
     );
     let log = store
-        .build_log(
+        .read(
             &who,
             &BuildLogQuery {
                 deployment: failed.deployment.id.clone(),
@@ -526,9 +532,10 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
 async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() {
     use ployz_core::ServiceName;
     use ployz_store::{
-        Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, DeploymentId,
-        DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId, Outcome, ProjectId,
-        ProjectName, RunnerId, SealingKey, ServiceId, SettingPath, UploadedSource,
+        Actor, Admit, BuildStatus, Change, ConfigStore, CreateProject, CreateService, Deploy,
+        DeploymentId, DeploymentStatus, Edit, EnvironmentId, EnvironmentRef, OrganizationId,
+        Outcome, ProjectId, ProjectName, RunnerId, SealingKey, ServiceLineageId, SettingPath,
+        UploadedSource,
     };
 
     let plan =
@@ -541,7 +548,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     let store = Arc::new(ConfigStore::open(&url, SealingKey::new(b"rung4").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -552,10 +559,10 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000010").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
@@ -564,7 +571,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         .unwrap();
     let set = |setting: &str, value: Value| {
         store
-            .edit(
+            .write(
                 &who,
                 &Edit {
                     environment: EnvironmentRef::default(),
@@ -596,9 +603,9 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             let id =
                 DeploymentId::parse(format!("00000000-0000-4000-8000-0000000002{n:02}")).unwrap();
             store
-                .admit(
+                .write_trusted(
                     &who,
-                    &Admit {
+                    &Admit::Deploy(Deploy {
                         id: id.clone(),
                         environment: EnvironmentRef::default(),
                         services: Vec::new(),
@@ -608,10 +615,9 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                             base: None,
                             uploader: None,
                         }),
-                        retry: None,
-                        remove: false,
                         accept_volume_loss: Vec::new(),
-                    },
+                        message: None,
+                    }),
                     &ployz_store::Trusted::default(),
                 )
                 .unwrap();
@@ -627,7 +633,9 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
             )
             .await
             .unwrap();
-            store.deployment(&who, &id).unwrap()
+            store
+                .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+                .unwrap()
         }
     };
     let built = deploy(1, true).await;
@@ -640,7 +648,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
     assert_eq!(built.builds[0].commit, None);
     assert_eq!(built.builds[0].status, BuildStatus::Built);
     let log = store
-        .build_log(
+        .read(
             &who,
             &ployz_store::BuildLogQuery {
                 deployment: built.deployment.id.clone(),
