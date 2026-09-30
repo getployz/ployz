@@ -300,7 +300,7 @@ impl Dataset {
             return Ok(());
         }
         Err(format!(
-            "Volume {name} already has a {}-byte bound; changing it to {requested} bytes is a separate update operation",
+            "Volume {name} already has a {}-byte bound; a Volume's size is fixed once deployed, so it can't become {requested} bytes",
             self.refquota
         )
         .into())

@@ -516,7 +516,7 @@ pub enum PlanError {
     },
     /// A Ployz-driver Volume exists with a different bound or malformed options.
     #[error(
-        "Managed Volume {name} on Server '{machine}' has a different storage limit; its data will not be resized or replaced (requested {maximum_bytes})"
+        "Managed Volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
     )]
     ExistingProvisionedVolumeMismatch {
         /// Existing machine-local Docker Volume name.
