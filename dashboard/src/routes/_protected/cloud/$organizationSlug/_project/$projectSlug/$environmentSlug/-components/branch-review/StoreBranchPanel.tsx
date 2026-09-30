@@ -14,6 +14,7 @@ import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { ItemGroup } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
 import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
+import { deploymentStatusLabel } from "#/modules/config-store/store-deployments";
 import {
   branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreViews, volumesQuery,
 } from "#/modules/config-store/store-view.queries";
@@ -70,7 +71,7 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
-    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} inFlight={removal.in_flight} shutDown={branch.pull_request !== null}
+    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} inFlight={removal.in_flight} label={deploymentStatusLabel(removal)} shutDown={branch.pull_request !== null}
       onFinish={() => void closing.close()} onStart={() => {
         // Back on the Servers until shut down again; the writer toasts a refusal.
         writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
@@ -180,8 +181,8 @@ const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => present
  * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
  * stays off until the pull request's next push brings it back.
  */
-function RemovalNews({ lead, name, status, inFlight, shutDown, onFinish, onStart }: {
-  lead: boolean; name: string; status: DeploymentStatus; inFlight: boolean; shutDown: boolean; onFinish: () => void; onStart: () => void;
+function RemovalNews({ lead, name, status, inFlight, label, shutDown, onFinish, onStart }: {
+  lead: boolean; name: string; status: DeploymentStatus; inFlight: boolean; label: string; shutDown: boolean; onFinish: () => void; onStart: () => void;
 }) {
   if (status === "applied" && shutDown) {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shut down" detail="The next push brings it back"
@@ -191,7 +192,7 @@ function RemovalNews({ lead, name, status, inFlight, shutDown, onFinish, onStart
       </span>} />;
   }
   if (status === "applied") {
-    return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off the servers" detail={`Finish closing ${name}`}
+    return <NewsRow lead={lead} icon={<PowerOffIcon />} title={label} detail={`Finish closing ${name}`}
       action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Finish closing</Button>} />;
   }
   return inFlight
