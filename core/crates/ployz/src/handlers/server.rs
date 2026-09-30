@@ -177,7 +177,9 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
 /// as `wg` prints it.
 pub(super) fn machine_json(machine: &Machine) -> Value {
     let mut value = serde_json::to_value(machine).expect("a Machine serializes");
-    value["public_key"] = json!(machine.public_key.to_string());
+    if let Value::Object(fields) = &mut value {
+        fields.insert("public_key".into(), json!(machine.public_key.to_string()));
+    }
     value
 }
 

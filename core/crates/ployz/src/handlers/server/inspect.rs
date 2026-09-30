@@ -127,9 +127,11 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 Err(error) => return Err(error.into()),
             };
             let mut server = serde_json::to_value(&details)?;
-            server["public_key"] = json!(details.public_key.to_string());
-            if let Some(machine) = &details.machine {
-                server["machine"] = super::machine_json(machine);
+            if let Value::Object(fields) = &mut server {
+                fields.insert("public_key".into(), json!(details.public_key.to_string()));
+                if let Some(machine) = &details.machine {
+                    fields.insert("machine".into(), super::machine_json(machine));
+                }
             }
             output::show(&json!({ "server": server, "upgrade": upgrade }))
         })
@@ -140,8 +142,13 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
 /// it, and the gateway of its subnet.
 fn observation_json(observation: &MachineObservation) -> Value {
     let mut value = serde_json::to_value(observation).expect("a Machine observation serializes");
-    value["machine"] = super::machine_json(&observation.machine);
-    value["gateway"] = json!(observation.machine.subnet.gateway().0);
+    if let Value::Object(fields) = &mut value {
+        fields.insert("machine".into(), super::machine_json(&observation.machine));
+        fields.insert(
+            "gateway".into(),
+            json!(observation.machine.subnet.gateway().0),
+        );
+    }
     value
 }
 
@@ -191,15 +198,15 @@ mod tests {
             ployz_core::MembershipObservation::Up,
         );
         let output = observation_json(&observation);
-        assert_eq!(output["gateway"], "10.210.7.1");
-        assert_eq!(output["machine"]["name"], "node-a");
+        assert_eq!(output.pointer("/gateway"), Some(&json!("10.210.7.1")));
+        assert_eq!(output.pointer("/machine/name"), Some(&json!("node-a")));
         assert_eq!(
-            output["machine"]["public_key"],
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+            output.pointer("/machine/public_key"),
+            Some(&json!("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="))
         );
         assert_eq!(
-            output["machine"],
-            super::super::machine_json(&observation.machine)
+            output.get("machine"),
+            Some(&super::super::machine_json(&observation.machine))
         );
     }
 }
