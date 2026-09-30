@@ -186,10 +186,14 @@ async fn last_cloud_managed_server_is_refused_before_any_confirmation() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{output:?}");
     let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "conflict", "{error}");
     assert_eq!(
-        error["error"]["details"]["next"],
-        "ployz org rm ORGANIZATION"
+        error.pointer("/error/code"),
+        Some(&json!("conflict")),
+        "{error}"
+    );
+    assert_eq!(
+        error.pointer("/error/details/next"),
+        Some(&json!("ployz org rm ORGANIZATION"))
     );
     assert!(resets.lock().unwrap().is_empty());
 }
