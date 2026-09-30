@@ -28,6 +28,7 @@ use crate::{
 use super::{Error, leaf_matches, string_values, with_client};
 
 mod add;
+mod clean;
 mod enroll;
 mod helpers;
 mod init;
@@ -402,6 +403,7 @@ pub(crate) fn command() -> Command {
     base("server", "Manage Servers")
         .arg_required_else_help(true)
         .subcommand(enroll::command())
+        .subcommand(clean::command())
         .subcommand(base("build-cache-clear", "Clear this execution host user's Ployz build cache")
             .long_about("Clear this execution host user's Ployz build cache. Run on the build host as the user running its Builds (including the daemon). Refuses active or quarantined builder ownership; preserves completed images and unrelated Docker data. No daemon is required.\n\nHost configuration: ~/.ployz/build.yaml. Optional cpu_cores and memory_bytes limit BuildKit and Railpack preparation, independently of Service runtime limits. Both are disabled when omitted. Optional cache_bytes and min_free_bytes are retention/GC targets, not hard peak disk quotas. Unconfigured GC uses pinned BuildKit defaults."))
         .subcommand(
@@ -498,6 +500,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "add" => enroll::add,
         "build-cache-clear" => clear_build_cache,
+        "clean" => clean::clean,
         "inspect" => inspect,
         "logs" => super::operator::machine_logs,
         "ls" => list,

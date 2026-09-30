@@ -61,6 +61,26 @@ pub struct NamespaceView {
     pub services: std::collections::BTreeMap<ServiceName, ServiceName>,
 }
 
+/// Every Namespace the Organization's Environments own on the Servers.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NamespacesQuery {}
+
+/// The Organization's Namespaces, each with the Environment that owns it. A
+/// Namespace the Servers run that isn't here is in no Project.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct NamespacesView {
+    pub namespaces: Vec<OwnedNamespace>,
+}
+
+/// A Namespace and the Environment that owns it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub struct OwnedNamespace {
+    pub namespace: ployz_core::Namespace,
+    pub project: crate::ProjectName,
+    pub environment: crate::EnvironmentName,
+}
+
 /// One page of an Environment's Deployments, newest first.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -167,6 +187,28 @@ pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<Pl
         changes,
         unresolved,
     })
+}
+
+/// Every Namespace `who`'s Environments own.
+pub(crate) fn namespaces(tx: &mut dyn Tx, who: &Actor) -> Result<NamespacesView, RpcError> {
+    let rows = tx.query(
+        "SELECT n.namespace, p.name, e.name FROM config_namespace n \
+         JOIN config_environment e ON e.id = n.environment_id \
+         JOIN config_project p ON p.id = e.project_id \
+         WHERE n.organization_id = ?1 ORDER BY n.namespace",
+        &[who.organization.as_str().into()],
+    )?;
+    let namespaces = rows
+        .iter()
+        .map(|row| {
+            Ok(OwnedNamespace {
+                namespace: row.parse(0, "Namespace")?,
+                project: row.parse(1, "Project name")?,
+                environment: row.parse(2, "Environment name")?,
+            })
+        })
+        .collect::<Result<_, RpcError>>()?;
+    Ok(NamespacesView { namespaces })
 }
 
 pub(crate) fn namespace(
