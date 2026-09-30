@@ -15,15 +15,15 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon, getServiceStatusClasses } from "./service-node-helpers";
 import type { StoreCanvasService } from "./types";
-import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
-import { useRuntimeService } from "#/providers/runtime-provider";
+import { isIncompleteObservation, type RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import { useRuntimeService, useRuntimeStatus } from "#/providers/runtime-provider";
 import { serviceOnline } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 
 /**
  * What a Service's card says, from what the next Deploy does to it; else how it runs (`runtime`, null before any
- * runtime evidence of it).
+ * runtime evidence of it). `observed`: the Servers' evidence is in, so no `runtime` means nothing of it runs.
  */
-export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null, uploaded = false) {
+export function storeServiceStatus(service: ServiceListing, changeCount: number, runtime: RuntimeServiceRecord | null, uploaded = false, observed = false) {
   if (service.change === "create") return { state: "success", text: "Service will be created", badge: "New" } as const;
   if (service.change === "delete") return { state: "destructive", text: "Removed on the next deploy", badge: "Removing" } as const;
   // A change shows before the Store's review counts it.
@@ -32,7 +32,7 @@ export function storeServiceStatus(service: ServiceListing, changeCount: number,
   }
   if (service.source === "empty" && !uploaded) return { state: undefined, text: "Empty", badge: null } as const;
   if (!runtime && uploaded) return { state: undefined, text: "Uploaded", badge: null } as const;
-  if (!runtime) return { state: undefined, text: "Deployed", badge: null } as const;
+  if (!runtime) return { state: undefined, text: observed ? "Not running" : "Deployed", badge: null } as const;
   const containers = `${runtime.containers.length} ${runtime.containers.length === 1 ? "container" : "containers"}`;
   return serviceOnline(runtime)
     ? { state: "success", text: `Online · ${containers}`, badge: null } as const
@@ -48,7 +48,9 @@ export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdenti
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service.name);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
-  const status = storeServiceStatus(service, changeCount, runtime, uploaded);
+  const { lensStatus, incompleteIds } = useRuntimeStatus();
+  const observed = lensStatus === "no_connection" || (lensStatus === "observed" && !isIncompleteObservation(incompleteIds));
+  const status = storeServiceStatus(service, changeCount, runtime, uploaded, observed);
   const dot = getServiceStatusClasses(status.state);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
