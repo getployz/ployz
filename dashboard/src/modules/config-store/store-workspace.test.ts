@@ -1,7 +1,7 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing, JsonValue } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { storeEnvironmentTree, teardownStep } from "./store-workspace";
-import { StoreRefused } from "./store-write";
+import { StoreRefused } from "./store.contract";
 
 const refused = (code: string, details: JsonValue) => new StoreRefused({ code, message: code, details });
 

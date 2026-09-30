@@ -1,13 +1,13 @@
 import "@tanstack/react-start/server-only";
 import { createRequire } from "node:module";
 import type * as PloyzSdk from "@ployz/sdk";
-import type { ConfigStore, JsonValue } from "@ployz/sdk";
+import type { ConfigStore } from "@ployz/sdk";
 import { sql } from "drizzle-orm";
 import { Context, Data, Effect, Layer, Redacted, Semaphore } from "effect";
 import { storeChangeSources } from "#/modules/organization/change-log.sources";
 import { AppConfig } from "#/server/config.server";
 import { Database, type DatabaseService } from "#/server/database.server";
-import type { StoreRefusal } from "./store.contract";
+import { StoreRefused } from "./store.contract";
 
 // SAFETY: the package exports this named CommonJS SDK surface at runtime.
 const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk") as Pick<
@@ -15,16 +15,6 @@ const { openConfigStore, RpcError } = createRequire(import.meta.url)("@ployz/sdk
   "openConfigStore" | "RpcError"
 >;
 
-/** The Store refused a call, in the RPC error vocabulary: `conflict` carries fresh state, `not_found` names what's missing. */
-export class StoreRefused extends Data.TaggedError("StoreRefused")<{
-  readonly code: string;
-  readonly message: string;
-  readonly details: JsonValue;
-}> {
-  get refusal(): StoreRefusal {
-    return { code: this.code, message: this.message, details: this.details };
-  }
-}
 
 /** Whether the Store refused with `code`. */
 export const refusedWith = (code: string) => <E>(error: E) => error instanceof StoreRefused && error.code === code;
