@@ -1,5 +1,6 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing } from "@ployz/sdk";
 import { StoreRefused } from "./store.contract";
+import { volumeLoss } from "./store-volumes";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
 export function storeEnvironmentTree(environments: readonly EnvironmentListing[]) {
@@ -62,11 +63,19 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
   if (written.teardown === "removed") return { done: true };
   if (written.teardown === "waiting") return { done: false, environment: written.environment, deployment: written.deployment };
   const id = crypto.randomUUID();
-  await commit({
+  const accept = accepted[written.environment] ?? [];
+  const admit = (version: string | null) => commit({
     command: "admit", admit: "remove", id, environment: { project: target.project, environment: written.environment },
-    version: null, accept_volume_loss: [...accepted[written.environment] ?? []],
+    version, accept_volume_loss: [...accept],
     // Deleting one Environment: the Store finishes a Branch itself once this applied, even if this tab is gone.
     close: target.environment !== null,
   }, ["confirmation_required", "invalid_argument"]);
+  await admit(null).catch((error: Error) => {
+    // The Store binds a loss to the version its refusal hands back: when it names only Volumes the user accepted, send
+    // that version. Anything else goes back to the user.
+    const loss = error instanceof StoreRefused ? volumeLoss(error) : null;
+    if (loss && loss.accept.every((name) => accept.includes(name))) return admit(loss.version);
+    throw error;
+  });
   return { done: false, environment: written.environment, deployment: id };
 }

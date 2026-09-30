@@ -35,6 +35,17 @@ it("takes an Environment still on the Servers off them first, accepting only its
   expect(step).toEqual({ done: false, environment: "staging", deployment: (sent[1] as { id: string }).id });
 });
 
+it("accepts a Volume loss at the version the Store hands back, and asks again for one the user didn't accept", async () => {
+  const loss = (accept: string[]) => refused("confirmation_required", { volumes: [], accept, version: "v:abc" });
+  const { sent, commit } = store(onServers("needs_removal"), loss(["pg"]));
+  await teardownStep(commit, { project: "shop", environment: null }, { staging: ["pg"] });
+  expect(sent.slice(1)).toMatchObject([{ version: null }, { version: "v:abc", accept_volume_loss: ["pg"] }]);
+
+  const again = store(onServers("needs_removal"), loss(["pg", "files"]));
+  await expect(teardownStep(again.commit, { project: "shop", environment: null }, { staging: ["pg"] })).rejects.toThrow("confirmation_required");
+  expect(again.sent).toHaveLength(2);
+});
+
 it("waits on a Deployment that hasn't ended rather than admitting another", async () => {
   const { sent, commit } = store(onServers("waiting"));
   expect(await teardownStep(commit, { project: "shop", environment: "staging" }, {}))
