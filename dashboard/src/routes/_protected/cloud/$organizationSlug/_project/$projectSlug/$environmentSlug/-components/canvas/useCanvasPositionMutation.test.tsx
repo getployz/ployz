@@ -1,10 +1,47 @@
 // @vitest-environment jsdom
 import { createTransaction } from "@tanstack/react-db";
 import { QueryClient } from "@tanstack/react-query";
+import { cleanup, render, screen } from "@testing-library/react";
+import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { expect, it, vi } from "vitest";
 import { createApiCollection, preloadCollection } from "#/collections/query-collection";
 import type { environmentCanvasNodePosition } from "#/modules/canvas/tables";
-import { persistCanvasPositionBatch } from "./useCanvasPositionMutation";
+import * as scopes from "#/collections/use-collection-scope";
+import * as collections from "#/collections/collections";
+import { persistCanvasPositionBatch, usePlaceNewNode } from "./useCanvasPositionMutation";
+
+it("places new nodes on the new-project route without an Environment match", async () => {
+  const queryClient = new QueryClient();
+  const collection = createApiCollection({ queryClient, queryKey: ["new-project-positions"],
+    queryFn: async () => [], getKey: (row: typeof environmentCanvasNodePosition.$inferSelect) => row.id });
+  vi.spyOn(scopes, "useCollectionScope").mockReturnValue({ queryClient, sessionId: "session", userId: "user" });
+  vi.spyOn(collections, "getCanvasPositionsCollection").mockReturnValue(collection);
+  function NewProject() {
+    usePlaceNewNode("acme");
+    return <div>Choose a source</div>;
+  }
+  const root = createRootRoute({ component: Outlet });
+  const protectedRoute = createRoute({ getParentRoute: () => root, id: "_protected", component: Outlet });
+  const cloud = createRoute({ getParentRoute: () => protectedRoute, path: "cloud", component: Outlet });
+  const organization = createRoute({ getParentRoute: () => cloud, path: "$organizationSlug",
+    loader: () => ({ organizationId: "org" }), component: Outlet });
+  const project = createRoute({ getParentRoute: () => organization, id: "_project", component: Outlet });
+  const newProject = createRoute({ getParentRoute: () => project, path: "new", component: NewProject });
+  const router = createRouter({ routeTree: root.addChildren([protectedRoute.addChildren([cloud.addChildren([
+    organization.addChildren([project.addChildren([newProject])]),
+  ])])]), history: createMemoryHistory({ initialEntries: ["/cloud/acme/new"] }) });
+  try {
+    await router.load();
+    render(<RouterProvider router={router} />);
+    expect(await screen.findByText("Choose a source")).toBeTruthy();
+  } finally {
+    cleanup();
+    router.history.destroy();
+    vi.restoreAllMocks();
+    await collection.cleanup();
+    queryClient.clear();
+  }
+});
 
 it.each([false, true])("applies committed sibling writes and preserves the batch failure (refresh fails: %s)", async (refreshFails) => {
   const queryClient = new QueryClient();

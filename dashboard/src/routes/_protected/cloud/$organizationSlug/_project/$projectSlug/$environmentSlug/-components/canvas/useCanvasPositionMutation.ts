@@ -9,7 +9,6 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { canvasPositionKey, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
 import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
 import type { CanvasResourceNode, CanvasResourceType } from "./types";
-import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 export function useCanvasPositionMutation(params: {
   organizationId: string;
@@ -136,7 +135,7 @@ export async function persistCanvasPositionBatch(
 export function usePlaceNewNode(organizationSlug: string) {
   const collection = getCanvasPositionsCollection(organizationSlug, useCollectionScope());
   const updatePosition = useServerFn(updateCanvasPositionServerFn);
-  const { organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
   const place = createOptimisticAction<Omit<UpdateCanvasPositionInput, "organizationSlug">>({
     onMutate: (input) => {
       const now = new Date();
