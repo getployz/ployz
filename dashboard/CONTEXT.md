@@ -25,8 +25,8 @@ The user-facing name for a host participating in an Organization Cluster. Rust c
 _Avoid_: Machine in user-facing copy, Cloud server record
 
 **Volume**:
-An Environment resource whose files survive deployments and restarts on the Server that hosts it. It is the Engine's Provisioned Volume by default, which product copy calls managed storage with a storage limit; a Docker Volume is an explicit Advanced choice. Both stay local to that Server. Its storage is editable before deployment is requested, then fixed even if the attempt fails. Managed storage does not imply backups, replication, or resizing.
-_Avoid_: Persistent storage as a resource name, network storage, replicated volume, Managed Volume as a term, ZFS in normal product copy
+An Environment resource whose files survive deployments and restarts on the Server that hosts it. It is the Engine's Provisioned Volume by default, which product copy calls a Managed volume with a storage limit; a plain Docker volume is an explicit, not-recommended Advanced choice. Both stay local to that Server. Its storage is editable before deployment is requested, then fixed even if the attempt fails. A Server without managed storage reads Docker only. A Managed volume does not imply backups, replication, or resizing today.
+_Avoid_: Persistent storage as a resource name, network storage, replicated volume, Provisioned in product copy, ZFS in normal product copy except the Add Server opt-out
 
 **Server Policy**:
 The roles (accepts builds, services, ingress) and labels of one Server, mirroring the runtime's Machine Role and Machine Label. Cloud requests a policy change as a queued operation and reads the resulting policy back from machine observation; it keeps no separate desired-policy record and policy is not part of any Environment's Saved State.
