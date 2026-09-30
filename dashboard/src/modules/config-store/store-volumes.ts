@@ -27,16 +27,28 @@ export function createVolumeCommand(id: string, environment: EnvironmentRef, nam
   return { command: "create_volume", id, environment, name, storage, mounts: [] };
 }
 
-/** Invalid managed limits never become an implicit Docker opt-out. */
+const GB = 1_000_000_000;
+
+/**
+ * Invalid managed limits never become an implicit Docker opt-out. GB are decimal and read exactly, to the byte: no
+ * floating point between what was typed and what is stored.
+ */
 export function volumeStorage(managed: boolean, sizeGB: string): VolumeKind | null {
   if (!managed) return { kind: "local" };
-  const maximumBytes = Number(sizeGB) * 1_000_000_000;
-  return Number.isSafeInteger(maximumBytes) && maximumBytes >= 1_000_000
-    ? { kind: "provisioned", maximumBytes } : null;
+  const typed = /^(\d+)(?:\.(\d{1,9}))?$/.exec(sizeGB.trim());
+  if (!typed) return null;
+  const maximumBytes = Number(typed[1]) * GB + Number((typed[2] ?? "").padEnd(9, "0"));
+  return Number.isSafeInteger(maximumBytes) && maximumBytes >= 1_000_000 ? { kind: "provisioned", maximumBytes } : null;
+}
+
+/** A byte count in decimal GB, exactly: 1001000000 is "1.001". */
+export function gigabytes(bytes: number) {
+  const fraction = String(bytes % GB).padStart(9, "0").replace(/0+$/, "");
+  return fraction ? `${Math.floor(bytes / GB)}.${fraction}` : String(Math.floor(bytes / GB));
 }
 
 export function volumeStorageText(storage: VolumeKind) {
-  return storage.kind === "provisioned" ? `${storage.maximumBytes / 1_000_000_000} GB limit` : "Docker volume";
+  return storage.kind === "provisioned" ? `${gigabytes(storage.maximumBytes)} GB limit` : "Docker volume";
 }
 
 const decodeVolumeLoss = Schema.decodeUnknownOption(Schema.Struct({

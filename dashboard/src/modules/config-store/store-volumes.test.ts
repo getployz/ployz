@@ -1,11 +1,15 @@
 import type { DiffView } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
-import { detachedMounts, mountChange, mountPathError, volumeLoss, volumeStorage } from "./store-volumes";
+import { detachedMounts, mountChange, mountPathError, gigabytes, volumeLoss, volumeStorage } from "./store-volumes";
 
 describe("store volumes", () => {
   it("uses an exact managed limit and only opts out when explicitly unchecked", () => {
     expect(volumeStorage(true, "5")).toEqual({ kind: "provisioned", maximumBytes: 5_000_000_000 });
     expect(volumeStorage(true, "0.5")).toEqual({ kind: "provisioned", maximumBytes: 500_000_000 });
+    // Decimal GB read exactly: floating point would make these inexact and refuse them.
+    expect(volumeStorage(true, "1.001")).toEqual({ kind: "provisioned", maximumBytes: 1_001_000_000 });
+    expect(volumeStorage(true, "4.1")).toEqual({ kind: "provisioned", maximumBytes: 4_100_000_000 });
+    expect([1_001_000_000, 4_100_000_000, 5_000_000_000, 1_073_741_824].map(gigabytes)).toEqual(["1.001", "4.1", "5", "1.073741824"]);
     for (const invalid of ["", "0", "-1", "bad", "Infinity", "9007199254.740992"]) {
       expect(volumeStorage(true, invalid)).toBeNull();
     }

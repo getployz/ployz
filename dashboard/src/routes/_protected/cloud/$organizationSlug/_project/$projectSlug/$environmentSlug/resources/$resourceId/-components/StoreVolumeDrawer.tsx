@@ -12,7 +12,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Separator } from "#/components/ui/separator";
 import { diffQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
+import { detachedMounts, gigabytes, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -88,7 +88,7 @@ function StoreVolumeStorage({ state, removing }: { state: StoreVolume; removing:
   const writer = useStoreWriter(state.organizationSlug);
   const { storage, storage_locked } = state.volume;
   const [managed, setManaged] = useState(storage.kind === "provisioned");
-  const [sizeGB, setSizeGB] = useState(storage.kind === "provisioned" ? String(storage.maximumBytes / 1_000_000_000) : "5");
+  const [sizeGB, setSizeGB] = useState(storage.kind === "provisioned" ? gigabytes(storage.maximumBytes) : "5");
   const [error, setError] = useState<string | null>(null);
   const next = volumeStorage(managed, sizeGB);
   const changed = next !== null && (next.kind !== storage.kind || (next.kind === "provisioned"
