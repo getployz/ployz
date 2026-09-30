@@ -15,6 +15,7 @@ import {
   createConfigDeploymentAdmittedEvent,
   createConfigDeploymentStartedEvent,
   createConfigPrCheckRequestedEvent,
+  createConfigSweepRequestedEvent,
   type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
@@ -178,10 +179,9 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A closing Branch whose removal applied at admission (nothing on a Server) goes now: no worker will sweep after it.
-  // ponytail: what else this sweep leaves to do waits for the hourly one.
   if (command.command === "admit" && command.admit === "remove" && command.close === true
     && written.written === "deployment" && written.status === "applied") {
-    yield* storeSystem(organizationId, { event: "sweep", now: Math.floor(Date.now() / 1000) });
+    yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   }
   yield* requestChecks(organizationId, written.checks);
 });
