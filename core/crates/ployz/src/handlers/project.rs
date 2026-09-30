@@ -111,10 +111,10 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
         project: ProjectName::parse(required(matches, "project")?)?,
         name: ProjectName::parse(required(matches, "name")?)?,
     };
-    let renamed = store(root)?
-        .args([rename.project.as_str(), rename.name.as_str()])
-        .write(&rename)?;
+    let store = store(root)?.args([rename.project.as_str(), rename.name.as_str()]);
+    let renamed = store.write(&rename)?;
     let links = super::link::rename_project(
+        &store,
         &super::config_path(matches)?,
         &rename.project,
         &renamed.name,
