@@ -11,7 +11,6 @@ import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
  * it saves. The writer's refetch after the commit (or its refusal, which is the rollback) replaces the guess. It guesses
  * only what the command says outright; anything the Store derives (a rename's diff rows, a Move's changes) waits.
  */
-// ponytail: Discard shows the deployed values (`before`), which is what it restores unless changes were published first.
 export async function applyOptimistic(queryClient: QueryClient, organizationSlug: string, command: ConfigCommand) {
   const cached = (kind: ConfigQuery["query"], environment: EnvironmentRef | null) =>
     queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) }).filter((query) => {
@@ -32,11 +31,11 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const node = view.changes.find((change) => change.type === "service" && change.name === service);
       const id = node?.id ?? listed(environment).find((listing) => listing.name === service)?.id;
       if (id === undefined) return view;
-      const had = node?.settings.some((other) => other.path === row.path) ?? false;
       const changes: NodeChange[] = node
         ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
         : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
-      return { ...view, changes, total_count: view.total_count + (had ? 0 : 1), published: false };
+      // The count and whether it's published are the Store's to say: they come with the write's answer.
+      return { ...view, changes };
     });
   // The Services as the tab last read them.
   const listed = (environment: EnvironmentRef) => cached("services", environment).flatMap((query) => {
@@ -44,13 +43,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
     const data = query.state.data as StoreResult<ServicesView> | undefined;
     return data?.ok ? data.value.services : [];
   });
-  // A node gone from the review is back to how it is deployed: a new one goes, a removal stays.
-  const unstage = <L extends { name: string; change: ServiceListing["change"] }>(listed: L[], names: ReadonlySet<string>) =>
-    listed.flatMap((node) => !names.has(node.name) ? [node] : node.change === "create" ? [] : [{ ...node, change: null }]);
 
   switch (command.command) {
     case "batch":
-      for (const inner of command.commands) applyOptimistic(queryClient, organizationSlug, inner);
+      for (const inner of command.commands) await applyOptimistic(queryClient, organizationSlug, inner);
       return;
     case "create_service":
     case "create_git_service": {
@@ -103,36 +99,18 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       await views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true }));
       return;
     case "discard": {
+      // Its rows leave the review at once; what the Store restores (values, nodes, the count) comes with its answer.
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // What goes from the review: every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
+      // Every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
       const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
       const whole = (change: NodeChange) => path === null
         || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
-      let reverted: NodeChange["settings"] = [];
-      let dropped = new Set<string>();
-      // The discarded rows go; with nothing left the review is empty. Any other count comes with the write's answer.
-      await views<DiffView>("diff", command.environment, (view) => {
-        const changes = view.changes.flatMap((change) => {
-          if (whole(change)) {
-            reverted = [...reverted, ...change.settings];
-            dropped = new Set([...dropped, `${change.type}:${change.name}`]);
-            return [];
-          }
-          const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
-          reverted = [...reverted, ...change.settings.filter((row) => !rows.includes(row))];
-          return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
-        });
-        // Whether what remains is published is the Store's to say.
-        return changes.length === 0 ? { ...view, changes, total_count: 0 } : { ...view, changes };
-      });
-      await views<EnvironmentView>("environment", command.environment, (view) => ({ ...view, settings: view.settings.map((row) => {
-        const deployed = reverted.find((change) => change.path === row.path);
-        return deployed ? { ...row, value: deployed.before } : row;
+      await views<DiffView>("diff", command.environment, (view) => ({ ...view, changes: view.changes.flatMap((change) => {
+        if (whole(change)) return [];
+        const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
+        return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
       }) }));
-      const of = (type: NodeChange["type"]) => new Set([...dropped].flatMap((key) => key.startsWith(`${type}:`) ? [key.slice(type.length + 1)] : []));
-      await views<ServicesView>("services", command.environment, (view) => ({ ...view, services: unstage(view.services, of("service")) }));
-      await views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: unstage(view.volumes, of("volume")) }));
       return;
     }
     case "keep_branch":
@@ -188,9 +166,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         domain.kind === "custom" ? domain.hostname !== command.domain : domain.prefix !== command.domain && domain.hostname !== command.domain) }));
       return;
     case "cancel":
-      // A queued one is cancelled at once; a running one is cancelling until its runner stops.
-      await views<DeploymentView>("deployment", null, (view) => view.id !== command.deployment ? view
-        : view.status === "queued" ? { ...view, status: "cancelled" } : view.status === "running" ? { ...view, status: "cancelling" } : view);
+      // Cancelling until the Store answers with where it ended.
+      await views<DeploymentView>("deployment", null, (view) => view.id === command.deployment && view.in_flight ? { ...view, status: "cancelling" } : view);
       return;
     case "set_pr_plan": {
       // Each field the command leaves null stays as it is.

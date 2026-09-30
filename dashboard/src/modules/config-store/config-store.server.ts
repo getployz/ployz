@@ -8,7 +8,7 @@ import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.ser
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreRefused } from "#/modules/config-store/store.contract";
+import { commandEnvironment, StoreRefused } from "#/modules/config-store/store.contract";
 import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
@@ -218,14 +218,18 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
   );
 }).pipe(Effect.withSpan("ConfigStore.call"));
 
+const memberOrganization = Effect.fn("ConfigStore.memberOrganization")(function* (actor: Actor, organizationSlug: string) {
+  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
+  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  return organization;
+});
+
 /**
  * The dashboard's way into the Store: one read or write as `actor`, in the Organization named by `organizationSlug`
  * when the actor is a member of it (the same Organization gate as the Org Store's reads).
  */
 export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizationSlug: string, call: C) => Effect.gen(function* () {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
-  return yield* callStore(organization.id, actor.userId, call);
+  return yield* callStore((yield* memberOrganization(actor, organizationSlug)).id, actor.userId, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
 
 /**
@@ -234,11 +238,10 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
  * out (the writer's refetch brings it); a command naming no Environment, or several (a Move), carries none.
  */
 export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
-  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
-  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  const organization = yield* memberOrganization(actor, organizationSlug);
   const result = yield* callStore(organization.id, actor.userId, { operation: "write", command });
-  if (!result.ok || !("environment" in command) || !command.environment) return result satisfies StoreWriteResult;
-  const { environment } = command;
+  const environment = commandEnvironment(command);
+  if (!result.ok || environment === null) return result satisfies StoreWriteResult;
   const views = yield* Effect.all({
     diff: readStore(organization.id, { query: "diff", environment }).pipe(Effect.option),
     services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),

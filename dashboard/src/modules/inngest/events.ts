@@ -105,6 +105,8 @@ export type ClusterDomainSyncRequestedEventData = {
 /** The Organization's first Server joined: its published Environments deploy to it. */
 export type ConfigFirstServerJoinedEventData = {
   organizationId: string;
+  /** The founding Server: a later founding (after teardown) is its own event. */
+  machineId: string;
 };
 
 /** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
@@ -263,9 +265,9 @@ export function createServerPolicyChangeRequestedEvent(
   return { name: serverPolicyChangeRequestedEvent, data } as const;
 }
 
-/** Keyed by Organization: a retried completion sends it again, and Inngest runs it once. */
+/** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
 export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoinedEventData) {
-  return { id: `config-first-server-joined-${data.organizationId}`, name: configFirstServerJoinedEvent, data } as const;
+  return { id: `config-first-server-joined-${data.organizationId}-${data.machineId}`, name: configFirstServerJoinedEvent, data } as const;
 }
 
 export function createClusterDomainSyncRequestedEvent(

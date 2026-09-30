@@ -1,4 +1,4 @@
-import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, DiffView, JsonValue, ServicesView } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, DiffView, EnvironmentRef as StoreEnvironmentRef, JsonValue, ServicesView } from "@ployz/sdk";
 import { Data, Schema } from "effect";
 
 /** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
@@ -22,6 +22,12 @@ export type StoreResult<T> = { ok: true; value: T } | { ok: false; refusal: Stor
 
 /** The views a dashboard write answers with, as committed: the named Environment's review and Services. */
 export type CommittedViews = { diff?: DiffView; services?: ServicesView };
+
+/** The Environment a command names, the one its committed views and write queue are of; a Batch's is its first command's. */
+export function commandEnvironment(command: ConfigCommand): StoreEnvironmentRef | null {
+  const named = command.command === "batch" ? command.commands[0] : command;
+  return named && "environment" in named && named.environment ? named.environment : null;
+}
 
 /** A dashboard write's answer: what it wrote and, once committed, the views it moved. */
 export type StoreWriteResult = { ok: true; value: ConfigWritten; views?: CommittedViews } | { ok: false; refusal: StoreRefusal };

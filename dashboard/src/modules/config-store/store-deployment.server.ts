@@ -106,17 +106,19 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
   );
 
 /**
- * A run that never claimed its Deployment stopped: nothing else will run it now, so it ends cancelled rather than wait
- * queued to be handed over again. One another runner claimed, or that already ended, is left as it is.
- * ponytail: read-then-cancel; a duplicate run claiming it in between is cancelled with it.
+ * Run `runId` stopped before it claimed its Deployment: the Store records it failed, with why, as one whose sources Cloud
+ * couldn't read. One another runner claimed, or that already ended, is left as it is.
+ * ponytail: read-then-fail; a duplicate run claiming it in between loses its claim to this one.
  */
-const cancelUnclaimed = Effect.fn("StoreDeployment.cancelUnclaimed")(function* (
-  store: ConfigStore, organizationId: string, deploymentId: string, why: string,
+const failUnclaimed = Effect.fn("StoreDeployment.failUnclaimed")(function* (
+  store: ConfigStore, organizationId: string, deploymentId: string, runId: string, why: string,
 ) {
   const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
   if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why };
-  yield* storeTry(() => store.write(organizationId, { command: "cancel", deployment: deploymentId }));
-  return { cancelled: deploymentId };
+  yield* storeTry(() => store.runDeployment(organizationId, deploymentId, storeDeploymentRunner(runId), [], {
+    failure: "Cloud's worker stopped before it started this Deployment. Deploy again.",
+  }));
+  return { failed: deploymentId };
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
@@ -139,7 +141,7 @@ export const forgetStoreDeploymentRun = Effect.fn("StoreDeployment.forgetRun")(f
 
 /**
  * Run `runId` stopped without finishing: its Deployment's GitHub builds stop and the Store records that it stopped (or,
- * never claimed, that it was cancelled), each whether or not the other could, so the Deployment never reads running or
+ * never claimed, that it failed), each whether or not the other could, so the Deployment never reads running or
  * waits queued for nobody. Fails, to be retried, if either failed.
  */
 export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(function* (
@@ -149,7 +151,7 @@ export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(funct
   const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(organizationId, deploymentId));
   const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
     // It never claimed it, or another runner owns it now.
-    Effect.catchIf(refusedWith("conflict"), (refused) => cancelUnclaimed(store, organizationId, deploymentId, refused.message)),
+    Effect.catchIf(refusedWith("conflict"), (refused) => failUnclaimed(store, organizationId, deploymentId, runId, refused.message)),
     Effect.ensuring(released(store, organizationId, deploymentId)),
   );
   yield* cancelled;
@@ -202,14 +204,14 @@ export const publishedEnvironments = Effect.fn("StoreDeployment.published")(func
 });
 
 /**
- * Deploy `environment` to the Organization's first Server, as its Deploy button would; no member admits it and nothing
- * uploads. A refusal (a Deploy that would delete data asks first) leaves it for the user.
+ * Deploy `environment` to the Organization's first Server as Deployment `id`, as its Deploy button would; no member
+ * admits it and nothing uploads. A refusal (a Deploy that would delete data asks first) leaves it for the user.
  */
 export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServer")(function* (
-  organizationId: string, environment: { project: string; environment: string },
+  organizationId: string, environment: { project: string; environment: string }, id: string,
 ) {
   const result = yield* callStore(organizationId, null, { operation: "write", command: {
-    command: "admit", admit: "deploy", id: crypto.randomUUID(), environment, services: [], version: null, accept_volume_loss: [],
+    command: "admit", admit: "deploy", id, environment, services: [], version: null, accept_volume_loss: [],
   } });
   if (result.ok) return { admitted: true };
   yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
