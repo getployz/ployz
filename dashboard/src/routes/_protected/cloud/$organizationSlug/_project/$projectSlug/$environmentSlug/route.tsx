@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { prefetchStoreEnvironment, requireStoreEnvironment } from "#/collections/route-data";
-import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, saveQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, saveQuery, servicesQuery, volumesQuery } from "#/modules/config-store/store-view.queries";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug",
@@ -10,7 +10,7 @@ export const Route = createFileRoute(
     const store = { project: params.projectSlug, environment: params.environmentSlug };
     const environment = await requireStoreEnvironment(context, params);
     await prefetchStoreEnvironment(context, params.organizationSlug, store,
-      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store),
+      environmentSettingsQuery(store), servicesQuery(store), diffQuery(store), volumesQuery(store), namespaceQuery(store), domainsQuery(store),
       // A Branch's Live Nodes and its button's news; refused elsewhere.
       branchQuery(store), saveQuery(store));
     return { environmentId: environment.id, store };

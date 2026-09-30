@@ -1,30 +1,24 @@
 import { Position, type Edge } from "@xyflow/react";
-import type { VolumeListing } from "@ployz/sdk";
+import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { serviceChanges } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
-import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
+import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
 import type {
+  CanvasResourceNode,
   CanvasResourceType,
   CanvasStoreServiceNode,
   CanvasStoreVolumeNode,
+  MountedVolume,
   StoreCanvas,
   StoreLiveNode,
   CanvasStoreLiveNode,
 } from "./types";
 
-const CANVAS_NODE_HANDLES = [
-  {
-    type: "source",
-    position: Position.Top,
-    x: SERVICE_NODE_WIDTH / 2,
-    y: 0,
-  },
-  {
-    type: "target",
-    position: Position.Bottom,
-    x: SERVICE_NODE_WIDTH / 2,
-    y: SERVICE_NODE_HEIGHT,
-  },
+/** A node's link handles: out of its top, into its bottom, below any trays. */
+const handles = (height: number) => [
+  { type: "source", position: Position.Top, x: SERVICE_NODE_WIDTH / 2, y: 0 },
+  { type: "target", position: Position.Bottom, x: SERVICE_NODE_WIDTH / 2, y: height },
 ] satisfies NonNullable<CanvasStoreServiceNode["handles"]>;
 
 function getCanvasPosition(
@@ -48,47 +42,65 @@ function getPositionByCanvasResource(
 }
 
 /**
+ * Each Volume as a tray under every Service here that mounts it, in the Store's order, keyed by Service id, marked where
+ * `diff` stages that Service's mount of it; `unmounted`, the Volumes no Service here mounts, which stay nodes of their own.
+ */
+export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name">[], volumes: readonly VolumeListing[], diff: DiffView) {
+  const names = new Set(services.map((service) => service.name));
+  const mounted = volumes.map((volume) => ({ volume, by: [...new Set(volume.mounts.map((mount) => mount.service))].filter((name) => names.has(name)) }));
+  return {
+    trays: new Map(services.map((service) => {
+      // A mount is the Service's Setting, `mounts.VOLUME`.
+      const changes = serviceChanges(diff, service.id);
+      return [service.id, mounted.flatMap(({ volume, by }): MountedVolume[] => by.includes(service.name)
+        ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`) }] : [])];
+    })),
+    unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
+  };
+}
+
+/**
  * Config Store Services and Volumes where the canvas last put them; positions stay Cloud's, keyed by the node's id.
- * One made elsewhere (the CLI) has no place yet: the first free one near the origin, or below the first Service that
- * mounts a Volume, until someone drags it.
+ * One made elsewhere (the CLI) has no place yet: the first free one near the origin, until someone drags it. A Volume
+ * a Service here mounts is a tray under it, not a node. Which node is selected is the route's to say, not React Flow's.
  */
 export function buildStoreNodes(
-  store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] },
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes"> & { live?: StoreLiveNode[] },
   canvasPositions: CanvasPosition[],
-  selectedNodeId: string | null,
   environmentId: string,
 ): (CanvasStoreServiceNode | CanvasStoreVolumeNode | CanvasStoreLiveNode)[] {
+  const trayCount = new Map(store.services.map(({ service, trays }) => [service.id, trays.length]));
+  // A Service's node grows by its trays; placing one keeps clear of each node's whole height.
+  const sizeOf = (id: string) => ({ ...SERVICE_NODE_SIZE, height: SERVICE_NODE_HEIGHT + (trayCount.get(id) ?? 0) * VOLUME_TRAY_HEIGHT });
   const positionByResource = getPositionByCanvasResource(canvasPositions);
-  const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...SERVICE_NODE_SIZE }));
-  const place = (resourceType: CanvasResourceType, resourceId: string, near = { x: 0, y: 0 }) => {
+  const occupied = canvasPositions.map((position) => ({ x: position.x, y: position.y, ...sizeOf(position.resourceId) }));
+  const place = (resourceType: CanvasResourceType, resourceId: string) => {
     const stored = positionByResource.get(canvasPositionKey({ resourceType, resourceId }));
     if (stored) return getCanvasPosition(stored);
-    const position = findPlacement(near, SERVICE_NODE_SIZE, occupied);
-    occupied.push({ ...position, ...SERVICE_NODE_SIZE });
+    const size = sizeOf(resourceId);
+    const position = findPlacement({ x: 0, y: 0 }, size, occupied);
+    occupied.push({ ...position, ...size });
     return position;
   };
-  const node = { width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, handles: CANVAS_NODE_HANDLES, draggable: true };
-  const services = store.services.map((service) => ({
-    ...node,
-    id: service.service.id,
-    type: "storeService",
-    position: place("service", service.service.id),
-    selected: service.service.id === selectedNodeId,
-    data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
-  } satisfies CanvasStoreServiceNode));
-  // Volumes sit below the Services that mount them, so their links run up into them.
-  const below = (volume: VolumeListing) => {
-    const owner = services.find((service) => service.data.service.name === volume.mounts[0]?.service);
-    return owner ? { x: owner.position.x, y: owner.position.y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 3 } : undefined;
-  };
+  const node = { width: SERVICE_NODE_WIDTH, height: SERVICE_NODE_HEIGHT, handles: handles(SERVICE_NODE_HEIGHT), draggable: true };
   return [
-    ...services,
-    ...store.volumes.map((volume) => ({
+    ...store.services.map((service) => {
+      const { height } = sizeOf(service.service.id);
+      return {
+        ...node,
+        height,
+        handles: handles(height),
+        id: service.service.id,
+        type: "storeService",
+        position: place("service", service.service.id),
+        data: { ...service, resourceType: "service", resourceId: service.service.id, environmentId },
+      } satisfies CanvasStoreServiceNode;
+    }),
+    ...store.unmountedVolumes.map((volume) => ({
       ...node,
       id: volume.id,
       type: "storeVolume",
-      position: place("volume", volume.id, below(volume)),
-      selected: volume.id === selectedNodeId,
+      position: place("volume", volume.id),
       data: { volume, resourceType: "volume", resourceId: volume.id, environmentId },
     } satisfies CanvasStoreVolumeNode)),
     // A Branch's Live Nodes take free spots; they are their owner's to move.
@@ -98,26 +110,31 @@ export function buildStoreNodes(
       type: "storeLive",
       position: place("service", liveNodeId(live.name)),
       draggable: false,
-      selected: liveNodeId(live.name) === selectedNodeId,
       data: { live },
     } satisfies CanvasStoreLiveNode)),
   ];
 }
 
-/** A link from each Volume into every Service that mounts it, and dashed ones from Live Nodes into their users. */
-export function buildStoreEdges(store: Pick<StoreCanvas, "services" | "volumes"> & { live?: StoreLiveNode[] }): Edge[] {
-  const serviceIdByName = new Map(store.services.map(({ service }) => [service.name, service.id]));
-  return [...store.volumes.flatMap((volume) => volume.mounts.flatMap((mount) => {
-    const serviceId = serviceIdByName.get(mount.service);
-    return serviceId ? [{ id: `mount:${volume.id}:${serviceId}`, source: volume.id, target: serviceId }] : [];
-  })),
-  // Dashed links from each Live Node into the Services here that read it.
-  ...(store.live ?? []).flatMap((live) => live.usedBy.map((serviceId) => ({
+/** Links into Live Nodes are dashed. */
+const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
+
+/** Dashed links from each Live Node into the Services here that read it; a mount is a tray, not a link. */
+export function buildStoreEdges(store: { live?: StoreLiveNode[] }): Edge[] {
+  return (store.live ?? []).flatMap((live) => live.usedBy.map((serviceId) => ({
     id: `${liveNodeId(live.name)}:${serviceId}`, source: liveNodeId(live.name), target: serviceId, style: LIVE_EDGE_STYLE,
-  })))];
+  })));
 }
 
-/** Links into Live Nodes are dashed; every other link is solid. */
-export const LIVE_EDGE_STYLE = { stroke: "var(--muted-foreground)", strokeDasharray: "6 4" };
+/** The node that shows `id` on the canvas: the node itself, else the first Service with it as a tray; null when none does. */
+export function canvasNodeOf(nodes: readonly CanvasResourceNode[], id: string) {
+  const shown = nodes.find((node) => node.id === id)
+    ?? nodes.find((node) => node.type === "storeService" && node.data.trays.some((tray) => tray.volume.id === id));
+  return shown?.id ?? null;
+}
+
+/** The nodes that show `ids` on the canvas, each once: what an open Deployment Page brings into view. */
+export function shownNodeIds(nodes: readonly CanvasResourceNode[], ids: readonly string[]) {
+  return [...new Set(ids.flatMap((id) => canvasNodeOf(nodes, id) ?? []))];
+}
 
 export const liveNodeId = (lineageId: string) => `live:${lineageId}`;

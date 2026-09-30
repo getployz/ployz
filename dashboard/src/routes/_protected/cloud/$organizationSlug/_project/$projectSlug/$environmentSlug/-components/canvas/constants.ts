@@ -1,5 +1,7 @@
 export const SERVICE_NODE_WIDTH = 288;
 export const SERVICE_NODE_HEIGHT = 144;
+/** How much each Volume tray under a Service adds to its node. */
+export const VOLUME_TRAY_HEIGHT = 40;
 export const CANVAS_MIN_ZOOM = 0.4;
 export const CANVAS_MAX_ZOOM = 1.35;
 export const SERVICE_NODE_SIZE = {

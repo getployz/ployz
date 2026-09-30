@@ -156,24 +156,13 @@ export function viewportAcrossPages(saved: Viewport | null, pageOpen: boolean, c
 }
 
 /**
- * Both canvases pass this as `onNodeClick`: React Flow gives a node pointer events only when it has a click handler
- * (or is selectable or draggable), so without it clicks fall through to the pane and the node's link never opens.
- * Mouse navigation must not leave a focus outline after the inspector closes.
- */
-export function blurClickedNodeLink(event: Pick<MouseEvent, "detail" | "target">) {
-  if (event.detail > 0 && event.target instanceof Element) {
-    event.target.closest("a")?.blur();
-  }
-}
-
-/**
- * Keeps the canvas focus in view beside the inspector pane: the selected node, else the nodes an open Deployment Page
- * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes; closing a node's
- * drawer fits the whole canvas again.
+ * Keeps the canvas focus in view beside the inspector pane: the node that shows the selection (`focusNodeId`, at
+ * `focusPositionKey`), else the nodes an open Deployment Page lights. Each is brought into view when it opens, when the
+ * node moves, and when the pane resizes; closing a node's drawer fits the whole canvas again.
  */
 export function useCanvasNavigation(
-  selectedNodeId: string | null,
-  selectedNodePositionKey: string | null,
+  focusNodeId: string | null,
+  focusPositionKey: string | null,
   flowReady: boolean,
   /**
    * The open Deployment Page (`key`) and the nodes it lights, or the New branch panel and every node; null while neither
@@ -183,16 +172,16 @@ export function useCanvasNavigation(
 ) {
   const flow = useReactFlow<CanvasResourceNode>();
   const nodesInitialized = useNodesInitialized();
-  const pageOpen = !selectedNodeId && deployment !== null;
-  const focusKey = selectedNodeId ?? (deployment ? `deployment:${deployment.key}` : null);
+  const pageOpen = !focusNodeId && deployment !== null;
+  const focusKey = focusNodeId ?? (deployment ? `deployment:${deployment.key}` : null);
   const geometryVersion = useCanvasInspectorGeometryVersion(flowReady && focusKey !== null);
-  const previousSelectedNodeId = useRef<string | null | symbol>(UNSET);
+  const previousFocusNodeId = useRef<string | null | symbol>(UNSET);
   const shown = useRef<{ focusKey: string | null; positionKey: string | null; geometryVersion: number } | null>(null);
   const savedViewport = useRef<Viewport | null>(null);
   // The ids live in a ref so the effect below reruns on the focus changing, not on each render's new array.
   const focusNodeIds = useRef<readonly string[]>([]);
   useEffect(() => {
-    focusNodeIds.current = selectedNodeId ? [selectedNodeId] : deployment?.nodeIds ?? [];
+    focusNodeIds.current = focusNodeId ? [focusNodeId] : deployment?.nodeIds ?? [];
   });
 
   useEffect(() => {
@@ -202,7 +191,7 @@ export function useCanvasNavigation(
 
     // A closed drawer gives the canvas back whole: undo the pan that opening it caused, and show every node again.
     // A Deployment Page or the New branch panel opening instead keeps its own focus.
-    if (selectedNodeId === null && !pageOpen && previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
+    if (focusNodeId === null && !pageOpen && previousFocusNodeId.current !== UNSET && previousFocusNodeId.current !== null) {
       // Not `fitView`: over controlled nodes it waits for a node change that may never come.
       const wrapper = document.querySelector<HTMLElement>(".react-flow");
       const nodes = flow.getNodes();
@@ -211,23 +200,8 @@ export function useCanvasNavigation(
           CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, CANVAS_FIT_VIEW.padding), { duration: prefersReducedMotion() ? 0 : 360 });
       }
     }
-    previousSelectedNodeId.current = selectedNodeId;
-
-    flow.setNodes((nodes) =>
-      nodes.map((node) => {
-        const nextSelected = node.id === selectedNodeId;
-
-        if (node.selected === nextSelected) {
-          return node;
-        }
-
-        return {
-          ...node,
-          selected: nextSelected,
-        };
-      }),
-    );
-  }, [flow, flowReady, nodesInitialized, selectedNodeId, pageOpen]);
+    previousFocusNodeId.current = focusNodeId;
+  }, [flow, flowReady, focusNodeId, pageOpen]);
 
   useEffect(() => {
     if (!flowReady) {
@@ -236,7 +210,7 @@ export function useCanvasNavigation(
     const across = viewportAcrossPages(savedViewport.current, pageOpen, flow.getViewport());
     savedViewport.current = across.saved;
     const start = across.start;
-    const positionKey = selectedNodeId ? selectedNodePositionKey : null;
+    const positionKey = focusNodeId ? focusPositionKey : null;
     const previous = shown.current;
     const changed = start !== null || previous?.focusKey !== focusKey || previous.positionKey !== positionKey
       || previous.geometryVersion !== geometryVersion;
@@ -264,7 +238,7 @@ export function useCanvasNavigation(
       frameId = window.requestAnimationFrame(show);
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [flow, flowReady, nodesInitialized, focusKey, pageOpen, selectedNodeId, selectedNodePositionKey, geometryVersion]);
+  }, [flow, flowReady, nodesInitialized, focusKey, pageOpen, focusNodeId, focusPositionKey, geometryVersion]);
 
   function getViewportCenter(): FlowPosition {
     const viewport = flow.getViewport();

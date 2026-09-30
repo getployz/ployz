@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
 import type { CanvasPosition } from "#/modules/canvas/canvas-positions";
-import { buildStoreEdges, buildStoreNodes } from "./nodes";
+import { buildStoreEdges, buildStoreNodes, canvasNodeOf, shownNodeIds, volumeTrays } from "./nodes";
 
 function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPosition {
   return {
@@ -19,29 +20,71 @@ function createCanvasPosition(overrides?: Partial<CanvasPosition>): CanvasPositi
 }
 
 describe("Config Store nodes", () => {
-  const service = (id: string, name: string) => {
-    // SAFETY: test ids stand in for the Store's minted Service ids.
-    const listing: ServiceListing = { id: id, name, private_dns: name, source: "image", change: null, template: null };
-    return { service: listing, subtitle: null, changeCount: 0, runtimeIdentity: null, uploaded: false };
-  };
+  // SAFETY: test ids stand in for the Store's minted Service ids.
+  const listing = (id: string, name: string): ServiceListing => ({ id: id, name, private_dns: name, source: "image", change: null, template: null });
   const volume = (id: string, mounts: { service: string; path: string }[]): VolumeListing =>
     ({ id, name: id, mounts, deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "create" });
+  const listings = [listing("s1", "postgres"), listing("s2", "web")];
+  const volumes = [
+    volume("shared", [{ service: "postgres", path: "/data" }, { service: "web", path: "/srv" }]),
+    volume("own", [{ service: "postgres", path: "/backup" }]),
+    volume("loose", []),
+    volume("orphan", [{ service: "gone", path: "/data" }]),
+  ];
+  // The next Deploy mounts `shared` into web; postgres's mount of it stays.
+  const diff = asTestDouble<DiffView>()({ changes: [{ type: "service", id: "s2", name: "web", lifecycle: "update", comparison: "head", data: null,
+    settings: [{ path: "web.mounts.shared", kind: "add", before: null, after: "/srv", canRestore: true }] }] });
+  const { trays, unmounted } = volumeTrays(listings, volumes, diff);
+  const store = {
+    services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null, trays: trays.get(service.id) ?? [] })),
+    unmountedVolumes: unmounted,
+  };
 
-  it("links each Volume into the Services that mount it", () => {
-    const store = { services: [service("s1", "postgres"), service("s2", "web")], volumes: [volume("v1", [{ service: "postgres", path: "/data" }, { service: "web", path: "/srv" }])] };
-    expect(buildStoreEdges(store)).toEqual([
-      { id: "mount:v1:s1", source: "v1", target: "s1" },
-      { id: "mount:v1:s2", source: "v1", target: "s2" },
-    ]);
+  it("puts a mounted Volume in a tray under each Service that mounts it, naming the others", () => {
+    expect(trays.get("s1")?.map((tray) => [tray.volume.id, tray.sharedWith])).toEqual([["shared", ["web"]], ["own", []]]);
+    expect(trays.get("s2")?.map((tray) => [tray.volume.id, tray.sharedWith])).toEqual([["shared", ["postgres"]]]);
+    expect(unmounted.map((listing) => listing.id)).toEqual(["loose", "orphan"]);
   });
 
-  it("keeps stored positions and puts an unplaced Volume below the Service that mounts it", () => {
-    const store = { services: [service("s1", "postgres")], volumes: [volume("v1", [{ service: "postgres", path: "/data" }]), volume("v2", [])] };
+  it("marks a tray whose mount the next Deploy stages, under that Service only", () => {
+    expect(trays.get("s2")?.map((tray) => [tray.volume.id, tray.mountChanged])).toEqual([["shared", true]]);
+    expect(trays.get("s1")?.map((tray) => [tray.volume.id, tray.mountChanged])).toEqual([["shared", false], ["own", false]]);
+  });
+
+  it("draws only a Volume nothing here mounts as a node, and grows each Service by its trays", () => {
     const positions = [createCanvasPosition({ resourceId: "s1", x: 480, y: 96 })];
-    const nodes = buildStoreNodes(store, positions, "v1", "e");
-    expect(nodes.map((node) => [node.id, node.type, node.selected])).toEqual([["s1", "storeService", false], ["v1", "storeVolume", true], ["v2", "storeVolume", false]]);
-    expect(nodes[0]?.position).toEqual({ x: 480, y: 96 });
-    expect(nodes[1]?.position.y).toBeGreaterThan(96 + 144);
-    expect(nodes[1]?.data).toMatchObject({ resourceType: "volume", resourceId: "v1", environmentId: "e" });
+    const nodes = buildStoreNodes(store, positions, "e");
+    expect(nodes.map((node) => [node.id, node.type])).toEqual([
+      ["s1", "storeService"], ["s2", "storeService"], ["loose", "storeVolume"], ["orphan", "storeVolume"],
+    ]);
+    expect(nodes[0]).toMatchObject({ position: { x: 480, y: 96 }, height: 144 + 2 * 40 });
+    expect(nodes[1]?.height).toBe(144 + 40);
+    expect(nodes[2]?.data).toMatchObject({ resourceType: "volume", resourceId: "loose", environmentId: "e" });
+  });
+
+  it("places a new node clear of each node's whole height, trays included", () => {
+    const tall = createCanvasPosition({ resourceId: "s1", x: 0, y: 0 });
+    const nodes = buildStoreNodes(store, [tall], "e");
+    const web = nodes.find((node) => node.id === "s2");
+    const clear = (web?.position.y ?? 0) >= 144 + 2 * 40 || (web?.position.x ?? 0) >= 288;
+    expect(clear).toBe(true);
+  });
+
+  it("links only Live Nodes: a mount is a tray, not a link", () => {
+    expect(buildStoreEdges({})).toEqual([]);
+    expect(buildStoreEdges({ live: [{ name: "redis", owner: "production", data: false, usedBy: ["s2"] }] }))
+      .toMatchObject([{ id: "live:redis:s2", source: "live:redis", target: "s2" }]);
+  });
+
+  it("finds the node that shows a selection: a tray's first Service, else the node itself", () => {
+    const nodes = buildStoreNodes(store, [], "e");
+    expect(canvasNodeOf(nodes, "shared")).toBe("s1");
+    expect(canvasNodeOf(nodes, "s2")).toBe("s2");
+    expect(canvasNodeOf(nodes, "loose")).toBe("loose");
+    expect(canvasNodeOf(nodes, "unknown")).toBeNull();
+  });
+
+  it("shows what a Deployment Page lights by the nodes that show it, each once", () => {
+    expect(shownNodeIds(buildStoreNodes(store, [], "e"), ["shared", "own", "s2", "loose", "gone"])).toEqual(["s1", "s2", "loose"]);
   });
 });

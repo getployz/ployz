@@ -1,4 +1,4 @@
-import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import type { DiffView, DomainRow, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { Node } from "@xyflow/react";
 
 export type CanvasResourceType = "service" | "volume";
@@ -6,15 +6,23 @@ export type CanvasResourceType = "service" | "volume";
 /** A Service as the Config Store lists it, with what its card shows. */
 export type StoreCanvasService = {
   service: ServiceListing;
-  /** Its image or repository. */
-  subtitle: string | null;
+  /** Its public domains, with their status. */
+  domains: DomainRow[];
   /** How many of its Settings the next Deploy changes. */
   changeCount: number;
   /** How runtime evidence names it, `NAMESPACE/PRIVATE_DNS`; null when the Environment has no Namespace. */
   runtimeIdentity: string | null;
-  /** An empty Service here last deployed from an Uploaded Source (`deploy --upload`). */
-  uploaded: boolean;
+  /** How many replicas its deployed Settings ask for, when they say. */
+  desiredReplicas: number | null;
+  /** The Volumes it mounts, as trays under its card. */
+  trays: MountedVolume[];
 };
+
+/**
+ * A Volume under a Service that mounts it; `sharedWith`: the other Services here that mount it; `mountChanged`: the next
+ * Deploy adds or changes this Service's mount of it.
+ */
+export type MountedVolume = { volume: VolumeListing; sharedWith: string[]; mountChanged: boolean };
 
 export type CanvasStoreServiceNode = Node<StoreCanvasService & {
   resourceType: "service";
@@ -47,6 +55,8 @@ export type CanvasStoreLiveNode = Node<{ live: StoreLiveNode }, "storeLive">;
 export type StoreCanvas = {
   services: StoreCanvasService[];
   volumes: VolumeListing[];
+  /** The Volumes no Service here mounts, which are nodes of their own. */
+  unmountedVolumes: VolumeListing[];
   /** A Branch's Live Nodes; none elsewhere. */
   live: StoreLiveNode[];
   /** What the next Deploy changes: the bottom bar's count and its Details. */
