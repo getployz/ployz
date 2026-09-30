@@ -288,6 +288,22 @@ pub(crate) fn add_domain(
         .flat_map(|intent| intent.services)
         .map(|service| (service.id, service.config))
         .collect::<Vec<_>>();
+    // Hostnames under the Cluster Domain are Ployz's to hand out, never custom.
+    let cluster = match &trusted.domains.cluster_domain {
+        Some(cluster) => Some(cluster.name.clone()),
+        None => crate::deployment::cluster_domain(tx, &environment.summary.id)?,
+    };
+    if let (Some(hostname), Some(cluster)) = (&add.hostname, &cluster) {
+        let (hostname, cluster) = (hostname.as_str(), cluster.as_str());
+        if hostname == cluster || hostname.ends_with(&format!(".{cluster}")) {
+            return Err(error::invalid(
+                format!(
+                    "{hostname} is under {cluster}, which Ployz generates domains in: use a domain of your own"
+                ),
+                json!({ "cluster_domain": cluster }),
+            ));
+        }
+    }
     let service = environment.service_mut(&add.service)?;
     let (name, port, changed) = match &add.hostname {
         Some(hostname) => {
