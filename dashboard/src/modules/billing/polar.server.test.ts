@@ -70,6 +70,7 @@ describe("Polar provider boundary", () => {
         id: "sub-pro",
         product_id: hosted.productId,
         current_period_end: "2026-04-01T00:00:00Z",
+        cancel_at_period_end: true,
       },
     ]);
 
@@ -83,6 +84,7 @@ describe("Polar provider boundary", () => {
         id: "sub-pro",
         productId: hosted.productId,
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+        cancelAtPeriodEnd: true,
       },
     ]);
   });
@@ -93,6 +95,7 @@ describe("Polar provider boundary", () => {
         id: "sub-invalid",
         product_id: hosted.productId,
         current_period_end: "not-a-date",
+        cancel_at_period_end: false,
       },
     ]);
 
