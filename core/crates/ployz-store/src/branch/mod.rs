@@ -301,8 +301,6 @@ pub struct Moved {
     /// The Conditional Save now: standing after a Save at merge, the one taken
     /// from after a take; none once withdrawn and for a Move now.
     pub conditional_save: Option<crate::ConditionalSave>,
-    /// Pull requests whose GitHub check Cloud publishes again.
-    pub checks: Vec<crate::PullRequestRef>,
 }
 
 /// Turn a Live Node into an Own Copy, from the Environment that runs it; a Volume

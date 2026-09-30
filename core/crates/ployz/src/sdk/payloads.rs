@@ -120,6 +120,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::View>();
     declarations.add::<ployz_store::Command>();
     declarations.add::<ployz_store::Written>();
+    declarations.add::<ployz_store::Committed>();
     declarations.add::<ployz_store::Trusted>();
     declarations.add::<ployz_store::GitSource>();
     declarations.add::<ployz_store::SystemEvent>();

@@ -39,7 +39,6 @@ pub(crate) fn move_changes(
     let staged = moving.apply(tx, who, &mut sides.into, picks)?;
     Ok(Moved {
         branch: Some(view(tx, sides.branch())?),
-        checks: crate::pull_request::project_checks(tx, &sides.into.summary.id)?,
         from: sides.from.summary,
         into: sides.into.summary,
         staged,
