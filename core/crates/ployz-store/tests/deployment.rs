@@ -1157,7 +1157,8 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     assert_eq!(view.builds.len(), 1);
     assert_eq!(view.builds[0].commit, None);
     assert_eq!(view.builds[0].status, ployz_store::BuildStatus::Failed);
-    let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = view.deployment.outcome else {
+    let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = view.deployment.outcome
+    else {
         panic!("nothing executed");
     };
     assert_eq!(needs_upload, vec![app]);
