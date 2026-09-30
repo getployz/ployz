@@ -13,6 +13,13 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectI
 import { getContainerLogStream, type ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 export type { ContainerLogSelection } from "#/modules/runtime/container-log.stream";
 
+/**
+ * Many programs log notices and progress to stderr; only a stderr line that says it failed reads red.
+ * ponytail: a word match; a structured level when the runtime reports one.
+ */
+const looksLikeError = (row: { channel: string; message: string }) =>
+  row.channel === "stderr" && /\b(error|err|fatal|panic|exception|failed|traceback)\b/iu.test(row.message);
+
 export function ContainerLogs({ selection, lifecycle = [] }: { selection: ContainerLogSelection; lifecycle?: readonly ContainerLogRow[] }) {
   const scope = useCollectionScope();
   const key = JSON.stringify([scope.sessionId, scope.userId, selection]);
@@ -88,7 +95,7 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
               if (!row) return null;
               return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6" style={{ transform: `translateY(${item.start}px)` }}>
                 <time className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
-                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", row.channel === "stderr" && "text-destructive")}>
+                <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", looksLikeError(row) && "text-destructive")}>
                   <span className="mr-3 text-muted-foreground">{row.serviceName} · {row.machineName}</span>{row.message}
                 </span>
               </div>;

@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { Change, EnvironmentRef, EnvironmentView, ServiceListing, SettingRow } from "@ployz/sdk";
+import type { Change, DomainRow, EnvironmentRef, EnvironmentView, ServiceListing, SettingRow } from "@ployz/sdk";
 import { getManagedServiceExports } from "#/modules/variables/managed-service-exports";
 import { buildReferenceTargets } from "#/modules/variables/variable-autocomplete";
 import type { VariableWriter } from "#/modules/variables/variables";
@@ -56,13 +56,16 @@ export function storeVariableWriter(
   };
 }
 
-/** The variables Ployz adds to a Service. Its domains come with the Store's networking Settings. */
-export function storeManagedExports(service: ServiceListing, environment: EnvironmentView["environment"]) {
+/**
+ * The variables Ployz adds to a Service; `domains` are its own. PLOYZ_PUBLIC_DOMAIN is its newest custom domain, else
+ * its generated one once the Cluster Domain names it.
+ */
+export function storeManagedExports(service: ServiceListing, environment: EnvironmentView["environment"], domains: readonly DomainRow[]) {
+  const custom = domains.filter((domain) => domain.kind === "custom").at(-1)?.hostname;
   return getManagedServiceExports({
     id: service.id, lineageId: service.id, name: service.name, slug: service.name, privateDns: service.private_dns,
     environmentId: environment.id, environmentSlug: environment.name,
-    // ponytail: no domains until the Store has networking (#1265), so no PLOYZ_PUBLIC_DOMAIN.
-    routes: [], managedHostnames: [],
+    publicDomain: custom ?? domains.find((domain) => domain.kind === "generated")?.hostname ?? null,
   });
 }
 
@@ -73,7 +76,8 @@ export function storeReferenceTargets(view: EnvironmentView, services: readonly 
       slug: service.name, name: service.name, isSelf: service.id === self,
       variables: serviceVariables(serviceSettingRows(view, service.name), service.id)
         .map((variable) => ({ key: variable.key, exported: variable.exported, isSecret: variable.value.type === "sealed", description: null })),
-      managedExports: storeManagedExports(service, view.environment),
+      // ponytail: references offer no PLOYZ_PUBLIC_DOMAIN (the domains view looks at the Cluster); typing it still works.
+      managedExports: storeManagedExports(service, view.environment, []),
     })),
   });
 }

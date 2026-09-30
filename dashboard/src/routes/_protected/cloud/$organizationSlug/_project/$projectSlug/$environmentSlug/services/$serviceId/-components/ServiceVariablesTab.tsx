@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { Suspense, useState, type ReactNode } from "react";
 import type { Change, EnvironmentRef, EnvironmentView, JsonValue, ServiceListing } from "@ployz/sdk";
 import { serviceSettingRows } from "#/modules/config-store/store-services";
 import { serviceVariables, storeManagedExports, storeReferenceTargets, storeVariableWriter } from "#/modules/config-store/store-variables";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { BracesIcon } from "lucide-react";
-import { SecretValueDisplay } from "#/components/secret-value-display";
 import { Button } from "#/components/ui/button";
 import {
   Empty,
@@ -45,7 +45,12 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
     <ServiceVariablesView
       variables={variables}
       writer={writer}
-      managed={storeManagedExports(service, settings.environment)}
+      // Its public domain needs the domains view, which looks at the Cluster: the rest shows without waiting for it.
+      managed={(
+        <Suspense fallback={<ManagedVariables managed={storeManagedExports(service, settings.environment, [])} />}>
+          <StoreManagedVariables organizationSlug={organizationSlug} environment={environment} service={service} settings={settings} />
+        </Suspense>
+      )}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
       allowSealOnCreate
       onCreateVariable={({ key, value, sealed, exported }) => store.edit({ environment, changes: [
@@ -71,7 +76,8 @@ function ServiceVariablesView({
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
-  managed: readonly { key: string; value: string }[];
+  /** The variables Ployz adds. */
+  managed: ReactNode;
   valueTargets: ReferenceTarget[];
   onCreateVariable: (input: VariableAddInput) => void;
   onSealVariable: (variable: PlainVariableRecord) => void;
@@ -101,36 +107,7 @@ function ServiceVariablesView({
             Raw editor
           </Button>
         }
-        renderAfterList={() => (
-          <>
-            <Separator />
-            <section>
-              <h2 className="font-medium">
-                {managed.length} Ployz variables
-              </h2>
-                <div className="pt-2">
-                  <p className="text-sm text-muted-foreground">
-                    Ployz adds these system variables to every build and deploy.
-                  </p>
-                  <div className="mt-4">
-                      {managed.map((variable) => (
-                        <div key={variable.key} className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
-                          <div className="min-w-0 truncate font-mono text-sm" title={variable.key}>
-                            {variable.key}
-                          </div>
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <SecretValueDisplay
-                              value={variable.value}
-                            />
-                            <span className="size-7 shrink-0" aria-hidden="true" />
-                          </div>
-                        </div>
-                      ))}
-                  </div>
-                </div>
-            </section>
-          </>
-        )}
+        renderAfterList={() => <><Separator />{managed}</>}
         emptyState={
           <Empty>
             <EmptyHeader>
@@ -158,5 +135,34 @@ function ServiceVariablesView({
         valueTargets={valueTargets}
       />
     </div></TabsContent>
+  );
+}
+
+/** The variables Ployz adds, with the public domain once the Service's domains are read. */
+function StoreManagedVariables({ organizationSlug, environment, service, settings }: {
+  organizationSlug: string; environment: EnvironmentRef; service: ServiceListing; settings: EnvironmentView;
+}) {
+  const domains = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains
+    .filter((domain) => domain.service === service.name);
+  return <ManagedVariables managed={storeManagedExports(service, settings.environment, domains)} />;
+}
+
+/** None of them is a secret, so each shows its value. */
+function ManagedVariables({ managed }: { managed: readonly { key: string; value: string }[] }) {
+  return (
+    <section>
+      <h2 className="font-medium">{managed.length} Ployz variables</h2>
+      <div className="pt-2">
+        <p className="text-sm text-muted-foreground">Ployz adds these system variables to every build and deploy.</p>
+        <div className="mt-4">
+          {managed.map((variable) => (
+            <div key={variable.key} className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
+              <div className="min-w-0 truncate font-mono text-sm" title={variable.key}>{variable.key}</div>
+              <div className="min-w-0 truncate font-mono text-sm text-muted-foreground" title={variable.value}>{variable.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
