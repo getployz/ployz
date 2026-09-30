@@ -105,8 +105,9 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
     try {
       await advance(accepted);
     } catch (error) {
-      // The Volumes deployed changed since the dialog read them: it shows them again, to be typed for again.
-      if (error instanceof StoreRefused && (error.code === "confirmation_required" || error.code === "invalid_argument")) return load();
+      // The Volumes deployed changed since the dialog read them: it shows them again, to be typed for again. Any other
+      // refusal (`invalid_argument` included) shows the Store's own words.
+      if (error instanceof StoreRefused && error.code === "confirmation_required") return load();
       throw error;
     }
   }
