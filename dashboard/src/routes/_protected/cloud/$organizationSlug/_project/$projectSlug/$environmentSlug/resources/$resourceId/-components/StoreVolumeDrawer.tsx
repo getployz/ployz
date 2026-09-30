@@ -264,6 +264,8 @@ function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; par
           <p className="mt-1 text-sm text-destructive/85">
             {removing && volume.deployed
               ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+              : removing
+              ? "Nothing of it is on your servers yet. Keep the volume to undo this."
               : volume.deployed
               ? "Its data on your servers goes with it. Deploy asks you to confirm first."
               : mounts > 0 ? `Deleted on your next deploy, with its ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Deleted on your next deploy."}
