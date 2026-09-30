@@ -473,6 +473,16 @@ fn an_agent_lists_moves_the_default_and_removes_environments_without_servers() {
         assert_eq!(listed["environments"][0]["name"], json!("production"));
         assert_eq!(listed["environments"][0]["default"], json!(true));
 
+        // Branches of production run a default Setup Command until it is cleared.
+        let set = ok(store, &["env", "setup", "--setup", "web=pnpm db:seed"]);
+        assert_eq!(
+            set["environments"][0]["branch_setup"],
+            json!([{ "service": "web", "command": "pnpm db:seed" }])
+        );
+        let cleared = ok(store, &["env", "setup", "--clear"]);
+        assert_eq!(cleared["environments"][0]["branch_setup"], json!([]));
+        failed(store, &["env", "setup"], 2);
+
         // Unconfirmed, it names what goes and the exact retry; nothing changes.
         let unconfirmed = error(store, &["env", "rm", "production"]);
         assert_eq!(unconfirmed["code"], json!("confirmation_required"));

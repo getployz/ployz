@@ -370,6 +370,14 @@ impl Store {
         self.call("read", &request, |store, who| store.read(who, query))
     }
 
+    pub(crate) fn set_branch_setup(
+        &self,
+        set: &ployz_store::SetBranchSetup,
+    ) -> Result<EnvironmentsView, StoreCallError> {
+        let request = Command::SetBranchSetup(set.clone());
+        self.call("write", &request, |store, who| store.write(who, set))
+    }
+
     pub(crate) fn set_default_environment(
         &self,
         set: &SetDefaultEnvironment,
