@@ -1,7 +1,7 @@
 import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
 
 /** Where Ployz runs its own Services on each Server (core's `Namespace::SYSTEM`). */
-const SYSTEM_NAMESPACE = "ployz-system";
+export const SYSTEM_NAMESPACE = "ployz-system";
 
 /**
  * Each Service with a container on some Server, named as the Engine names it: `namespace/name`. Hook containers are

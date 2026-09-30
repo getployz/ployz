@@ -17,6 +17,7 @@ import { RemoveServerSection } from "./-components/remove-server-section";
 import { runsHere } from "./-components/runs-here";
 import { ServerBuildsSection } from "./-components/server-builds-section";
 import { ServerSwitcher } from "./-components/server-switcher";
+import { StrayNamespaces } from "./-components/stray-namespaces";
 import { ServersStaleAlert, ServersUnreachable } from "./-components/servers-unreachable";
 
 export const Route = createFileRoute(
@@ -80,7 +81,7 @@ function RouteComponent() {
           <AlertDescription>Check that it’s powered on and online.</AlertDescription>
         </Alert>
       ) : null}
-      <RunningHere server={server} servers={servers} stale={stale} />
+      <RunningHere organizationSlug={organizationSlug} server={server} servers={servers} stale={stale} />
       <ServerBuildsSection machine={machine} organizationSlug={organizationSlug} />
       <RemoveServerSection machine={machine} organizationSlug={organizationSlug} />
     </DashboardPage>
@@ -106,7 +107,8 @@ function ServerPageSkeleton() {
  * How many Services run on this Server; the list itself opens in a sheet. While the Server is offline, the row says
  * how many run nowhere else, since that is what the outage takes down.
  */
-function RunningHere({ server, servers, stale }: {
+function RunningHere({ organizationSlug, server, servers, stale }: {
+  organizationSlug: string;
   server: Server;
   servers: readonly Server[];
   stale: boolean;
@@ -146,6 +148,7 @@ function RunningHere({ server, servers, stale }: {
             <ItemActions><ChevronRightIcon className="size-4 text-muted-foreground" /></ItemActions>
           </Item>
         )}
+        <StrayNamespaces organizationSlug={organizationSlug} server={server} servers={servers} />
       </ItemGroup>
       <Sheet open={open && count > 0} onOpenChange={(next) => { if (!next) void navigate({ to: ".", search: {} }); }}>
         <SheetContent className="gap-0">

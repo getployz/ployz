@@ -8,6 +8,8 @@ import type {
   ConnectOptions,
   Connection,
   DataLossConfirmation,
+  DeployOutcome,
+  ExecutionError,
   MachineDetails,
   MachineTarget,
   MachineUpdate,
@@ -61,6 +63,10 @@ export interface PloyzSession {
     machine: MachineTarget,
     update: Partial<MachineUpdate>,
   ) => Effect.Effect<void, PloyzSdkError>;
+  /** What removing Namespace `namespace`, its Volumes included, deletes. */
+  readonly dataLossIfNamespaceDestroyed: (namespace: string) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
+  /** Remove Namespace `namespace` from every Server, its Volumes included, accepting exactly `confirmDataLoss`. */
+  readonly destroyNamespace: (namespace: string, confirmDataLoss: DataLossConfirmation) => Effect.Effect<DeployOutcome<ExecutionError>, PloyzSdkError>;
   readonly publishCertificateMaterial: (
     request: PublishCertificateMaterialRequest,
   ) => Effect.Effect<void, PloyzSdkError>;
@@ -162,6 +168,10 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),
       ),
+    dataLossIfNamespaceDestroyed: (namespace) =>
+      sdkPromise("load namespace data loss", () => client.dataLossIfNamespaceDestroyed(namespace, true)),
+    destroyNamespace: (namespace, confirmDataLoss) =>
+      sdkPromise("remove namespace", () => client.destroyNamespace(namespace, confirmDataLoss, true)),
     updateMachine: (machine, update) =>
       sdkPromise("update machine", () =>
         client.updateMachine(machine, update).then(() => undefined),
