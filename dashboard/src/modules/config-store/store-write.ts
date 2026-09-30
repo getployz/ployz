@@ -103,7 +103,7 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
-      applyOptimistic(queryClient, organizationSlug, command);
+      void applyOptimistic(queryClient, organizationSlug, command);
       // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one.
       const expects = "expect" in command;
       const save = async () => {
