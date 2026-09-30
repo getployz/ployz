@@ -183,6 +183,14 @@ fn custom_domains_need_the_capability_to_add_or_retarget() {
         )
         .unwrap_err();
     assert_eq!(taken.code, RpcErrorCode::Conflict);
+
+    // Hostnames under the Cluster Domain are Ployz's to generate, never custom.
+    for hostname in ["web.acme.ployz.app", "acme.ployz.app"] {
+        let generated = store
+            .write_trusted(&who, &add(Some(hostname), None), &cloud(true))
+            .unwrap_err();
+        assert_eq!(generated.code, RpcErrorCode::InvalidArgument, "{hostname}");
+    }
 }
 
 #[test]
