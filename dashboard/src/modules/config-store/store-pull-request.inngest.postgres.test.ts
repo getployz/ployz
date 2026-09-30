@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect, vi } from "vitest";
 import { cloudStore } from "#/modules/config-store/store-sdk.server";
-import { requestChecks } from "#/modules/config-store/config-store.server";
+import { callStore } from "#/modules/config-store/config-store.server";
 import { createStorePullRequest } from "#/modules/config-store/store-github.inngest";
 import { githubPullRequestReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
@@ -93,8 +93,10 @@ it.live(
       expect(yield* environments()).toEqual(["pr-5", "production"]);
       expect(posted).toMatchObject([{ head_sha: HEAD, conclusion: "success", output: { title: "No changes for production" } }]);
 
-      // Any later write may move the check: Cloud asks for it again.
-      yield* requestChecks(ORGANIZATION).pipe(Effect.provide(services));
+      // A later write in its Project may move the check: the Store names it, and Cloud asks for it again.
+      yield* callStore(ORGANIZATION, null, { operation: "write", command: {
+        command: "edit", environment: here, expect: null, changes: [{ op: "set", path: "web.replicas", value: 2 }],
+      } }).pipe(Effect.provide(services));
       expect(requested).toEqual([[{ name: "config/pr-check.requested", data: {
         organizationId: ORGANIZATION, repositoryId: 42, number: 5, pullRequestKey: "42:5",
       } }]]);

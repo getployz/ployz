@@ -9,8 +9,6 @@ type ServiceExportContext = {
   environmentId: string;
   environmentSlug: string;
   privateDns: string;
-  /** Its public hostname, if it has one: PLOYZ_PUBLIC_DOMAIN. */
-  publicDomain: string | null;
 };
 
 export interface ManagedServiceExportRecord {
@@ -63,13 +61,6 @@ export function getManagedServiceExports(service: ServiceExportContext): Managed
       value: service.id,
     },
   ];
-
-  const { publicDomain } = service;
-  if (publicDomain) definitions.push({
-    key: "PLOYZ_PUBLIC_DOMAIN",
-    description: "The most recently linked custom domain, otherwise the most recently linked generated domain.",
-    value: publicDomain,
-  });
 
   return definitions.map((definition) => ({
     serviceId: service.id,

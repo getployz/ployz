@@ -488,7 +488,7 @@ export const completeMachineEnrollment = Effect.fn(
       yield* recordJoined(input.token, machineId);
       return { machineId };
     }
-    // Past this, `machineId` is the founder: false only when a retried completion founded it already.
+    // Past this, `machineId` is the founder (a retried completion may have founded it already).
     yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
@@ -497,7 +497,7 @@ export const completeMachineEnrollment = Effect.fn(
     );
     yield* recordJoined(input.token, machineId);
     // Its published Environments deploy to it, durably: a retried completion sends this again, and Inngest runs it once.
-    yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId })).pipe(
+    yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId, machineId })).pipe(
       Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
     );
     return { machineId };
@@ -505,8 +505,7 @@ export const completeMachineEnrollment = Effect.fn(
 );
 
 /**
- * Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current; true
- * when this call made it the founder.
+ * Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current.
  */
 const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
   organizationId: string, machineId: MachineId, encryptedPairingSecret: EncryptedSecretValue,
@@ -523,10 +522,9 @@ const commitFounder = Effect.fn("MachineEnrollment.commitFounder")(function* (
   if (pairing.founderMachineId !== null && pairing.founderMachineId !== machineId) {
     return yield* new Conflict({ message: "The Organization is already ready on another Machine." });
   }
-  if (pairing.founderMachineId !== null) return false;
+  if (pairing.founderMachineId !== null) return;
   yield* drizzle.update(schemaOrganizationPairing).set({ founderMachineId: machineId, updatedAt: new Date() })
     .where(eq(schemaOrganizationPairing.organizationId, organizationId));
-  return true;
 });
 
 const resetPendingEnrollment = Effect.fn("MachineEnrollment.resetPendingState")(

@@ -318,6 +318,7 @@ async function openConfigStore(url, sealingSecret) {
     runDeployment: (organization, deployment, runner, connections, sources) =>
       withRpcError(store.runDeployment(organization, deployment, runner, connections, sources)),
     abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
+    checks: (environment) => withRpcError(store.checks(environment)),
     system: (organization, event, trusted) => withRpcError(store.system(organization, event, trusted)),
     removeOrganization: (organization) => withRpcError(store.removeOrganization(organization)),
     unclaimed: (before) => withRpcError(store.unclaimed(before)),

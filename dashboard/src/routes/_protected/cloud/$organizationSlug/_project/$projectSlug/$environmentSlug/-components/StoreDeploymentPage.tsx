@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "#
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs,
+  admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs, outcomeReason,
   nodeLight, nodeOutcomeLabel, nodeStatusLabels, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
@@ -54,7 +54,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
-  const reason = deployment.outcome && "reason" in deployment.outcome ? deployment.outcome.reason : undefined;
+  const reason = outcomeReason(deployment.outcome);
   const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
   const fixing = focused && canFixOnBranch(deployment, focused, noServers) ? focused.name : null;
   const { at, started, ended } = admission(deployment);
@@ -220,7 +220,7 @@ function StoreBuildLog({ deploymentId, service }: { deploymentId: string; servic
   const result = useStoreView(organizationSlug, buildLogQuery(deploymentId, service));
   if (!result.ok) return <p className="text-muted-foreground">{result.refusal.message}</p>;
   return (
-    <pre aria-label="Build logs" tabIndex={0} className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
+    <pre aria-label={`${service} build output`} tabIndex={0} className="min-h-0 flex-1 overflow-auto font-mono text-xs leading-6 break-words whitespace-pre-wrap">
       {result.value.log || "No output yet."}
     </pre>
   );

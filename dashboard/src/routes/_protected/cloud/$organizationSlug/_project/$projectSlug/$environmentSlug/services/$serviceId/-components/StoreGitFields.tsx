@@ -8,7 +8,7 @@ import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectSeparator, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting } from "#/modules/config-store/catalog";
-import { settingText } from "#/modules/config-store/store-services";
+import { changedProps, settingText } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { useCachedStoreView } from "#/modules/config-store/store-view.queries";
 import { githubFileSearchQueryOptions } from "#/modules/github/github.queries";
@@ -55,8 +55,7 @@ export function StoreBranchField({ repository, gitRef, value, change, onSet }: {
             onSelectBranch={(branch) => { void onSet(branch); setPicking(false); }} />
         </>
       ) : (
-        <ServiceSettingInput ariaLabel={setting.title} placeholder="main" value={value} isChanged={change !== undefined}
-          baselineValue={change ? settingText(change.before) : undefined} onCommit={(raw) => onSet(raw)} />
+        <ServiceSettingInput ariaLabel={setting.title} placeholder="main" value={value} {...changedProps(change)} onCommit={(raw) => onSet(raw)} />
       )}
     </Field>
   );
@@ -81,8 +80,7 @@ export function StoreDockerfileField({ gitRef, branch, value, change, onCommit }
     <Field>
       <FieldLabel>{setting.title}</FieldLabel>
       <FieldDescription>{setting.description}</FieldDescription>
-      <ServiceSettingInput ariaLabel={setting.title} placeholder="Dockerfile" value={value} isChanged={change !== undefined}
-        baselineValue={change ? settingText(change.before) : undefined}
+      <ServiceSettingInput ariaLabel={setting.title} placeholder="Dockerfile" value={value} {...changedProps(change)}
         suggestions={gitRef ? suggestions : undefined} suggestionsLoading={files.isFetching}
         suggestionsMessage={files.isError ? "Couldn’t load suggestions. Enter a path." : undefined}
         suggestionsNotice={files.data?.truncated ? "Some files are omitted. You can enter a path manually." : undefined}

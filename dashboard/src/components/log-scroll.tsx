@@ -23,7 +23,7 @@ export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HT
 }
 
 /** Log columns' widths, shared by the header, the rows, and their skeleton. */
-export const LOG_TIME_COLUMN = { build: "w-24", container: "w-48" } as const;
+export const LOG_TIME_COLUMN = { container: "w-48" } as const;
 
 /** The column header a log reads under; the time column names its zone. */
 export function LogHeader({ time, children }: { time: string; children: ReactNode }) {

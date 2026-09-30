@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
+import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
 import { openOrCreateOrganizationServerFn } from "#/modules/organization/organization-state.functions";
@@ -38,6 +39,8 @@ function NoOrganization() {
     try {
       const slug = await openOrCreateOrganizationServerFn();
       await navigate({ to: "/cloud/$organizationSlug/~", params: { organizationSlug: slug }, replace: true, reloadDocument: true });
+    } catch {
+      toast.error("Couldn't create your organization. Try again.");
     } finally {
       setPending(false);
     }

@@ -1,5 +1,5 @@
 import type {
-  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, ServiceListing,
+  ChangeKind, DeploymentStatus, DeploymentSummary, DeploymentView, DiffView, JsonValue, NodeChange, NodeOutcome, NodeStatus, Outcome, ServiceListing,
   UploadedSource,
 } from "@ployz/sdk";
 import { Option, Schema } from "effect";
@@ -68,10 +68,8 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
-        // A Setting, variable or mount discards alone; a domain or a rename goes with its node. A Volume's row
-        // discards alone when the Store can restore it (a deployed Volume's name or storage).
-        canDiscard: node.type === "volume" ? row.canRestore
-          : row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting),
+        // Whether Discard takes this path alone is the Store's to say.
+        canDiscard: row.canRestore,
       };
     }),
   }));
@@ -158,9 +156,11 @@ export function nodeOutcomeLabel(outcome: NodeStatus, deployment: Pick<Deploymen
 
 /**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
- * Coming off the servers, then Off the servers.
+ * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
+ * says so.
  */
-export function deploymentStatusLabel({ status, remove }: Pick<DeploymentSummary, "status" | "remove">) {
+export function deploymentStatusLabel({ status, remove, outcome }: Pick<DeploymentSummary, "status" | "remove"> & { outcome?: Outcome | null }) {
+  if (outcome?.type === "forgotten") return "Removed from Ployz";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
   return deploymentStatusLabels[status];
@@ -218,11 +218,18 @@ export function focusedService(deployment: DeploymentView, picked: string | unde
 export const canFixOnBranch = (deployment: DeploymentView, node: NodeOutcome, noServers: boolean) =>
   !noServers && deployment.status === "failed" && deployment.outcome?.type === "executed" && !nodeApplied(node.outcome);
 
+/** Why a Deployment ended as it did, when that needs saying: the Store's reason, or what a forgotten removal left. */
+export function outcomeReason(outcome: Outcome | null) {
+  if (outcome?.type === "forgotten") return "No server was enrolled any more, so whatever ran on the old ones is still there.";
+  return outcome && "reason" in outcome ? outcome.reason ?? undefined : undefined;
+}
+
 /**
  * Why `node` has no deploy logs in the Deployment: nothing of it ran, its turn never came, or it was removed. Null when it
  * may have some.
  */
 export function missingDeployLogs(deployment: DeploymentView, node: NodeOutcome) {
+  if (deployment.outcome?.type === "never_ran" || deployment.outcome?.type === "forgotten") return "Nothing ran on a server";
   if (deployment.started_at === null || deployment.outcome?.type === "not_executed") return "Not started";
   return node.outcome === "not_attempted" || node.outcome === "removed" ? nodeStatusLabels[node.outcome] : null;
 }

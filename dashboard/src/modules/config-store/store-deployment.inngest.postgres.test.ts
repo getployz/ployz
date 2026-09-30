@@ -97,11 +97,11 @@ it.live(
       // Recorded runs are forgotten once stopped, and other functions' runs were never recorded.
       expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
 
-      // A run cancelled before it claimed its Deployment (waiting on GitHub builds) cancels it: nothing else would run it.
+      // A run cancelled before it claimed its Deployment (waiting on GitHub builds) records it failed, not cancelled.
       yield* write({ command: "admit", admit: "deploy", id: UNCLAIMED, environment: here, services: [], version: null, accept_volume_loss: [] });
       yield* recordStoreDeploymentRun("early-run", admitted(UNCLAIMED).data).pipe(Effect.provide(services));
-      expect(yield* stop("early-run")).toEqual({ cancelled: UNCLAIMED });
-      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "cancelled" });
+      expect(yield* stop("early-run")).toEqual({ failed: UNCLAIMED });
+      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "failed" });
 
       // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run
       // holds its Environment's queue.
@@ -139,7 +139,7 @@ it.live("a first Server's join deploys each published Environment once, and leav
     makeInngestEffectRunner((program) => Effect.runPromise(program.pipe(Effect.provide(services))));
   const joined = yield* Effect.promise(() => new InngestTestEngine({
     function: createDeployToFirstServer(new Inngest({ id: "first-server-test" }), runner),
-    events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION })],
+    events: [createConfigFirstServerJoinedEvent({ organizationId: ORGANIZATION, machineId: "founder" })],
   }).execute());
   expect(joined.result).toEqual([{ environment: "shop/production", admitted: true }]);
   const { deployments } = yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployments", environment: { project: "shop", environment: null }, cursor: null, limit: null }));

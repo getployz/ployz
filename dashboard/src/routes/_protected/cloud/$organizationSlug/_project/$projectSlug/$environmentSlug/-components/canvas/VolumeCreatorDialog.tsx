@@ -16,7 +16,7 @@ import {
 import { Input } from "#/components/ui/input";
 import type { VolumeKind } from "@ployz/sdk";
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
-import { volumeStorage } from "#/modules/config-store/store-volumes";
+import { DEFAULT_VOLUME_GB, volumeStorage } from "#/modules/config-store/store-volumes";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { FlowPosition } from "./types";
 
@@ -39,7 +39,7 @@ export function VolumeCreatorDialog({
 }) {
   const [name, setName] = useState("data");
   const [managed, setManaged] = useState(true);
-  const [sizeGB, setSizeGB] = useState("5");
+  const [sizeGB, setSizeGB] = useState(DEFAULT_VOLUME_GB);
   const trimmedName = name.trim();
   const runtime = useRuntimeLens(organizationSlug);
   const needsServer = runtime.noServers || (runtime.status === "observed" && !runtime.incomplete
@@ -52,7 +52,7 @@ export function VolumeCreatorDialog({
     if (!open) {
       setName("data");
       setManaged(true);
-      setSizeGB("5");
+      setSizeGB(DEFAULT_VOLUME_GB);
     }
   }
 
