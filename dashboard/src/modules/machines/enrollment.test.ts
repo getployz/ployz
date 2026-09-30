@@ -15,7 +15,7 @@ const machineId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const display = "XQhwYRG/2fpuX4+RlNuIsE5SfhGdsGpMVVvwu1y2Ak0=";
 
 describe("machine enrollment command", () => {
-  it("pastes ployz server add with the token", () => {
+  it("installs the stable release on hosted Cloud", () => {
     const minted = mintedEnrollment({
       origin: "https://ployz.dev",
       token: "pmet_secret",
@@ -24,19 +24,21 @@ describe("machine enrollment command", () => {
     });
 
     expect(minted.command).toBe(
-      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3-beta.4 && sudo ployz server add --token 'pmet_secret'",
+      "curl -fsSL https://ployz.sh/ | sh && sudo ployz server add --token 'pmet_secret'",
     );
     expect(minted.expiresAt).toBe("2026-08-19T00:00:00.000Z");
   });
 
-  it("adds --cloud-url for self-hosted Cloud", () => {
+  it("pins its own version and adds --cloud-url for self-hosted Cloud", () => {
     expect(
       buildMachineJoinCommand({
         token: "pmet_secret",
         origin: "https://cloud.example",
         version: "1.2.3",
       }),
-    ).toContain("--cloud-url 'https://cloud.example'");
+    ).toBe(
+      "curl -fsSL https://ployz.sh/ | sh -s -- 1.2.3 && sudo ployz server add --token 'pmet_secret' --cloud-url 'https://cloud.example'",
+    );
   });
 
   it("keeps token expiry stable", () => {

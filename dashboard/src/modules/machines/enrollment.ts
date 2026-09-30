@@ -218,18 +218,19 @@ const DEFAULT_CLOUD_URL_HOST = "ployz.dev";
 const INSTALLER_URL = "https://ployz.sh/";
 
 /**
- * One line that installs `version`, the release Cloud's own SDK speaks, so the
- * Server understands this enrollment (the stable channel can lag far behind).
+ * One line that installs a daemon and enrolls it. Ployz's hosted Cloud installs the
+ * stable release, which every Cloud from 0.2.0 on speaks; any other Cloud pins
+ * `version`, the release its own SDK speaks, since stable may be newer than it.
  */
 export function buildMachineJoinCommand(input: {
   token: string;
   origin: string;
   version: string;
 }) {
-  const host = new URL(input.origin).hostname;
-  const cloudUrlFlag =
-    host === DEFAULT_CLOUD_URL_HOST ? "" : ` --cloud-url '${input.origin}'`;
-  return `curl -fsSL ${INSTALLER_URL} | sh -s -- ${input.version} && sudo ployz server add --token '${input.token}'${cloudUrlFlag}`;
+  const hosted = new URL(input.origin).hostname === DEFAULT_CLOUD_URL_HOST;
+  const install = hosted ? "sh" : `sh -s -- ${input.version}`;
+  const cloudUrlFlag = hosted ? "" : ` --cloud-url '${input.origin}'`;
+  return `curl -fsSL ${INSTALLER_URL} | ${install} && sudo ployz server add --token '${input.token}'${cloudUrlFlag}`;
 }
 
 export function mintedEnrollment(input: {
