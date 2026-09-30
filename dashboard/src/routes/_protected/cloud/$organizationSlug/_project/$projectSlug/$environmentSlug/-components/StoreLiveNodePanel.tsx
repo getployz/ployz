@@ -39,7 +39,7 @@ export function StoreLiveNodePanel({ name }: { name: string }) {
         <span className="font-medium">{name}</span>
         <p className="truncate text-sm text-muted-foreground">{storeLiveLabel(live)}</p>
       </CanvasInspectorHeader>
-      <FieldGroup className="min-h-0 flex-1 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4"><FieldGroup>
         <FieldSet>
           <FieldLegend>Whose it is</FieldLegend>
           <FieldDescription>{live.owner ? `Changing it changes ${live.owner}.` : "Services here can't reach it."}</FieldDescription>
@@ -79,7 +79,7 @@ export function StoreLiveNodePanel({ name }: { name: string }) {
             ))}
           </ItemGroup>
         </FieldSet>
-      </FieldGroup>
+      </FieldGroup></div>
     </div>
   );
 }
