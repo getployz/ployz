@@ -161,7 +161,24 @@ pub(crate) fn machine_policy_flags(command: Command) -> Command {
 pub(crate) fn reviewed_version() -> Arg {
     value("expect-version", None)
         .value_name("VERSION")
+        .value_parser(review_version)
         .help("Refuse unless this is still the reviewed version; a data-loss refusal names it")
+}
+
+/// A review's version is `REVISION:SAVED:TOKEN`, and a data-loss refusal's adds `:DIGEST`.
+fn review_version(version: &str) -> Result<String, &'static str> {
+    let parts: Vec<&str> = version.split(':').collect();
+    match parts.as_slice() {
+        [revision, saved, rest @ ..]
+            if !rest.is_empty()
+                && revision.parse::<u64>().is_ok()
+                && saved.parse::<u64>().is_ok()
+                && rest.iter().all(|part| !part.is_empty()) =>
+        {
+            Ok(version.to_owned())
+        }
+        _ => Err("Use the version ployz diff --json or a refusal gave, such as 3:1:0.1"),
+    }
 }
 
 pub(crate) fn volume_acceptance() -> Arg {
@@ -178,6 +195,16 @@ fn completion() -> Command {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expect_version_takes_a_review_or_refusal_version_only() {
+        for good in ["3:1:0.1", "3:0:0.12:ab12cd"] {
+            assert_eq!(super::review_version(good).as_deref(), Ok(good));
+        }
+        for bad in ["garbage", "3:1", "3:1:", "x:1:0.1", "3:1:0.1:"] {
+            assert!(super::review_version(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn root_version_flags_are_accepted() {
         for flag in ["--version", "-V"] {
