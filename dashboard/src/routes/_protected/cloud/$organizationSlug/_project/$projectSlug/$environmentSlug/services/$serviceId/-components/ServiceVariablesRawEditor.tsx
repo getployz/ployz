@@ -216,7 +216,7 @@ export function ServiceVariablesRawEditor({
 
     const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText };
     // Optimistic: a refusal reopens the editor on what was typed, with the Store's reason over it.
-    onApply(diff).isPersisted.promise.catch((error: unknown) => {
+    onApply(diff).isPersisted.promise.catch((error) => {
       refusedRef.current = { ...typed, submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." };
       onOpenChange(true);
     });
