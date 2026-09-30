@@ -6,7 +6,8 @@ use std::time::Duration;
 use ployz_core::RpcError;
 use postgres::error::SqlState;
 use postgres::types::{ToSql, Type};
-use postgres::{Client, Config, IsolationLevel, NoTls};
+use postgres::{Client, Config, IsolationLevel};
+use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::{Cell, Param, Row, Tx};
 use crate::error;
@@ -18,10 +19,11 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// Idle connections kept for reuse. Callers bound how many run at once.
 const IDLE: usize = 8;
 
-// ponytail: plaintext connections only; add TLS (tokio-postgres-rustls) when the Store's
-// database is reached over a network that needs it.
+/// TLS follows the URL's `sslmode`: `prefer` (the default) falls back to plaintext on a
+/// private network, `require` refuses to.
 pub(crate) struct Postgres {
     config: Config,
+    tls: MakeRustlsConnect,
     idle: Mutex<Vec<Client>>,
 }
 
@@ -37,8 +39,18 @@ impl Postgres {
         config.connect_timeout(TIMEOUT).options(&format!(
             "-c statement_timeout={millis} -c lock_timeout={millis}"
         ));
+        let roots =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(|_| error::internal("The Config Store TLS setup failed"))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
         Ok(Self {
             config,
+            tls: MakeRustlsConnect::new(tls),
             idle: Mutex::new(Vec::new()),
         })
     }
@@ -55,7 +67,10 @@ impl Postgres {
             .pop();
         let mut client = match idle {
             Some(client) if !client.is_closed() => client,
-            _ => self.config.connect(NoTls).map_err(storage_error)?,
+            _ => self
+                .config
+                .connect(self.tls.clone())
+                .map_err(storage_error)?,
         };
         let result = run(&mut client, write, work);
         if !client.is_closed() {
