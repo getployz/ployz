@@ -14,7 +14,7 @@ use ployz_core::config::{
     LiveLineageUse, LiveValuesInput, LiveValuesOwner, SavedEnvironmentIntent, SavedServiceIntent,
     SavedVariableProducer, SavedVariableValue, ServiceImageCredentials, ServiceSource, ValuePart,
     ValuePartOwner, branch_changes, canonicalize_environment_intent, compile_environment_intent,
-    live_values, parse_environment_intent, plan_branch,
+    live_values, plan_branch,
 };
 use ployz_core::{Namespace, RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -24,11 +24,13 @@ use ts_rs::TS;
 use crate::command::{Command, insert_environment, replayable};
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
-use crate::id::{ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision};
+use crate::id::{
+    ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision, VolumeName,
+};
 use crate::policy::{self, Policy};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
-use crate::settings::ServiceSetting;
+use crate::settings::{NodeName, ServiceSetting, shown};
 use crate::storage::Tx;
 use crate::{Actor, registry, review};
 
@@ -47,10 +49,10 @@ pub struct CreateBranch {
     /// The Parent's Services and Volumes to copy, by name. With `fix` and none
     /// named, the Services the failed Deployment didn't apply.
     #[serde(default)]
-    pub copy: Vec<String>,
+    pub copy: Vec<NodeName>,
     /// Nodes the Branch must use live, by name: refused unless the plan agrees.
     #[serde(default)]
-    pub live: Vec<String>,
+    pub live: Vec<NodeName>,
     /// Commands to run in an Own Copy before it first deploys, such as seeding the
     /// copy of a database.
     #[serde(default)]
@@ -282,8 +284,8 @@ pub struct Moved {
     pub from: EnvironmentSummary,
     /// Where they landed.
     pub into: EnvironmentSummary,
-    /// Nodes staged in `into`'s Working State: Services by name, Volumes as `volumes.NAME`.
-    pub staged: Vec<String>,
+    /// Nodes staged in `into`'s Working State.
+    pub staged: Vec<NodeName>,
     /// The Branch now; none for a take.
     pub branch: Option<BranchView>,
     /// The Conditional Save now: standing after a Save at merge, the one taken
@@ -329,10 +331,10 @@ pub struct BranchPlanQuery {
     pub from: EnvironmentRef,
     /// The nodes the Branch is for, by name: what a preset plans around.
     #[serde(default)]
-    pub focus: Vec<String>,
+    pub focus: Vec<NodeName>,
     /// The nodes to copy, by name, as [`CreateBranch::copy`]; ignored with a preset.
     #[serde(default)]
-    pub copy: Vec<String>,
+    pub copy: Vec<NodeName>,
     /// Plan what a preset copies around `focus` instead.
     #[serde(default)]
     #[ts(optional = nullable)]
@@ -357,7 +359,7 @@ pub struct BranchPlanView {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PlannedNode {
     /// Its name where the Branch comes from.
-    pub name: String,
+    pub name: NodeName,
     pub kind: EnvironmentNodeType,
     /// `own`: the Branch gets its own copy; `live`: it uses the running one;
     /// `left_out`: it has none.
@@ -428,8 +430,8 @@ pub struct LiveNode {
 pub struct Branched {
     /// The Branch now.
     pub branch: BranchView,
-    /// Nodes staged in its Working State: Services by name, Volumes as `volumes.NAME`.
-    pub staged: Vec<String>,
+    /// Nodes staged in its Working State.
+    pub staged: Vec<NodeName>,
     /// What changed at once.
     pub immediate: Vec<String>,
 }
@@ -581,7 +583,7 @@ fn insert_branch(
         }
     }
 
-    let into = empty(create.name.as_str());
+    let into = crate::review::empty(create.name.as_str());
     let hostnames = BranchHostnames {
         from: suffix(tx, &parent)?,
         into: format!("-{}", create.name),
@@ -750,8 +752,10 @@ pub(crate) fn move_row(
         Some(crate::variables::shown(found, names))
     };
     let (from_names, into_names) = (from.names(), into.names());
-    let from_value = variable(&moving.from, &from_names).unwrap_or_else(|| shown(path, &row.from));
-    let into_value = variable(&into.working, &into_names).unwrap_or_else(|| shown(path, &row.into));
+    let from_value =
+        variable(&moving.from, &from_names).unwrap_or_else(|| shown(path, row.from.clone()));
+    let into_value =
+        variable(&into.working, &into_names).unwrap_or_else(|| shown(path, row.into.clone()));
     Some(MoveRow {
         row: moving.name(&into.working, &key),
         conflict: *conflict,
@@ -1040,12 +1044,10 @@ pub(crate) fn copy_node(
         .cloned()
         .ok_or_else(|| {
             let names: Vec<&str> = branch.live.values().map(String::as_str).collect();
-            error::not_found(
+            error::choices(
                 format!("This Branch uses no node named {} live", copy.node),
-                json!({
-                    "did_you_mean": error::did_you_mean(copy.node.as_str(), names.iter().copied()),
-                    "valid_children": names,
-                }),
+                copy.node.as_str(),
+                names.iter().copied(),
             )
         })?;
     settled(tx, &branch)?;
@@ -1166,7 +1168,7 @@ pub(crate) fn branch_plan(
         .first()
         .map(|own| lineages(&own.applied))
         .unwrap_or_default();
-    let named = |names: &[String]| -> Result<Vec<String>, RpcError> {
+    let named = |names: &[NodeName]| -> Result<Vec<String>, RpcError> {
         names
             .iter()
             .map(|name| lineage_named(working, name))
@@ -1221,10 +1223,16 @@ pub(crate) fn branch_plan(
             .iter()
             .find(|other| other.lineage_id == *lineage)
             .map_or(PlannedRole::LeftOut, |other| role(&other.role));
+            let name = node_of(working, lineage)
+                .or_else(|| {
+                    names
+                        .get(lineage)
+                        .and_then(|name| ServiceName::parse(name.as_str()).ok())
+                        .map(NodeName::Service)
+                })
+                .ok_or_else(|| error::corrupt("Branch plan"))?;
             Ok(PlannedNode {
-                name: name_of(working, lineage)
-                    .or_else(|| names.get(lineage).cloned())
-                    .unwrap_or_else(|| lineage.clone()),
+                name,
                 kind: node.node_type,
                 role: role(&node.role),
                 because: match &node.role {
@@ -1312,11 +1320,10 @@ pub(crate) fn live_names(
             "SELECT working FROM config_environment WHERE id = ?1",
             &[ancestor.as_str().into()],
         )?;
-        let intent = parse(
-            rows.first()
-                .ok_or_else(|| error::corrupt("Environment"))?
-                .text(0)?,
-        )?;
+        let intent = rows
+            .first()
+            .ok_or_else(|| error::corrupt("Environment"))?
+            .intent(0, "Branch")?;
         wanted.retain(|lineage| match name_of(&intent, lineage) {
             Some(name) => {
                 names.insert(lineage.clone(), name);
@@ -1398,12 +1405,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
         setup,
         live,
         update,
-        pull_request: crate::pull_request::of(tx, &branch.summary.id)?.map(
-            |(repository_id, number)| crate::PullRequestRef {
-                repository_id,
-                number,
-            },
-        ),
+        pull_request: crate::pull_request::of(tx, &branch.summary.id)?,
     })
 }
 
@@ -1540,7 +1542,8 @@ impl Moving {
         ) {
             (Some(key), _) => format!("env.{key}"),
             (_, Some(volume)) => format!("mounts.{}", name_in(volume)),
-            _ => setting(path).map_or_else(|| path.to_owned(), |setting| setting.name().to_owned()),
+            _ => ServiceSetting::of_field(path)
+                .map_or_else(|| path.to_owned(), |setting| setting.name().to_owned()),
         };
         format!("{node}.{path}")
     }
@@ -1553,7 +1556,7 @@ impl Moving {
         who: &Actor,
         into: &mut Environment,
         picks: Vec<BranchPick>,
-    ) -> Result<Vec<String>, RpcError> {
+    ) -> Result<Vec<NodeName>, RpcError> {
         let moved = self.compare(&into.working, Some(picks.clone()))?;
         let base = moved
             .base
@@ -1577,23 +1580,6 @@ impl Moving {
             &[document(&base).as_str().into(), self.branch.as_str().into()],
         )?;
         Ok(staged)
-    }
-}
-
-/// The Setting a row's core path writes.
-fn setting(path: &str) -> Option<ServiceSetting> {
-    ServiceSetting::ALL
-        .into_iter()
-        .find(|setting| setting.field() == path)
-}
-
-/// A row's value as `get` shows it: never a credential or a repository ID.
-fn shown(path: &str, value: &Value) -> Value {
-    match path {
-        "source.credentials" if *value == Value::Bool(true) => json!({ "secret": true }),
-        "source.credentials" => Value::Null,
-        "source.repository" => value.get("repository").cloned().unwrap_or(Value::Null),
-        path => setting(path).map_or_else(|| value.clone(), |setting| setting.shown(value.clone())),
     }
 }
 
@@ -1642,7 +1628,7 @@ pub(crate) fn land(
     (from, carried): (&SavedEnvironmentIntent, &Carried),
     next: SavedEnvironmentIntent,
     picks: &[BranchPick],
-) -> Result<Vec<String>, RpcError> {
+) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
     scope::save_working(tx, branch)?;
     let id = branch.summary.id.clone();
@@ -1658,7 +1644,10 @@ pub(crate) fn land(
         if old == Some(service) {
             continue;
         }
-        staged.push(service.slug.clone());
+        staged.push(NodeName::Service(
+            ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+        ));
         if old.is_some() {
             continue;
         }
@@ -1677,7 +1666,7 @@ pub(crate) fn land(
                 policy::store(tx, who, &id, &service.id, policy)?;
             }
         }
-        introduce(tx, who, &id, "service", &service.id, service)?;
+        scope::introduce(tx, who, &id, scope::Node::Service(service))?;
     }
     for pick in picks {
         let Some(lineage) = pick.key.strip_suffix(":source.credentials") else {
@@ -1695,39 +1684,16 @@ pub(crate) fn land(
             .iter()
             .any(|old| old.resource_id == volume.resource_id)
         {
-            staged.push(format!("volumes.{}", volume.name));
-            introduce(tx, who, &id, "volume", &volume.resource_id, volume)?;
+            staged.push(NodeName::Volume(
+                VolumeName::parse(volume.name.as_str())
+                    .map_err(|_| error::corrupt("Volume name"))?,
+            ));
+            scope::introduce(tx, who, &id, scope::Node::Volume(volume))?;
         }
     }
     branch.live = live_names(tx, &id, &branch.working)?;
     staged.sort();
     Ok(staged)
-}
-
-fn introduce(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    environment: &EnvironmentId,
-    node_type: &str,
-    id: &str,
-    node: &impl Serialize,
-) -> Result<(), RpcError> {
-    tx.execute(
-        "INSERT INTO config_node_introduction \
-         (environment_id, node_id, organization_id, node_type, node) \
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        &[
-            environment.as_str().into(),
-            id.into(),
-            who.organization.as_str().into(),
-            node_type.into(),
-            serde_json::to_string(node)
-                .expect("a node is JSON")
-                .as_str()
-                .into(),
-        ],
-    )?;
-    Ok(())
 }
 
 /// Update and Own Copy rewrite what a Branch runs, so they wait until it runs its
@@ -1782,7 +1748,7 @@ fn failed_services(
         .filter(|service| {
             view.nodes
                 .iter()
-                .any(|node| node.id == service.id && !node.outcome.advances())
+                .any(|node| node.node.id() == service.id && !node.outcome.advances())
                 && !applied.services.contains(service)
         })
         .collect())
@@ -1828,8 +1794,7 @@ fn live_producers(
         let Some(namespace) = rows.first() else {
             continue;
         };
-        let namespace =
-            Namespace::parse(namespace.text(0)?).map_err(|_| error::corrupt("Namespace"))?;
+        let namespace = namespace.parse::<Namespace>(0, "Namespace")?;
         let mut provided =
             compile_environment_intent(id.as_str(), owner.applied.clone()).variable_producers;
         if let Some(row) = row(tx, id)? {
@@ -1905,7 +1870,10 @@ fn chain(tx: &mut dyn Tx, parent: &EnvironmentId) -> Result<Vec<Ancestor>, RpcEr
 }
 
 /// The Environments `id` comes from, nearest first: none for a root.
-fn ancestors(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Vec<EnvironmentId>, RpcError> {
+pub(crate) fn ancestors(
+    tx: &mut dyn Tx,
+    id: &EnvironmentId,
+) -> Result<Vec<EnvironmentId>, RpcError> {
     let mut found: Vec<EnvironmentId> = Vec::new();
     let mut at = id.clone();
     while let Some(row) = row(tx, &at)? {
@@ -1927,10 +1895,10 @@ pub(crate) fn row(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Row>, Rp
         return Ok(None);
     };
     Ok(Some(Row {
-        parent: EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Branch"))?,
+        parent: row.parse::<EnvironmentId>(0, "Branch")?,
         kept: row.int(1)? != 0,
-        base: parse(row.text(2)?)?,
-        setup: serde_json::from_str(row.text(3)?).map_err(|_| error::corrupt("Branch"))?,
+        base: row.intent(2, "Branch")?,
+        setup: row.json(3, "Branch")?,
     }))
 }
 
@@ -2034,39 +2002,45 @@ pub(crate) fn changes_into(
     .count())
 }
 
-/// The lineage of the Service or Volume named `name` in `intent`.
+/// The lineage of the node named `name` in `intent`.
 pub(crate) fn lineage_named(
     intent: &SavedEnvironmentIntent,
-    name: &str,
+    name: &NodeName,
 ) -> Result<String, RpcError> {
-    let service = intent.services.iter().find(|service| service.slug == name);
-    let volume = intent.volumes.iter().find(|volume| volume.name == name);
-    match (service, volume) {
-        (Some(service), None) => Ok(service.lineage_id.clone()),
-        (None, Some(volume)) => Ok(volume.resource_lineage_id.clone()),
-        (Some(_), Some(_)) => Err(error::ambiguous(
-            format!("{name} names a Service and a Volume: rename one"),
-            json!({ "node": name }),
-        )),
-        (None, None) => {
-            let names = names(intent);
-            Err(error::not_found(
-                format!("No Service or Volume named {name}"),
-                json!({
-                    "did_you_mean": error::did_you_mean(name, names.iter().map(String::as_str)),
-                    "valid_children": names,
-                }),
-            ))
-        }
-    }
+    let found = match name {
+        NodeName::Service(name) => intent
+            .services
+            .iter()
+            .find(|service| service.slug == name.as_str())
+            .map(|service| service.lineage_id.clone()),
+        NodeName::Volume(name) => intent
+            .volumes
+            .iter()
+            .find(|volume| volume.name == name.as_str())
+            .map(|volume| volume.resource_lineage_id.clone()),
+    };
+    found.ok_or_else(|| {
+        let names = names(intent);
+        error::choices(
+            format!("No node named {name}"),
+            &name.to_string(),
+            names.iter().map(String::as_str),
+        )
+    })
 }
 
+/// Every node of `intent` by name: Services as `SERVICE`, Volumes as `volumes.NAME`.
 fn names(intent: &SavedEnvironmentIntent) -> Vec<String> {
     intent
         .services
         .iter()
         .map(|service| service.slug.clone())
-        .chain(intent.volumes.iter().map(|volume| volume.name.clone()))
+        .chain(
+            intent
+                .volumes
+                .iter()
+                .map(|volume| format!("volumes.{}", volume.name)),
+        )
         .collect()
 }
 
@@ -2084,6 +2058,24 @@ pub(crate) fn name_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<
                 .find(|volume| volume.resource_lineage_id == lineage)
                 .map(|volume| volume.name.clone())
         })
+}
+
+/// The node of lineage `lineage` in `intent`, by name.
+pub(crate) fn node_of(intent: &SavedEnvironmentIntent, lineage: &str) -> Option<NodeName> {
+    let service = intent
+        .services
+        .iter()
+        .find(|service| service.lineage_id == lineage)
+        .and_then(|service| ServiceName::parse(service.slug.as_str()).ok())
+        .map(NodeName::Service);
+    service.or_else(|| {
+        intent
+            .volumes
+            .iter()
+            .find(|volume| volume.resource_lineage_id == lineage)
+            .and_then(|volume| VolumeName::parse(volume.name.as_str()).ok())
+            .map(NodeName::Volume)
+    })
 }
 
 /// Whether `lineage` in `intent` holds data: a Volume, or a Service mounting one.
@@ -2116,22 +2108,6 @@ fn lineages(intent: &SavedEnvironmentIntent) -> Vec<String> {
         .collect()
 }
 
-fn empty(name: &str) -> SavedEnvironmentIntent {
-    SavedEnvironmentIntent {
-        version: 1,
-        environment_slug: name.to_owned(),
-        services: Vec::new(),
-        volumes: Vec::new(),
-    }
-}
-
 fn document(intent: &SavedEnvironmentIntent) -> String {
     serde_json::to_string(intent).expect("Working State is JSON")
-}
-
-fn parse(text: &str) -> Result<SavedEnvironmentIntent, RpcError> {
-    serde_json::from_str(text)
-        .ok()
-        .and_then(|value| parse_environment_intent(value).ok())
-        .ok_or_else(|| error::corrupt("Branch"))
 }

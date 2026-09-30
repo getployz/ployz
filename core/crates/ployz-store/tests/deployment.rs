@@ -10,12 +10,12 @@ use ployz_core::{
     DeployOutcome, DeployPreview, ExecutionError, RpcError, RpcErrorCode, ServiceName,
 };
 use ployz_store::{
-    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, DeploymentId,
-    DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView, Discard, Edit,
-    EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId, PlanQuery,
-    Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Revision, RunEvidence,
-    RunnerId, ServiceId, ServiceQuery, ServicesQuery, SettingPath, Start, Trusted, UploadBase,
-    UploadedSource, View, Written,
+    Actor, Admit, Cancel, Change, Command, ConfigStore, CreateProject, CreateService, Deploy,
+    DeploymentId, DeploymentStatus, DeploymentSummary, DeploymentsQuery, DiffQuery, DiffView,
+    Discard, Edit, EnvironmentId, EnvironmentRef, NamespaceQuery, NodeStatus, OrganizationId,
+    PlanQuery, Principal, ProjectId, ProjectName, Query, RemoveService, RenameService, Retry,
+    Revision, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath,
+    Start, Trusted, UploadBase, UploadedSource, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -29,7 +29,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(PROJECT).unwrap(),
@@ -40,10 +40,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
+                    id: ServiceLineageId::parse(format!("00000000-0000-4000-8000-00000000000{n}"))
                         .unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
@@ -70,9 +70,9 @@ fn admit(
     services: &[&str],
     version: Option<String>,
 ) -> Result<DeploymentSummary, RpcError> {
-    store.admit(
+    store.write_trusted(
         who,
-        &Admit {
+        &Admit::Deploy(Deploy {
             id: id(n),
             environment: EnvironmentRef::default(),
             services: services
@@ -81,16 +81,15 @@ fn admit(
                 .collect(),
             version,
             upload: None,
-            retry: None,
-            remove: false,
             accept_volume_loss: Vec::new(),
-        },
+            message: None,
+        }),
         &Trusted::default(),
     )
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    store.diff(who, &DiffQuery::default()).unwrap()
+    store.read(who, &DiffQuery::default()).unwrap()
 }
 
 fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
@@ -103,7 +102,7 @@ fn changed(store: &ConfigStore, who: &Actor) -> Vec<String> {
 
 fn set_replicas(store: &ConfigStore, who: &Actor, service: &str, replicas: u8) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -155,11 +154,11 @@ fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
 
 fn nodes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
     store
-        .deployment(who, &id(n))
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (node.name, node.outcome))
+        .map(|node| (node.node.name().to_owned(), node.outcome))
         .collect()
 }
 
@@ -214,7 +213,13 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             ("api".to_owned(), NodeStatus::Deployed)
         ]
     );
-    assert!(store.deployment(&who, &id(1)).unwrap().preview.is_some());
+    assert!(
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap()
+            .preview
+            .is_some()
+    );
     assert!(changed(&store, &who).is_empty());
     assert_eq!(code(store.claim(&id(1), &a)), RpcErrorCode::Conflict);
 
@@ -252,7 +257,11 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     };
     store.record(&id(1), &a, partial).unwrap();
     assert_eq!(
-        store.deployment(&who, &id(1)).unwrap().deployment.status,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap()
+            .deployment
+            .status,
         DeploymentStatus::Failed
     );
     assert_eq!(
@@ -312,7 +321,11 @@ fn admission_replays_supersedes_and_checks_the_reviewed_version() {
     let second = admit(&store, &who, 2, &[], Some(diff(&store, &who).version)).unwrap();
     assert_eq!((second.number, second.saved), (2, Revision(2)));
     assert_eq!(
-        store.deployment(&who, &id(1)).unwrap().deployment.status,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap()
+            .deployment
+            .status,
         DeploymentStatus::Superseded
     );
     assert_eq!(
@@ -329,7 +342,9 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
     store.claim(&id(1), &a).unwrap();
     admit(&store, &who, 2, &[], None).unwrap();
     store.claim(&id(2), &runner("runner-b")).unwrap();
-    let replaced = store.deployment(&who, &id(1)).unwrap();
+    let replaced = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
     assert_eq!(replaced.deployment.status, DeploymentStatus::Unknown);
     assert!(
         replaced
@@ -344,11 +359,15 @@ fn a_new_runner_leaves_the_replaced_deployment_unknown() {
 }
 
 fn cancel(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, RpcError> {
-    store.cancel(who, &Cancel { deployment: id(n) })
+    store.write(who, &Cancel { deployment: id(n) })
 }
 
 fn status(store: &ConfigStore, who: &Actor, n: u8) -> DeploymentStatus {
-    store.deployment(who, &id(n)).unwrap().deployment.status
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .deployment
+        .status
 }
 
 #[test]
@@ -461,7 +480,9 @@ fn a_runner_that_stops_before_preparing_executed_nothing() {
     );
     store.claim(&id(1), &a).unwrap();
     store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
-    let view = store.deployment(&who, &id(1)).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     assert!(matches!(
         view.outcome,
@@ -489,24 +510,18 @@ fn retry(
     n: u8,
     source: u8,
 ) -> Result<DeploymentSummary, RpcError> {
-    store.admit(
+    store.write_trusted(
         who,
-        &Admit {
+        &Admit::Retry(Retry {
             id: id(n),
-            environment: EnvironmentRef::default(),
-            services: Vec::new(),
-            version: None,
-            upload: None,
-            retry: Some(id(source)),
-            remove: false,
-            accept_volume_loss: Vec::new(),
-        },
+            deployment: id(source),
+        }),
         &ployz_store::Trusted::default(),
     )
 }
 
 fn start(store: &ConfigStore, who: &Actor, n: u8) -> Result<DeploymentSummary, RpcError> {
-    store.start(who, &Start { deployment: id(n) })
+    store.write(who, &Start { deployment: id(n) })
 }
 
 /// Deployment `n` claimed by `runner-a`, which fails `api` after applying `web`.
@@ -567,11 +582,19 @@ fn a_retry_ships_exactly_what_the_failed_deployment_froze() {
     let claimed = store.claim(&id(3), &runner("runner-b")).unwrap();
     assert_eq!(claimed.intent, frozen);
     assert_eq!(
-        store.deployment(&who, &id(3)).unwrap().namespace.as_str(),
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(3) })
+            .unwrap()
+            .namespace
+            .as_str(),
         "shop-production"
     );
     // A cancelled Deployment can be retried too, with its own Saved revision.
-    let newer = store.deployment(&who, &id(2)).unwrap().deployment.saved;
+    let newer = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap()
+        .deployment
+        .saved;
     assert_ne!(newer, first.saved);
     assert_eq!(retry(&store, &who, 4, 2).unwrap().saved, newer);
 }
@@ -581,22 +604,6 @@ fn a_retry_is_refused_unless_its_deployment_ended_without_applying() {
     let (store, who) = shop();
     let other = Actor::system(OrganizationId::parse("other").unwrap());
     admit(&store, &who, 1, &[], None).unwrap();
-    // It names the Environment: nothing else may.
-    let narrowed = store.admit(
-        &who,
-        &Admit {
-            id: id(9),
-            environment: EnvironmentRef::default(),
-            services: vec![ServiceName::parse("web").unwrap()],
-            version: None,
-            upload: None,
-            retry: Some(id(1)),
-            remove: false,
-            accept_volume_loss: Vec::new(),
-        },
-        &ployz_store::Trusted::default(),
-    );
-    assert_eq!(code(narrowed), RpcErrorCode::InvalidArgument);
     assert_eq!(code(retry(&store, &other, 9, 1)), RpcErrorCode::NotFound);
     assert_eq!(code(retry(&store, &who, 9, 8)), RpcErrorCode::NotFound);
     // Queued, running or cancelling: not ended yet.
@@ -666,7 +673,7 @@ fn only_a_queued_deployment_starts() {
 fn a_targeted_deploy_and_its_plan_cover_only_the_named_services() {
     let (store, who) = shop();
     let plan = store
-        .plan(
+        .read(
             &who,
             &PlanQuery {
                 services: vec![ServiceName::parse("web").unwrap()],
@@ -712,7 +719,7 @@ fn deployments_page_newest_first_within_the_organization() {
     }
     let page = |cursor: Option<String>| {
         store
-            .deployments(
+            .read(
                 &who,
                 &DeploymentsQuery {
                     limit: Some(2),
@@ -740,7 +747,7 @@ fn deployments_page_newest_first_within_the_organization() {
         [1]
     );
     assert_eq!(last.next_cursor, None);
-    let bad_limit = store.deployments(
+    let bad_limit = store.read(
         &who,
         &DeploymentsQuery {
             limit: Some(0),
@@ -750,7 +757,7 @@ fn deployments_page_newest_first_within_the_organization() {
     assert_eq!(code(bad_limit), RpcErrorCode::InvalidArgument);
     let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(
-        code(store.deployment(&stranger, &id(1))),
+        code(store.read(&stranger, &ployz_store::DeploymentQuery { id: id(1) })),
         RpcErrorCode::NotFound
     );
 }
@@ -772,7 +779,7 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
         environment: EnvironmentRef::default(),
         service: ServiceName::parse("web").unwrap(),
     };
-    store.remove_service(&who, &remove).unwrap();
+    store.write(&who, &remove).unwrap();
     // Nothing ran: `web` is still applied, and lists as removed by the next Deploy.
     assert_eq!(
         nodes(&store, &who, 1),
@@ -781,7 +788,7 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
             ("api".to_owned(), NodeStatus::Deployed)
         ]
     );
-    let listed = store.services(&who, &ServicesQuery::default()).unwrap();
+    let listed = store.read(&who, &ServicesQuery::default()).unwrap();
     assert_eq!(
         listed
             .services
@@ -792,7 +799,7 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
     );
     assert_eq!(changed(&store, &who), ["web"]);
     let removed = store
-        .service(
+        .read(
             &who,
             &ServiceQuery {
                 environment: EnvironmentRef::default(),
@@ -810,7 +817,7 @@ fn a_staged_removal_leaves_applied_state_until_its_deploy_confirms_it() {
         .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
         .unwrap();
     store.record(&id(2), &a, succeeded(&["web"])).unwrap();
-    let listed = store.services(&who, &ServicesQuery::default()).unwrap();
+    let listed = store.read(&who, &ServicesQuery::default()).unwrap();
     assert_eq!(listed.services.len(), 1);
     assert!(changed(&store, &who).is_empty());
 }
@@ -848,7 +855,7 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
     );
 
     store
-        .discard(
+        .write(
             &who,
             &Discard {
                 environment: EnvironmentRef::default(),
@@ -869,11 +876,11 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
     };
     assert_eq!(before.namespace.as_str(), "shop-production");
     admit(&store, &who, 1, &[], None).unwrap();
-    let after = store.namespace(&who, &NamespaceQuery::default()).unwrap();
+    let after = store.read(&who, &NamespaceQuery::default()).unwrap();
     assert_eq!(after, before);
     let stranger = Actor::system(OrganizationId::parse("other").unwrap());
     assert_eq!(
-        code(store.namespace(&stranger, &NamespaceQuery::default())),
+        code(store.read(&stranger, &NamespaceQuery::default())),
         RpcErrorCode::NotFound
     );
 }
@@ -882,10 +889,10 @@ fn an_environments_namespace_is_the_one_its_deployments_use() {
 fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back() {
     let (store, who) = shop();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
@@ -895,24 +902,23 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let upload = UploadedSource {
         digest: "d".repeat(64),
         base: Some(UploadBase {
-            commit: "c".repeat(40),
+            commit: backend::sha(&"c".repeat(40)),
             changed: true,
         }),
         uploader: None,
     };
     let with = |n: u8, upload: Option<UploadedSource>| {
-        store.admit(
+        store.write_trusted(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
                 upload,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &ployz_store::Trusted::default(),
         )
     };
@@ -950,7 +956,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     store.record(&id(1), &a, built(receipt.clone())).unwrap();
     // Built from an upload, it lists as uploaded, not empty.
     let listed = store
-        .services(&who, &ployz_store::ServicesQuery::default())
+        .read(&who, &ployz_store::ServicesQuery::default())
         .unwrap();
     let app = listed
         .services
@@ -970,7 +976,11 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         Some(&receipt)
     );
     assert_eq!(
-        store.deployment(&who, &id(1)).unwrap().deployment.upload,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+            .unwrap()
+            .deployment
+            .upload,
         Some(upload.clone())
     );
     // A retry ships the failed one's upload, not the Environment's latest.
@@ -988,7 +998,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         environment: Some(ployz_store::EnvironmentName::parse("staging").unwrap()),
     };
     store
-        .create_environment(
+        .write(
             &who,
             &ployz_store::CreateEnvironment {
                 id: EnvironmentId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
@@ -998,10 +1008,10 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000098").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000098").unwrap(),
                 environment: staging.clone(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
@@ -1009,18 +1019,17 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         )
         .unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id(5),
                 environment: staging,
                 services: Vec::new(),
                 version: None,
                 upload: Some(upload),
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
@@ -1034,10 +1043,10 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
 fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     let (store, who) = shop();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
@@ -1051,17 +1060,16 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         uploader: uploader.map(|name| Principal::parse(name).unwrap()),
     };
     let admit = |n: u8, who: &Actor| {
-        let command = Command::Admit(Admit {
+        let command = Command::Admit(Admit::Deploy(Deploy {
             id: id(n),
             environment: EnvironmentRef::default(),
             services: Vec::new(),
             version: None,
             // A caller can't name the uploader: only Cloud's authentication does.
             upload: Some(upload(Some("mallory"))),
-            retry: None,
-            remove: false,
             accept_volume_loss: Vec::new(),
-        });
+            message: None,
+        }));
         let Written::Deployment(summary) = store.write(who, &command).unwrap() else {
             panic!("an admit writes a Deployment");
         };
@@ -1099,7 +1107,9 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     store
         .record(&id(2), &a, RunEvidence::UploadNeeded(vec![app.clone()]))
         .unwrap();
-    let view = store.deployment(&who, &id(2)).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     assert_eq!(view.builds.len(), 1);
     assert_eq!(view.builds[0].commit, None);
@@ -1113,4 +1123,72 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         retry(&store, &who, 3, 2).unwrap().upload,
         Some(upload(None))
     );
+}
+
+#[test]
+fn a_deploy_message_shows_on_the_deployment_and_its_retry() {
+    let (store, who) = shop();
+    let admit = |n: u8, message: String| {
+        store.write(
+            &who,
+            &Admit::Deploy(Deploy {
+                id: id(n),
+                environment: EnvironmentRef::default(),
+                services: Vec::new(),
+                version: None,
+                upload: None,
+                accept_volume_loss: Vec::new(),
+                message: Some(message),
+            }),
+        )
+    };
+    let too_long = admit(1, "x".repeat(501)).unwrap_err();
+    assert_eq!(too_long.code, RpcErrorCode::InvalidArgument);
+    let admitted = admit(1, "  Ship the new header  ".into()).unwrap();
+    assert_eq!(admitted.message.as_deref(), Some("Ship the new header"));
+    store
+        .write(&who, &ployz_store::Cancel { deployment: id(1) })
+        .unwrap();
+    let retried = store
+        .write(
+            &who,
+            &Admit::Retry(ployz_store::Retry {
+                id: id(2),
+                deployment: id(1),
+            }),
+        )
+        .unwrap();
+    assert_eq!(retried.message.as_deref(), Some("Ship the new header"));
+    let shown = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
+    assert_eq!(
+        shown.deployment.message.as_deref(),
+        Some("Ship the new header")
+    );
+}
+
+#[test]
+fn deploying_a_service_with_nothing_to_run_is_refused_naming_it() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000005").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("blank").unwrap(),
+                image: None,
+            },
+        )
+        .unwrap();
+    let refused = admit(&store, &who, 1, &[], None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused.message,
+        "blank has nothing to run yet: add an image or connect a repository"
+    );
+    assert_eq!(refused.details["service"], "blank");
+    // Deploying other Services leaves it out.
+    admit(&store, &who, 1, &["web"], None).unwrap();
 }

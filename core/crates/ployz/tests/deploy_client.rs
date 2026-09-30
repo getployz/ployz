@@ -940,9 +940,9 @@ async fn wait_phases_carry_elapsed_and_deadline_clocks() {
 #[tokio::test]
 async fn cloud_runner_deploys_a_store_deployment_once() {
     use ployz_store::{
-        Actor, Admit, ConfigStore, CreateProject, CreateService, DeploymentId, DeploymentStatus,
-        EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, ProjectId, ProjectName,
-        RunnerId, SealingKey, ServiceId,
+        Actor, Admit, ConfigStore, CreateProject, CreateService, Deploy, DeploymentId,
+        DeploymentStatus, EnvironmentId, EnvironmentRef, NodeStatus, OrganizationId, ProjectId,
+        ProjectName, RunnerId, SealingKey, ServiceLineageId,
     };
     use std::sync::Arc;
 
@@ -950,7 +950,7 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -961,10 +961,10 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
                 image: Some("nginx".into()),
@@ -973,18 +973,17 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         .unwrap();
     let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
@@ -1001,7 +1000,9 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 
     let summary = run("cloud-run-1").await.unwrap();
     assert_eq!(summary.status, DeploymentStatus::Applied);
-    let view = store.deployment(&who, &id).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap();
     assert!(
         view.nodes
             .iter()
@@ -1013,24 +1014,31 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     let duplicate = run("cloud-run-2").await.unwrap_err();
     assert_eq!(duplicate.code, ployz_core::RpcErrorCode::Conflict);
     assert_eq!(
-        store.deployment(&who, &id).unwrap().deployment.status,
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+            .unwrap()
+            .deployment
+            .status,
         DeploymentStatus::Applied
     );
 
     // Cancelled while it runs, the runner stops it.
     let second = DeploymentId::parse("00000000-0000-4000-8000-000000000102").unwrap();
-    let mut admit = Admit {
+    let mut admit = Deploy {
         id: second.clone(),
         environment: EnvironmentRef::default(),
         services: Vec::new(),
         version: None,
         upload: None,
-        retry: None,
-        remove: false,
         accept_volume_loss: Vec::new(),
+        message: None,
     };
     store
-        .admit(&who, &admit, &ployz_store::Trusted::default())
+        .write_trusted(
+            &who,
+            &Admit::Deploy(admit.clone()),
+            &ployz_store::Trusted::default(),
+        )
         .unwrap();
     let running = tokio::spawn(ployz::sdk::run_deployment(
         Arc::clone(&store),
@@ -1039,11 +1047,16 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
         vec![ployz::context::Connection::tcp(address)],
         Ok(Default::default()),
     ));
-    while store.deployment(&who, &second).unwrap().preview.is_none() {
+    while store
+        .read(&who, &ployz_store::DeploymentQuery { id: second.clone() })
+        .unwrap()
+        .preview
+        .is_none()
+    {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     store
-        .cancel(
+        .write(
             &who,
             &ployz_store::Cancel {
                 deployment: second.clone(),
@@ -1056,10 +1069,14 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
     // Cancelled while queued, it never runs.
     admit.id = DeploymentId::parse("00000000-0000-4000-8000-000000000103").unwrap();
     store
-        .admit(&who, &admit, &ployz_store::Trusted::default())
+        .write_trusted(
+            &who,
+            &Admit::Deploy(admit.clone()),
+            &ployz_store::Trusted::default(),
+        )
         .unwrap();
     store
-        .cancel(
+        .write(
             &who,
             &ployz_store::Cancel {
                 deployment: admit.id.clone(),
@@ -1082,10 +1099,10 @@ async fn cloud_runner_deploys_a_store_deployment_once() {
 #[tokio::test]
 async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     use ployz_store::{
-        Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, DeploymentId,
-        DeploymentStatus, EnvironmentId, EnvironmentRef, Mount, OrganizationId, ProjectId,
-        ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey, ServiceId, Trusted,
-        VolumeId, VolumeName, VolumesQuery,
+        Actor, Admit, ConfigStore, CreateProject, CreateService, CreateVolume, Deploy,
+        DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef, Mount, OrganizationId,
+        ProjectId, ProjectName, RemovalsQuery, RemoveVolume, RunnerId, SealingKey,
+        ServiceLineageId, Trusted, VolumeId, VolumeName, VolumesQuery,
     };
     use std::sync::Arc;
 
@@ -1093,7 +1110,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -1105,10 +1122,10 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         .unwrap();
     let web = ployz_core::ServiceName::parse("web").unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: web.clone(),
                 image: Some("postgres".into()),
@@ -1117,7 +1134,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         .unwrap();
     let data = VolumeName::parse("data").unwrap();
     store
-        .create_volume(
+        .write(
             &who,
             &CreateVolume {
                 storage: ployz_core::config::VolumeKind::Local {},
@@ -1138,18 +1155,17 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     let deploy = |n: u8, accept: Vec<VolumeName>, trusted: Trusted, version: Option<String>| {
         let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
         store
-            .admit(
+            .write_trusted(
                 &who,
-                &Admit {
+                &Admit::Deploy(Deploy {
                     id: id.clone(),
                     environment: EnvironmentRef::default(),
                     services: Vec::new(),
                     version,
                     upload: None,
-                    retry: None,
-                    remove: false,
                     accept_volume_loss: accept,
-                },
+                    message: None,
+                }),
                 &trusted,
             )
             .map(|_| id)
@@ -1185,7 +1201,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     held.lock().unwrap().push(on('a'));
 
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -1194,7 +1210,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
         )
         .unwrap();
     let sought = store
-        .removals(&who, &RemovalsQuery::default())
+        .read(&who, &RemovalsQuery::default())
         .unwrap()
         .volumes
         .into_iter()
@@ -1233,7 +1249,7 @@ async fn cloud_runner_deletes_only_the_docker_volumes_a_deploy_accepted() {
     assert_eq!(*held.lock().unwrap(), [on('b')]);
     assert!(
         store
-            .volumes(&who, &VolumesQuery::default())
+            .read(&who, &VolumesQuery::default())
             .unwrap()
             .volumes
             .is_empty()
@@ -1248,9 +1264,9 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     use ployz_core::config::ServiceGitAccess;
     use ployz_store::{
         Actor, Admit, AuthorizedRepository, BuildOrder, Command, ConfigStore, CreateGitService,
-        CreateProject, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef,
+        CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentRef,
         GithubBuildId, GithubEnd, OrganizationId, Outcome, ProjectId, ProjectName, RunnerId,
-        SealingKey, ServiceId, SetBuildOrder, Trusted,
+        SealingKey, ServiceLineageId, SetBuildOrder, Trusted,
     };
     use std::sync::Arc;
 
@@ -1258,7 +1274,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         Arc::new(ConfigStore::open("sqlite::memory:", SealingKey::new(b"cloud").unwrap()).unwrap());
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -1270,22 +1286,22 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         .unwrap();
     let trusted = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
             branches: Vec::new(),
         }],
         ..Trusted::default()
     };
     store
-        .create_git_service(
+        .write_trusted(
             &who,
             &CreateGitService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ployz_core::ServiceName::parse("web").unwrap(),
-                repository: "acme/web".into(),
+                repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
                 branch: None,
             },
             &trusted,
@@ -1301,24 +1317,30 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
         .unwrap();
     let id = DeploymentId::parse("00000000-0000-4000-8000-000000000101").unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &Trusted::default(),
         )
         .unwrap();
     let web = ployz_core::ServiceName::parse("web").unwrap();
     store
-        .pin(&id, &[(web.clone(), "a".repeat(40))].into())
+        .pin(
+            &id,
+            &[(
+                web.clone(),
+                ployz_store::CommitSha::parse("a".repeat(40)).unwrap(),
+            )]
+            .into(),
+        )
         .unwrap();
     let build = GithubBuildId {
         deployment: id.clone(),
@@ -1340,7 +1362,10 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     .await
     .unwrap();
     assert_eq!(summary.status, DeploymentStatus::Failed);
-    let Some(Outcome::NotExecuted { reason, .. }) = store.deployment(&who, &id).unwrap().outcome
+    let Some(Outcome::NotExecuted { reason, .. }) = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
+        .unwrap()
+        .outcome
     else {
         panic!("nothing ran")
     };

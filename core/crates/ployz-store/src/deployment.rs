@@ -7,14 +7,15 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    CompiledNodeConfig, EncryptedSecretValue, EnvironmentNodeType, RuntimeOutcomeProjection,
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, ServiceSource,
+    CompiledNodeConfig, EncryptedSecretValue, LowerDeploymentInput, LowerDeploymentSnapshot,
+    LowerDeploymentVolume, RuntimeOutcomeProjection, SavedEnvironmentIntent, SavedServiceIntent,
+    SavedVolumeIntent, ServiceConfig, ServiceImageCredentials, ServiceSource,
     canonicalize_environment_intent, compile_environment_intent, lower_deployment,
-    parse_environment_intent, parse_runtime_preview, project_runtime_outcome,
+    parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
     DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
-    RpcError, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    RpcError, ServiceAttempt, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -23,17 +24,17 @@ use ts_rs::TS;
 
 use crate::Actor;
 use crate::build::{self, BuildReport, BuildView, GitSource};
-use crate::command::Admit;
 use crate::error;
 use crate::id::{
-    DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision, RunnerId,
+    CommitSha, DeploymentId, EnvironmentId, Hostname, OrganizationId, Principal, Revision,
+    RunnerId, ServiceLineageId, VolumeId, VolumeName,
 };
 use crate::registry;
 use crate::removal::VolumeLoss;
 use crate::review::{self, Head};
-use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary, revision_param};
+use crate::scope::{self, Environment, EnvironmentSummary, revision_param};
 use crate::sealing::SealingKey;
-use crate::storage::{Row, Tx};
+use crate::storage::{Row, Tx, name_of};
 use crate::variables;
 
 /// Where a Deployment is in its life.
@@ -63,30 +64,6 @@ impl DeploymentStatus {
     #[must_use]
     pub const fn in_flight(self) -> bool {
         matches!(self, Self::Queued | Self::Running | Self::Cancelling)
-    }
-
-    const ALL: [Self; 8] = [
-        Self::Queued,
-        Self::Superseded,
-        Self::Running,
-        Self::Applied,
-        Self::Failed,
-        Self::Unknown,
-        Self::Cancelling,
-        Self::Cancelled,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Queued => "queued",
-            Self::Superseded => "superseded",
-            Self::Running => "running",
-            Self::Applied => "applied",
-            Self::Failed => "failed",
-            Self::Unknown => "unknown",
-            Self::Cancelling => "cancelling",
-            Self::Cancelled => "cancelled",
-        }
     }
 }
 
@@ -121,7 +98,12 @@ pub struct DeploymentSummary {
     /// it ran.
     #[ts(type = "number | null")]
     pub ended_at: Option<i64>,
+    /// What whoever admitted it said it ships.
+    pub message: Option<String>,
 }
+
+/// The most characters a Deployment message has.
+pub(crate) const MESSAGE_MAX: usize = 500;
 
 /// How long a runner holds a claimed Deployment without recording anything. Every
 /// record renews it; once it lapses the runner is gone and the outcome is unknown.
@@ -163,21 +145,18 @@ pub struct UploadedSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct UploadBase {
-    pub commit: String,
+    pub commit: CommitSha,
     /// Whether the directory held changes the commit doesn't.
     pub changed: bool,
 }
 
 impl UploadedSource {
     pub(crate) fn check(&self) -> Result<(), RpcError> {
-        let base = self.base.as_ref();
-        if ployz_core::is_lower_hex(&self.digest, 64)
-            && base.is_none_or(|base| ployz_core::is_lower_hex(&base.commit, 40))
-        {
+        if ployz_core::is_lower_hex(&self.digest, 64) {
             return Ok(());
         }
         Err(error::invalid(
-            "An upload names a lowercase sha256 digest and a full lowercase Git commit",
+            "An upload names a lowercase sha256 digest",
             json!({ "upload": self }),
         ))
     }
@@ -203,13 +182,8 @@ pub struct DeploymentView {
 /// What a Deployment did to one of its target nodes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct NodeOutcome {
-    /// Whether it is a Service or a Volume.
-    #[serde(rename = "type")]
-    pub node_type: EnvironmentNodeType,
-    /// The node's entity ID.
-    pub id: String,
-    /// The node's name when admitted.
-    pub name: String,
+    #[serde(flatten)]
+    pub node: DeployedNode,
     pub outcome: NodeStatus,
 }
 
@@ -312,41 +286,97 @@ pub struct Claimed {
 
 /// One node a Deployment targets, as frozen at admission.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub(crate) struct TargetNode {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    /// The runtime Service a Service node lowers to, which its Node Outcome is
-    /// confirmed by; none for a Volume.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) service: Option<ServiceName>,
-    /// For a Volume the Deployment removes: the Docker Volumes it deletes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) deletes: Option<Vec<DockerVolumeId>>,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum TargetNode {
+    Service {
+        id: ServiceLineageId,
+        name: ServiceName,
+        /// The runtime Service it lowers to, which its Node Outcome is confirmed by.
+        runtime: ServiceName,
+    },
+    Volume {
+        id: VolumeId,
+        name: VolumeName,
+        /// For a Volume the Deployment removes: the Docker Volumes it deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deletes: Option<Vec<DockerVolumeId>>,
+    },
 }
 
 impl TargetNode {
-    fn service(service: &SavedServiceIntent) -> Self {
-        Self {
-            id: service.id.clone(),
-            name: service.slug.clone(),
-            service: Some(service.config.private_dns.clone()),
-            deletes: None,
-        }
+    fn service(service: &SavedServiceIntent) -> Result<Self, RpcError> {
+        Ok(Self::Service {
+            id: parse_stored(&service.id)?,
+            name: ServiceName::parse(service.slug.as_str())
+                .map_err(|_| error::corrupt("Service name"))?,
+            runtime: service.config.private_dns.clone(),
+        })
     }
 
-    fn volume(volume: &SavedVolumeIntent, deletes: Option<Vec<DockerVolumeId>>) -> Self {
-        Self {
-            id: volume.resource_id.clone(),
-            name: volume.name.clone(),
-            service: None,
+    fn volume(
+        volume: &SavedVolumeIntent,
+        deletes: Option<Vec<DockerVolumeId>>,
+    ) -> Result<Self, RpcError> {
+        Ok(Self::Volume {
+            id: parse_stored(&volume.resource_id)?,
+            name: parse_stored(&volume.name)?,
             deletes,
+        })
+    }
+
+    /// Its node ID.
+    pub(crate) fn id(&self) -> &str {
+        match self {
+            Self::Service { id, .. } => id.as_str(),
+            Self::Volume { id, .. } => id.as_str(),
         }
     }
 
-    const fn node_type(&self) -> EnvironmentNodeType {
-        match self.service {
-            Some(_) => EnvironmentNodeType::Service,
-            None => EnvironmentNodeType::Volume,
+    /// The node as views name it.
+    fn shown(&self) -> DeployedNode {
+        match self {
+            Self::Service { id, name, .. } => DeployedNode::Service {
+                id: id.clone(),
+                name: name.clone(),
+            },
+            Self::Volume { id, name, .. } => DeployedNode::Volume {
+                id: id.clone(),
+                name: name.clone(),
+            },
+        }
+    }
+}
+
+/// A node a Deployment targets, by its identity and its name when admitted.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DeployedNode {
+    Service {
+        id: ServiceLineageId,
+        name: ServiceName,
+    },
+    Volume {
+        id: VolumeId,
+        name: VolumeName,
+    },
+}
+
+impl DeployedNode {
+    /// Its name when admitted.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Service { name, .. } => name.as_str(),
+            Self::Volume { name, .. } => name.as_str(),
+        }
+    }
+
+    /// Its node ID.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Service { id, .. } => id.as_str(),
+            Self::Volume { id, .. } => id.as_str(),
         }
     }
 }
@@ -359,12 +389,14 @@ pub(crate) struct Frozen {
     pub(crate) credentials: BTreeMap<ServiceName, EncryptedSecretValue>,
     /// The Cluster Domain its generated domains expand under.
     pub(crate) cluster_domain: Option<Hostname>,
+    /// Its target Services with no source of their own: they run only an upload.
+    pub(crate) sourceless: Vec<String>,
 }
 
 impl Frozen {
     /// Whether this Deployment targets node `id`.
     pub(crate) fn targets(&self, id: &str) -> bool {
-        self.nodes.iter().any(|node| node.id == id)
+        self.nodes.iter().any(|node| node.id() == id)
     }
 }
 
@@ -390,13 +422,17 @@ pub(crate) struct Stored {
 }
 
 const COLUMNS: &str = "id, environment_id, number, status, saved_revision, services, nodes, \
-     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended";
+     namespace, run, upload, cluster_domain, runner, lease, admitted_by, admitted, started, ended, \
+     message";
 
 /// SQL selecting Deployments that may still run: queued, or claimed by a runner
 /// whose lease holds.
 pub(crate) fn in_flight_sql() -> String {
     format!(
-        "(status = 'queued' OR (status IN ('running', 'cancelling') AND lease > {}))",
+        "(status = '{}' OR (status IN ('{}', '{}') AND lease > {}))",
+        name_of(DeploymentStatus::Queued),
+        name_of(DeploymentStatus::Running),
+        name_of(DeploymentStatus::Cancelling),
         now()
     )
 }
@@ -426,7 +462,7 @@ pub(crate) fn freeze(
                     .filter(|old| !saved.services.iter().any(|new| new.id == old.id)),
             )
             .map(TargetNode::service)
-            .collect()
+            .collect::<Result<_, _>>()?
     } else {
         services
             .iter()
@@ -436,6 +472,7 @@ pub(crate) fn freeze(
                     .iter()
                     .find(|service| service.slug == name.as_str())
                     .map(TargetNode::service)
+                    .transpose()?
                     .ok_or_else(|| {
                         error::not_found(
                             format!("No Service named {name} to deploy"),
@@ -448,7 +485,7 @@ pub(crate) fn freeze(
     // A full Deploy applies every Volume; a narrowed one those its Services mount.
     let mounted = |volume: &SavedVolumeIntent| {
         saved.services.iter().any(|service| {
-            nodes.iter().any(|node| node.id == service.id)
+            nodes.iter().any(|node| node.id() == service.id)
                 && service
                     .volume_attachments
                     .iter()
@@ -460,7 +497,7 @@ pub(crate) fn freeze(
         .iter()
         .filter(|volume| services.is_empty() || mounted(volume))
         .map(|volume| TargetNode::volume(volume, None))
-        .collect();
+        .collect::<Result<_, _>>()?;
     nodes.extend(kept);
     if services.is_empty() {
         for loss in losses {
@@ -469,7 +506,7 @@ pub(crate) fn freeze(
                 .iter()
                 .find(|volume| volume.resource_id == loss.volume.id.as_str())
                 .ok_or_else(|| error::corrupt("Applied State"))?;
-            nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone())));
+            nodes.push(TargetNode::volume(volume, Some(loss.deletes.clone()))?);
         }
     }
     // Live values and Setup Commands resolve at claim; checking without them is the same.
@@ -481,11 +518,21 @@ pub(crate) fn freeze(
         &crate::branch::Lowering::default(),
         None,
     )?;
+    let sourceless = saved
+        .services
+        .iter()
+        .filter(|service| {
+            matches!(service.config.source, ServiceSource::Empty { .. })
+                && nodes.iter().any(|node| node.id() == service.id)
+        })
+        .map(|service| service.slug.clone())
+        .collect();
     Ok(Frozen {
         nodes,
         namespace,
         credentials: BTreeMap::new(),
         cluster_domain: cluster_domain.cloned(),
+        sourceless,
     })
 }
 
@@ -507,10 +554,10 @@ fn lower(
         crate::domain::expand(saved, cluster_domain),
     );
     // Live values order nothing: what provides them runs elsewhere.
-    let lineages: serde_json::Map<String, Value> = compiled
+    let lineages: BTreeMap<String, String> = compiled
         .variable_producers
         .iter()
-        .map(|producer| (producer.owner_lineage_id.clone(), json!(producer.owner_id)))
+        .map(|producer| (producer.owner_lineage_id.clone(), producer.owner_id.clone()))
         .collect();
     compiled
         .variable_producers
@@ -522,7 +569,7 @@ fn lower(
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
         .map(|service| service.id.as_str())
         .collect();
-    let snapshots: Vec<Value> = compiled
+    let snapshots: Vec<(ServiceConfig, LowerDeploymentSnapshot)> = compiled
         .node_snapshots
         .into_iter()
         .filter_map(|node| match node.snapshot.0 {
@@ -534,73 +581,80 @@ fn lower(
             {
                 None
             }
-            CompiledNodeConfig::Service(config) => Some(json!({
-                "serviceId": node.node_id,
-                "resolvedEnv": resolved.remove(&node.node_id).unwrap_or_default(),
-                "setupCommands": branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
-                "config": config,
-            })),
+            CompiledNodeConfig::Service(config) => Some((
+                *config,
+                LowerDeploymentSnapshot {
+                    resolved_env: resolved.remove(&node.node_id).unwrap_or_default(),
+                    setup_commands: branch.setup.get(&node.node_id).cloned().unwrap_or_default(),
+                    service_id: Some(node.node_id),
+                    config: Value::Null,
+                    replicas: None,
+                },
+            )),
             CompiledNodeConfig::Volume(_) => None,
         })
         .collect();
     // Empty reconciles the whole Namespace; names deploy only those Services.
-    let selected: Vec<Value> = saved
+    let selected = saved
         .services
         .iter()
         .filter(|service| services.iter().any(|name| name.as_str() == service.slug))
-        .map(|service| json!({ "name": service.config.private_dns }))
-        .collect();
-    let volumes: Vec<Value> = saved
-        .volumes
-        .iter()
-        .map(|volume| json!({ "volumeResourceId": volume.resource_id, "storage": volume.storage }))
-        .collect();
-    let input = json!({
-        "namespace": namespace,
-        "snapshots": snapshots,
-        "volumes": volumes,
-        "lineages": lineages,
-        "selected": selected,
-    });
-    let intent = lower_deployment(
-        serde_json::from_value(built_later(input.clone())).expect("lowering input is valid"),
-    )
-    .map_err(|error| {
+        .map(|service| ServiceAttempt {
+            name: service.config.private_dns.clone(),
+        })
+        .collect::<Vec<_>>();
+    let input = |snapshots: Vec<LowerDeploymentSnapshot>| LowerDeploymentInput {
+        namespace: namespace.clone(),
+        snapshots,
+        volumes: saved
+            .volumes
+            .iter()
+            .map(|volume| LowerDeploymentVolume {
+                volume_resource_id: volume.resource_id.clone(),
+                storage: volume.storage.clone(),
+            })
+            .collect(),
+        lineages: lineages.clone(),
+        selected: Some(selected.clone()),
+    };
+    let with = |built_later: bool| {
+        snapshots
+            .iter()
+            .map(|(config, snapshot)| LowerDeploymentSnapshot {
+                config: json_value(&if built_later {
+                    built(config)
+                } else {
+                    config.clone()
+                }),
+                ..snapshot.clone()
+            })
+            .collect()
+    };
+    let intent = lower_deployment(input(with(true))).map_err(|error| {
         error::invalid(
             format!("This Environment can't deploy: {}", error.message),
             json!({ "path": error.path }),
         )
     })?;
-    Ok((input, intent))
+    Ok((json_value(&input(with(false))), intent))
 }
 
-/// `input` with each Git Service's source replaced by the image its build will
-/// produce, as the SDK's preparation does once it built it.
-fn built_later(mut input: Value) -> Value {
-    let snapshots = input.get_mut("snapshots").and_then(Value::as_array_mut);
-    for config in snapshots
-        .into_iter()
-        .flatten()
-        .filter_map(|snapshot| snapshot.get_mut("config"))
-    {
-        if config.pointer("/source/type") != Some(&json!("git")) {
-            continue;
-        }
-        let name = config
-            .get("privateDns")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let image = json!({
-            "type": "image",
-            "version": 1,
-            "image": format!("ployz-build/{name}:pending"),
-            "credentials": { "type": "none" },
-        });
-        if let Some(source) = config.get_mut("source") {
-            *source = image;
-        }
+/// `config` with a Git source replaced by the image its build will produce, as the
+/// SDK's preparation does once it built it.
+fn built(config: &ServiceConfig) -> ServiceConfig {
+    let mut config = config.clone();
+    if matches!(config.settings.source, ServiceSource::Git { .. }) {
+        config.settings.source = ServiceSource::Image {
+            version: 1,
+            image: format!("ployz-build/{}:pending", config.settings.private_dns),
+            credentials: ServiceImageCredentials::None,
+        };
     }
-    input
+    config
+}
+
+fn json_value(value: &impl Serialize) -> Value {
+    serde_json::to_value(value).expect("lowering input is JSON")
 }
 
 /// Admit a frozen Deployment of Saved revision `saved`. A Deployment still queued is
@@ -608,20 +662,24 @@ fn built_later(mut input: Value) -> Value {
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
-    admit: &Admit,
+    (id, services, upload, message): (
+        &DeploymentId,
+        &[ServiceName],
+        Option<UploadedSource>,
+        Option<String>,
+    ),
     environment: &EnvironmentId,
     saved: Revision,
     frozen: &Frozen,
 ) -> Result<DeploymentSummary, RpcError> {
     let intent = saved_at(tx, environment, saved)?;
     crate::command::check_storage(tx, environment, &intent)?;
-    let (id, services) = (&admit.id, &admit.services);
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
-    let upload = match &admit.upload {
+    let upload = match upload {
         Some(upload) => {
             upload.check()?;
-            Some(upload.clone())
+            Some(upload)
         }
         None => match tx
             .query(
@@ -631,11 +689,29 @@ pub(crate) fn admit(
             )?
             .first()
         {
-            Some(row) => serde_json::from_str(row.text(0)?)
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            Some(row) => row.json(0, "Deployment upload")?,
             None => None,
         },
     };
+    // A Service with nothing to run would fail the whole Deploy on the Servers.
+    if let (None, Some(name)) = (&upload, frozen.sourceless.first()) {
+        return Err(error::invalid(
+            format!("{name} has nothing to run yet: add an image or connect a repository"),
+            json!({ "service": name }),
+        ));
+    }
+    let message = message
+        .map(|message| message.trim().to_owned())
+        .filter(|message| !message.is_empty());
+    if message
+        .as_ref()
+        .is_some_and(|message| message.chars().count() > MESSAGE_MAX)
+    {
+        return Err(error::invalid(
+            format!("A Deployment message is at most {MESSAGE_MAX} characters"),
+            json!({}),
+        ));
+    }
     let number = queue(tx, environment)?;
     let summary = DeploymentSummary {
         id: id.clone(),
@@ -650,12 +726,13 @@ pub(crate) fn admit(
         admitted_at: now(),
         started_at: None,
         ended_at: None,
+        message,
     };
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
-         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
+         VALUES (?1, ?2, ?3, ?4, 'queued', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
@@ -670,16 +747,29 @@ pub(crate) fn admit(
             json_text(&Run::default()).as_str().into(),
             json_text(&frozen.credentials).as_str().into(),
             json_text(&summary.upload).as_str().into(),
-            frozen
-                .cluster_domain
-                .as_ref()
-                .map_or("", Hostname::as_str)
-                .into(),
+            frozen.cluster_domain.as_ref().map(Hostname::as_str).into(),
             summary.admitted_at.into(),
             who.principal.as_ref().map(Principal::as_str).into(),
+            summary.message.as_deref().into(),
         ],
     )?;
     Ok(summary)
+}
+
+/// The Cluster Domain `environment`'s latest Deployment that had one expanded its
+/// generated domains under, if any.
+pub(crate) fn cluster_domain(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<Hostname>, RpcError> {
+    tx.query(
+        "SELECT cluster_domain FROM config_deployment \
+         WHERE environment_id = ?1 AND cluster_domain IS NOT NULL ORDER BY number DESC LIMIT 1",
+        &[environment.as_str().into()],
+    )?
+    .first()
+    .map(|row| parse_stored(row.text(0)?))
+    .transpose()
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
@@ -737,9 +827,9 @@ pub(crate) fn retry(
     tx.execute(
         "INSERT INTO config_deployment \
          (id, organization_id, environment_id, number, status, saved_revision, services, nodes, \
-          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by) \
+          namespace, run, credentials, upload, cluster_domain, admitted, admitted_by, message) \
          SELECT ?1, organization_id, environment_id, ?2, 'queued', saved_revision, services, \
-          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6 \
+          nodes, namespace, ?3, credentials, upload, cluster_domain, ?5, ?6, message \
          FROM config_deployment WHERE id = ?4",
         &[
             id.as_str().into(),
@@ -756,7 +846,7 @@ pub(crate) fn retry(
     tx.execute(
         "INSERT INTO config_build \
          (deployment_id, service, organization_id, commit_sha, status, message, log) \
-         SELECT ?1, service, organization_id, commit_sha, 'pending', '', '' \
+         SELECT ?1, service, organization_id, commit_sha, 'pending', NULL, '' \
          FROM config_build WHERE deployment_id = ?2",
         &[id.as_str().into(), source.as_str().into()],
     )?;
@@ -811,7 +901,7 @@ pub(crate) fn namespace(
         &[environment.id.as_str().into()],
     )?;
     if let Some(row) = rows.first() {
-        return Namespace::parse(row.text(0)?).map_err(|_| error::corrupt("Namespace"));
+        return row.parse::<Namespace>(0, "Namespace");
     }
     let base = format!("{}-{}", environment.project, environment.name);
     let suffix: String = environment
@@ -936,11 +1026,14 @@ pub(crate) fn claim(
     let deletes = stored
         .nodes
         .iter()
-        .filter_map(|node| node.deletes.clone())
+        .filter_map(|node| match node {
+            TargetNode::Volume { deletes, .. } => deletes.clone(),
+            TargetNode::Service { .. } => None,
+        })
         .flatten()
         .collect();
     let organization = build::organization(tx, id)?;
-    let build_order = crate::builders::order(tx, &organization)?;
+    let build_order = crate::builders::order(tx, organization.as_str())?;
     Ok(Ok(Claimed {
         deployment: stored.summary,
         intent,
@@ -969,10 +1062,9 @@ pub(crate) fn receipts(
          ORDER BY CASE WHEN r.environment_id = ?1 THEN 0 ELSE 1 END, r.environment_id",
         &[environment.as_str().into()],
     )? {
-        let service = ServiceName::parse(row.text(0)?).map_err(|_| error::corrupt("receipt"))?;
+        let service = row.parse::<ServiceName>(0, "receipt")?;
         if let std::collections::btree_map::Entry::Vacant(entry) = receipts.entry(service) {
-            entry
-                .insert(serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("receipt"))?);
+            entry.insert(row.json(1, "receipt")?);
         }
     }
     Ok(receipts)
@@ -989,9 +1081,9 @@ pub(crate) fn save_receipt(
         return Err(invalid_evidence("build receipt"));
     }
     tx.execute(
-        "INSERT INTO config_build_receipt (environment_id, service, receipt) \
-         VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, service) \
-         DO UPDATE SET receipt = excluded.receipt",
+        "INSERT INTO config_build_receipt (environment_id, service, organization_id, receipt) \
+         SELECT id, ?2, organization_id, ?3 FROM config_environment WHERE id = ?1 \
+         ON CONFLICT (environment_id, service) DO UPDATE SET receipt = excluded.receipt",
         &[
             environment.as_str().into(),
             service.as_str().into(),
@@ -1229,7 +1321,7 @@ fn node_outcomes(
             .services
             .iter()
             .filter(|service| {
-                nodes.iter().any(|node| node.id == service.id)
+                nodes.iter().any(|node| node.id() == service.id)
                     && service
                         .volume_attachments
                         .iter()
@@ -1250,20 +1342,30 @@ fn node_outcomes(
     nodes
         .iter()
         .map(|node| {
-            let status = match (&node.service, &node.deletes) {
-                (Some(name), _) => {
-                    service(name, saved.services.iter().any(|kept| kept.id == node.id))
-                }
-                (None, Some(_)) if !success => NodeStatus::NotAttempted,
-                (None, Some(deletes)) if deletes.iter().all(gone) => NodeStatus::Removed,
-                (None, Some(_)) => NodeStatus::Failed,
-                (None, None) => saved
+            let status = match node {
+                TargetNode::Service { id, runtime, .. } => service(
+                    runtime,
+                    saved.services.iter().any(|kept| kept.id == id.as_str()),
+                ),
+                TargetNode::Volume {
+                    deletes: Some(_), ..
+                } if !success => NodeStatus::NotAttempted,
+                TargetNode::Volume {
+                    deletes: Some(deletes),
+                    ..
+                } if deletes.iter().all(gone) => NodeStatus::Removed,
+                TargetNode::Volume {
+                    deletes: Some(_), ..
+                } => NodeStatus::Failed,
+                TargetNode::Volume {
+                    id, deletes: None, ..
+                } => saved
                     .volumes
                     .iter()
-                    .find(|volume| volume.resource_id == node.id)
+                    .find(|volume| volume.resource_id == id.as_str())
                     .map_or(NodeStatus::Unchanged, kept_volume),
             };
-            (node.id.clone(), status)
+            (node.id().to_owned(), status)
         })
         .collect()
 }
@@ -1291,30 +1393,24 @@ fn finish(
             stored
                 .run
                 .nodes
-                .get(&node.id)
+                .get(node.id())
                 .is_some_and(|status| status.advances())
         })
         .collect();
     if !advanced.is_empty() {
         let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
         for node in advanced {
-            let (applied, node_type) = match node.service {
-                Some(_) => (
-                    saved
-                        .services
-                        .iter()
-                        .find(|service| service.id == node.id)
-                        .map(json_text),
-                    "service",
-                ),
-                None => (
-                    saved
-                        .volumes
-                        .iter()
-                        .find(|volume| volume.resource_id == node.id)
-                        .map(json_text),
-                    "volume",
-                ),
+            let applied = match node {
+                TargetNode::Service { .. } => saved
+                    .services
+                    .iter()
+                    .find(|service| service.id == node.id())
+                    .map(scope::Node::Service),
+                TargetNode::Volume { .. } => saved
+                    .volumes
+                    .iter()
+                    .find(|volume| volume.resource_id == node.id())
+                    .map(scope::Node::Volume),
             };
             match applied {
                 Some(applied) => tx.execute(
@@ -1326,14 +1422,14 @@ fn finish(
                      DO UPDATE SET deployment_id = excluded.deployment_id, node = excluded.node",
                     &[
                         stored.summary.id.as_str().into(),
-                        node.id.as_str().into(),
-                        applied.as_str().into(),
-                        node_type.into(),
+                        node.id().into(),
+                        applied.document().as_str().into(),
+                        applied.node_type().into(),
                     ],
                 )?,
                 None => tx.execute(
                     "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[stored.environment.as_str().into(), node.id.as_str().into()],
+                    &[stored.environment.as_str().into(), node.id().into()],
                 )?,
             };
         }
@@ -1374,23 +1470,11 @@ pub(crate) fn applied_state(
     environment: &EnvironmentId,
     like: &SavedEnvironmentIntent,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
-    let mut applied = review::empty(like);
-    for row in tx.query(
+    let rows = tx.query(
         "SELECT node, node_type FROM config_applied WHERE environment_id = ?1 ORDER BY node_id",
         &[environment.as_str().into()],
-    )? {
-        let corrupt = |_| error::corrupt("Applied State");
-        if row.text(1)? == "volume" {
-            applied
-                .volumes
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        } else {
-            applied
-                .services
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        }
-    }
-    Ok(applied)
+    )?;
+    scope::nodes(&rows, like, "Applied State")
 }
 
 /// What reviews compare Working State against: Applied State, overlaid with the
@@ -1426,28 +1510,33 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
         });
     };
     let saved = saved_at(tx, id, revision(row.int(1)?)?)?;
-    let nodes: Vec<TargetNode> =
-        serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("Deployment"))?;
+    let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
     let mut intent = applied.clone();
     for node in nodes {
-        intent.services.retain(|service| service.id != node.id);
+        intent.services.retain(|service| service.id != node.id());
         intent
             .volumes
-            .retain(|volume| volume.resource_id != node.id);
-        intent.services.extend(
-            saved
-                .services
-                .iter()
-                .filter(|service| service.id == node.id)
-                .cloned(),
-        );
-        intent.volumes.extend(
-            saved
-                .volumes
-                .iter()
-                .filter(|volume| node.deletes.is_none() && volume.resource_id == node.id)
-                .cloned(),
-        );
+            .retain(|volume| volume.resource_id != node.id());
+        match node {
+            TargetNode::Service { .. } => intent.services.extend(
+                saved
+                    .services
+                    .iter()
+                    .filter(|service| service.id == node.id())
+                    .cloned(),
+            ),
+            // A Volume the Deployment removes isn't in Head.
+            TargetNode::Volume {
+                deletes: Some(_), ..
+            } => {}
+            TargetNode::Volume { deletes: None, .. } => intent.volumes.extend(
+                saved
+                    .volumes
+                    .iter()
+                    .filter(|volume| volume.resource_id == node.id())
+                    .cloned(),
+            ),
+        }
     }
     Ok(Head {
         token: format!("{}.{ended}", row.int(0)?),
@@ -1501,9 +1590,9 @@ pub(crate) fn unclaimed(tx: &mut dyn Tx, before: i64) -> Result<Vec<Unclaimed>, 
     .iter()
     .map(|row| {
         Ok(Unclaimed {
-            organization: parse_stored(row.text(0)?)?,
-            environment: parse_stored(row.text(1)?)?,
-            deployment: parse_stored(row.text(2)?)?,
+            organization: row.parse(0, "identity")?,
+            environment: row.parse(1, "identity")?,
+            deployment: row.parse(2, "identity")?,
             admitted_at: row.int(3)?,
         })
     })
@@ -1516,33 +1605,14 @@ pub(crate) fn view(
     who: &Actor,
     id: &DeploymentId,
 ) -> Result<DeploymentView, RpcError> {
-    let rows = tx.query(
-        &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
-        &[id.as_str().into(), who.organization.as_str().into()],
-    )?;
-    let stored = stored(rows.first().ok_or_else(|| missing(id))?)?;
-    let names = tx.query(
-        "SELECT p.name, e.name FROM config_environment e \
-         JOIN config_project p ON p.id = e.project_id WHERE e.id = ?1",
-        &[stored.environment.as_str().into()],
-    )?;
-    let names = names.first().ok_or_else(|| error::corrupt("Environment"))?;
-    let environment = scope::environment(
-        tx,
-        who,
-        &EnvironmentRef {
-            project: Some(parse_stored(names.text(0)?)?),
-            environment: Some(parse_stored(names.text(1)?)?),
-        },
-    )?;
+    let stored = owned(tx, who, id)?;
+    let environment = scope::load_by_id(tx, &stored.environment)?;
     let nodes = stored
         .nodes
         .iter()
         .map(|node| NodeOutcome {
-            node_type: node.node_type(),
-            id: node.id.clone(),
-            name: node.name.clone(),
-            outcome: match (stored.run.nodes.get(&node.id), stored.summary.status) {
+            node: node.shown(),
+            outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
                 (
@@ -1579,15 +1649,17 @@ pub(crate) fn build_log(
     who: &Actor,
     query: &build::BuildLogQuery,
 ) -> Result<build::BuildLogView, RpcError> {
+    let stored = owned(tx, who, &query.deployment)?;
+    build::log(tx, &stored, &query.service)
+}
+
+/// Deployment `id` of `who`'s Organization.
+fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcError> {
     let rows = tx.query(
         &format!("SELECT {COLUMNS} FROM config_deployment WHERE id = ?1 AND organization_id = ?2"),
-        &[
-            query.deployment.as_str().into(),
-            who.organization.as_str().into(),
-        ],
+        &[id.as_str().into(), who.organization.as_str().into()],
     )?;
-    let stored = stored(rows.first().ok_or_else(|| missing(&query.deployment))?)?;
-    build::log(tx, &stored, &query.service)
+    stored(rows.first().ok_or_else(|| missing(id))?)
 }
 
 /// One page of `environment`'s Deployments, newest first, before `cursor`.
@@ -1624,10 +1696,7 @@ pub(crate) fn page(
 /// of one Environment apply in turn.
 pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
     let environment = load(tx, id)?.environment;
-    tx.execute(
-        "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
-        &[environment.as_str().into()],
-    )?;
+    scope::lock_all(tx, [environment])?;
     // A lapsed lease reads unknown; writing it down keeps the rows saying so too.
     tx.execute(
         "UPDATE config_deployment SET status = 'unknown' \
@@ -1647,14 +1716,7 @@ pub(crate) fn load(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcErro
 }
 
 fn stored(row: &Row) -> Result<Stored, RpcError> {
-    let status = row.text(3)?;
-    let json = |index: usize, what: &str| -> Result<Value, RpcError> {
-        serde_json::from_str(row.text(index)?).map_err(|_| error::corrupt(what))
-    };
-    let status = DeploymentStatus::ALL
-        .into_iter()
-        .find(|known| known.as_str() == status)
-        .ok_or_else(|| error::corrupt("Deployment status"))?;
+    let status: DeploymentStatus = row.variant(3, "Deployment status")?;
     let lease = row.int(12)?;
     // A runner whose lease lapsed is gone: what ran is unknown.
     let lapsed = matches!(
@@ -1668,31 +1730,25 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     };
     Ok(Stored {
         summary: DeploymentSummary {
-            id: parse_stored(row.text(0)?)?,
-            number: u64::try_from(row.int(2)?).map_err(|_| error::corrupt("Deployment"))?,
+            id: row.parse(0, "identity")?,
+            number: row.number(2, "Deployment")?,
             status,
             saved: revision(row.int(4)?)?,
-            services: serde_json::from_value(json(5, "Deployment")?)
-                .map_err(|_| error::corrupt("Deployment"))?,
-            runner: row.optional_text(11)?.map(parse_stored).transpose()?,
-            upload: serde_json::from_value(json(9, "Deployment upload")?)
-                .map_err(|_| error::corrupt("Deployment upload"))?,
+            services: row.json(5, "Deployment")?,
+            runner: row.parse_optional(11, "identity")?,
+            upload: row.json(9, "Deployment upload")?,
             remove: revision(row.int(4)?)? == NOTHING,
-            admitted_by: row.optional_text(13)?.map(parse_stored).transpose()?,
+            admitted_by: row.parse_optional(13, "identity")?,
             admitted_at: row.int(14)?,
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
+            message: row.optional_text(17)?.map(str::to_owned),
         },
-        environment: parse_stored(row.text(1)?)?,
-        nodes: serde_json::from_value(json(6, "Deployment")?)
-            .map_err(|_| error::corrupt("Deployment"))?,
-        namespace: Namespace::parse(row.text(7)?).map_err(|_| error::corrupt("Namespace"))?,
-        run: serde_json::from_value(json(8, "Deployment run")?)
-            .map_err(|_| error::corrupt("Deployment run"))?,
-        cluster_domain: match row.text(10)? {
-            "" => None,
-            name => Some(parse_stored(name)?),
-        },
+        environment: row.parse(1, "identity")?,
+        nodes: row.json(6, "Deployment")?,
+        namespace: row.parse::<Namespace>(7, "Namespace")?,
+        run: row.json(8, "Deployment run")?,
+        cluster_domain: row.parse_optional(10, "identity")?,
         lease,
     })
 }
@@ -1702,7 +1758,7 @@ fn save(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",
         &[
-            stored.summary.status.as_str().into(),
+            name_of(stored.summary.status).as_str().into(),
             json_text(&stored.run).as_str().into(),
             stored.summary.id.as_str().into(),
             stored.summary.runner.as_ref().map(RunnerId::as_str).into(),
@@ -1738,7 +1794,8 @@ pub(crate) fn saved_at(
     revision: Revision,
 ) -> Result<SavedEnvironmentIntent, RpcError> {
     if revision == NOTHING {
-        return scope::load_by_id(tx, environment).map(|loaded| review::empty(&loaded.working));
+        return scope::load_by_id(tx, environment)
+            .map(|loaded| review::empty(&loaded.working.environment_slug));
     }
     let rows = tx.query(
         "SELECT intent FROM config_saved WHERE environment_id = ?1 AND revision = ?2",
@@ -1748,11 +1805,9 @@ pub(crate) fn saved_at(
         ],
     )?;
     rows.first()
-        .and_then(|row| row.text(0).ok())
-        .and_then(|text| serde_json::from_str(text).ok())
-        .and_then(|value| parse_environment_intent(value).ok())
+        .ok_or_else(|| error::corrupt("Saved State"))?
+        .intent(0, "Saved State")
         .map(canonicalize_environment_intent)
-        .ok_or_else(|| error::corrupt("Saved State"))
 }
 
 fn revision(value: i64) -> Result<Revision, RpcError> {
@@ -1771,18 +1826,6 @@ fn json_text(value: &impl Serialize) -> String {
 
 fn missing(id: &DeploymentId) -> RpcError {
     error::not_found(format!("No Deployment {id}"), json!({}))
-}
-
-/// `not_found` unless Deployment `id` belongs to `who`'s Organization.
-fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<(), RpcError> {
-    let rows = tx.query(
-        "SELECT id FROM config_deployment WHERE id = ?1 AND organization_id = ?2",
-        &[id.as_str().into(), who.organization.as_str().into()],
-    )?;
-    if rows.is_empty() {
-        return Err(missing(id));
-    }
-    Ok(())
 }
 
 fn superseded(id: &DeploymentId) -> RpcError {

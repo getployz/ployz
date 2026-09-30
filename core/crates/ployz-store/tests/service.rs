@@ -11,7 +11,7 @@ use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Change, Command, ConfigStore, CreateProject, CreateService, DiffQuery, Edit,
     EnvironmentId, EnvironmentRef, OrganizationId, ProjectId, ProjectName, RemoveService,
-    RenameService, ServiceId, ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
+    RenameService, ServiceLineageId, ServiceQuery, ServicesQuery, SettingPath, SourceKind, Written,
 };
 use serde_json::json;
 
@@ -30,7 +30,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -41,10 +41,10 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     for (n, service, image) in [(3, "web", Some("nginx:1")), (4, "worker", None)] {
         store
-            .create_service(
+            .write(
                 &who,
                 &CreateService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: name(service),
                     image: image.map(Into::into),
@@ -70,7 +70,7 @@ fn rename(store: &ConfigStore, who: &Actor, from: &str, to: &str) -> Result<Writ
 
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<(String, String, SourceKind)> {
     store
-        .services(who, &ServicesQuery::default())
+        .read(who, &ServicesQuery::default())
         .unwrap()
         .services
         .into_iter()
@@ -86,7 +86,7 @@ fn listed(store: &ConfigStore, who: &Actor) -> Vec<(String, String, SourceKind)>
 
 fn inspect(store: &ConfigStore, who: &Actor, service: &str) -> ployz_store::ServiceView {
     store
-        .service(
+        .read(
             who,
             &ServiceQuery {
                 environment: EnvironmentRef::default(),
@@ -112,7 +112,7 @@ fn an_empty_service_lists_without_a_source_until_it_gets_an_image() {
     assert!(!worker.values.contains_key("image"));
 
     store
-        .edit(
+        .write(
             &who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -149,12 +149,12 @@ fn a_rename_keeps_the_private_dns_name() {
     );
     assert_eq!(
         store
-            .service(
+            .read(
                 &who,
                 &ServiceQuery {
                     environment: EnvironmentRef::default(),
                     service: name("web"),
-                },
+                }
             )
             .unwrap_err()
             .code,
@@ -171,19 +171,19 @@ fn a_rename_keeps_the_private_dns_name() {
         RpcErrorCode::Conflict
     );
     let web = CreateService {
-        id: ServiceId::parse(uuid(5)).unwrap(),
+        id: ServiceLineageId::parse(uuid(5)).unwrap(),
         environment: EnvironmentRef::default(),
         name: name("web"),
         image: None,
     };
     assert_eq!(
-        store.create_service(&who, &web).unwrap_err().code,
+        store.write(&who, &web).unwrap_err().code,
         RpcErrorCode::Conflict
     );
 
     // Renaming back to its Private DNS name is allowed; renaming to itself changes nothing.
     let revision = store
-        .services(&who, &ServicesQuery::default())
+        .read(&who, &ServicesQuery::default())
         .unwrap()
         .environment
         .revision;
@@ -200,7 +200,7 @@ fn a_rename_keeps_the_private_dns_name() {
 fn removing_a_new_service_drops_it_from_working_state() {
     let (store, who) = shop();
     let removed = store
-        .remove_service(
+        .write(
             &who,
             &RemoveService {
                 environment: EnvironmentRef::default(),
@@ -214,7 +214,7 @@ fn removing_a_new_service_drops_it_from_working_state() {
         [("web".into(), "web".into(), SourceKind::Image)]
     );
     // Nothing was ever deployed, so no removal is staged either.
-    let changes = store.diff(&who, &DiffQuery::default()).unwrap().changes;
+    let changes = store.read(&who, &DiffQuery::default()).unwrap().changes;
     assert_eq!(
         changes
             .iter()
@@ -224,10 +224,10 @@ fn removing_a_new_service_drops_it_from_working_state() {
     );
     // Another Service may take the freed name.
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse(uuid(6)).unwrap(),
+                id: ServiceLineageId::parse(uuid(6)).unwrap(),
                 environment: EnvironmentRef::default(),
                 name: name("worker"),
                 image: None,
@@ -235,7 +235,7 @@ fn removing_a_new_service_drops_it_from_working_state() {
         )
         .unwrap();
     let missing = store
-        .remove_service(
+        .write(
             &who,
             &RemoveService {
                 environment: EnvironmentRef::default(),

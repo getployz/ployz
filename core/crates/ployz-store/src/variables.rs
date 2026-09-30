@@ -115,12 +115,10 @@ pub(crate) fn find<'intent>(
                 .variables
                 .iter()
                 .map(|variable| variable.key.as_str());
-            error::not_found(
+            error::choices(
                 format!("{} has no variable {key}", service.slug),
-                json!({
-                    "did_you_mean": error::did_you_mean(key.as_str(), keys.clone()),
-                    "valid_children": keys.collect::<Vec<_>>(),
-                }),
+                key.as_str(),
+                keys,
             )
         })
 }
@@ -234,10 +232,7 @@ pub(crate) fn text_value(
         let names = names.values().map(String::as_str);
         return Err(error::invalid(
             format!("{key}: a reference names no Service in this Environment"),
-            json!({
-                "did_you_mean": error::did_you_mean(name, names.clone()),
-                "valid_children": names.collect::<Vec<_>>(),
-            }),
+            error::suggest(name, names),
         ));
     }
     let fingerprint = plain_fingerprint(&template.parts);

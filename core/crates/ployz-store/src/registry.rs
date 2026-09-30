@@ -133,9 +133,7 @@ pub(crate) fn sealed(
         &[environment.as_str().into(), service_id.into()],
     )?;
     rows.first()
-        .map(|row| {
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("registry credential"))
-        })
+        .map(|row| row.json(0, "registry credential"))
         .transpose()
 }
 

@@ -13,6 +13,7 @@
 //! `closing`. Cloud admits its removal from the Servers (`Admit { remove }`, with
 //! the runtime evidence it gathers) and the sweep deletes it once that applied.
 
+use crate::id::{BranchName, CommitSha, PullRequestNumber, RepositoryId, RepositoryName};
 use std::collections::BTreeSet;
 
 use ployz_core::config::{
@@ -25,14 +26,14 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::command::{Admit, ProjectSummary};
+use crate::command::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
-use crate::domain::{ClusterDomain, ClusterDomainStatus};
 use crate::error;
-use crate::id::{DeploymentId, EnvironmentId, EnvironmentName, Hostname, ProjectName};
+use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
+use crate::settings::NodeName;
 use crate::storage::Tx;
-use crate::{Actor, Trusted, build, review, teardown};
+use crate::{Actor, Trusted, review, teardown};
 
 /// A Branch closes after this long without a Deployment.
 const IDLE: i64 = 7 * 24 * 60 * 60;
@@ -41,32 +42,30 @@ const IDLE: i64 = 7 * 24 * 60 * 60;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct PullRequest {
-    #[ts(type = "number")]
-    pub repository_id: u64,
-    #[ts(type = "number")]
-    pub number: u64,
+    pub repository_id: RepositoryId,
+    pub number: PullRequestNumber,
     pub title: String,
     /// Its author's login.
     pub author: String,
     /// Whether its author is a bot.
     pub bot: bool,
     /// The branch it merges from.
-    pub head_branch: String,
+    pub head_branch: BranchName,
     /// That branch's head commit.
-    pub head: String,
+    pub head: CommitSha,
     /// The branch it merges into.
-    pub target_branch: String,
+    pub target_branch: BranchName,
     #[ts(type = "number")]
     pub commits: u64,
     pub open: bool,
     /// Its merge commit, once merged.
     #[serde(default)]
-    pub merge_commit: Option<String>,
+    pub merge_commit: Option<CommitSha>,
     /// Once merged: the target branch's head as the Store last saw it
     /// ([`crate::ConfigStore::branch_head`]), when Cloud found the merge commit in it
     /// already. Its Conditional Saves then land with what that push deployed.
     #[serde(default)]
-    pub merge_reached: Option<String>,
+    pub merge_reached: Option<CommitSha>,
     /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
     pub updated: String,
 }
@@ -85,10 +84,8 @@ pub struct Sweep {
 /// [`crate::Query::PullRequest`].
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PullRequestRef {
-    #[ts(type = "number")]
-    pub repository_id: u64,
-    #[ts(type = "number")]
-    pub number: u64,
+    pub repository_id: RepositoryId,
+    pub number: PullRequestNumber,
 }
 
 /// Change a Project's PR plan for one repository: only the fields given change.
@@ -99,7 +96,7 @@ pub struct SetPrPlan {
     #[serde(default)]
     pub project: Option<ProjectName>,
     /// The repository, like `acme/app`: one some Service of the Project deploys from.
-    pub repository: String,
+    pub repository: RepositoryName,
     /// Whether its pull requests get PR Environments.
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -108,7 +105,7 @@ pub struct SetPrPlan {
     pub start_from: Option<EnvironmentName>,
     /// What else each copies from it, by name; the repository's Services always are.
     #[serde(default)]
-    pub copy: Option<Vec<String>>,
+    pub copy: Option<Vec<NodeName>>,
     /// Commands to run in its Own Copies before they first deploy.
     #[serde(default)]
     pub setup: Option<Vec<SetupCommand>>,
@@ -139,16 +136,15 @@ pub struct PrPlansView {
 /// One repository's PR plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct PrPlan {
-    pub repository: String,
-    #[ts(type = "number")]
-    pub repository_id: u64,
+    pub repository: RepositoryName,
+    pub repository_id: RepositoryId,
     /// The GitHub App installation its Services deploy through.
     #[ts(type = "number")]
     pub installation_id: u64,
     pub enabled: bool,
     /// None until picked, or once that Environment is gone.
     pub start_from: Option<EnvironmentName>,
-    pub copy: Vec<String>,
+    pub copy: Vec<NodeName>,
     pub setup: Vec<SetupCommand>,
     pub remove_on_close: bool,
     pub include_bots: bool,
@@ -159,8 +155,7 @@ pub struct PrPlan {
 /// A pull request with a PR Environment.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct OpenPullRequest {
-    #[ts(type = "number")]
-    pub number: u64,
+    pub number: PullRequestNumber,
     /// Empty until Cloud reports its facts.
     pub title: String,
     pub author: String,
@@ -171,10 +166,8 @@ pub struct OpenPullRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct PullRequestQuery {
-    #[ts(type = "number")]
-    pub repository_id: u64,
-    #[ts(type = "number")]
-    pub number: u64,
+    pub repository_id: RepositoryId,
+    pub number: PullRequestNumber,
 }
 
 /// What Cloud publishes as the pull request's GitHub check.
@@ -264,19 +257,16 @@ pub(crate) fn set_plan(
         .iter()
         .find(|repository| repository.name == set.repository)
     else {
-        let names: Vec<&str> = repositories
+        let names = repositories
             .iter()
-            .map(|repository| repository.name.as_str())
-            .collect();
-        return Err(error::not_found(
+            .map(|repository| repository.name.as_str());
+        return Err(error::choices(
             format!(
                 "No Service of Project {} deploys from {} through the GitHub App",
                 project.name, set.repository
             ),
-            json!({
-                "did_you_mean": error::did_you_mean(&set.repository, names.iter().copied()),
-                "valid_children": names,
-            }),
+            set.repository.as_str(),
+            names,
         ));
     };
     let mut plan = load(tx, &project.id, *repository_id)?.unwrap_or_else(off);
@@ -345,7 +335,7 @@ pub(crate) fn set_plan(
          ON CONFLICT (project_id, repository_id) DO UPDATE SET repository = excluded.repository, plan = excluded.plan",
         &[
             project.id.as_str().into(),
-            repository(*repository_id)?.into(),
+            (*repository_id).into(),
             who.organization.as_str().into(),
             name.into(),
             serde_json::to_string(&plan).expect("a plan is JSON").as_str().into(),
@@ -393,7 +383,11 @@ pub(crate) fn plans(
             copy: stored
                 .copy
                 .iter()
-                .filter_map(|lineage| named(lineage))
+                .filter_map(|lineage| {
+                    start
+                        .as_ref()
+                        .and_then(|start| branch::node_of(&start.working, lineage))
+                })
                 .collect(),
             setup: stored
                 .setup
@@ -431,8 +425,7 @@ fn repositories(
     )?;
     let mut found = std::collections::BTreeMap::new();
     for row in rows {
-        let id =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
         for service in scope::load_by_id(tx, &id)?.working.services {
             if let ServiceSource::Git {
                 repository,
@@ -441,9 +434,15 @@ fn repositories(
                 ..
             } = service.config.source
             {
-                found.entry(repository_id).or_insert(Repository {
-                    id: repository_id,
-                    name: repository,
+                let (Ok(id), Ok(name)) = (
+                    RepositoryId::parse(repository_id),
+                    RepositoryName::parse(repository),
+                ) else {
+                    return Err(error::corrupt("Git Service"));
+                };
+                found.entry(id).or_insert(Repository {
+                    id,
+                    name,
                     installation_id,
                 });
             }
@@ -456,8 +455,8 @@ fn repositories(
 
 /// A repository a Project's Services deploy from through the GitHub App.
 struct Repository {
-    id: u64,
-    name: String,
+    id: RepositoryId,
+    name: RepositoryName,
     installation_id: u64,
 }
 
@@ -466,20 +465,19 @@ fn open_in(
     tx: &mut dyn Tx,
     who: &Actor,
     project: &crate::id::ProjectId,
-    repository_id: u64,
+    repository_id: RepositoryId,
 ) -> Result<Vec<OpenPullRequest>, RpcError> {
     let rows = tx.query(
         "SELECT p.number, e.name FROM config_pr_environment p \
          JOIN config_environment e ON e.id = p.environment_id \
          JOIN config_environment_branch b ON b.environment_id = p.environment_id \
          WHERE e.project_id = ?1 AND p.repository_id = ?2 AND b.closing = 0 ORDER BY p.number",
-        &[project.as_str().into(), repository(repository_id)?.into()],
+        &[project.as_str().into(), repository_id.into()],
     )?;
     let mut open = Vec::new();
     for row in rows {
-        let number = u64::try_from(row.int(0)?).map_err(|_| error::corrupt("pull request"))?;
-        let environment =
-            EnvironmentName::parse(row.text(1)?).map_err(|_| error::corrupt("Environment name"))?;
+        let number: PullRequestNumber = row.number(0, "pull request")?;
+        let environment = row.parse::<EnvironmentName>(1, "Environment name")?;
         let facts = facts(tx, who, repository_id, number)?;
         open.push(OpenPullRequest {
             number,
@@ -494,15 +492,13 @@ fn open_in(
 fn load(
     tx: &mut dyn Tx,
     project: &crate::id::ProjectId,
-    repository_id: u64,
+    repository_id: RepositoryId,
 ) -> Result<Option<Stored>, RpcError> {
     let rows = tx.query(
         "SELECT plan FROM config_pr_plan WHERE project_id = ?1 AND repository_id = ?2",
-        &[project.as_str().into(), repository(repository_id)?.into()],
+        &[project.as_str().into(), repository_id.into()],
     )?;
-    rows.first()
-        .map(|row| serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("PR plan")))
-        .transpose()
+    rows.first().map(|row| row.json(0, "PR plan")).transpose()
 }
 
 /// The start-from Environment, unless it is gone.
@@ -522,37 +518,40 @@ fn pr_environment(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<bool, RpcError>
 }
 
 /// The pull request (repository ID, number) Environment `id` is the PR Environment of.
-pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<(u64, u64)>, RpcError> {
+pub(crate) fn of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<PullRequestRef>, RpcError> {
     let rows = tx.query(
         "SELECT repository_id, number FROM config_pr_environment WHERE environment_id = ?1",
         &[id.as_str().into()],
     )?;
-    rows.first()
-        .map(|row| {
-            let unsigned = |n: i64| u64::try_from(n).map_err(|_| error::corrupt("pull request"));
-            Ok((unsigned(row.int(0)?)?, unsigned(row.int(1)?)?))
-        })
-        .transpose()
+    rows.first().map(pull_request_ref).transpose()
+}
+
+/// A pull request's repository and number, the first two columns of `row`.
+fn pull_request_ref(row: &crate::storage::Row) -> Result<PullRequestRef, RpcError> {
+    Ok(PullRequestRef {
+        repository_id: row.number(0, "pull request")?,
+        number: row.number(1, "pull request")?,
+    })
 }
 
 /// The latest facts Cloud reported of a pull request.
 pub(crate) fn facts(
     tx: &mut dyn Tx,
     who: &Actor,
-    repository_id: u64,
-    pr: u64,
+    repository_id: RepositoryId,
+    pr: PullRequestNumber,
 ) -> Result<Option<PullRequest>, RpcError> {
     tx.query(
         "SELECT facts FROM config_pull_request \
          WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
         &[
             who.organization.as_str().into(),
-            repository(repository_id)?.into(),
-            number(pr)?.into(),
+            repository_id.into(),
+            pr.into(),
         ],
     )?
     .first()
-    .map(|row| serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("pull request")))
+    .map(|row| row.json(0, "pull request"))
     .transpose()
 }
 
@@ -570,15 +569,7 @@ pub(crate) fn project_checks(
          WHERE s.id = ?1 AND b.closing = 0 ORDER BY p.repository_id, p.number",
         &[environment.as_str().into()],
     )?;
-    rows.iter()
-        .map(|row| {
-            let unsigned = |n: i64| u64::try_from(n).map_err(|_| error::corrupt("pull request"));
-            Ok(PullRequestRef {
-                repository_id: unsigned(row.int(0)?)?,
-                number: unsigned(row.int(1)?)?,
-            })
-        })
-        .collect()
+    rows.iter().map(pull_request_ref).collect()
 }
 
 /// Whether the Store is closing this Branch: nothing deploys it on push.
@@ -599,24 +590,8 @@ pub(crate) fn pull_request(
 ) -> Result<Automated, RpcError> {
     validate(event)?;
     let organization = who.organization.as_str();
-    let repository_id = repository(event.repository_id)?;
-    let number = number(event.number)?;
-    let key: [crate::storage::Param<'_>; 3] =
-        [organization.into(), repository_id.into(), number.into()];
-    let before: Option<PullRequest> = match tx
-        .query(
-            "SELECT facts FROM config_pull_request \
-             WHERE organization_id = ?1 AND repository_id = ?2 AND number = ?3",
-            &key,
-        )?
-        .first()
-    {
-        Some(row) => {
-            Some(serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("pull request"))?)
-        }
-        None => None,
-    };
-    let [organization_param, repository_param, number_param] = key;
+    let (repository_id, number) = (event.repository_id, event.number);
+    let before = facts(tx, who, repository_id, number)?;
     let written = tx.execute(
         "INSERT INTO config_pull_request (organization_id, repository_id, number, facts, updated) \
          VALUES (?1, ?2, ?3, ?4, ?5) \
@@ -624,9 +599,9 @@ pub(crate) fn pull_request(
          facts = excluded.facts, updated = excluded.updated \
          WHERE excluded.updated >= config_pull_request.updated",
         &[
-            organization_param,
-            repository_param,
-            number_param,
+            organization.into(),
+            repository_id.into(),
+            number.into(),
             serde_json::to_string(event)
                 .expect("facts are JSON")
                 .as_str()
@@ -687,19 +662,15 @@ pub(crate) fn pull_request(
 fn start_froms(
     tx: &mut dyn Tx,
     who: &Actor,
-    repository_id: u64,
+    repository_id: RepositoryId,
 ) -> Result<Vec<EnvironmentId>, RpcError> {
     let rows = tx.query(
         "SELECT plan FROM config_pr_plan WHERE organization_id = ?1 AND repository_id = ?2",
-        &[
-            who.organization.as_str().into(),
-            repository(repository_id)?.into(),
-        ],
+        &[who.organization.as_str().into(), repository_id.into()],
     )?;
     let mut ids = Vec::new();
     for row in rows {
-        let plan: Stored =
-            serde_json::from_str(row.text(0)?).map_err(|_| error::corrupt("PR plan"))?;
+        let plan: Stored = row.json(0, "PR plan")?;
         ids.extend(plan.start_from);
     }
     Ok(ids)
@@ -709,8 +680,8 @@ fn start_froms(
 fn current(
     tx: &mut dyn Tx,
     who: &Actor,
-    repository_id: u64,
-    pr: u64,
+    repository_id: RepositoryId,
+    pr: PullRequestNumber,
 ) -> Result<Vec<(EnvironmentId, crate::id::ProjectId)>, RpcError> {
     let rows = tx.query(
         "SELECT p.environment_id, e.project_id FROM config_pr_environment p \
@@ -720,16 +691,15 @@ fn current(
          ORDER BY p.environment_id",
         &[
             who.organization.as_str().into(),
-            repository(repository_id)?.into(),
-            number(pr)?.into(),
+            repository_id.into(),
+            pr.into(),
         ],
     )?;
     rows.iter()
         .map(|row| {
             Ok((
-                EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?,
-                crate::id::ProjectId::parse(row.text(1)?)
-                    .map_err(|_| error::corrupt("Project ID"))?,
+                row.parse::<EnvironmentId>(0, "Environment ID")?,
+                row.parse::<crate::id::ProjectId>(1, "Project ID")?,
             ))
         })
         .collect()
@@ -746,16 +716,11 @@ fn open(
     let rows = tx.query(
         "SELECT project_id, plan FROM config_pr_plan \
          WHERE organization_id = ?1 AND repository_id = ?2 ORDER BY project_id",
-        &[
-            who.organization.as_str().into(),
-            repository(event.repository_id)?.into(),
-        ],
+        &[who.organization.as_str().into(), event.repository_id.into()],
     )?;
     for row in rows {
-        let project =
-            crate::id::ProjectId::parse(row.text(0)?).map_err(|_| error::corrupt("Project ID"))?;
-        let plan: Stored =
-            serde_json::from_str(row.text(1)?).map_err(|_| error::corrupt("PR plan"))?;
+        let project = row.parse::<crate::id::ProjectId>(0, "Project ID")?;
+        let plan: Stored = row.json(1, "PR plan")?;
         if !plan.enabled
             || (event.bot && !plan.include_bots)
             || current.iter().any(|(_, has)| *has == project)
@@ -812,18 +777,18 @@ fn create(
     event: &PullRequest,
 ) -> Result<Option<AutoDeployed>, RpcError> {
     let working = &start.working;
-    let ours = |source: &ServiceSource| matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id);
-    let mut copy: Vec<String> = working
+    let ours = |source: &ServiceSource| matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id.get());
+    let mut copy: Vec<NodeName> = working
         .services
         .iter()
         .filter(|service| ours(&service.config.source))
-        .map(|service| service.slug.clone())
+        .filter_map(|service| branch::node_of(working, &service.lineage_id))
         .collect();
     if copy.is_empty() {
         return Ok(None);
     }
     for lineage in &plan.copy {
-        if let Some(name) = branch::name_of(working, lineage)
+        if let Some(name) = branch::node_of(working, lineage)
             && !copy.contains(&name)
         {
             copy.push(name);
@@ -834,11 +799,12 @@ fn create(
         .iter()
         .filter_map(|setup| {
             // Setup Commands for Services it doesn't copy are left out.
-            let name = branch::name_of(working, &setup.lineage)?;
-            copy.contains(&name).then(|| {
+            let Some(NodeName::Service(service)) = branch::node_of(working, &setup.lineage) else {
+                return None;
+            };
+            copy.contains(&NodeName::Service(service.clone())).then(|| {
                 Ok(SetupCommand {
-                    service: ServiceName::parse(name)
-                        .map_err(|_| error::corrupt("Service name"))?,
+                    service,
                     command: setup.command.clone(),
                 })
             })
@@ -847,7 +813,7 @@ fn create(
     // Generated domains expand under the Cluster Domain of the start-from's last
     // Deploy. Refused before anything is written: a PR Environment that can't deploy
     // isn't made.
-    let cluster_domain = cluster_domain(tx, &start.summary.id)?;
+    let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
     if cluster_domain.is_none() && crate::domain::has_generated(working) {
         return Err(RpcError {
             code: RpcErrorCode::Unsupported,
@@ -901,35 +867,15 @@ fn create(
         &[
             id.as_str().into(),
             who.organization.as_str().into(),
-            repository(event.repository_id)?.into(),
-            number(event.number)?.into(),
+            event.repository_id.into(),
+            event.number.into(),
         ],
     )?;
-    let trusted = Trusted {
-        domains: crate::DomainEvidence {
-            cluster_domain: cluster_domain.map(|name| ClusterDomain {
-                name,
-                status: ClusterDomainStatus::Ready,
-            }),
-            ..crate::DomainEvidence::default()
-        },
-        ..Trusted::default()
-    };
-    let admit = Admit {
-        id: DeploymentId::parse(uuid::Uuid::new_v4().to_string())?,
-        environment: EnvironmentRef {
-            project: Some(environment.summary.project.clone()),
-            environment: Some(name),
-        },
-        services: Vec::new(),
-        version: None,
-        upload: None,
-        retry: None,
-        remove: false,
-        accept_volume_loss: Vec::new(),
-    };
-    let deployment = crate::command::admit(tx, who, &admit, &trusted)?;
-    // The repository's Services build the head Cloud read.
+    // It deploys what it saves first: all of it, the repository's Services at the head
+    // Cloud read.
+    let latest = review::latest_saved(tx, &id)?;
+    review::publish(tx, who, &id, environment.working.clone(), latest.as_ref())?;
+    let saved = review::latest_saved(tx, &id)?.ok_or_else(|| error::corrupt("Saved State"))?;
     let pins = environment
         .working
         .services
@@ -937,7 +883,13 @@ fn create(
         .filter(|service| ours(&service.config.source))
         .map(|service| (service.config.private_dns.clone(), event.head.clone()))
         .collect();
-    build::pin(tx, &admit.id, &pins)?;
+    let deployment = crate::automation::auto_admit(
+        tx,
+        who,
+        (&environment, &saved),
+        &[],
+        (cluster_domain.as_ref(), &pins),
+    )?;
     Ok(Some(AutoDeployed {
         environment: id,
         deployment,
@@ -948,7 +900,7 @@ fn create(
 fn free_name(
     tx: &mut dyn Tx,
     start: &Environment,
-    number: u64,
+    number: PullRequestNumber,
 ) -> Result<EnvironmentName, RpcError> {
     for attempt in 1.. {
         let name = match attempt {
@@ -985,10 +937,10 @@ fn track(mut intent: SavedEnvironmentIntent, event: &PullRequest) -> SavedEnviro
             branch,
             ..
         } = &mut service.config.source
-            && *repository_id == event.repository_id
+            && *repository_id == event.repository_id.get()
         {
             *branch = ServiceGitBranch::Connected {
-                name: event.head_branch.clone(),
+                name: event.head_branch.to_string(),
             };
         }
     }
@@ -1014,17 +966,6 @@ fn retrack(
         scope::save_working(tx, &mut environment)?;
     }
     Ok(())
-}
-
-fn cluster_domain(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Option<Hostname>, RpcError> {
-    tx.query(
-        "SELECT cluster_domain FROM config_deployment \
-         WHERE environment_id = ?1 AND cluster_domain <> '' ORDER BY number DESC LIMIT 1",
-        &[id.as_str().into()],
-    )?
-    .first()
-    .map(|row| Hostname::parse(row.text(0)?).map_err(|_| error::corrupt("Cluster Domain")))
-    .transpose()
 }
 
 /// Start closing a Branch: stop what it is deploying, then remove it as far as
@@ -1110,8 +1051,7 @@ pub(crate) fn sweep(tx: &mut dyn Tx, who: &Actor, sweep: &Sweep) -> Result<Autom
     )?;
     let mut automated = Automated::default();
     for row in rows {
-        let id =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let id = row.parse::<EnvironmentId>(0, "Environment ID")?;
         if row.int(2)? != 0 {
             settle(tx, who, &id, &mut automated)?;
             continue;
@@ -1138,13 +1078,16 @@ pub(crate) fn view(
     let pull_request = facts(tx, who, query.repository_id, query.number)?;
     let target = pull_request
         .as_ref()
-        .map(|facts| facts.target_branch.clone())
-        .unwrap_or_default();
+        .map(|facts| facts.target_branch.clone());
     let mut environments = Vec::new();
     for (id, project) in current(tx, who, query.repository_id, query.number)? {
         let environment = scope::load_by_id(tx, &id)?;
         let mut destinations = Vec::new();
-        for into in destinations_of(tx, &project, query.repository_id, &target)? {
+        let into_all = match &target {
+            Some(target) => destinations_of(tx, &project, query.repository_id, target)?,
+            None => Vec::new(),
+        };
+        for into in into_all {
             let into = scope::load_by_id(tx, &into)?;
             destinations.push(Destination {
                 changes: branch::changes_into(tx, &environment, &into)?,
@@ -1152,7 +1095,7 @@ pub(crate) fn view(
                     tx,
                     &environment,
                     &into.summary.id,
-                    &target,
+                    target.as_ref(),
                 )?
                 .map(|(id, standing, changes)| DestinationSave {
                     id,
@@ -1168,7 +1111,10 @@ pub(crate) fn view(
             destinations,
         });
     }
-    let (passing, reason) = check(&environments, &target);
+    let (passing, reason) = check(
+        &environments,
+        target.as_ref().map_or("", BranchName::as_str),
+    );
     Ok(PullRequestView {
         pull_request,
         environments,
@@ -1239,68 +1185,39 @@ fn changes(n: usize) -> String {
 pub(crate) fn destinations_of(
     tx: &mut dyn Tx,
     project: &crate::id::ProjectId,
-    repository_id: u64,
-    target: &str,
+    repository_id: RepositoryId,
+    target: &BranchName,
 ) -> Result<Vec<EnvironmentId>, RpcError> {
     let rows = tx.query(
-        "SELECT e.id, COALESCE(b.parent_id, '') FROM config_environment e \
-         LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
-         WHERE e.project_id = ?1 AND e.id NOT IN (SELECT environment_id FROM config_pr_environment) \
-         ORDER BY e.id",
+        "SELECT id FROM config_environment WHERE project_id = ?1 \
+         AND id NOT IN (SELECT environment_id FROM config_pr_environment) ORDER BY id",
         &[project.as_str().into()],
     )?;
-    let mut parents = std::collections::BTreeMap::new();
     let mut tracking = BTreeSet::new();
     for row in rows {
-        let id =
-            EnvironmentId::parse(row.text(0)?).map_err(|_| error::corrupt("Environment ID"))?;
+        let id: EnvironmentId = row.parse(0, "Environment ID")?;
         let tracks = review::latest_saved(tx, &id)?.is_some_and(|saved| {
-            saved.intent.services.iter().any(|service| {
-                matches!(
-                    &service.config.source,
-                    ServiceSource::Git { repository_id: at, branch: ServiceGitBranch::Connected { name }, .. }
-                        if *at == repository_id && name == target
-                )
-            })
+            saved
+                .intent
+                .services
+                .iter()
+                .any(|service| crate::git::tracks(service, repository_id, target))
         });
         if tracks {
-            tracking.insert(id.clone());
+            tracking.insert(id);
         }
-        parents.insert(id, row.text(1)?.to_owned());
     }
-    let above = |id: &EnvironmentId| {
-        let mut at = parents.get(id).cloned().unwrap_or_default();
-        let mut hops = 0;
-        while !at.is_empty() && hops < parents.len() {
-            if tracking.iter().any(|tracked| tracked.as_str() == at) {
-                return true;
-            }
-            at = parents
-                .iter()
-                .find(|(candidate, _)| candidate.as_str() == at)
-                .map(|(_, parent)| parent.clone())
-                .unwrap_or_default();
-            hops += 1;
+    let mut destinations = Vec::new();
+    for id in &tracking {
+        let above = branch::ancestors(tx, id)?;
+        if !above.iter().any(|ancestor| tracking.contains(ancestor)) {
+            destinations.push(id.clone());
         }
-        false
-    };
-    Ok(tracking.iter().filter(|id| !above(id)).cloned().collect())
+    }
+    Ok(destinations)
 }
 
 fn validate(event: &PullRequest) -> Result<(), RpcError> {
-    crate::git::valid_branch(&event.head_branch)?;
-    crate::git::valid_branch(&event.target_branch)?;
-    for commit in std::iter::once(&event.head)
-        .chain(&event.merge_commit)
-        .chain(&event.merge_reached)
-    {
-        if !ployz_core::is_lower_hex(commit, 40) {
-            return Err(error::invalid(
-                "A commit is a full lowercase Git commit",
-                json!({}),
-            ));
-        }
-    }
     let text_ok =
         |text: &str, most: usize| text.len() <= most && !text.chars().any(char::is_control);
     if !text_ok(&event.title, 1024) || !text_ok(&event.author, 255) {
@@ -1310,12 +1227,4 @@ fn validate(event: &PullRequest) -> Result<(), RpcError> {
         ));
     }
     crate::automation::timestamp(&event.updated)
-}
-
-pub(crate) fn repository(id: u64) -> Result<i64, RpcError> {
-    i64::try_from(id).map_err(|_| error::invalid("Expected a GitHub repository ID", json!({})))
-}
-
-pub(crate) fn number(number: u64) -> Result<i64, RpcError> {
-    i64::try_from(number).map_err(|_| error::invalid("Expected a pull request number", json!({})))
 }

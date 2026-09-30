@@ -9,9 +9,10 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, BuildLogQuery, BuildReport, BuildStatus, Change, Command,
-    ConfigStore, CreateGitService, CreateProject, CreateService, DeploymentId, DiffQuery, Edit,
-    EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
-    Publish, Query, RunEvidence, RunnerId, ServiceId, SettingPath, Trusted, View, Written,
+    ConfigStore, CreateGitService, CreateProject, CreateService, Deploy, DeploymentId, DiffQuery,
+    Edit, EnvironmentId, EnvironmentQuery, EnvironmentRef, OrganizationId, ProjectId, ProjectName,
+    Publish, Query, Retry, RunEvidence, RunnerId, ServiceLineageId, ServiceQuery, SettingPath,
+    SourceKind, Trusted, View, Written,
 };
 use ployz_store::{
     BuildOrder, BuildOrderQuery, Builder, GithubBuildId, GithubClaims, GithubEnd, GithubGrant,
@@ -28,7 +29,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -47,17 +48,17 @@ fn evidence() -> Trusted {
     Trusted {
         repositories: vec![
             AuthorizedRepository {
-                repository: "acme/web".into(),
-                repository_id: 11,
+                repository: backend::repo_name("acme/web"),
+                repository_id: backend::repo_id(11),
                 access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-                default_branch: "main".into(),
-                branches: vec!["dev".into()],
+                default_branch: backend::git_branch("main"),
+                branches: vec![backend::git_branch("dev")],
             },
             AuthorizedRepository {
-                repository: "acme/docs".into(),
-                repository_id: 12,
+                repository: backend::repo_name("acme/docs"),
+                repository_id: backend::repo_id(12),
                 access: ServiceGitAccess::Public,
-                default_branch: "main".into(),
+                default_branch: backend::git_branch("main"),
                 branches: Vec::new(),
             },
         ],
@@ -67,11 +68,11 @@ fn evidence() -> Trusted {
 
 fn create(repository: &str, branch: Option<&str>) -> CreateGitService {
     CreateGitService {
-        id: ServiceId::parse(SERVICE).unwrap(),
+        id: ServiceLineageId::parse(SERVICE).unwrap(),
         environment: EnvironmentRef::default(),
         name: ServiceName::parse("web").unwrap(),
-        repository: repository.into(),
-        branch: branch.map(Into::into),
+        repository: backend::repo_name(repository),
+        branch: branch.map(backend::git_branch),
     }
 }
 
@@ -96,32 +97,33 @@ fn values(store: &ConfigStore, who: &Actor) -> Value {
         path: Some(SettingPath::parse("web").unwrap()),
         all: false,
     };
-    json!(store.environment(who, &query).unwrap().values)
+    json!(store.read(who, &query).unwrap().values)
 }
 
 #[test]
 fn a_repository_needs_cloud_evidence() {
     let (store, who) = shop();
     let error = store
-        .create_git_service(&who, &create("acme/web", None), &Trusted::default())
+        .write_trusted(&who, &create("acme/web", None), &Trusted::default())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details["next"], "ployz github connect");
 
     let error = store
-        .create_git_service(&who, &create("acme/secret", None), &evidence())
+        .write_trusted(&who, &create("acme/secret", None), &evidence())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert!(!error.message.contains("secret"), "{error:?}");
 
-    let error = store
-        .create_git_service(&who, &create("not a repo!", None), &evidence())
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(!error.message.contains("not a repo"), "{error:?}");
+    let malformed = json!({
+        "command": "create_git_service", "id": SERVICE, "name": "web",
+        "repository": "not a repo!",
+    });
+    let error = serde_json::from_value::<Command>(malformed).unwrap_err();
+    assert!(!error.to_string().contains("not a repo"), "{error}");
 
     let error = store
-        .create_git_service(&who, &create("acme/web", Some("nope-branch")), &evidence())
+        .write_trusted(&who, &create("acme/web", Some("nope-branch")), &evidence())
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::NotFound);
     assert_eq!(error.details["next"], "ployz github ls acme/web");
@@ -139,7 +141,7 @@ fn a_repository_needs_cloud_evidence() {
 fn a_git_service_round_trips_get_edit_publish() {
     let (store, who) = shop();
     let created = store
-        .create_git_service(&who, &create("ACME/Web", None), &evidence())
+        .write_trusted(&who, &create("ACME/Web", None), &evidence())
         .unwrap();
     let staged = created
         .staged
@@ -151,7 +153,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         values(&store, &who),
         json!({
             "repository": "acme/web", "branch": "main", "buildMethod": "railpack",
-            "maxRetries": 10, "replicas": 1, "restartPolicy": "unless-stopped",
+            "maxRetries": 10, "privateDns": "web", "replicas": 1, "restartPolicy": "unless-stopped",
             "autoDeploy": true, "waitForCi": false, "watchPaths": [],
         })
     );
@@ -201,7 +203,7 @@ fn a_git_service_round_trips_get_edit_publish() {
     assert!(edited.staged.is_empty(), "sending get back changes nothing");
 
     // Diff names Settings and shows values as `get` does, never the stored shape.
-    let diff = store.diff(&who, &DiffQuery::default()).unwrap();
+    let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let branch = diff.changes[0]
         .settings
         .iter()
@@ -252,7 +254,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         assert_eq!(error.code, code, "{path}");
     }
 
-    let diff = store.diff(&who, &DiffQuery::default()).unwrap();
+    let diff = store.read(&who, &DiffQuery::default()).unwrap();
     let rows = &diff.changes[0].settings;
     let repository = rows
         .iter()
@@ -260,7 +262,7 @@ fn a_git_service_round_trips_get_edit_publish() {
         .unwrap();
     assert_eq!(repository.after, json!("acme/docs"));
     let published = store
-        .publish(
+        .write_trusted(
             &who,
             &Publish {
                 environment: EnvironmentRef::default(),
@@ -271,15 +273,15 @@ fn a_git_service_round_trips_get_edit_publish() {
         )
         .unwrap();
     assert!(published.saved.0 >= 1);
-    assert!(store.diff(&who, &DiffQuery::default()).unwrap().published);
+    assert!(store.read(&who, &DiffQuery::default()).unwrap().published);
 }
 
 fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> DeploymentId {
     let id = DeploymentId::parse(format!("00000000-0000-4000-8000-0000000001{n:02}")).unwrap();
     store
-        .admit(
+        .write_trusted(
             who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id.clone(),
                 environment: EnvironmentRef::default(),
                 services: services
@@ -288,18 +290,17 @@ fn admit(store: &ConfigStore, who: &Actor, n: u8, services: &[&str]) -> Deployme
                     .collect(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
     id
 }
 
-fn pins(commit: &str) -> BTreeMap<ServiceName, String> {
-    BTreeMap::from([(ServiceName::parse("web").unwrap(), commit.to_owned())])
+fn pins(commit: &ployz_store::CommitSha) -> BTreeMap<ServiceName, ployz_store::CommitSha> {
+    BTreeMap::from([(ServiceName::parse("web").unwrap(), commit.clone())])
 }
 
 fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence {
@@ -315,13 +316,13 @@ fn report(status: BuildStatus, message: Option<&str>, log: &str) -> RunEvidence 
 fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     let (store, who) = shop();
     store
-        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("api").unwrap(),
                 image: Some("nginx:1".into()),
@@ -338,19 +339,19 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         (source.service.as_str(), source.repository.as_str()),
         ("web", "acme/web")
     );
-    assert_eq!(source.repository_id, 11);
+    assert_eq!(source.repository_id.get(), 11);
     assert_eq!(
         source.access,
         ServiceGitAccess::GithubInstallation { installation_id: 7 }
     );
     assert_eq!(
-        (source.branch.as_deref(), source.commit.as_deref()),
-        (Some("main"), None)
+        (source.branch.clone(), source.commit.clone()),
+        (Some(backend::git_branch("main")), None)
     );
 
     // A pin never moves: the branch moving on changes nothing for this Deployment.
-    let a = "a".repeat(40);
-    let b = "b".repeat(40);
+    let a = backend::sha(&"a".repeat(40));
+    let b = backend::sha(&"b".repeat(40));
     assert_eq!(
         store.pin(&first, &pins(&a)).unwrap()[0].commit,
         Some(a.clone())
@@ -359,13 +360,9 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         store.pin(&first, &pins(&b)).unwrap()[0].commit,
         Some(a.clone())
     );
-    for bad in [
-        pins("HEAD"),
-        BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]),
-    ] {
-        let error = store.pin(&first, &bad).unwrap_err();
-        assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    }
+    let other = BTreeMap::from([(ServiceName::parse("api").unwrap(), a.clone())]);
+    let error = store.pin(&first, &other).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
 
     // Its runner gets the pin, and reports the build as it goes.
     let runner = RunnerId::parse("cloud-1").unwrap();
@@ -383,7 +380,9 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
             report(BuildStatus::Building, None, "#1 FROM node\n"),
         )
         .unwrap();
-    let view = store.deployment(&who, &first).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: first.clone() })
+        .unwrap();
     assert_eq!(
         json!(view.builds),
         json!([{"service": "web", "commit": a, "status": "building", "message": null}])
@@ -418,7 +417,7 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
         service: ServiceName::parse("web").unwrap(),
     };
     assert_eq!(
-        store.build_log(&stranger, &query).unwrap_err().code,
+        store.read(&stranger, &query).unwrap_err().code,
         RpcErrorCode::NotFound
     );
 
@@ -449,18 +448,12 @@ fn a_git_build_pins_its_commit_once_and_records_progress_log_and_receipt() {
     // Retrying it builds the commit it pinned, wherever the branch is now.
     let again = DeploymentId::parse("00000000-0000-4000-8000-000000000199").unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Retry(Retry {
                 id: again.clone(),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(first.clone()),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: first.clone(),
+            }),
             &ployz_store::Trusted::default(),
         )
         .unwrap();
@@ -499,7 +492,7 @@ fn build_order(store: &ConfigStore, who: &Actor, order: Option<BuildOrder>) -> V
 fn the_build_order_and_preferred_builder_apply_at_once_and_shape_each_walk() {
     let (store, who) = shop();
     store
-        .create_git_service(&who, &create("acme/web", None), &evidence())
+        .write_trusted(&who, &create("acme/web", None), &evidence())
         .unwrap();
 
     // Auto: GitHub first, skipped at once where the repository has no build workflow.
@@ -585,7 +578,7 @@ fn github_run(run_id: u64) -> GithubRun {
         run_id,
         run_url: format!("https://github.com/acme/web/actions/runs/{run_id}"),
         workflow_ref: WORKFLOW.into(),
-        repository: "acme/web".into(),
+        repository: backend::repo_name("acme/web"),
         installation_id: 7,
     }
 }
@@ -611,17 +604,24 @@ fn lines(from: u64, lines: &[&str], platforms: Option<&[&str]>) -> GithubReport 
     GithubReport {
         from,
         lines: lines.iter().map(|line| (*line).to_owned()).collect(),
-        platforms: platforms.map(|platforms| platforms.iter().map(|p| (*p).to_owned()).collect()),
+        ended: platforms.map(|platforms| match platforms {
+            [] => ployz_store::RunEnd::Failed,
+            platforms => ployz_store::RunEnd::Built {
+                platforms: platforms.iter().map(|p| (*p).to_owned()).collect(),
+            },
+        }),
     }
 }
 
 /// A pinned Git build of a fresh Deployment, handed to GitHub run `RUN`.
 fn dispatched(store: &ConfigStore, who: &Actor) -> GithubBuildId {
     store
-        .create_git_service(who, &create("acme/web", None), &evidence())
+        .write_trusted(who, &create("acme/web", None), &evidence())
         .unwrap();
     let deployment = admit(store, who, 1, &[]);
-    store.pin(&deployment, &pins(&"a".repeat(40))).unwrap();
+    store
+        .pin(&deployment, &pins(&backend::sha(&"a".repeat(40))))
+        .unwrap();
     let id = GithubBuildId::parse(&format!("{deployment}.web")).unwrap();
     store.github_dispatched(&id, &github_run(RUN)).unwrap();
     // A retried dispatch step replays; another run can't take it.
@@ -690,7 +690,7 @@ fn a_github_check_in_must_come_from_the_dispatched_repository_workflow_and_run()
 
     // Only the runner gets the inputs: the lowering input and the pinned commit.
     let (input, commit, receipt) = store.github_input(&id).unwrap();
-    assert_eq!(commit, "a".repeat(40));
+    assert_eq!(commit.as_str(), "a".repeat(40));
     assert!(input.get("snapshots").is_some());
     assert_eq!(receipt, None);
 }
@@ -746,8 +746,10 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
         .unwrap_err();
     assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
-        store.github_build(&id).unwrap().platforms,
-        Some(vec!["linux/amd64".to_owned()])
+        store.github_build(&id).unwrap().ended,
+        Some(ployz_store::RunEnd::Built {
+            platforms: vec!["linux/amd64".to_owned()]
+        })
     );
 
     let receipt = json!({ "fingerprint": "f".repeat(64), "machine_id": grant().machine });
@@ -770,7 +772,7 @@ fn a_github_build_checks_in_once_takes_each_log_line_once_and_refuses_late_repor
         RpcErrorCode::Conflict
     );
     let log = store
-        .build_log(
+        .read(
             &who,
             &BuildLogQuery {
                 deployment: id.deployment.clone(),
@@ -823,7 +825,7 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
 
     // A cancelled Deployment wants no build: a new dispatch is refused.
     store
-        .cancel(
+        .write(
             &who,
             &ployz_store::Cancel {
                 deployment: id.deployment.clone(),
@@ -837,4 +839,53 @@ fn a_skipped_github_build_goes_back_to_the_next_builder_and_cancellation_lists_o
             .code,
         RpcErrorCode::Conflict
     );
+}
+
+fn source(store: &ConfigStore, who: &Actor) -> SourceKind {
+    let query = ServiceQuery {
+        environment: EnvironmentRef::default(),
+        service: ServiceName::parse("web").unwrap(),
+    };
+    store.read(who, &query).unwrap().service.source
+}
+
+#[test]
+fn a_source_disconnects_to_empty_and_an_empty_service_connects_a_repository() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(SERVICE).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("web").unwrap(),
+                image: Some("nginx:1".into()),
+            },
+        )
+        .unwrap();
+    let unset = |path: &str| {
+        edit(vec![Change::Unset {
+            path: SettingPath::parse(path).unwrap(),
+        }])
+    };
+    store.write(&who, &unset("web.image")).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+
+    // Connecting a repository needs Cloud's evidence, then builds its default branch.
+    let connect = edit(vec![set("web.repository", json!("acme/web"))]);
+    let refused = store
+        .write_trusted(&who, &connect, &Trusted::default())
+        .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::NotFound);
+    store.write_trusted(&who, &connect, &evidence()).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Git);
+    assert_eq!(values(&store, &who)["repository"], json!("acme/web"));
+    assert_eq!(values(&store, &who)["branch"], json!("main"));
+
+    store.write(&who, &unset("web.repository")).unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Empty);
+    store
+        .write(&who, &edit(vec![set("web.image", json!("nginx:2"))]))
+        .unwrap();
+    assert_eq!(source(&store, &who), SourceKind::Image);
 }

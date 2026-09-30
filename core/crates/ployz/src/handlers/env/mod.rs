@@ -399,3 +399,20 @@ fn finish_removal(
         );
     })
 }
+
+/// Nodes by name: `SERVICE`, or `volumes.VOLUME`.
+fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
+    Ok(names
+        .iter()
+        .map(|name| ployz_store::NodeName::parse(name.as_str()))
+        .collect::<Result<_, _>>()?)
+}
+
+/// Items as one line of text.
+fn joined<T: ToString>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}

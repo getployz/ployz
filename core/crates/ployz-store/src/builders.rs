@@ -13,7 +13,7 @@ use crate::error;
 use crate::id::EnvironmentId;
 use crate::policy::PolicySetting;
 use crate::settings::ServiceSetting;
-use crate::storage::Tx;
+use crate::storage::{Tx, name_of};
 
 /// Which Builders a Git build tries, in turn.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -26,26 +26,10 @@ pub enum BuildOrder {
 }
 
 impl BuildOrder {
-    const ALL: [Self; 4] = [
-        Self::ServersOnly,
-        Self::GithubThenServers,
-        Self::ServersThenGithub,
-        Self::GithubOnly,
-    ];
-
     /// An Organization that never chose one: GitHub first. GitHub is skipped at
     /// once for a repository without the build workflow, so until GitHub is set up
     /// this builds on the servers only.
     pub const AUTO: Self = Self::GithubThenServers;
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::ServersOnly => "servers-only",
-            Self::GithubThenServers => "github-then-servers",
-            Self::ServersThenGithub => "servers-then-github",
-            Self::GithubOnly => "github-only",
-        }
-    }
 
     const fn builders(self) -> &'static [Builder] {
         match self {
@@ -106,7 +90,7 @@ pub(crate) fn set_build_order(
         Some(order) => tx.execute(
             "INSERT INTO config_build_order (organization_id, build_order) VALUES (?1, ?2) \
              ON CONFLICT (organization_id) DO UPDATE SET build_order = excluded.build_order",
-            &[organization.into(), order.as_str().into()],
+            &[organization.into(), name_of(order).as_str().into()],
         )?,
         None => tx.execute(
             "DELETE FROM config_build_order WHERE organization_id = ?1",
@@ -130,13 +114,7 @@ fn chosen(tx: &mut dyn Tx, organization: &str) -> Result<Option<BuildOrder>, Rpc
         &[organization.into()],
     )?
     .first()
-    .map(|row| {
-        let text = row.text(0)?;
-        BuildOrder::ALL
-            .into_iter()
-            .find(|order| order.as_str() == text)
-            .ok_or_else(|| error::corrupt("Build Order"))
-    })
+    .map(|row| row.variant(0, "Build Order"))
     .transpose()
 }
 

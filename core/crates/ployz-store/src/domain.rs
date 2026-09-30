@@ -9,7 +9,6 @@
 
 use ployz_core::config::{
     SavedEnvironmentIntent, SavedServiceIntent, ServiceManagedHostname, ServiceRoute,
-    parse_environment_intent,
 };
 use ployz_core::{
     CertificateAvailability, CertificateFailureKind, CertificateObservation, IngressHost, RpcError,
@@ -122,8 +121,6 @@ pub struct DomainStaged {
     pub domain: Domain,
     /// Its Service, when this changed it; empty when it already was so.
     pub staged: Vec<SettingPath>,
-    /// What took effect at once: never anything here.
-    pub immediate: Vec<SettingPath>,
 }
 
 /// A Service's public domain.
@@ -248,12 +245,32 @@ pub enum DomainAction {
 /// One DNS record to create at the domain's DNS provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DnsRecord {
-    /// `CNAME`, `A` or `AAAA`.
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: DnsRecordKind,
     /// Relative to the registrable domain; `@` is its apex.
     pub name: String,
     pub value: String,
+}
+
+/// The kind of a DNS record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+pub enum DnsRecordKind {
+    #[serde(rename = "CNAME")]
+    Cname,
+    #[serde(rename = "A")]
+    A,
+    #[serde(rename = "AAAA")]
+    Aaaa,
+}
+
+impl std::fmt::Display for DnsRecordKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Cname => "CNAME",
+            Self::A => "A",
+            Self::Aaaa => "AAAA",
+        })
+    }
 }
 
 pub(crate) fn add_domain(
@@ -360,7 +377,6 @@ pub(crate) fn add_domain(
         } else {
             Vec::new()
         },
-        immediate: Vec::new(),
     })
 }
 
@@ -391,7 +407,6 @@ pub(crate) fn remove_domain(
         environment: environment.summary,
         staged: vec![SettingPath::whole(&found.service)],
         domain: found,
-        immediate: Vec::new(),
     })
 }
 
@@ -561,12 +576,7 @@ fn other_environments(
         ],
     )?
     .iter()
-    .map(|row| {
-        serde_json::from_str(row.text(0)?)
-            .ok()
-            .and_then(|value| parse_environment_intent(value).ok())
-            .ok_or_else(|| error::corrupt("Working State"))
-    })
+    .map(|row| row.intent(0, "Working State"))
     .collect()
 }
 
@@ -812,7 +822,7 @@ fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord>
         && name != "@"
     {
         return vec![DnsRecord {
-            kind: "CNAME".into(),
+            kind: DnsRecordKind::Cname,
             name,
             value: cluster.name.to_string(),
         }];
@@ -821,7 +831,11 @@ fn dns_records(hostname: &Hostname, evidence: &DomainEvidence) -> Vec<DnsRecord>
         .ingress_addresses
         .iter()
         .map(|address| DnsRecord {
-            kind: if address.contains(':') { "AAAA" } else { "A" }.into(),
+            kind: if address.contains(':') {
+                DnsRecordKind::Aaaa
+            } else {
+                DnsRecordKind::A
+            },
             name: name.clone(),
             value: address.clone(),
         })
@@ -885,7 +899,7 @@ mod tests {
             action,
             Some(DomainAction::Dns {
                 records: vec![DnsRecord {
-                    kind: "CNAME".into(),
+                    kind: DnsRecordKind::Cname,
                     name: "app".into(),
                     value: "acme.ployz.app".into(),
                 }]
@@ -920,8 +934,8 @@ mod tests {
             panic!("expected DNS records");
         };
         assert_eq!(
-            records.first().map(|record| record.kind.as_str()),
-            Some("A")
+            records.first().map(|record| record.kind),
+            Some(DnsRecordKind::A)
         );
         assert_eq!(
             records.first().map(|record| record.name.as_str()),

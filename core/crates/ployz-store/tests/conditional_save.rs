@@ -13,12 +13,17 @@ use ployz_store::{
     Actor, AuthorizedRepository, Automated, BranchHead, Change, CheckSuite, Command, ConfigStore,
     CreateGitService, CreateProject, DiffQuery, Edit, EnvironmentId, EnvironmentName,
     EnvironmentRef, Landed, Move, MovePick, MoveQuery, OrganizationId, PickChoice, ProjectId,
-    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState, ServiceId,
-    SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
+    ProjectName, Publish, PullRequest, PullRequestQuery, RunnerId, Save, SaveState,
+    ServiceLineageId, SetPrPlan, SettingPath, SystemEvent, Take, Trusted, When, Written,
 };
 use serde_json::{Value, json};
 
 mod backend;
+
+/// Items as their text, to compare with literals.
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
 
 const MERGE: &str = "3333333333333333333333333333333333333333";
 
@@ -26,8 +31,8 @@ fn uuid(n: u8) -> String {
     format!("00000000-0000-4000-8000-0000000000{n:02}")
 }
 
-fn commit(n: u8) -> String {
-    format!("{n:x}").repeat(40)
+fn commit(n: u8) -> ployz_store::CommitSha {
+    backend::sha(&format!("{n:x}").repeat(40))
 }
 
 fn at(environment: &str) -> EnvironmentRef {
@@ -43,7 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -54,23 +59,23 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
         ..Trusted::default()
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ployz_core::ServiceName::parse(name).unwrap(),
-                    repository: "acme/web".into(),
+                    repository: backend::repo_name("acme/web"),
                     branch: None,
                 },
                 &evidence,
@@ -79,11 +84,11 @@ fn shop() -> (ConfigStore, Actor) {
     }
     publish(&store, &who, "production");
     store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
                 project: None,
-                repository: "acme/web".into(),
+                repository: backend::repo_name("acme/web"),
                 enabled: Some(true),
                 start_from: Some(EnvironmentName::parse("production").unwrap()),
                 copy: None,
@@ -117,7 +122,7 @@ fn publish(store: &ConfigStore, who: &Actor, environment: &str) {
 
 fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Value)]) {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: at(environment),
@@ -134,19 +139,24 @@ fn set(store: &ConfigStore, who: &Actor, environment: &str, changes: &[(&str, Va
         .unwrap();
 }
 
-fn facts(open: bool, merge: Option<&str>, reached: Option<String>, second: u8) -> PullRequest {
+fn facts(
+    open: bool,
+    merge: Option<&str>,
+    reached: Option<ployz_store::CommitSha>,
+    second: u8,
+) -> PullRequest {
     PullRequest {
-        repository_id: 11,
-        number: 5,
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
         bot: false,
-        head_branch: "search".into(),
+        head_branch: backend::git_branch("search"),
         head: commit(1),
-        target_branch: "main".into(),
+        target_branch: backend::git_branch("main"),
         commits: 1,
         open,
-        merge_commit: merge.map(Into::into),
+        merge_commit: merge.map(backend::sha),
         merge_reached: reached,
         updated: format!("2026-09-29T10:00:{second:02}Z"),
     }
@@ -163,17 +173,23 @@ fn observe(store: &ConfigStore, who: &Actor, event: SystemEvent) -> Automated {
 }
 
 fn push(store: &ConfigStore, who: &Actor, head: u8, merged: &[&str]) -> Automated {
-    let base = store.branch_head(&who.organization, 11, "main").unwrap();
+    let base = store
+        .branch_head(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     observe(
         store,
         who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "main".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("main"),
             base,
             head: Some(commit(head)),
             changed: None,
-            merged: merged.iter().map(|merge| (*merge).to_owned()).collect(),
+            merged: merged.iter().map(|merge| backend::sha(merge)).collect(),
         }),
     )
 }
@@ -201,7 +217,7 @@ fn saving(rows: &[&str], version: Option<String>) -> Save {
 
 fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
     store
-        .service(
+        .read(
             who,
             &ployz_store::ServiceQuery {
                 environment: at(environment),
@@ -217,11 +233,11 @@ fn env(store: &ConfigStore, who: &Actor, environment: &str) -> Value {
 
 fn check(store: &ConfigStore, who: &Actor) -> (bool, String) {
     let view = store
-        .pull_request(
+        .read(
             who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -260,7 +276,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         into: None,
         when: None,
     };
-    let review = store.move_view(&who, &query).unwrap();
+    let review = store.read(&who, &query).unwrap();
     assert_eq!(review.into.name.as_str(), "production");
     let rows: Vec<&str> = review.rows.iter().map(|row| row.row.as_str()).collect();
     assert_eq!(rows, ["web.env.MODE", "web.env.TOKEN"]);
@@ -269,7 +285,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         ..saving(&["web.env"], None)
     });
     assert_eq!(
-        store.move_changes(&who, &now).unwrap_err().code,
+        store.write(&who, &now).unwrap_err().code,
         RpcErrorCode::InvalidArgument
     );
     assert_eq!(
@@ -278,7 +294,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
     );
 
     let saved = store
-        .move_changes(&who, &save(&["web.env"], Some(review.version)))
+        .write(&who, &save(&["web.env"], Some(review.version)))
         .unwrap();
     let conditional = saved.conditional_save.unwrap();
     assert_eq!(conditional.state, SaveState::Standing);
@@ -298,13 +314,13 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         check(&store, &who),
         (false, "Changed since saved · save again".into())
     );
-    let withdrawn = store.move_changes(&who, &save(&[], None)).unwrap();
+    let withdrawn = store.write(&who, &save(&[], None)).unwrap();
     assert!(withdrawn.conditional_save.is_none());
     assert_eq!(
         check(&store, &who),
         (false, "2 changes to save in Ployz".into())
     );
-    store.move_changes(&who, &save(&["web.env"], None)).unwrap();
+    store.write(&who, &save(&["web.env"], None)).unwrap();
     set(
         &store,
         &who,
@@ -313,18 +329,33 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
     );
 
     // The merge push arrived first: Cloud reports the merge, and the save freezes.
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
-    assert_eq!((pending.standing, pending.merged.len()), (vec![5], 0));
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
+    assert_eq!(
+        (pending.standing, pending.merged.len()),
+        (vec![backend::pr_number(5)], 0)
+    );
     let closed = observe(
         &store,
         &who,
         SystemEvent::PullRequest(facts(false, Some(MERGE), None, 2)),
     );
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     assert_eq!(
         (pending.standing.len(), pending.merged),
-        (0, vec![MERGE.to_owned()])
+        (0, vec![backend::sha(MERGE)])
     );
     assert!(env(&store, &who, "production").get("MODE").is_none());
 
@@ -340,7 +371,7 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         &store,
         &who,
         SystemEvent::CheckSuite(CheckSuite {
-            repository_id: 11,
+            repository_id: backend::repo_id(11),
             suite: 1,
             head: commit(5),
             status: "completed".into(),
@@ -354,7 +385,13 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         resolved(&store, &passed.admitted[0].deployment.id, "TOKEN"),
         json!("pr-secret")
     );
-    let pending = store.pending_saves(&who.organization, 11, "main").unwrap();
+    let pending = store
+        .pending_saves(
+            &who.organization,
+            backend::repo_id(11),
+            &backend::git_branch("main"),
+        )
+        .unwrap();
     assert!(pending.merged.is_empty());
 }
 
@@ -370,7 +407,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             ("web.env.TOKEN", json!({ "secret": "pr-secret" })),
         ],
     );
-    store.move_changes(&who, &save(&["web.env"], None)).unwrap();
+    store.write(&who, &save(&["web.env"], None)).unwrap();
     // Production changes MODE live, then stages its own edit on top.
     set(
         &store,
@@ -401,7 +438,7 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
 
     let diff = |store: &ConfigStore| {
         store
-            .diff(
+            .read(
                 &who,
                 &DiffQuery {
                     environment: at("production"),
@@ -420,7 +457,12 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
             &hint.value,
             hint.pull_request
         ),
-        ("web.env.MODE", Landed::Hint, &json!("pr"), 5)
+        (
+            "web.env.MODE",
+            Landed::Hint,
+            &json!("pr"),
+            backend::pr_number(5)
+        )
     );
     let take = |row: Option<&str>| {
         Move::Take(Take {
@@ -432,23 +474,21 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     };
     assert_eq!(
         store
-            .move_changes(&who, &take(Some("web.env.NOPE")))
+            .write(&who, &take(Some("web.env.NOPE")))
             .unwrap_err()
             .code,
         RpcErrorCode::NotFound
     );
     // The PR Environment is gone; its value still moves.
-    let taken = store
-        .move_changes(&who, &take(Some("web.env.MODE")))
-        .unwrap();
-    assert_eq!(taken.staged, ["web"]);
+    let taken = store.write(&who, &take(Some("web.env.MODE"))).unwrap();
+    assert_eq!(texts(&taken.staged), ["web"]);
     assert_eq!(taken.from.name.as_str(), "pr-5");
     assert_eq!(taken.conditional_save.unwrap().state, SaveState::Landed);
     assert_eq!(env(&store, &who, "production")["MODE"], json!("pr"));
     assert_eq!(diff(&store)[0].landed, Landed::Staged);
     // Nothing is left to take.
     assert_eq!(
-        store.move_changes(&who, &take(None)).unwrap_err().code,
+        store.write(&who, &take(None)).unwrap_err().code,
         RpcErrorCode::Conflict
     );
     publish(&store, &who, "production");

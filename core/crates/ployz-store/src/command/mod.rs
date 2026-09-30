@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use admit::{Admit, Cancel, Start};
+pub use admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
 pub(crate) use admit::{admit, cancel, start};
 pub(crate) use edit::edit;
 pub use edit::{Change, Edit, Edited};
@@ -109,7 +109,7 @@ impl Command {
             }
             Self::CreateEnvironment(create) => vec![create.id.as_str()],
             Self::CreateService(create) => vec![create.id.as_str()],
-            Self::Admit(admit) => vec![admit.id.as_str()],
+            Self::Admit(admit) => vec![admit.id().as_str()],
             Self::CreateGitService(create) => vec![create.id.as_str()],
             Self::CreateVolume(create) => vec![create.id.as_str()],
             Self::CreateBranch(create) => vec![create.id.as_str()],
@@ -270,7 +270,7 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
                     json!({ "id": id }),
                 ));
             }
-            return serde_json::from_str(row.text(2)?).map_err(|_| error::corrupt("create result"));
+            return row.json(2, "create result");
         }
     }
     let written = create(tx)?;
@@ -289,3 +289,70 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
     }
     Ok(written)
 }
+
+/// A [`Command`], or one of its payloads, and what it answers with.
+pub trait Tell: Clone {
+    type Written;
+    fn command(self) -> Command;
+    /// The result, as this command's own.
+    ///
+    /// # Errors
+    /// `internal` for the result of another command.
+    fn written(written: Written) -> Result<Self::Written, RpcError>;
+}
+
+impl Tell for Command {
+    type Written = Written;
+    fn command(self) -> Command {
+        self
+    }
+    fn written(written: Written) -> Result<Written, RpcError> {
+        Ok(written)
+    }
+}
+
+macro_rules! tells {
+    ($($command:ty => $variant:ident / $written:ident($answer:ty) $(as $unbox:tt)?),* $(,)?) => {$(
+        impl Tell for $command {
+            type Written = $answer;
+            fn command(self) -> Command {
+                Command::$variant(self)
+            }
+            fn written(written: Written) -> Result<$answer, RpcError> {
+                match written {
+                    Written::$written(answer) => Ok($($unbox)? answer),
+                    _ => Err(crate::error::internal("The Store answered another command")),
+                }
+            }
+        }
+    )*};
+}
+
+tells!(
+    CreateProject => CreateProject / Project(ProjectCreated),
+    CreateEnvironment => CreateEnvironment / Environment(EnvironmentCreated),
+    CreateService => CreateService / Service(ServiceStaged),
+    crate::CreateGitService => CreateGitService / Service(ServiceStaged),
+    RenameService => RenameService / ServiceRenamed(ServiceStaged),
+    RemoveService => RemoveService / ServiceRemoved(ServiceStaged),
+    CreateVolume => CreateVolume / Volume(VolumeStaged),
+    RemoveVolume => RemoveVolume / VolumeRemoved(VolumeStaged),
+    SetVolumeStorage => SetVolumeStorage / Volume(VolumeStaged),
+    Edit => Edit / Edited(Edited),
+    Publish => Publish / Published(Published),
+    Discard => Discard / Discarded(Discarded),
+    Admit => Admit / Deployment(crate::DeploymentSummary),
+    Start => Start / Deployment(crate::DeploymentSummary),
+    Cancel => Cancel / Deployment(crate::DeploymentSummary),
+    crate::AddDomain => AddDomain / Domain(crate::DomainStaged),
+    crate::RemoveDomain => RemoveDomain / Domain(crate::DomainStaged),
+    crate::CreateBranch => CreateBranch / Branch(crate::Branched),
+    crate::Move => Move / Moved(crate::Moved) as *,
+    crate::CopyNode => CopyNode / Branch(crate::Branched),
+    crate::KeepBranch => KeepBranch / Branch(crate::Branched),
+    crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
+    crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
+    crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::EnvironmentRemoved),
+    crate::RemoveProject => RemoveProject / ProjectRemoved(crate::ProjectRemoved),
+    crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),
+);

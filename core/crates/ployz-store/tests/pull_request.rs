@@ -9,14 +9,19 @@ use ployz_core::config::ServiceGitAccess;
 use ployz_core::{DeployOutcome, DeployPreview, RpcErrorCode, ServiceName};
 use ployz_store::{
     Actor, Admit, AuthorizedRepository, Automated, BranchHead, CreateBranch, CreateGitService,
-    CreateProject, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName, EnvironmentRef,
-    EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName, PullRequest,
-    PullRequestQuery, RunEvidence, RunnerId, ServiceId, SetPrPlan, SetupCommand, Sweep,
-    SystemEvent, Trusted, Written,
+    CreateProject, Deploy, DeploymentId, DeploymentStatus, EnvironmentId, EnvironmentName,
+    EnvironmentRef, EnvironmentsQuery, OrganizationId, PrPlansQuery, ProjectId, ProjectName,
+    PullRequest, PullRequestQuery, Removal, RunEvidence, RunnerId, ServiceLineageId, SetPrPlan,
+    SetupCommand, Sweep, SystemEvent, Trusted, Written,
 };
 use serde_json::json;
 
 mod backend;
+
+/// A node by its name: `SERVICE`, or `volumes.VOLUME`.
+fn node(name: &str) -> ployz_store::NodeName {
+    ployz_store::NodeName::parse(name).unwrap()
+}
 
 const HEAD: &str = "1111111111111111111111111111111111111111";
 const DAY: i64 = 24 * 60 * 60;
@@ -38,7 +43,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse(uuid(1)).unwrap(),
@@ -49,23 +54,23 @@ fn shop() -> (ConfigStore, Actor) {
         .unwrap();
     let evidence = Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: backend::repo_name("acme/web"),
+            repository_id: backend::repo_id(11),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
+            default_branch: backend::git_branch("main"),
             branches: Vec::new(),
         }],
         ..Trusted::default()
     };
     for (n, name) in [(3, "web"), (4, "api")] {
         store
-            .create_git_service(
+            .write_trusted(
                 &who,
                 &CreateGitService {
-                    id: ServiceId::parse(uuid(n)).unwrap(),
+                    id: ServiceLineageId::parse(uuid(n)).unwrap(),
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
-                    repository: "acme/web".into(),
+                    repository: backend::repo_name("acme/web"),
                     branch: None,
                 },
                 &evidence,
@@ -88,13 +93,13 @@ fn shop() -> (ConfigStore, Actor) {
 use ployz_store::ConfigStore;
 
 fn plan(store: &ConfigStore, who: &Actor, set: SetPrPlan) {
-    store.set_pr_plan(who, &set).unwrap();
+    store.write(who, &set).unwrap();
 }
 
 fn on() -> SetPrPlan {
     SetPrPlan {
         project: None,
-        repository: "acme/web".into(),
+        repository: backend::repo_name("acme/web"),
         enabled: Some(true),
         start_from: Some(EnvironmentName::parse("production").unwrap()),
         copy: None,
@@ -106,14 +111,14 @@ fn on() -> SetPrPlan {
 
 fn facts(open: bool, updated: &str) -> PullRequest {
     PullRequest {
-        repository_id: 11,
-        number: 5,
+        repository_id: backend::repo_id(11),
+        number: backend::pr_number(5),
         title: "Add search".into(),
         author: "ada".into(),
         bot: false,
-        head_branch: "search".into(),
-        head: HEAD.into(),
-        target_branch: "main".into(),
+        head_branch: backend::git_branch("search"),
+        head: backend::sha(HEAD),
+        target_branch: backend::git_branch("main"),
         commits: 1,
         open,
         merge_commit: None,
@@ -153,7 +158,7 @@ fn now() -> i64 {
 /// Each Environment's name, `<` naming its Parent.
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<String> {
     store
-        .environments(who, &EnvironmentsQuery::default())
+        .read(who, &EnvironmentsQuery::default())
         .unwrap()
         .environments
         .into_iter()
@@ -207,18 +212,14 @@ fn run(store: &ConfigStore, id: &DeploymentId, services: &[&str]) {
 fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
     let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
-        .admit(
+        .write_trusted(
             who,
-            &Admit {
+            &Admit::Remove(Removal {
                 id: id.clone(),
                 environment: at(environment),
-                services: Vec::new(),
                 version: None,
-                upload: None,
-                retry: None,
-                remove: true,
                 accept_volume_loss: Vec::new(),
-            },
+            }),
             &Trusted::default(),
         )
         .unwrap();
@@ -228,7 +229,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
 #[test]
 fn plans_name_nodes_of_the_start_from_environment() {
     let (store, who) = shop();
-    let view = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let view = store.read(&who, &PrPlansQuery::default()).unwrap();
     assert_eq!(view.plans.len(), 1);
     assert!(!view.plans[0].enabled && view.plans[0].remove_on_close);
     assert_eq!(view.plans[0].start_from, None);
@@ -239,7 +240,7 @@ fn plans_name_nodes_of_the_start_from_environment() {
         command: " php artisan migrate ".into(),
     }];
     let early = store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
                 setup: Some(setup.clone()),
@@ -250,10 +251,10 @@ fn plans_name_nodes_of_the_start_from_environment() {
         .unwrap_err();
     assert_eq!(early.code, RpcErrorCode::InvalidArgument);
     let missing = store
-        .set_pr_plan(
+        .write(
             &who,
             &SetPrPlan {
-                repository: "acme/nope".into(),
+                repository: backend::repo_name("acme/nope"),
                 ..on()
             },
         )
@@ -280,9 +281,9 @@ fn plans_name_nodes_of_the_start_from_environment() {
             ..on()
         },
     );
-    let view = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let view = store.read(&who, &PrPlansQuery::default()).unwrap();
     let plan = &view.plans[0];
-    assert_eq!(plan.repository, "acme/web");
+    assert_eq!(plan.repository.as_str(), "acme/web");
     assert!(plan.enabled && plan.include_bots && !plan.remove_on_close);
     assert_eq!(
         plan.start_from.as_ref().map(ToString::to_string).as_deref(),
@@ -307,7 +308,7 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert_eq!(listed(&store, &who), ["pr-5<production", "production"]);
     // Its Git Services track the head branch and run one replica, pinned to the head.
     let branch = store
-        .branch(
+        .read(
             &who,
             &ployz_store::BranchQuery {
                 environment: at("pr-5"),
@@ -316,20 +317,22 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .unwrap();
     assert_eq!(branch.parent.to_string(), "production");
     assert_eq!(
-        branch.pull_request.map(|pr| (pr.repository_id, pr.number)),
+        branch
+            .pull_request
+            .map(|pr| (pr.repository_id.get(), pr.number.get())),
         Some((11, 5))
     );
     // The plan lists it as open, by the facts Cloud reported.
-    let plans = store.pr_plans(&who, &PrPlansQuery::default()).unwrap();
+    let plans = store.read(&who, &PrPlansQuery::default()).unwrap();
     let open = &plans.plans[0].open;
-    assert_eq!(plans.plans[0].repository_id, 11);
+    assert_eq!(plans.plans[0].repository_id.get(), 11);
     assert_eq!(open.len(), 1);
     assert_eq!(
-        (open[0].number, open[0].environment.to_string()),
+        (open[0].number.get(), open[0].environment.to_string()),
         (5, "pr-5".into())
     );
     let services = store
-        .services(
+        .read(
             &who,
             &ployz_store::ServicesQuery {
                 environment: at("pr-5"),
@@ -338,15 +341,20 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         .unwrap();
     assert_eq!(services.services.len(), 2);
     let deployment = store
-        .deployment(&who, &opened.admitted[0].deployment.id)
+        .read(
+            &who,
+            &ployz_store::DeploymentQuery {
+                id: opened.admitted[0].deployment.id.clone(),
+            },
+        )
         .unwrap();
     assert_eq!(deployment.deployment.status, DeploymentStatus::Queued);
     let sources = store.sources(&opened.admitted[0].deployment.id).unwrap();
     assert!(
         sources
             .iter()
-            .all(|source| source.commit.as_deref() == Some(HEAD)
-                && source.branch.as_deref() == Some("search"))
+            .all(|source| source.commit == Some(backend::sha(HEAD))
+                && source.branch == Some(backend::git_branch("search")))
     );
 
     // A replay, or a later synchronize, makes no second one; a bot's needs the plan's say.
@@ -354,11 +362,11 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
     assert!(again.admitted.is_empty() && again.checks.len() == 1);
     assert_eq!(listed(&store, &who).len(), 2);
     let view = store
-        .pull_request(
+        .read(
             &who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -384,11 +392,11 @@ fn an_opened_pull_request_gets_a_deployed_pr_environment_once() {
         )
         .unwrap();
     let view = store
-        .pull_request(
+        .read(
             &who,
             &PullRequestQuery {
-                repository_id: 11,
-                number: 5,
+                repository_id: backend::repo_id(11),
+                number: backend::pr_number(5),
             },
         )
         .unwrap();
@@ -405,7 +413,12 @@ fn a_late_open_never_restores_a_closed_pull_request() {
     // Never deployed: the queued Deployment is cancelled and the PR Environment deleted at once.
     assert_eq!(closed.removed.len(), 1, "{closed:?}");
     assert_eq!(listed(&store, &who), ["production"]);
-    let cancelled = store.deployment(&who, &opened.admitted[0].deployment.id);
+    let cancelled = store.read(
+        &who,
+        &ployz_store::DeploymentQuery {
+            id: opened.admitted[0].deployment.id.clone(),
+        },
+    );
     assert!(cancelled.is_err(), "deleted with its Environment");
 
     // The open GitHub sent first arrives last.
@@ -429,22 +442,21 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
 
     // A renamed head branch: it tracks the new name, in Working and Saved State.
     let mut renamed = facts(true, "2026-09-29T10:10:00Z");
-    renamed.head_branch = "search-v2".into();
+    renamed.head_branch = backend::git_branch("search-v2");
     pull(&store, &who, renamed);
     let redeploy = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: redeploy.clone(),
                 environment: at("pr-5"),
                 services: Vec::new(),
                 version: None,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: Vec::new(),
-            },
+                message: None,
+            }),
             &Trusted::default(),
         )
         .unwrap();
@@ -453,12 +465,12 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
             .sources(&redeploy)
             .unwrap()
             .iter()
-            .all(|source| source.branch.as_deref() == Some("search-v2"))
+            .all(|source| source.branch == Some(backend::git_branch("search-v2")))
     );
     run(&store, &redeploy, &["web", "api"]);
 
     let mut closed = facts(false, "2026-09-29T11:00:00Z");
-    closed.head_branch = "search-v2".into();
+    closed.head_branch = backend::git_branch("search-v2");
     let closing = pull(&store, &who, closed);
     assert_eq!(closing.closing.len(), 1, "{closing:?}");
     assert_eq!(closing.closing[0].name.to_string(), "pr-5");
@@ -467,10 +479,10 @@ fn a_closed_pull_request_leaves_the_servers_before_the_store() {
         &store,
         &who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "search-v2".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search-v2"),
             base: None,
-            head: Some("2".repeat(40)),
+            head: Some(backend::sha(&"2".repeat(40))),
             changed: None,
             merged: Vec::new(),
         }),
@@ -507,10 +519,10 @@ fn a_kept_open_pull_request_stays_and_a_push_brings_a_shut_down_one_back() {
         &store,
         &who,
         SystemEvent::BranchHead(BranchHead {
-            repository_id: 11,
-            branch: "search".into(),
+            repository_id: backend::repo_id(11),
+            branch: backend::git_branch("search"),
             base: None,
-            head: Some("2".repeat(40)),
+            head: Some(backend::sha(&"2".repeat(40))),
             changed: None,
             merged: Vec::new(),
         }),
@@ -532,13 +544,13 @@ fn idle_branches_close_after_a_week_unless_kept() {
         (22, "fresh", false),
     ] {
         store
-            .create_branch(
+            .write(
                 &who,
                 &CreateBranch {
                     id: EnvironmentId::parse(uuid(n)).unwrap(),
                     from: EnvironmentRef::default(),
                     name: EnvironmentName::parse(name).unwrap(),
-                    copy: vec!["web".into()],
+                    copy: vec![node("web")],
                     live: Vec::new(),
                     setup: Vec::new(),
                     keep,
@@ -550,18 +562,17 @@ fn idle_branches_close_after_a_week_unless_kept() {
     for name in ["idle", "kept"] {
         let id = DeploymentId::parse(uuid::Uuid::new_v4().to_string()).unwrap();
         store
-            .admit(
+            .write_trusted(
                 &who,
-                &Admit {
+                &Admit::Deploy(Deploy {
                     id: id.clone(),
                     environment: at(name),
                     services: Vec::new(),
                     version: None,
                     upload: None,
-                    retry: None,
-                    remove: false,
                     accept_volume_loss: Vec::new(),
-                },
+                    message: None,
+                }),
                 &Trusted::default(),
             )
             .unwrap();

@@ -171,7 +171,7 @@ fn serve(store: &std::sync::Arc<ConfigStore>, mut stream: TcpStream) -> std::io:
         (None, _) => (401, json!({ "code": "UNAUTHORIZED" })),
         (Some(who), "/api/config/read") => answer(store.read_trusted(
             &who,
-            &serde_json::from_slice(&body).unwrap(),
+            &serde_json::from_slice::<ployz_store::Query>(&body).unwrap(),
             &evidence(&who),
         )),
         (Some(who), "/api/config/write") => {
@@ -249,11 +249,11 @@ static UPLOADS: std::sync::Mutex<std::collections::BTreeMap<String, Vec<u8>>> =
 fn github() -> Trusted {
     Trusted {
         repositories: vec![AuthorizedRepository {
-            repository: "acme/web".into(),
-            repository_id: 11,
+            repository: ployz_store::RepositoryName::parse("acme/web").unwrap(),
+            repository_id: ployz_store::RepositoryId::parse(11).unwrap(),
             access: ServiceGitAccess::GithubInstallation { installation_id: 7 },
-            default_branch: "main".into(),
-            branches: vec!["dev".into()],
+            default_branch: ployz_store::BranchName::parse("main").unwrap(),
+            branches: vec![ployz_store::BranchName::parse("dev").unwrap()],
         }],
         ..Trusted::default()
     }
@@ -287,6 +287,7 @@ fn an_agent_creates_and_edits_an_image_service() {
                 "web.maxRetries",
                 "web.memLimit",
                 "web.preDeployCommand",
+                "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
                 "web.startCommand"
@@ -311,10 +312,10 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            10
+            11
         );
         assert_eq!(
-            got.pointer("/settings/7"),
+            got.pointer("/settings/8"),
             Some(&json!({ "path": "web.replicas", "value": 3, "default": 1, "apply": "staged" }))
         );
         assert_eq!(
@@ -322,6 +323,7 @@ fn an_agent_creates_and_edits_an_image_service() {
             Some(&json!({
                 "image": "nginx:1",
                 "maxRetries": 10,
+                "privateDns": "web",
                 "replicas": 3,
                 "restartPolicy": "unless-stopped",
                 "startCommand": "nginx -g 'daemon off;'",
@@ -331,6 +333,25 @@ fn an_agent_creates_and_edits_an_image_service() {
         ok(store, &["unset", "web.replicas"]);
         let got = ok(store, &["get", "web.replicas"]);
         assert_eq!(got.pointer("/settings/0/value"), Some(&json!(1)));
+
+        // Healthcheck and Private DNS set and unset like any Setting.
+        let value = |path: &str| ok(store, &["get", path])["settings"][0]["value"].clone();
+        ok(store, &["set", "web.healthcheck=/up"]);
+        assert_eq!(
+            value("web.healthcheck"),
+            json!({ "path": "/up", "timeoutSeconds": 300 })
+        );
+        ok(store, &["unset", "web.healthcheck"]);
+        assert_eq!(value("web.healthcheck"), Value::Null);
+        ok(store, &["set", "web.privateDns=front"]);
+        assert_eq!(value("web.privateDns"), json!("front"));
+        ok(store, &["unset", "web.privateDns"]);
+        assert_eq!(value("web.privateDns"), json!("web"));
+
+        // Unsetting the image disconnects the source: the Service is empty again.
+        ok(store, &["unset", "web.image"]);
+        let listed = ok(store, &["service", "ls"]);
+        assert_eq!(listed.pointer("/services/0/source"), Some(&json!("empty")));
     }
 }
 
@@ -976,7 +997,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            10
+            11
         );
 
         for patch in [r#"{"memLimit": null}"#, "not json"] {
@@ -1244,9 +1265,13 @@ fn an_agent_plans_deploys_and_reads_the_deployment() {
                 failed(store, &["deploy", "--detach"], 2);
             }
             Target::Cloud { .. } => {
-                let detached = ok(store, &["deploy", "--detach"]);
+                let detached = ok(
+                    store,
+                    &["deploy", "--detach", "--message", "Ship the header"],
+                );
                 let id = detached["id"].as_str().unwrap();
                 assert_eq!(detached["number"], json!(2));
+                assert_eq!(detached["message"], json!("Ship the header"));
                 assert_eq!(
                     detached["next"],
                     json!(format!("ployz deployment show {id}"))
@@ -1725,6 +1750,15 @@ fn a_repository_service_is_checked_by_cloud() {
         ok(store, &["set", "web.branch=main", "web.rootDir=/apps/web"]);
         let diff = ok(store, &["diff"]);
         assert!(diff.to_string().contains("web.rootDir"), "{diff}");
+
+        // An empty Service connects a repository by setting it; unset disconnects it.
+        ok(store, &["service", "add", "blank"]);
+        ok(store, &["set", "blank.repository=acme/web"]);
+        let got = ok(store, &["get", "blank"]);
+        assert_eq!(got["values"]["branch"], "main", "{got}");
+        ok(store, &["unset", "blank.repository"]);
+        let got = ok(store, &["get", "blank"]);
+        assert_eq!(got["values"].get("repository"), None, "{got}");
     }
 }
 
@@ -1906,8 +1940,8 @@ fn a_private_image_credential_arrives_on_stdin_and_rotates_at_once() {
 }
 
 /// Over Cloud, `deploy --upload` hands Cloud the directory before admitting the
-/// Deployment it's for; Cloud names the uploader. With no upload to build from, Cloud's
-/// runner says a new upload is the fix.
+/// Deployment it's for; Cloud names the uploader. With no upload to build from, the
+/// Deploy is refused up front.
 #[test]
 fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     let cloud = Target::Cloud {
@@ -1916,13 +1950,9 @@ fn an_agent_uploads_a_directory_to_cloud_and_is_told_when_to_upload_again() {
     };
     ok(&cloud, &["project", "new", "shop"]);
     ok(&cloud, &["service", "add", "app"]);
-    let (code, never) = ployz(Some(&cloud), &["deploy"]);
-    assert_eq!(code, Some(3), "{never}");
-    assert_eq!(never["outcome"]["needs_upload"], json!(["app"]), "{never}");
-    assert_eq!(
-        never["next"],
-        json!("ployz up --project shop --env production")
-    );
+    // Nothing to build from: the Store refuses before anything queues.
+    let never = error(&cloud, &["deploy"]);
+    assert_eq!(never["details"]["service"], json!("app"), "{never}");
 
     let source = tempfile::tempdir().unwrap();
     std::fs::write(source.path().join("Dockerfile"), "FROM scratch\n").unwrap();

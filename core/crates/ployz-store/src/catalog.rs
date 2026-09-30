@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use ts_rs::TS;
 
-use crate::error;
 use crate::settings::{ServiceSetting, SettingPath, Target};
 use crate::variables;
 
@@ -17,7 +16,7 @@ pub const CATALOG_VERSION: u32 = 1;
 const DIALECT: &str = "https://json-schema.org/draft/2020-12/schema";
 
 /// A node name: a lowercase DNS label.
-const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
+pub(crate) const NODE_NAME: &str = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$";
 
 /// A variable name, as stored.
 const VARIABLE_KEY: &str = "^[A-Z_][A-Z0-9_]{0,127}$";
@@ -61,14 +60,7 @@ pub fn explain(path: &str) -> Result<Explained, RpcError> {
     let parsed = SettingPath::parse(path)?;
     let service = parsed.settings_of()?;
     let Some(one) = parsed.target() else {
-        let names = ServiceSetting::ALL.map(ServiceSetting::name);
-        return Err(error::invalid(
-            "Name a Setting: SERVICE.SETTING",
-            json!({
-                "valid_children": names,
-                "example": format!("{service}.replicas"),
-            }),
-        ));
+        return Err(crate::settings::name_a_setting(service));
     };
     Ok(Explained {
         schema: target(one),

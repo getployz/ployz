@@ -10,7 +10,7 @@ use ployz_core::config::{
     ChangeKind, ChangeSetInput, EnvironmentNodeType, ReviewComparisonRole, ReviewLifecycleKind,
     ReviewNodeIdentity, ReviewNodeProjection, ReviewStateProjection, SavedEnvironmentIntent,
     ServiceSettingChange, canonicalize_environment_intent, compile_environment_intent,
-    parse_environment_intent, project_environment_changes,
+    project_environment_changes,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,7 +20,7 @@ use crate::Actor;
 use crate::error;
 use crate::id::{EnvironmentId, Revision};
 use crate::scope::{Environment, EnvironmentSummary, revision_param};
-use crate::settings::ServiceSetting;
+use crate::settings::{ServiceSetting, shown};
 use crate::storage::Tx;
 
 /// An Environment's staged changes, grouped by node, and the version to act on them.
@@ -142,10 +142,6 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                     .settings
                     .into_iter()
                     .map(|mut row| {
-                        if row.path.starts_with("env.") {
-                            row.before = shown_env(row.before);
-                            row.after = shown_env(row.after);
-                        }
                         if let Some(volume) = row.path.strip_prefix("mounts.") {
                             row.path = format!(
                                 "{name}.mounts.{}",
@@ -159,15 +155,10 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
                             row.path = format!("volumes.{name}.{}", row.path);
                             return row;
                         }
-                        row.path = match ServiceSetting::ALL
-                            .into_iter()
-                            .find(|setting| setting.field() == row.path)
-                        {
-                            Some(setting) => {
-                                row.before = setting.shown(row.before);
-                                row.after = setting.shown(row.after);
-                                format!("{name}.{}", setting.name())
-                            }
+                        row.before = shown(&row.path, row.before);
+                        row.after = shown(&row.path, row.after);
+                        row.path = match ServiceSetting::of_field(&row.path) {
+                            Some(setting) => format!("{name}.{}", setting.name()),
                             None => format!("{name}.{}", row.path),
                         };
                         row
@@ -267,15 +258,6 @@ fn data_effect(
     }
 }
 
-/// A variable change as `get` shows values: text, or `{"secret": true}`.
-fn shown_env(value: serde_json::Value) -> serde_json::Value {
-    match value.get("kind").and_then(serde_json::Value::as_str) {
-        Some("secret") => json!({ "secret": true }),
-        Some(_) => value.get("value").cloned().unwrap_or_default(),
-        None => value,
-    }
-}
-
 /// Refuse unless `version` still names this review; the refusal carries the fresh
 /// one. A version a destructive review handed back names this review, then what it
 /// deletes (see `crate::removal::review`).
@@ -339,20 +321,7 @@ pub(crate) fn introductions(
         "SELECT node, node_type FROM config_node_introduction WHERE environment_id = ?1",
         &[environment.summary.id.as_str().into()],
     )?;
-    let mut intent = empty(&environment.working);
-    for row in rows {
-        let corrupt = |_| error::corrupt("Node Introduction");
-        if row.text(1)? == "volume" {
-            intent
-                .volumes
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        } else {
-            intent
-                .services
-                .push(serde_json::from_str(row.text(0)?).map_err(corrupt)?);
-        }
-    }
-    Ok(intent)
+    crate::scope::nodes(&rows, &environment.working, "Node Introduction")
 }
 
 pub(crate) fn latest_saved(
@@ -367,20 +336,18 @@ pub(crate) fn latest_saved(
     let Some(row) = rows.first() else {
         return Ok(None);
     };
-    let intent = serde_json::from_str(row.text(1)?)
-        .ok()
-        .and_then(|value| parse_environment_intent(value).ok())
-        .ok_or_else(|| error::corrupt("Saved State"))?;
+    let intent = row.intent(1, "Saved State")?;
     Ok(Some(Saved {
-        revision: Revision(u64::try_from(row.int(0)?).map_err(|_| error::corrupt("revision"))?),
+        revision: Revision(row.number(0, "revision")?),
         intent: canonicalize_environment_intent(intent),
     }))
 }
 
-pub(crate) fn empty(like: &SavedEnvironmentIntent) -> SavedEnvironmentIntent {
+/// An Environment `name` with nothing in it.
+pub(crate) fn empty(name: &str) -> SavedEnvironmentIntent {
     SavedEnvironmentIntent {
-        version: like.version,
-        environment_slug: like.environment_slug.clone(),
+        version: 1,
+        environment_slug: name.to_owned(),
         services: Vec::new(),
         volumes: Vec::new(),
     }

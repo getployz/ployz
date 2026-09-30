@@ -4,7 +4,8 @@
 use std::collections::BTreeMap;
 
 use ployz_core::config::{
-    SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent, parse_environment_intent,
+    EnvironmentNodeType, SavedEnvironmentIntent, SavedServiceIntent, SavedVolumeIntent,
+    parse_environment_intent,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -128,15 +129,13 @@ impl Environment {
                     .iter()
                     .map(|volume| volume.name.as_str())
                     .collect::<Vec<_>>();
-                error::not_found(
+                error::choices(
                     format!(
                         "No Volume named {name} in Environment {}",
                         self.summary.name
                     ),
-                    json!({
-                        "did_you_mean": error::did_you_mean(name.as_str(), names.iter().copied()),
-                        "valid_children": names,
-                    }),
+                    name.as_str(),
+                    names.iter().copied(),
                 )
             })
     }
@@ -153,13 +152,90 @@ pub(crate) fn no_service(
         .iter()
         .map(|service| service.slug.as_str())
         .collect::<Vec<_>>();
-    error::not_found(
+    error::choices(
         format!("No Service named {service} in Environment {environment}"),
-        json!({
-            "did_you_mean": error::did_you_mean(service.as_str(), names.iter().copied()),
-            "valid_children": names,
-        }),
+        service.as_str(),
+        names.iter().copied(),
     )
+}
+
+/// One node of an Environment, as its own rows store it beside the Environment.
+#[derive(Clone, Copy)]
+pub(crate) enum Node<'a> {
+    Service(&'a SavedServiceIntent),
+    Volume(&'a SavedVolumeIntent),
+}
+
+impl Node<'_> {
+    pub(crate) const fn node_type(self) -> &'static str {
+        match self {
+            Self::Service(_) => "service",
+            Self::Volume(_) => "volume",
+        }
+    }
+
+    pub(crate) fn document(self) -> String {
+        match self {
+            Self::Service(service) => serde_json::to_string(service),
+            Self::Volume(volume) => serde_json::to_string(volume),
+        }
+        .expect("a node is JSON")
+    }
+}
+
+/// Capture `node`'s Node Introduction in `environment`: it never changes after.
+pub(crate) fn introduce(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    environment: &EnvironmentId,
+    node: Node<'_>,
+) -> Result<(), RpcError> {
+    let id = match node {
+        Node::Service(service) => service.id.as_str(),
+        Node::Volume(volume) => volume.resource_id.as_str(),
+    };
+    tx.execute(
+        "INSERT INTO config_node_introduction \
+         (environment_id, node_id, organization_id, node_type, node) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        &[
+            environment.as_str().into(),
+            id.into(),
+            who.organization.as_str().into(),
+            node.node_type().into(),
+            node.document().as_str().into(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Rows of `(node, node_type)`, as one document shaped like `like`: Node
+/// Introductions, or Applied State (`what`, when one is unreadable).
+pub(crate) fn nodes(
+    rows: &[crate::storage::Row],
+    like: &SavedEnvironmentIntent,
+    what: &str,
+) -> Result<SavedEnvironmentIntent, RpcError> {
+    let mut intent = crate::review::empty(&like.environment_slug);
+    let corrupt = |_| error::corrupt(what);
+    for row in rows {
+        let node_type: EnvironmentNodeType =
+            serde_json::from_value(json!(row.text(1)?)).map_err(corrupt)?;
+        let node = row.text(0)?;
+        match node_type {
+            EnvironmentNodeType::Service => {
+                intent
+                    .services
+                    .push(serde_json::from_str(node).map_err(corrupt)?);
+            }
+            EnvironmentNodeType::Volume => {
+                intent
+                    .volumes
+                    .push(serde_json::from_str(node).map_err(corrupt)?);
+            }
+        }
+    }
+    Ok(intent)
 }
 
 pub(crate) fn project(
@@ -182,9 +258,9 @@ pub(crate) fn project(
     };
     match rows.as_slice() {
         [row] => Ok(Project {
-            id: stored(ProjectId::parse(row.text(0)?))?,
-            name: stored(ProjectName::parse(row.text(1)?))?,
-            default_environment: stored(EnvironmentId::parse(row.text(2)?))?,
+            id: row.parse::<ProjectId>(0, "identity")?,
+            name: row.parse::<ProjectName>(1, "identity")?,
+            default_environment: row.parse::<EnvironmentId>(2, "identity")?,
         }),
         [] => Err(match name {
             Some(name) => error::not_found(format!("No Project named {name}"), json!({})),
@@ -198,6 +274,21 @@ pub(crate) fn project(
             json!({ "projects": rows.iter().map(|row| row.text(1)).collect::<Result<Vec<_>, _>>()? }),
         )),
     }
+}
+
+/// The Project Environment `id` belongs to.
+pub(crate) fn project_of(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Project, RpcError> {
+    let rows = tx.query(
+        "SELECT p.id, p.name, p.default_environment_id FROM config_project p \
+         JOIN config_environment e ON e.project_id = p.id WHERE e.id = ?1",
+        &[id.as_str().into()],
+    )?;
+    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
+    Ok(Project {
+        id: row.parse(0, "Project")?,
+        name: row.parse(1, "Project")?,
+        default_environment: row.parse(2, "Project")?,
+    })
 }
 
 /// Resolve and load an Environment without locking it.
@@ -220,10 +311,7 @@ pub(crate) fn lock(
     at: &EnvironmentRef,
 ) -> Result<Environment, RpcError> {
     let (project, id) = resolve(tx, who, at)?;
-    tx.execute(
-        "UPDATE config_environment SET working_revision = working_revision WHERE id = ?1",
-        &[id.as_str().into()],
-    )?;
+    lock_all(tx, [id.clone()])?;
     load(tx, project, &id)
 }
 
@@ -275,11 +363,10 @@ fn owned(tx: &mut dyn Tx, who: &Actor, id: &EnvironmentId) -> Result<Environment
          WHERE e.id = ?1 AND e.organization_id = ?2",
         &[id.as_str().into(), who.organization.as_str().into()],
     )?;
-    let project = stored(ProjectName::parse(
-        rows.first()
-            .ok_or_else(|| error::not_found("No such Environment", json!({})))?
-            .text(0)?,
-    ))?;
+    let project = rows
+        .first()
+        .ok_or_else(|| error::not_found("No such Environment", json!({})))?
+        .parse::<ProjectName>(0, "identity")?;
     load(tx, project, id)
 }
 
@@ -303,7 +390,7 @@ fn resolve(
             json!({ "next": format!("ployz env new {name} --project {}", project.name) }),
         ));
     };
-    Ok((project.name, stored(EnvironmentId::parse(row.text(0)?))?))
+    Ok((project.name, row.parse::<EnvironmentId>(0, "identity")?))
 }
 
 /// Load an Environment by its ID, without locking it.
@@ -313,11 +400,10 @@ pub(crate) fn load_by_id(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<Environm
          JOIN config_project p ON p.id = e.project_id WHERE e.id = ?1",
         &[id.as_str().into()],
     )?;
-    let project = stored(ProjectName::parse(
-        rows.first()
-            .ok_or_else(|| error::corrupt("Environment"))?
-            .text(0)?,
-    ))?;
+    let project = rows
+        .first()
+        .ok_or_else(|| error::corrupt("Environment"))?
+        .parse::<ProjectName>(0, "identity")?;
     load(tx, project, id)
 }
 
@@ -331,17 +417,14 @@ fn load(
         &[id.as_str().into()],
     )?;
     let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
-    let working = serde_json::from_str(row.text(2)?)
-        .ok()
-        .and_then(|value| parse_environment_intent(value).ok())
-        .ok_or_else(|| error::corrupt("Working State"))?;
+    let working = row.intent(2, "Working State")?;
     let live = crate::branch::live_names(tx, id, &working)?;
     Ok(Environment {
         summary: EnvironmentSummary {
             id: id.clone(),
             project,
-            name: stored(EnvironmentName::parse(row.text(0)?))?,
-            revision: Revision(u64::try_from(row.int(1)?).map_err(|_| error::corrupt("revision"))?),
+            name: row.parse::<EnvironmentName>(0, "identity")?,
+            revision: Revision(row.number(1, "revision")?),
         },
         working,
         live,
@@ -372,8 +455,4 @@ pub(crate) fn save_working(tx: &mut dyn Tx, environment: &mut Environment) -> Re
 
 pub(crate) fn revision_param(revision: Revision) -> Result<i64, RpcError> {
     i64::try_from(revision.0).map_err(|_| error::internal("Working State revision overflowed"))
-}
-
-fn stored<T>(value: Result<T, RpcError>) -> Result<T, RpcError> {
-    value.map_err(|_| error::corrupt("identity"))
 }

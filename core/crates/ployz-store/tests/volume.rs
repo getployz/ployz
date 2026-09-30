@@ -12,14 +12,20 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId, EnvironmentQuery,
-    EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName, RemovalsQuery,
-    RemoveVolume, RunEvidence, RunnerId, ServiceId, SetVolumeStorage, SettingPath, Trusted,
-    VolumeId, VolumeListing, VolumeName, VolumeObservation, VolumeQuery, VolumesQuery,
+    Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
+    EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
+    Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
+    SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
+    VolumeQuery, VolumesQuery,
 };
 use serde_json::{Value, json};
 
 mod backend;
+
+/// Items as their text, to compare with literals.
+fn texts<T: ToString>(items: &[T]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
 
 const VOLUME: &str = "00000000-0000-4000-8000-000000000005";
 const DOCKER_VOLUME: &str = "shop-production_vol-00000000-0000-4000-8000-000000000005";
@@ -29,7 +35,7 @@ fn shop() -> (ConfigStore, Actor) {
     let store = backend::open();
     let who = Actor::system(OrganizationId::parse("org").unwrap());
     store
-        .create_project(
+        .write(
             &who,
             &CreateProject {
                 id: ProjectId::parse("00000000-0000-4000-8000-000000000001").unwrap(),
@@ -40,10 +46,10 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     store
-        .create_service(
+        .write(
             &who,
             &CreateService {
-                id: ServiceId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000003").unwrap(),
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("web").unwrap(),
                 image: Some("postgres:17".into()),
@@ -51,7 +57,7 @@ fn shop() -> (ConfigStore, Actor) {
         )
         .unwrap();
     let created = store
-        .create_volume(
+        .write(
             &who,
             &CreateVolume {
                 storage: ployz_core::config::VolumeKind::Local {},
@@ -65,13 +71,13 @@ fn shop() -> (ConfigStore, Actor) {
             },
         )
         .unwrap();
-    assert_eq!(created.staged, ["volumes.data", "web.mounts.data"]);
+    assert_eq!(texts(&created.staged), ["volumes.data", "web.mounts.data"]);
     (store, who)
 }
 
 fn edit(store: &ConfigStore, who: &Actor, change: Change) -> Result<(), RpcError> {
     store
-        .edit(
+        .write(
             who,
             &Edit {
                 environment: EnvironmentRef::default(),
@@ -87,14 +93,11 @@ fn path(path: &str) -> SettingPath {
 }
 
 fn listed(store: &ConfigStore, who: &Actor) -> Vec<VolumeListing> {
-    store
-        .volumes(who, &VolumesQuery::default())
-        .unwrap()
-        .volumes
+    store.read(who, &VolumesQuery::default()).unwrap().volumes
 }
 
 fn diff(store: &ConfigStore, who: &Actor) -> DiffView {
-    store.diff(who, &DiffQuery::default()).unwrap()
+    store.read(who, &DiffQuery::default()).unwrap()
 }
 
 fn id(n: u8) -> DeploymentId {
@@ -130,21 +133,20 @@ fn admit_at(
     version: Option<String>,
 ) -> Result<(), RpcError> {
     store
-        .admit(
+        .write_trusted(
             who,
-            &Admit {
+            &Admit::Deploy(Deploy {
                 id: id(n),
                 environment: EnvironmentRef::default(),
                 services: Vec::new(),
                 version,
                 upload: None,
-                retry: None,
-                remove: false,
                 accept_volume_loss: accept
                     .iter()
                     .map(|name| VolumeName::parse(*name).unwrap())
                     .collect(),
-            },
+                message: None,
+            }),
             &Trusted {
                 volumes: observed,
                 ..Trusted::default()
@@ -217,7 +219,7 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
     assert_eq!(create.storage, VolumeKind::managed_default());
     let (store, who) = shop();
     let set = |storage, expect| {
-        store.set_volume_storage(
+        store.write(
             &who,
             &SetVolumeStorage {
                 environment: EnvironmentRef::default(),
@@ -228,7 +230,7 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         )
     };
     let changed = set(VolumeKind::managed_default(), None).unwrap();
-    assert_eq!(changed.staged, ["volumes.data.storage"]);
+    assert_eq!(texts(&changed.staged), ["volumes.data"]);
     assert!(!listed(&store, &who)[0].storage_locked);
     let stale = changed.environment.revision;
     set(VolumeKind::Local {}, Some(stale)).unwrap();
@@ -260,7 +262,16 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         )
         .unwrap();
     assert_eq!(
-        store.deployment(&who, &id(1)).unwrap().deployment.status,
+        store
+            .read(
+                &who,
+                &ployz_store::DeploymentQuery {
+                    id: ToOwned::to_owned(&id(1))
+                }
+            )
+            .unwrap()
+            .deployment
+            .status,
         DeploymentStatus::Failed
     );
     assert!(listed(&store, &who)[0].storage_locked);
@@ -269,7 +280,7 @@ fn draft_storage_is_explicit_and_locks_even_when_deployment_fails() {
         assert_eq!(refused.code, RpcErrorCode::Conflict);
         assert_eq!(refused.details["storage_locked"], true);
     }
-    assert_eq!(set(managed, None).unwrap().staged, Vec::<String>::new());
+    assert!(set(managed, None).unwrap().staged.is_empty());
     assert_eq!(listed(&store, &who)[0].volume.storage, managed);
 }
 
@@ -278,7 +289,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     let (store, who) = shop();
     let get = |at: &str| {
         store
-            .environment(
+            .read(
                 &who,
                 &EnvironmentQuery {
                     environment: EnvironmentRef::default(),
@@ -331,7 +342,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     ] {
         assert_eq!(code(edit(&store, &who, change)), expected);
     }
-    let taken = store.create_volume(
+    let taken = store.write(
         &who,
         &CreateVolume {
             storage: ployz_core::config::VolumeKind::Local {},
@@ -344,7 +355,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
     assert_eq!(code(taken), RpcErrorCode::Conflict);
 
     let volume = store
-        .volume(
+        .read(
             &who,
             &VolumeQuery {
                 environment: EnvironmentRef::default(),
@@ -362,7 +373,7 @@ fn a_volume_mounts_by_setting_and_round_trips_get_patch_get() {
 fn an_undeployed_volume_is_removed_without_servers() {
     let (store, who) = shop();
     let removed = store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -370,7 +381,7 @@ fn an_undeployed_volume_is_removed_without_servers() {
             },
         )
         .unwrap();
-    assert_eq!(removed.staged, ["volumes.data", "web.mounts.data"]);
+    assert_eq!(texts(&removed.staged), ["volumes.data", "web.mounts.data"]);
     assert!(listed(&store, &who).is_empty());
     assert!(
         diff(&store, &who)
@@ -394,7 +405,9 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
             .contains("vol-00000000-0000-4000-8000-000000000005"),
         "the Deploy Intent mounts the Volume"
     );
-    let view = store.deployment(&who, &id(1)).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
     assert!(
         view.nodes
             .iter()
@@ -416,7 +429,7 @@ fn a_deployed_volume_is_applied_and_detaching_keeps_it() {
     // The Volume stays, so the Deploy deletes nothing and needs no evidence.
     assert!(
         store
-            .removals(&who, &RemovalsQuery::default())
+            .read(&who, &RemovalsQuery::default())
             .unwrap()
             .volumes
             .is_empty()
@@ -432,7 +445,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -447,7 +460,7 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
         .unwrap();
     assert_eq!(volume.lifecycle, ReviewLifecycleKind::Delete);
     assert_eq!(volume.data, Some(DataEffect::Deleted));
-    let removals = store.removals(&who, &RemovalsQuery::default()).unwrap();
+    let removals = store.read(&who, &RemovalsQuery::default()).unwrap();
     assert_eq!(removals.volumes[0].docker_volume.as_str(), DOCKER_VOLUME);
 
     // Missing, off-target or incomplete evidence fails closed.
@@ -527,12 +540,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     // A deletion that failed keeps the Volume deployed and staged for removal: the
     // Deployment failed, and its Node Outcome says the Volume did.
     assert!(listed(&store, &who)[0].deployed);
-    let failed = store.deployment(&who, &id(2)).unwrap();
+    let failed = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(2) })
+        .unwrap();
     assert_eq!(failed.deployment.status, DeploymentStatus::Failed);
     let data = failed
         .nodes
         .iter()
-        .find(|node| node.name == "data")
+        .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Failed);
 
@@ -540,12 +555,14 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     run(&store, 3, vec![removal(VolumeRemovalOutcome::Removed)]);
     assert!(listed(&store, &who).is_empty());
     assert!(diff(&store, &who).changes.is_empty());
-    let removed = store.deployment(&who, &id(3)).unwrap();
+    let removed = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(3) })
+        .unwrap();
     assert_eq!(removed.deployment.status, DeploymentStatus::Applied);
     let data = removed
         .nodes
         .iter()
-        .find(|node| node.name == "data")
+        .find(|node| node.node.name() == "data")
         .unwrap();
     assert_eq!(data.outcome, NodeStatus::Removed);
 }
@@ -556,7 +573,7 @@ fn a_removed_volume_no_server_holds_needs_no_acceptance() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -575,7 +592,7 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
     admit(&store, &who, 1, &[], None).unwrap();
     run(&store, 1, Vec::new());
     store
-        .remove_volume(
+        .write(
             &who,
             &RemoveVolume {
                 environment: EnvironmentRef::default(),
@@ -591,21 +608,56 @@ fn a_retry_deletes_exactly_what_its_source_accepted_without_a_new_review() {
         .unwrap();
     // The retry needs no evidence: it ships the source's frozen, accepted identities.
     store
-        .admit(
+        .write_trusted(
             &who,
-            &Admit {
+            &Admit::Retry(Retry {
                 id: id(3),
-                environment: EnvironmentRef::default(),
-                services: Vec::new(),
-                version: None,
-                upload: None,
-                retry: Some(id(2)),
-                remove: false,
-                accept_volume_loss: Vec::new(),
-            },
+                deployment: id(2),
+            }),
             &Trusted::default(),
         )
         .unwrap();
     let claimed = store.claim(&id(3), &runner).unwrap();
     assert_eq!(claimed.deletes, [held('a')]);
+}
+
+#[test]
+fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    store
+        .write(
+            &who,
+            &RemoveVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+            },
+        )
+        .unwrap();
+    let publish =
+        |accept: &[&str], observed: Option<VolumeObservation>, version: Option<String>| {
+            store.write_trusted(
+                &who,
+                &Publish {
+                    environment: EnvironmentRef::default(),
+                    version,
+                    accept_volume_loss: accept
+                        .iter()
+                        .map(|name| VolumeName::parse(*name).unwrap())
+                        .collect(),
+                },
+                &Trusted {
+                    volumes: observed,
+                    ..Trusted::default()
+                },
+            )
+        };
+    assert_eq!(code(publish(&[], None, None)), RpcErrorCode::Unavailable);
+    let refused = publish(&[], Some(observed(&['a'])), None).unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::ConfirmationRequired);
+    assert_eq!(refused.details["accept"], json!(["data"]));
+    let bound = refused.details["version"].as_str().unwrap().to_owned();
+    let published = publish(&["data"], Some(observed(&['a'])), Some(bound)).unwrap();
+    assert!(published.created);
 }

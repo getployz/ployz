@@ -125,7 +125,7 @@ pub(crate) fn environments(
 ) -> Result<EnvironmentsView, RpcError> {
     let project = scope::project(tx, who, query.project.as_ref())?;
     let rows = tx.query(
-        "SELECT e.id, e.name, COALESCE(p.name, '') FROM config_environment e \
+        "SELECT e.id, e.name, p.name FROM config_environment e \
          LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
          LEFT JOIN config_environment p ON p.id = b.parent_id \
          WHERE e.project_id = ?1 ORDER BY e.name",
@@ -133,15 +133,11 @@ pub(crate) fn environments(
     )?;
     let mut environments = Vec::with_capacity(rows.len());
     for row in rows {
-        let corrupt = |_| error::corrupt("Environment");
-        let id = EnvironmentId::parse(row.text(0)?).map_err(corrupt)?;
-        let parent = match row.text(2)? {
-            "" => None,
-            name => Some(EnvironmentName::parse(name).map_err(corrupt)?),
-        };
+        let id = row.parse::<EnvironmentId>(0, "Environment")?;
+        let parent = row.parse_optional::<EnvironmentName>(2, "Environment")?;
         environments.push(EnvironmentListing {
             default: id == project.default_environment,
-            name: EnvironmentName::parse(row.text(1)?).map_err(corrupt)?,
+            name: row.parse::<EnvironmentName>(1, "Environment")?,
             parent,
             removal: removal(tx, &id)?,
             id,
@@ -238,7 +234,7 @@ fn still_on_servers(name: &EnvironmentName, deployment: &DeploymentSummary) -> R
 /// when its whole Project goes.
 pub(crate) fn guard_removal(tx: &mut dyn Tx, environment: &Environment) -> Result<(), RpcError> {
     let summary = &environment.summary;
-    let project = project_of(tx, &summary.id)?;
+    let project = scope::project_of(tx, &summary.id)?;
     let members = members(tx, &project.id)?;
     let branches = members
         .iter()
@@ -304,39 +300,20 @@ struct Member {
     parent: Option<EnvironmentId>,
 }
 
-fn project_of(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<scope::Project, RpcError> {
-    let rows = tx.query(
-        "SELECT p.id, p.name, p.default_environment_id FROM config_project p \
-         JOIN config_environment e ON e.project_id = p.id WHERE e.id = ?1",
-        &[environment.as_str().into()],
-    )?;
-    let row = rows.first().ok_or_else(|| error::corrupt("Environment"))?;
-    let corrupt = |_| error::corrupt("Project");
-    Ok(scope::Project {
-        id: ProjectId::parse(row.text(0)?).map_err(corrupt)?,
-        name: ProjectName::parse(row.text(1)?).map_err(corrupt)?,
-        default_environment: EnvironmentId::parse(row.text(2)?).map_err(corrupt)?,
-    })
-}
-
 /// A Project's Environments with their Parents, in ID order.
 fn members(tx: &mut dyn Tx, project: &ProjectId) -> Result<Vec<Member>, RpcError> {
     let rows = tx.query(
-        "SELECT e.id, e.name, COALESCE(b.parent_id, '') FROM config_environment e \
+        "SELECT e.id, e.name, b.parent_id FROM config_environment e \
          LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
          WHERE e.project_id = ?1 ORDER BY e.id",
         &[project.as_str().into()],
     )?;
     rows.iter()
         .map(|row| {
-            let corrupt = |_| error::corrupt("Environment");
             Ok(Member {
-                id: EnvironmentId::parse(row.text(0)?).map_err(corrupt)?,
-                name: EnvironmentName::parse(row.text(1)?).map_err(corrupt)?,
-                parent: match row.text(2)? {
-                    "" => None,
-                    parent => Some(EnvironmentId::parse(parent).map_err(corrupt)?),
-                },
+                id: row.parse::<EnvironmentId>(0, "Environment")?,
+                name: row.parse::<EnvironmentName>(1, "Environment")?,
+                parent: row.parse_optional::<EnvironmentId>(2, "Environment")?,
             })
         })
         .collect()
@@ -462,35 +439,8 @@ fn removal(
         .filter(|latest| latest.remove))
 }
 
-/// Delete every row of `environment`, children before what they reference.
+/// Delete `environment` and everything it owns: its rows go with it.
 pub(crate) fn purge(tx: &mut dyn Tx, environment: &EnvironmentId) -> Result<(), RpcError> {
-    tx.execute(
-        "DELETE FROM config_build WHERE deployment_id IN \
-         (SELECT id FROM config_deployment WHERE environment_id = ?1)",
-        &[environment.as_str().into()],
-    )?;
-    for table in [
-        "config_applied",
-        "config_deployment",
-        "config_namespace",
-        "config_saved",
-        "config_node_introduction",
-        "config_registry_credential",
-        "config_build_receipt",
-        "config_service_policy",
-        "config_waiting_deploy",
-        "config_pr_environment",
-        "config_environment_branch",
-    ] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE environment_id = ?1"),
-            &[environment.as_str().into()],
-        )?;
-    }
-    tx.execute(
-        "DELETE FROM config_conditional_save WHERE environment_id = ?1 OR pr_environment_id = ?1",
-        &[environment.as_str().into()],
-    )?;
     tx.execute(
         "DELETE FROM config_environment WHERE id = ?1",
         &[environment.as_str().into()],
@@ -508,15 +458,14 @@ pub(crate) fn projects(tx: &mut dyn Tx, who: &Actor) -> Result<ProjectsView, Rpc
     )?;
     let mut projects: Vec<ProjectListing> = Vec::new();
     for row in rows {
-        let corrupt = |_| error::corrupt("Project");
-        let id = ProjectId::parse(row.text(0)?).map_err(corrupt)?;
-        let environment = EnvironmentName::parse(row.text(3)?).map_err(corrupt)?;
+        let id = row.parse::<ProjectId>(0, "Project")?;
+        let environment = row.parse::<EnvironmentName>(3, "Project")?;
         match projects.last_mut() {
             Some(project) if project.id == id => project.environments.push(environment),
             _ => projects.push(ProjectListing {
                 id,
-                name: ProjectName::parse(row.text(1)?).map_err(corrupt)?,
-                default_environment: EnvironmentName::parse(row.text(2)?).map_err(corrupt)?,
+                name: row.parse::<ProjectName>(1, "Project")?,
+                default_environment: row.parse::<EnvironmentName>(2, "Project")?,
                 environments: vec![environment],
             }),
         }
@@ -541,13 +490,7 @@ pub(crate) fn remove_project(
             return Err(still_on_servers(&member.name, &running));
         }
     }
-    for member in &order {
-        purge(tx, &member.id)?;
-    }
-    tx.execute(
-        "DELETE FROM config_pr_plan WHERE project_id = ?1",
-        &[project.id.as_str().into()],
-    )?;
+    // Its Environments and PR plans go with it, and everything they own.
     tx.execute(
         "DELETE FROM config_project WHERE id = ?1",
         &[project.id.as_str().into()],
@@ -591,7 +534,6 @@ pub(crate) fn remove_organization(
         "config_check_suite",
         "config_build_order",
         "config_pull_request",
-        "config_conditional_save",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE organization_id = ?1"),
