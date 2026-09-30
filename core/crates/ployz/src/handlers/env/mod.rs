@@ -419,7 +419,7 @@ fn node_names(names: &[String]) -> Result<Vec<ployz_store::NodeName>, Error> {
 }
 
 /// Items as one line of text.
-fn joined<T: ToString>(items: &[T]) -> String {
+pub(super) fn joined<T: ToString>(items: &[T]) -> String {
     items
         .iter()
         .map(ToString::to_string)

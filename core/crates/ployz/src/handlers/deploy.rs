@@ -39,11 +39,7 @@ pub(crate) fn deploy_command() -> Command {
             switch("plan", None)
                 .help("Show what would deploy, from authored state alone; run nothing"),
         )
-        .arg(
-            value("expect-version", None)
-                .value_name("VERSION")
-                .help("Refuse unless this is still the latest `ployz diff` version"),
-        )
+        .arg(crate::cli::reviewed_version())
         .arg(
             value("message", None)
                 .value_name("TEXT")
