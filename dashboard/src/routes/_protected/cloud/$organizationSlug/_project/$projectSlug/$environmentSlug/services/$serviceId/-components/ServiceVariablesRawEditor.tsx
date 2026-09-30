@@ -39,8 +39,6 @@ type RawEditorState = {
   jsonText: string;
   parseError: string | null;
   submitError: string | null;
-  /** Saving: the dialog stays open until the Store takes it or says why not. */
-  saving: boolean;
 };
 
 type RawEditorAction =
@@ -53,7 +51,6 @@ const initialRawEditorState: RawEditorState = {
   jsonText: "",
   parseError: null,
   submitError: null,
-  saving: false,
 };
 
 function rawEditorReducer(
@@ -107,6 +104,8 @@ export function ServiceVariablesRawEditor({
   );
   const prevOpenRef = useRef(open);
   const isEditorInitializedRef = useRef(false);
+  /** What was typed when the Store refused it, with its reason: the editor reopens on it. */
+  const refusedRef = useRef<Pick<RawEditorState, "mode" | "envText" | "jsonText" | "submitError"> | null>(null);
 
   function resetEditorFromVariables() {
     dispatchEditor({
@@ -119,7 +118,9 @@ export function ServiceVariablesRawEditor({
   if (open !== prevOpenRef.current) {
     prevOpenRef.current = open;
     if (open) {
-      resetEditorFromVariables();
+      if (refusedRef.current) dispatchEditor({ type: "patch", patch: refusedRef.current });
+      else resetEditorFromVariables();
+      refusedRef.current = null;
       isEditorInitializedRef.current = true;
     } else {
       isEditorInitializedRef.current = false;
@@ -171,8 +172,7 @@ export function ServiceVariablesRawEditor({
     }
   }
 
-  async function handleSubmit() {
-    if (editor.saving) return;
+  function handleSubmit() {
     dispatchEditor({
       type: "patch",
       patch: { parseError: null, submitError: null },
@@ -214,16 +214,13 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    // A refusal keeps the text, with the Store's reason over it.
-    dispatchEditor({ type: "patch", patch: { saving: true } });
-    try {
-      await onApply(diff).isPersisted.promise;
-      onOpenChange(false);
-    } catch (error) {
-      dispatchEditor({ type: "patch", patch: { submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." } });
-    } finally {
-      dispatchEditor({ type: "patch", patch: { saving: false } });
-    }
+    const typed = { mode: editor.mode, envText: editor.envText, jsonText: editor.jsonText };
+    // Optimistic: a refusal reopens the editor on what was typed, with the Store's reason over it.
+    onApply(diff).isPersisted.promise.catch((error: unknown) => {
+      refusedRef.current = { ...typed, submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." };
+      onOpenChange(true);
+    });
+    onOpenChange(false);
   }
 
   function handleOpenChange(nextOpen: boolean) {
@@ -289,8 +286,7 @@ export function ServiceVariablesRawEditor({
         <ServiceVariablesRawEditorFooter
           envText={editor.envText}
           onCancel={() => handleOpenChange(false)}
-          onSubmit={() => void handleSubmit()}
-          saving={editor.saving}
+          onSubmit={handleSubmit}
         />
       </DialogContent>
     </Dialog>

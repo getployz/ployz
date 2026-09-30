@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { useState } from "react";
+import { afterEach, expect, it } from "vitest";
 import { ServiceVariablesRawEditor } from "./ServiceVariablesRawEditor";
 
 afterEach(() => {
@@ -9,16 +10,17 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-it("a refused save keeps the dialog open with the text and the Store's reason", async () => {
-  const onOpenChange = vi.fn();
+function Harness({ onApply }: { onApply: () => { isPersisted: { promise: Promise<unknown> } } }) {
+  const [open, setOpen] = useState(true);
+  return <ServiceVariablesRawEditor open={open} onOpenChange={setOpen} variables={[]} onApply={onApply} />;
+}
+
+it("a refused save reopens the editor on what was typed, with the Store's reason", async () => {
   const refused = Promise.reject(new Error("web has no variable named MISSING"));
   refused.catch(() => undefined);
-  render(<ServiceVariablesRawEditor open onOpenChange={onOpenChange} variables={[]}
-    onApply={() => ({ isPersisted: { promise: refused } })} />);
-  const text = screen.getByLabelText("Service variables in ENV format");
-  fireEvent.change(text, { target: { value: "A=${{ web.MISSING }}" } });
+  render(<Harness onApply={() => ({ isPersisted: { promise: refused } })} />);
+  fireEvent.change(screen.getByLabelText("Service variables in ENV format"), { target: { value: "A=${{ web.MISSING }}" } });
   fireEvent.click(screen.getByRole("button", { name: "Update variables" }));
   await waitFor(() => expect(screen.getByText("web has no variable named MISSING")).toBeTruthy());
-  expect(onOpenChange).not.toHaveBeenCalledWith(false);
-  expect((screen.getByLabelText("Service variables in ENV format") as HTMLTextAreaElement).value).toBe("A=${{ web.MISSING }}");
+  expect(screen.getByLabelText<HTMLTextAreaElement>("Service variables in ENV format").value).toBe("A=${{ web.MISSING }}");
 });
