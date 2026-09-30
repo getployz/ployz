@@ -125,7 +125,10 @@ pub(in crate::handlers) fn add(root: &ArgMatches) -> Result<(), Error> {
             )
         })
     })();
-    output::emit_committed(json!({ "server": assigned }), follow_up)
+    output::emit_committed(
+        json!({ "server": super::server_json(&assigned) }),
+        follow_up,
+    )
 }
 
 fn added_machine_line(assigned: &Machine) -> String {

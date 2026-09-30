@@ -188,7 +188,7 @@ async fn remote_mismatch_is_rejected_without_mutating_the_local_machine() {
     assert_eq!(
         result.unwrap_err().to_string(),
         format!(
-            "daemon version synchronization requires running ployz server add on the Machine itself; connected through {connect}"
+            "daemon version synchronization requires running ployz server add on the Server itself; connected through {connect}"
         )
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
