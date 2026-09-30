@@ -164,23 +164,12 @@ pub(crate) fn view(
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.environment)?;
-    let planned = match &stored.run.preview {
-        Some(preview) if stored.run.nodes.is_empty() && stored.summary.status.in_flight() => {
-            let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-            let applied = applied_state(tx, &stored.environment, &saved)?;
-            planned_outcomes(&stored.nodes, &saved, &applied, preview)?
-        }
-        _ => BTreeMap::new(),
-    };
     let nodes = stored
         .nodes
         .iter()
         .map(|node| NodeOutcome {
             node: node.shown(),
-            outcome: match (
-                stored.run.nodes.get(node.id()).or(planned.get(node.id())),
-                stored.summary.status,
-            ) {
+            outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
                 (Some(status), _) => *status,
                 (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
                 (
