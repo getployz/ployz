@@ -15,6 +15,7 @@ import {
   createConfigDeploymentAdmittedEvent,
   createConfigDeploymentStartedEvent,
   createConfigPrCheckRequestedEvent,
+  type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
@@ -50,19 +51,27 @@ export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds
 const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   organizationId: string,
   written: ConfigWritten,
-  read: StoreRead,
   started: boolean,
 ) {
-  // A removal with nothing on a Server applied at admission: no worker runs it.
-  if (written.written !== "deployment" || written.status === "applied") return;
-  const view = yield* storeTry(() => read({ query: "deployment", id: written.id }));
-  const data = { organizationId, environmentId: view.environment.id, deploymentId: written.id };
-  const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
-  yield* sendInngestEvent(event).pipe(
-    Effect.catchTag("InngestEventSendError", (error) =>
-      Effect.logWarning("An admitted Deployment waits to be handed over again: Cloud couldn't hand it to its worker.", { data, error })),
-  );
+  for (const data of admittedEvents(organizationId, written)) {
+    const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
+    yield* sendInngestEvent(event).pipe(
+      Effect.catchTag("InngestEventSendError", (error) =>
+        Effect.logWarning("An admitted Deployment waits to be handed over again: Cloud couldn't hand it to its worker.", { data, error })),
+    );
+  }
 });
+
+/**
+ * The Deployments a write admitted, for Cloud's worker: one admitted or started, or those an automation admitted. A
+ * removal with nothing on a Server applied at admission: no worker runs it.
+ */
+export function admittedEvents(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
+  const summaries = written.written === "deployment" ? [written]
+    : written.written === "automated" ? written.admitted.map((auto) => auto.deployment) : [];
+  return summaries.filter((summary) => summary.status !== "applied")
+    .map((summary) => ({ organizationId, environmentId: summary.environment_id, deploymentId: summary.id }));
+}
 
 /**
  * The open pull requests with PR Environments in the Organization: any write there may move their checks.
@@ -169,7 +178,7 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
 
 /** What a committed write leaves Cloud to do: stop a cancelled Deployment's GitHub builds, run an admitted one, recheck PRs. */
 const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
-  organizationId: string, command: ConfigCommand, written: ConfigWritten, read: StoreRead,
+  organizationId: string, command: ConfigCommand, written: ConfigWritten,
 ) {
   if (command.command === "cancel") {
     // Cancellation ends outstanding Build Grants at once; best effort, as the walk's next look ends them too.
@@ -179,7 +188,7 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
   }
   // An admitted (or retried) or started Deployment goes to Cloud's worker, whoever asked.
   if (command.command === "admit" || command.command === "start") {
-    yield* dispatchAdmitted(organizationId, written, read, command.command === "start");
+    yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   yield* requestChecks(organizationId);
 });
@@ -198,7 +207,7 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
     const written = yield* storeTry(() => store.write(organizationId, call.command, trusted, principal));
     // The write committed: nothing after it may answer as its refusal. What failed is logged; sweeps redo it.
-    yield* afterWrite(organizationId, call.command, written, read).pipe(
+    yield* afterWrite(organizationId, call.command, written).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Cloud's follow-up to a committed Store write failed.", cause)),
     );
     return { ok: true, value: written };

@@ -1,5 +1,4 @@
 import type { ConfigCommand, ConfigWritten, EnvironmentListing } from "@ployz/sdk";
-import { isInFlight } from "./store-deployments";
 import { StoreRefused } from "./store.contract";
 
 /** A Project's Environments in tree order: roots first, each Branch right under its Parent, siblings as listed. */
@@ -20,7 +19,7 @@ export function storeEnvironmentTree(environments: readonly EnvironmentListing[]
 
 /** A removal from the Servers that hasn't ended. */
 export const removing = (environment: EnvironmentListing) =>
-  environment.removal !== null && isInFlight(environment.removal.status);
+  environment.removal !== null && environment.removal.in_flight;
 
 /** What an Environment has, in a few words, wherever the tree is listed: "default", "deleting". */
 export function storeEnvironmentNotes(environment: EnvironmentListing) {

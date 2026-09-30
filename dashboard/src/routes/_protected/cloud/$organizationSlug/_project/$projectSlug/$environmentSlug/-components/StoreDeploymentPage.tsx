@@ -115,7 +115,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
                 <Link key={node.id} to="." search={pageSearch(node.id)} replace aria-current={current ? "true" : undefined}
                   className={buttonVariants({ size: "sm", variant: current ? "secondary" : "outline" })}>
                   {node.name}
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>{nodeStatusLabels[node.outcome]}</Badge>
+                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment)]}>{nodeStatusLabels[node.outcome]}</Badge>
                 </Link>
               );
             })}
@@ -133,7 +133,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
                 <TabsTrigger value="deploy">Deploy</TabsTrigger>
               </TabsList>
               {services.length === 1 ? (
-                <Badge variant={outcomeBadges[nodeLight(focused.outcome, deployment.status)]} className="ml-auto">{nodeStatusLabels[focused.outcome]}</Badge>
+                <Badge variant={outcomeBadges[nodeLight(focused.outcome, deployment)]} className="ml-auto">{nodeStatusLabels[focused.outcome]}</Badge>
               ) : null}
             </div>
             <TabsContent value="build" className="mt-3 flex min-h-0 flex-1 flex-col gap-2">
@@ -163,7 +163,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
                 <Item key={node.id} variant="outline" size="sm">
                   <ItemContent className="min-w-0"><ItemTitle><span className="truncate">{node.name}</span></ItemTitle></ItemContent>
                   {/* A removed Volume's data is gone: say so. */}
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>
+                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment)]}>
                     {node.outcome === "removed" ? "Deleted" : nodeStatusLabels[node.outcome]}
                   </Badge>
                 </Item>

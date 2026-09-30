@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, ConfigWritten, SystemEvent } from "@ployz/sdk";
+import type { ConfigStore, SystemEvent } from "@ployz/sdk";
 import { Data, Effect } from "effect";
-import { storeSystem } from "#/modules/config-store/config-store.server";
+import { admittedEvents, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import {
   compareInstallationRepositoryCommits,
@@ -82,14 +82,6 @@ const mergedInto = Effect.fn("StoreGithub.mergedInto")(function* (
   return carried;
 });
 
-/** The Deployments an observation admitted, as Cloud dispatches them to runners. */
-export function admitted(organizationId: string, written: ConfigWritten): ConfigDeploymentAdmittedEventData[] {
-  if (written.written !== "automated") return [];
-  return written.admitted.map((deployed) => ({
-    organizationId, environmentId: deployed.environment, deploymentId: deployed.deployment.id,
-  }));
-}
-
 /**
  * Tell one Organization's Store where the branch is now, compared from the head the Store last saw. A push another
  * worker applied first makes the Store refuse the stale base, so it reads and compares again.
@@ -118,7 +110,7 @@ const observeBranchFor = Effect.fn("StoreGithub.observeBranchFor")(function* (
       Effect.map((written) => ({ written })),
       Effect.catchIf(refusedWith("conflict"), () => Effect.succeed(null)),
     );
-    if (written !== null) return admitted(organizationId, written.written);
+    if (written !== null) return admittedEvents(organizationId, written.written);
   }
   return yield* new StoreGithubFailure({ message: "The branch's head kept moving while Cloud compared it." });
 });
@@ -159,7 +151,7 @@ export const observeStoreCheckSuite = Effect.fn("StoreGithub.observeCheckSuite")
   const deployments: ConfigDeploymentAdmittedEventData[] = [];
   for (const organizationId of organizations) {
     const written = yield* storeSystem(organizationId, event);
-    deployments.push(...admitted(organizationId, written));
+    deployments.push(...admittedEvents(organizationId, written));
   }
   return deployments;
 });

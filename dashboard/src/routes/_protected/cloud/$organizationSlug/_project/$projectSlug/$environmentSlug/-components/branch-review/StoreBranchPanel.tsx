@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
-import { isInFlight } from "#/modules/config-store/store-deployments";
 import type { StoreResult } from "#/modules/config-store/store.contract";
 import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
@@ -70,7 +69,7 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
-    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} shutDown={branch.pull_request !== null}
+    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} inFlight={removal.in_flight} shutDown={branch.pull_request !== null}
       onFinish={() => void closing.close()} onStart={() => {
         // Back on the Servers until shut down again; the writer toasts a refusal.
         writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
@@ -180,8 +179,8 @@ const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => present
  * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
  * stays off until the pull request's next push brings it back.
  */
-function RemovalNews({ lead, name, status, shutDown, onFinish, onStart }: {
-  lead: boolean; name: string; status: DeploymentStatus; shutDown: boolean; onFinish: () => void; onStart: () => void;
+function RemovalNews({ lead, name, status, inFlight, shutDown, onFinish, onStart }: {
+  lead: boolean; name: string; status: DeploymentStatus; inFlight: boolean; shutDown: boolean; onFinish: () => void; onStart: () => void;
 }) {
   if (status === "applied" && shutDown) {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shut down" detail="The next push brings it back"
@@ -194,7 +193,7 @@ function RemovalNews({ lead, name, status, shutDown, onFinish, onStart }: {
     return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Off the servers" detail={`Finish closing ${name}`}
       action={<Button size="sm" variant={actionVariant(lead)} onClick={onFinish}>Finish closing</Button>} />;
   }
-  return isInFlight(status)
+  return inFlight
     ? <NewsRow lead={lead} icon={<PowerOffIcon />} title={shutDown ? "Shutting down" : "Coming off the servers"}
       detail={shutDown ? "The next push brings it back" : "Then it closes"} />
     : <NewsRow lead={lead} icon={<PowerOffIcon className="text-destructive" />} title="Couldn't come off the servers"

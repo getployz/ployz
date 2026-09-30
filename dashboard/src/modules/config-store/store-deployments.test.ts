@@ -46,14 +46,14 @@ it("words a Volume's storage by its limit", () => {
 });
 
 it("reads a pending node as its Deployment does, and a vanished runner's node as Unknown, never Failed", () => {
-  expect(nodeLight("pending", "queued")).toBe("queued");
-  expect(nodeLight("pending", "running")).toBe("deploying");
-  expect(nodeLight("pending", "cancelled")).toBe("not_applied");
-  expect(nodeLight("deployed", "failed")).toBe("deployed");
-  expect(nodeLight("unchanged", "failed")).toBe("deployed");
-  expect(nodeLight("failed", "failed")).toBe("failed");
-  expect(nodeLight("not_attempted", "failed")).toBe("not_applied");
-  expect(nodeLight("unknown", "unknown")).toBe("unknown");
+  expect(nodeLight("pending", { status: "queued", in_flight: true })).toBe("queued");
+  expect(nodeLight("pending", { status: "running", in_flight: true })).toBe("deploying");
+  expect(nodeLight("pending", { status: "cancelled", in_flight: false })).toBe("not_applied");
+  expect(nodeLight("deployed", { status: "failed", in_flight: false })).toBe("deployed");
+  expect(nodeLight("unchanged", { status: "failed", in_flight: false })).toBe("deployed");
+  expect(nodeLight("failed", { status: "failed", in_flight: false })).toBe("failed");
+  expect(nodeLight("not_attempted", { status: "failed", in_flight: false })).toBe("not_applied");
+  expect(nodeLight("unknown", { status: "unknown", in_flight: false })).toBe("unknown");
 });
 
 it("offers retry only after a Deployment ended without applying, start while queued, cancel before it ends", () => {
