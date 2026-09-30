@@ -63,8 +63,11 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
               <div className="row-span-2">{icon}</div>
               {title}
               <div className="justify-self-end">{chipBadge}</div>
-              <div className="min-w-0">{subtitle}</div>
-              <StatusLine status={status} issues={issues} className="justify-self-end" />
+              {/* The domain gives way to the status line, down to a stub. */}
+              <div className="col-span-2 flex min-w-0 items-center gap-3">
+                <div className="min-w-12 flex-1">{subtitle}</div>
+                <StatusLine status={status} issues={issues} />
+              </div>
             </CardContent>
           ) : <>
             <CardHeader>
