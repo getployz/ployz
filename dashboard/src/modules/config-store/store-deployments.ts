@@ -38,6 +38,7 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
   if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
   if (setting === "managedHostnames") return "Generated domain";
+  if (setting === "source") return "Source";
   return setting;
 }
 
@@ -79,13 +80,15 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
   Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
   Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
+  // A whole source, when a Service connects or disconnects one.
+  Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));
 
 /**
  * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
  * path and timeout, generated domains by name and port; else its JSON.
  */
-function shownValue(value: JsonValue): string {
+export function shownValue(value: JsonValue): string {
   if (value === null) return "";
   return Option.match(decodeShown(value), {
     onNone: () => typeof value === "object" ? JSON.stringify(value) : String(value),
@@ -94,6 +97,7 @@ function shownValue(value: JsonValue): string {
       if ("hostname" in shown) return shown.hostname;
       if ("secret" in shown) return "Sealed";
       if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
+      if ("type" in shown) return shown.image ?? shown.repository ?? "None";
       return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
     },
   });

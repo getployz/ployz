@@ -9,7 +9,8 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { shownValue } from "#/modules/config-store/store-deployments";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
@@ -162,7 +163,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
-          className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          className="flex min-h-0 flex-1 flex-col overflow-clip">
           <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
             {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
           </TabsList>
@@ -178,7 +179,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
           </TabsContent>
-          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
+          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">
                 {SERVICE_SETTINGS_SECTIONS.flatMap((section) => {
@@ -261,7 +262,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
       <FieldDescription>{setting.description}</FieldDescription>
       {setting.enum ? (
         <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) edit(next); }}>
-          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "h-auto w-full py-1.5" : "w-full"} data-changed={change ? true : undefined}
+          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "w-full py-1.5 data-[size=default]:h-auto" : "w-full"} data-changed={change ? true : undefined}
             title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
             <SelectValue>
               <span className="flex flex-col items-start">
@@ -435,10 +436,18 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   </>;
 
   if (state.source === "empty") {
-    const change = changeOf(state.changes, "image", "repository");
+    const change = changeOf(state.changes, "source", "image", "repository");
     return (
       <FieldGroup>
-        <Field data-changed={change ? true : undefined} title={change ? `Deployed: ${settingText(change.before) || "none"}` : undefined}>
+        {change ? (
+          <Item variant="muted" size="sm" data-changed>
+            <ItemContent>
+              <ItemTitle>No source after your next deploy</ItemTitle>
+              <ItemDescription>Deployed: {shownValue(change.before) || "none"}</ItemDescription>
+            </ItemContent>
+          </Item>
+        ) : null}
+        <Field>
           <FieldLabel>Add a source</FieldLabel>
           <FieldDescription>Deploy from a GitHub repository, or run a container image.</FieldDescription>
           <div className="flex flex-wrap gap-2">
