@@ -314,7 +314,11 @@ fn redacted_env(value: &Value) -> Value {
         Value::Null
     } else if value["kind"] == "secret" {
         json!({"kind": "secret"})
-    } else {
+    } else if value["parts"].is_array() {
         json!({"kind": "literal", "value": value["value"]})
+    } else {
+        // Shown as `get` shows it: a plain `${{` reads escaped, unlike a reference.
+        let text = value["value"].as_str().unwrap_or_default();
+        json!({"kind": "literal", "value": text.replace("${{", "$${{")})
     }
 }

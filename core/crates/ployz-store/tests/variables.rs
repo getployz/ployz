@@ -300,16 +300,34 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     let error = set(&store, &[("api.env.URL", json!("${{ wbe.HOST }}"))]).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details["did_you_mean"], "web");
+    let error = set(&store, &[("api.env.URL", json!("${{ web.HOST"))]).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(error.message.contains("$${{"), "{}", error.message);
+    // A variable web doesn't have is refused, naming what it has; a built-in isn't.
+    let error = set(&store, &[("api.env.URL", json!("${{ web.HOST }}"))]).unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert!(
+        error.message.contains("PLOYZ_PRIVATE_DOMAIN"),
+        "{}",
+        error.message
+    );
+    assert_eq!(error.details["service"], "web");
+    set(
+        &store,
+        &[("api.env.PEER", json!("${{ web.PLOYZ_PRIVATE_DOMAIN }}"))],
+    )
+    .unwrap();
+    // One edit may reference a variable it sets later.
     set(
         &store,
         &[
-            ("web.env.HOST", json!("web.internal")),
-            ("web.env.HOST.exported", json!("true")),
-            ("web.env.KEY", json!({ "secret": SECRET })),
             (
                 "api.env.URL",
                 json!("http://${{ web.HOST }}/ $${{ not.A_REF }}"),
             ),
+            ("web.env.HOST", json!("web.internal")),
+            ("web.env.HOST.exported", json!("true")),
+            ("web.env.KEY", json!({ "secret": SECRET })),
         ],
     )
     .unwrap();
@@ -361,4 +379,26 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     let error = admit(&store, 1).unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(error.message.contains("web.env.A"), "{}", error.message);
+}
+
+#[test]
+fn diff_and_plan_show_a_plain_template_opener_escaped_as_get_does() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.RAW", json!("echo $${{ HOME }}"))]).unwrap();
+    assert_eq!(value(&store, "web.env.RAW"), "echo $${{ HOME }}");
+    let after = |read: Value| {
+        read["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|change| change["settings"].as_array().unwrap())
+            .find(|row| row["path"] == "web.env.RAW")
+            .map(|row| row["after"].clone())
+    };
+    let diff = json!(store.read(&who(), &DiffQuery::default()).unwrap());
+    assert_eq!(after(diff), Some(json!("echo $${{ HOME }}")));
+    let plan = json!(store.read(&who(), &PlanQuery::default()).unwrap());
+    assert!(plan.to_string().contains("echo $${{ HOME }}"), "{plan}");
+    assert!(!plan.to_string().contains("echo ${{ HOME }}"), "{plan}");
 }

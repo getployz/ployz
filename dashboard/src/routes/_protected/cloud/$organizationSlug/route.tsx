@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { createFileRoute, Outlet, useMatch, useParams } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useParams } from "@tanstack/react-router";
 import { useOrganizationChanges } from "#/collections/org-changes.stream";
 import { prefetchOrgStore, requireOrganization } from "#/collections/route-data";
 import { DashboardShell } from "#/components/dashboard-shell";
@@ -35,9 +35,6 @@ function RouteComponent() {
 function OrganizationLayout() {
   const { organizationSlug } = Route.useParams();
   const { projectSlug, environmentSlug } = useParams({ strict: false });
-  const creatingProject = useMatch({ from: "/_protected/cloud/$organizationSlug/_project/new", shouldThrow: false });
-  // Project creation is a focused full-screen flow.
-  if (creatingProject) return <Outlet />;
   const scope: DashboardScope = projectSlug && environmentSlug
     ? { kind: "environment", organizationSlug, projectSlug, environmentSlug }
     : { kind: "all", organizationSlug };

@@ -149,7 +149,7 @@ pub(in crate::handlers) fn init(root: &ArgMatches) -> Result<(), Error> {
     });
     // The Machine and its context are committed: print them before a follow-up failure.
     let result = json!({
-        "server": machine,
+        "server": super::server_json(&machine),
         "context": context_name,
         "ingress": ingress.as_ref().ok().and_then(Option::as_ref),
     });

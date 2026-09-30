@@ -10,7 +10,6 @@ import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import { parseDisplayToParts } from "#/modules/variables/variable-template";
-import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 
 /** A variable's name, as the Store takes it (the settings catalog's `env` keys). */
@@ -27,10 +26,8 @@ type VariableAddFormState = {
   value: string;
   sealed: boolean;
   exported: boolean;
-  overwriteCandidate: {
-    id: string;
-    value: string;
-  } | null;
+  /** The key names an existing variable: confirm before replacing it. */
+  confirmingOverwrite: boolean;
 };
 
 type VariableAddFormAction =
@@ -38,7 +35,7 @@ type VariableAddFormAction =
   | { type: "valueChanged"; value: string }
   | { type: "sealedChanged"; checked: boolean }
   | { type: "exportedChanged"; checked: boolean }
-  | { type: "overwriteRequested"; id: string; value: string }
+  | { type: "overwriteRequested" }
   | { type: "overwriteCleared" }
   | { type: "reset"; defaults: VariableAddFormDefaults };
 
@@ -51,7 +48,7 @@ function createVariableAddFormState({
     value: draft?.value ?? "",
     sealed: draft?.sealed ?? allowSealOnCreate,
     exported: draft?.exported ?? defaultExported,
-    overwriteCandidate: null,
+    confirmingOverwrite: false,
   };
 }
 
@@ -76,12 +73,9 @@ function variableAddFormReducer(
     case "exportedChanged":
       return { ...state, exported: action.checked };
     case "overwriteRequested":
-      return {
-        ...state,
-        overwriteCandidate: { id: action.id, value: action.value },
-      };
+      return { ...state, confirmingOverwrite: true };
     case "overwriteCleared":
-      return { ...state, overwriteCandidate: null };
+      return { ...state, confirmingOverwrite: false };
     case "reset":
       return createVariableAddFormState(action.defaults);
   }
@@ -89,7 +83,6 @@ function variableAddFormReducer(
 
 export function VariableAddForm({
   variables,
-  collection,
   onCreateVariable,
   onCancel,
   allowSealOnCreate,
@@ -100,7 +93,6 @@ export function VariableAddForm({
   initial,
 }: {
   variables: VariableRecord[];
-  collection: VariableWriter;
   /** Saves in the background; a refusal reopens the form with `initial`. */
   onCreateVariable: (input: VariableAddInput) => void;
   onCancel: () => void;
@@ -128,7 +120,9 @@ export function VariableAddForm({
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
     ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
-  const valueError = state.sealed ? null : referenceError(state.value, serviceNames);
+  const valueError = state.sealed
+    ? state.value.includes("${{") ? "A sealed value is stored as-is. Untick Sealed to use a reference." : null
+    : referenceError(state.value, serviceNames);
 
   function handleAdd() {
     const key = typedKey;
@@ -141,30 +135,21 @@ export function VariableAddForm({
         toast.error(getSealedVariableCollisionMessage(existing.key));
         return;
       }
-      dispatch({
-        type: "overwriteRequested",
-        id: existing.id,
-        value: state.value,
-      });
+      dispatch({ type: "overwriteRequested" });
       return;
     }
 
+    save();
+  }
+
+  /** Writes the variable as the form has it, sealed or not; an overwrite replaces the existing one. */
+  function save() {
     // Optimistic: the writer rolls back and toasts if saving fails.
     onCreateVariable({
-      key,
+      key: typedKey,
       value: state.value,
       sealed: state.sealed,
       exported: state.exported,
-    });
-    closeForm();
-  }
-
-  function handleConfirmOverwrite() {
-    if (!state.overwriteCandidate) return;
-    const { id, value } = state.overwriteCandidate;
-    // Optimistic: the writer rolls back and toasts if saving fails.
-    collection.update(id, (draft) => {
-      draft.value = { type: "plain", value };
     });
     closeForm();
   }
@@ -280,7 +265,7 @@ export function VariableAddForm({
       </form>
 
       <ConfirmDialog
-        open={state.overwriteCandidate !== null}
+        open={state.confirmingOverwrite}
         onOpenChange={(open) => {
           if (!open) dispatch({ type: "overwriteCleared" });
         }}
@@ -289,7 +274,7 @@ export function VariableAddForm({
         actionLabel="Overwrite"
         pendingLabel="Overwriting…"
         variant="destructive"
-        onConfirm={handleConfirmOverwrite}
+        onConfirm={save}
       />
     </>
   );

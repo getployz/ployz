@@ -3,9 +3,9 @@
 use super::{Error, leaf_matches, string_values};
 use crate::{connect::Client, context::ConnectionSource};
 use clap::ArgMatches;
-use ployz_core::{DataLossConfirmation, ObservedDataLoss};
+use ployz_core::{DataLoss, DataLossConfirmation, ObservedDataLoss};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     io::{self, Write},
 };
 
@@ -17,6 +17,14 @@ pub(super) enum VolumeEffect {
     LoseAccess,
 }
 
+/// The Volume name each Docker Volume keeps a Volume's data for, by Docker name.
+pub(super) type VolumeLabels = BTreeMap<String, String>;
+
+/// What a person names `loss` by: its Volume's name, else its Docker name.
+pub(super) fn volume_label<'a>(labels: &'a VolumeLabels, loss: &'a DataLoss) -> &'a str {
+    labels.get(loss.name()).map_or(loss.name(), String::as_str)
+}
+
 pub(super) fn confirm_removal(
     root: &ArgMatches,
     client: &Client,
@@ -24,6 +32,7 @@ pub(super) fn confirm_removal(
     operation: &str,
     targets: &[String],
     volume_effect: VolumeEffect,
+    labels: &VolumeLabels,
 ) -> Result<Option<DataLossConfirmation>, Error> {
     let leaf = leaf_matches(root);
     let context = match client.connection_source() {
@@ -40,6 +49,7 @@ pub(super) fn confirm_removal(
         targets,
         ConfirmationOptions {
             volume_effect,
+            labels,
             // A typed `--confirm` stands in for `--yes`.
             yes: leaf.try_get_one::<bool>("yes").ok().flatten() == Some(&true)
                 || leaf
@@ -77,8 +87,9 @@ pub(super) fn retry_args(root: &ArgMatches, source: &ConnectionSource) -> Vec<St
     args
 }
 
-struct ConfirmationOptions {
+struct ConfirmationOptions<'a> {
     volume_effect: VolumeEffect,
+    labels: &'a VolumeLabels,
     yes: bool,
     tty: bool,
 }
@@ -87,16 +98,18 @@ fn confirm_with(
     observed: &ObservedDataLoss,
     named: &[String],
     targets: &[String],
-    options: ConfirmationOptions,
+    options: ConfirmationOptions<'_>,
     retry: &[String],
     output: &mut dyn Write,
     mut read: impl FnMut(&str) -> io::Result<Option<String>>,
 ) -> Result<Option<DataLossConfirmation>, Error> {
     let ConfirmationOptions {
         volume_effect,
+        labels,
         yes,
         tty,
     } = options;
+    let label = |loss| volume_label(labels, loss);
     writeln!(
         output,
         "Based on what the connected machine can see; other machines may have additional resources."
@@ -105,18 +118,18 @@ fn confirm_with(
         VolumeEffect::Preserve => writeln!(output, "Volumes will be kept.")?,
         VolumeEffect::LoseAccess => writeln!(
             output,
-            "Volumes losing access through the cluster ({}). Their data will not be erased:",
+            "Volumes the Cluster loses ({}); only the Server's disk keeps their data:",
             observed.data_loss.len()
         )?,
     }
     for loss in &observed.data_loss {
-        let ployz_core::DataLoss::DockerVolume { id } = loss;
-        writeln!(output, "  {} (machine ID: {})", id.name, id.machine_id)?;
+        let DataLoss::DockerVolume { id } = loss;
+        writeln!(output, "  {} (machine ID: {})", label(loss), id.machine_id)?;
     }
     let names = observed
         .data_loss
         .iter()
-        .map(|loss| loss.name())
+        .map(label)
         .collect::<BTreeSet<_>>();
     let supplied = named.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let unknown = supplied.difference(&names).copied().collect::<Vec<_>>();
@@ -124,12 +137,7 @@ fn confirm_with(
         return Err(Error::usage(format!(
             "Unknown volume acceptance: {}. Actual affected volumes: {}. No changes made.",
             unknown.join(", "),
-            observed
-                .data_loss
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            names.iter().copied().collect::<Vec<_>>().join(", ")
         )));
     }
     let missing = names.difference(&supplied).copied().collect::<Vec<_>>();
@@ -144,9 +152,10 @@ fn confirm_with(
             shell_words::join(command)
         )));
     }
+    // Past the checks above every observed loss is accepted, by whichever name.
     let confirmation = || {
         observed
-            .confirm_names(names.iter().copied())
+            .confirm_names(observed.data_loss.iter().map(DataLoss::name))
             .map_err(|error| Error::usage(error.to_string()))
     };
     if !named.is_empty() || (names.is_empty() && yes) {
@@ -181,7 +190,7 @@ fn prompt(
     if !targets.is_empty() {
         let consequence = match volume_effect {
             VolumeEffect::LoseAccess => {
-                "lose access to the listed volumes through the cluster; their data will not be erased"
+                "lose the listed volumes: only the Server's disk keeps their data"
             }
             VolumeEffect::Preserve => "keep the listed volumes",
         };
@@ -294,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn machine_reset_confirmation_names_access_loss_without_promising_erasure() {
+    fn machine_reset_confirmation_names_the_loss_without_promising_the_data_is_safe() {
         let observed = ObservedDataLoss {
             data_loss: vec![loss('a', "data")],
         };
@@ -305,6 +314,7 @@ mod tests {
             &["worker".into()],
             ConfirmationOptions {
                 volume_effect: VolumeEffect::LoseAccess,
+                labels: &VolumeLabels::new(),
                 yes: false,
                 tty: true,
             },
@@ -319,13 +329,74 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmation).is_ok());
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("Their data will not be erased"), "{output}");
         assert!(
-            output.contains("lose access to the listed volumes through the cluster"),
+            output.contains("lose the listed volumes: only the Server's disk keeps their data"),
             "{output}"
         );
-        assert!(output.contains("data will not be erased"), "{output}");
+        assert!(!output.contains("not be erased"), "{output}");
         assert!(!output.contains("Permanently delete"), "{output}");
+    }
+
+    #[test]
+    fn volumes_are_listed_and_accepted_by_their_volume_name() {
+        let observed = ObservedDataLoss {
+            data_loss: vec![loss('a', "shop-production_vol-1"), loss('a', "stray")],
+        };
+        let labels = VolumeLabels::from([("shop-production_vol-1".into(), "pgdata".into())]);
+        let options = |tty| ConfirmationOptions {
+            volume_effect: VolumeEffect::LoseAccess,
+            labels: &labels,
+            yes: false,
+            tty,
+        };
+        let mut output = Vec::new();
+        let missing = confirm_with(
+            &observed,
+            &[],
+            &["worker".into()],
+            options(false),
+            &["ployz".into()],
+            &mut output,
+            |_| panic!("no tty"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            missing.contains("--accept-volume-loss pgdata --accept-volume-loss stray"),
+            "{missing}"
+        );
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("  pgdata (machine ID:")
+        );
+        let raw = confirm_with(
+            &observed,
+            &["shop-production_vol-1".into(), "stray".into()],
+            &["worker".into()],
+            options(false),
+            &[],
+            &mut Vec::new(),
+            |_| panic!("no tty"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            raw.contains("Unknown volume acceptance: shop-production_vol-1"),
+            "{raw}"
+        );
+        let confirmed = confirm_with(
+            &observed,
+            &["pgdata".into(), "stray".into()],
+            &["worker".into()],
+            options(false),
+            &[],
+            &mut Vec::new(),
+            |_| panic!("no tty"),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(observed.require(&confirmed).is_ok());
     }
 
     #[test]
@@ -342,6 +413,7 @@ mod tests {
                 &["app".into()],
                 ConfirmationOptions {
                     volume_effect: VolumeEffect::LoseAccess,
+                    labels: &VolumeLabels::new(),
                     yes: true,
                     tty: true,
                 },
@@ -371,6 +443,7 @@ mod tests {
                     &["app".into()],
                     ConfirmationOptions {
                         volume_effect: VolumeEffect::LoseAccess,
+                        labels: &VolumeLabels::new(),
                         yes,
                         tty: false,
                     },
@@ -406,6 +479,7 @@ mod tests {
                 &["app".into()],
                 ConfirmationOptions {
                     volume_effect: VolumeEffect::LoseAccess,
+                    labels: &VolumeLabels::new(),
                     yes: false,
                     tty,
                 },
@@ -441,6 +515,7 @@ mod tests {
             &targets,
             ConfirmationOptions {
                 volume_effect: VolumeEffect::LoseAccess,
+                labels: &VolumeLabels::new(),
                 yes: true,
                 tty: true,
             },
@@ -456,9 +531,9 @@ mod tests {
         .unwrap();
         assert!(observed.require(&confirmed).is_ok());
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("This will remove app/db, app/api and lose access to the listed volumes through the cluster; their data will not be erased."));
+        assert!(output.contains("This will remove app/db, app/api and lose the listed volumes: only the Server's disk keeps their data."));
         assert!(output.contains("Press Enter without typing to cancel."));
-        assert!(output.contains("Volumes losing access through the cluster (1)."));
+        assert!(output.contains("Volumes the Cluster loses (1);"));
         assert!(output.contains("(machine ID: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)"));
         assert!(output.contains("Names did not match"));
         assert!(!output.contains("[y/N]"));
@@ -471,6 +546,7 @@ mod tests {
                     &targets,
                     ConfirmationOptions {
                         volume_effect: VolumeEffect::LoseAccess,
+                        labels: &VolumeLabels::new(),
                         yes: false,
                         tty: true
                     },
@@ -494,6 +570,7 @@ mod tests {
                 &targets,
                 ConfirmationOptions {
                     volume_effect: VolumeEffect::LoseAccess,
+                    labels: &VolumeLabels::new(),
                     yes: false,
                     tty: true
                 },
@@ -510,10 +587,7 @@ mod tests {
         let observed = ObservedDataLoss { data_loss: vec![] };
         for (effect, shown) in [
             (VolumeEffect::Preserve, "Volumes will be kept"),
-            (
-                VolumeEffect::LoseAccess,
-                "Volumes losing access through the cluster (0)",
-            ),
+            (VolumeEffect::LoseAccess, "Volumes the Cluster loses (0)"),
         ] {
             let mut output = Vec::new();
             assert!(
@@ -523,6 +597,7 @@ mod tests {
                     &["app".into()],
                     ConfirmationOptions {
                         volume_effect: effect,
+                        labels: &VolumeLabels::new(),
                         yes: false,
                         tty: false
                     },
@@ -540,6 +615,7 @@ mod tests {
                     &["app".into()],
                     ConfirmationOptions {
                         volume_effect: effect,
+                        labels: &VolumeLabels::new(),
                         yes: true,
                         tty: false
                     },
@@ -557,6 +633,7 @@ mod tests {
                     &["app".into()],
                     ConfirmationOptions {
                         volume_effect: effect,
+                        labels: &VolumeLabels::new(),
                         yes: false,
                         tty: true
                     },

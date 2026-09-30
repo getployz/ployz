@@ -11,6 +11,8 @@ describe("Save sheet over the Store", () => {
     expect(presentMoveRow({ row: "web.env.API_KEY", conflict: false, choice: { ...variable, secret: true }, from: { secret: true }, into: null }))
       .toMatchObject({ node: "web", label: "API_KEY", before: "", after: "hidden" });
     expect(presentMoveRow({ row: "cache", conflict: false, from: "cache", into: null })).toMatchObject({ node: "cache", label: "New", after: "" });
+    expect(presentMoveRow({ row: "volumes.data", conflict: false, from: null, into: null })).toMatchObject({ lineageId: "volumes.data", node: "data", label: "New" });
+    expect(presentMoveRow({ row: "volumes.data.size", conflict: false, from: "5GB", into: "1GB" })).toMatchObject({ lineageId: "volumes.data", node: "data" });
   });
 
   it("moves a new node whole, its unticked variables left out, and a kept node's settings one by one", () => {

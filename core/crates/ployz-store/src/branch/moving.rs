@@ -95,11 +95,34 @@ pub(crate) fn view_of(
         .iter()
         .filter_map(|row| move_row(moving, &from, &into, row))
         .collect();
+    let differ = changes
+        .rows
+        .iter()
+        .filter_map(|row| match row.role {
+            BranchRole::Differ {
+                why:
+                    why @ (BranchReason::Sizing
+                    | BranchReason::CustomDomain
+                    | BranchReason::GeneratedAddress
+                    | BranchReason::GitBranch),
+            } => {
+                let (row, from, into) = shown_row(moving, &from, &into, row);
+                Some(DifferRow {
+                    row,
+                    why,
+                    from,
+                    into,
+                })
+            }
+            BranchRole::Differ { .. } | BranchRole::Move { .. } => None,
+        })
+        .collect();
     Ok(MoveView {
         version: version(&into, &changes.review),
         from: from.summary,
         into: into.summary,
         rows,
+        differ,
     })
 }
 
@@ -114,6 +137,27 @@ pub(crate) fn move_row(
     let BranchRole::Move { conflict, choice } = &row.role else {
         return None;
     };
+    let (name, from_value, into_value) = shown_row(moving, from, into, row);
+    Some(MoveRow {
+        row: name,
+        conflict: *conflict,
+        choice: choice.as_ref().map(|choice| MoveChoice {
+            default: moving.default(choice),
+            options: choice.options.clone(),
+            secret: choice.secret,
+        }),
+        from: from_value,
+        into: into_value,
+    })
+}
+
+/// A row's name and its two values as reads show them.
+fn shown_row(
+    moving: &Moving,
+    from: &Environment,
+    into: &Environment,
+    row: &BranchRow,
+) -> (String, Value, Value) {
     let key = row.key.to_string();
     let (lineage, path) = split(&key);
     let variable = |intent: &SavedEnvironmentIntent, names| {
@@ -127,17 +171,7 @@ pub(crate) fn move_row(
         variable(&moving.from, &from_names).unwrap_or_else(|| shown(path, row.from.clone()));
     let into_value =
         variable(&into.working, &into_names).unwrap_or_else(|| shown(path, row.into.clone()));
-    Some(MoveRow {
-        row: moving.name(&into.working, &key),
-        conflict: *conflict,
-        choice: choice.as_ref().map(|choice| MoveChoice {
-            default: moving.default(choice),
-            options: choice.options.clone(),
-            secret: choice.secret,
-        }),
-        from: from_value,
-        into: into_value,
-    })
+    (moving.name(&into.working, &key), from_value, into_value)
 }
 
 /// Which way changes move between a Branch and its Parent. [`Way`] is the same
@@ -315,9 +349,16 @@ pub(crate) fn picks(
             Some(offered) => {
                 let option = asked.map_or_else(|| moving.default(offered), PickChoice::option);
                 if !offered.options.contains(&option) {
+                    let options = json!(offered.options);
+                    let names: Vec<&str> = options
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .collect();
                     return Err(error::invalid(
-                        format!("{name}: a variable lands as one of {:?}", offered.options),
-                        json!({ "row": name }),
+                        format!("{name}: a variable lands as one of {}", names.join(", ")),
+                        json!({ "row": name, "options": options }),
                     ));
                 }
                 Some(match (option, asked) {

@@ -848,6 +848,29 @@ fn a_new_volume_is_deployed_once_the_service_mounting_it_is_confirmed() {
 }
 
 #[test]
+fn a_volume_confirmed_mid_run_still_reads_deployed_once_the_deploy_ends() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    prepare(&store, 1, &["web"]);
+    store
+        .record(
+            &id(1),
+            &RunnerId::parse("runner").unwrap(),
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    // Applied State holds data already; the Deploy still created it.
+    execute(&store, 1, Vec::new());
+    assert_eq!(
+        outcomes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("data".to_owned(), NodeStatus::Deployed),
+        ]
+    );
+}
+
+#[test]
 fn a_shared_volume_lands_with_the_one_confirmed_service_whatever_the_other_does() {
     let (store, who) = shop();
     store

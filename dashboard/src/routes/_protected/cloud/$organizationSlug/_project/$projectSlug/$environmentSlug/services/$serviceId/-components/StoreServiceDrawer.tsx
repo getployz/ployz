@@ -517,7 +517,7 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
 }
 
 function StoreDangerSection({ state }: { state: StoreService }) {
-  const remove = useRemoveStoreService(state.environment, state.service.name);
+  const remove = useRemoveStoreService(state.environment, state.service);
   return (
     <div className="flex flex-col items-start justify-between gap-4 rounded-xl border border-destructive-border bg-destructive-soft p-4 sm:flex-row sm:items-center">
       <div className="min-w-0">

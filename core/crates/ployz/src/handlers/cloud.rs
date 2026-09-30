@@ -241,7 +241,7 @@ where
     crate::output::say!("Joined Server {} ({})", assigned.name, assigned.id);
     // The join is committed; a catch-up failure makes it partial.
     crate::output::emit_committed(
-        serde_json::json!({ "server": assigned, "founded": false }),
+        serde_json::json!({ "server": super::server::server_json(&assigned), "founded": false }),
         catch_up.map_err(|error| {
             Error::coded(
                 error.code(),
@@ -319,6 +319,8 @@ where
     } else {
         Some(crate::ingress::service_spec(ingress_image, Default::default()).await?)
     };
+    // A rerun on the founded Server finishes or repeats the enrollment; it founds nothing.
+    let founding = matches!(state, FounderLocalState::Initialize);
     let (machine, mut ready) = match state {
         FounderLocalState::Resume { machine } => (*machine, client),
         FounderLocalState::Initialize => {
@@ -377,8 +379,28 @@ where
         &pairing.secret,
     )
     .await?;
-    crate::output::say!("Initialised Server {} ({})", machine.name, machine.id);
-    crate::output::emit(&serde_json::json!({ "server": machine, "founded": true }))
+    crate::output::emit(&founder_result(&machine, founding))
+}
+
+/// The first Server's result. Founding it, Cloud deploys the Organization's saved
+/// Environments to it, as Deployments admitted after this returns.
+fn founder_result(machine: &Machine, founding: bool) -> serde_json::Value {
+    let next = founding.then_some("ployz deployment ls");
+    if founding {
+        crate::output::say!("Initialised Server {} ({})", machine.name, machine.id);
+        crate::output::say!("Cloud now deploys any saved Environments to it.");
+    } else {
+        crate::output::say!("Server {} ({}) is enrolled", machine.name, machine.id);
+    }
+    if let Some(next) = next {
+        crate::output::say!("next: {next}");
+    }
+    serde_json::json!({
+        "server": super::server::server_json(machine),
+        "founded": founding,
+        "deploys_saved_environments": founding,
+        "next": next,
+    })
 }
 
 /// Take a fresh Management Capability for Cloud's `cloud` Management Client slot.

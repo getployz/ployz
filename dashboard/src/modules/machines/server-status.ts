@@ -5,7 +5,7 @@ export type ServerStatus = "online" | "building" | "offline" | "unknown";
 /** Storage support as observed, separate from whether the Server is online. */
 export function volumeSupportText(storage: RuntimeMachineRecord["storage"]) {
   return storage === null ? "Volume support unknown"
-    : storage === "stateless" ? "Docker volumes only" : "Managed volumes available";
+    : storage === "stateless" ? "Docker only" : "Managed volumes available";
 }
 
 /**

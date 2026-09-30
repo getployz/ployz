@@ -484,7 +484,7 @@ pub enum PlanError {
     },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
-        "Server '{machine}' cannot host managed volumes yet; enable managed volumes when adding the Server"
+        "Server '{machine}' is Docker only and cannot host Managed volumes; pick a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
     )]
     ProvisionedVolumeStorageRequired {
         /// Explicitly selected stateless Machine.
@@ -492,7 +492,7 @@ pub enum PlanError {
     },
     /// No observed automatically eligible Machine has usable ZFS storage preparation.
     #[error(
-        "No available Server can host managed volumes. Add a Server with managed volumes enabled"
+        "No available Server can host Managed volumes. Add a Server with Managed volumes, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
     )]
     ProvisionedVolumeStorageUnavailable,
     /// Storage capability was unavailable for every otherwise eligible Machine.
@@ -516,7 +516,7 @@ pub enum PlanError {
     },
     /// A Ployz-driver Volume exists with a different bound or malformed options.
     #[error(
-        "Managed Volume {name} on Server '{machine}' has a different storage limit; its data will not be resized or replaced (requested {maximum_bytes})"
+        "Managed volume {name} on Server '{machine}' has a different size limit; a Volume's size is fixed once deployed, so its data is neither resized nor replaced (requested {maximum_bytes})"
     )]
     ExistingProvisionedVolumeMismatch {
         /// Existing machine-local Docker Volume name.
