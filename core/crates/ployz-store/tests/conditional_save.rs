@@ -383,8 +383,8 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
             repository_id: backend::repo_id(11),
             suite: 1,
             head: commit(5),
-            status: "completed".into(),
-            conclusion: Some("success".into()),
+            status: ployz_store::CheckStatus::Completed,
+            conclusion: Some(ployz_store::CheckConclusion::Success),
             updated: ployz_store::GithubTimestamp::parse("2026-09-29T10:01:00Z").unwrap(),
         }),
     );
