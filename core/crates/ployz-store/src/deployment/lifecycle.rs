@@ -70,7 +70,8 @@ pub(crate) fn admit(
         started_at: None,
         ended_at: None,
         message,
-        in_flight: true,
+        in_flight: DeploymentStatus::Queued.in_flight(),
+        outcome: None,
     };
     tx.execute(
         "INSERT INTO config_deployment \
@@ -222,7 +223,8 @@ pub(crate) fn retry(
         admitted_at,
         started_at: None,
         ended_at: None,
-        in_flight: true,
+        in_flight: DeploymentStatus::Queued.in_flight(),
+        outcome: None,
         ..stored.summary
     })
 }
@@ -860,6 +862,7 @@ fn end(
         _ => status,
     };
     stored.summary.ended_at = Some(now());
+    stored.summary.outcome = Some(outcome.clone());
     stored.run.outcome = Some(outcome);
     save(tx, &mut stored)?;
     Ok(stored.summary)

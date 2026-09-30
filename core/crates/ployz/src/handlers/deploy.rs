@@ -300,7 +300,7 @@ pub(super) fn execute(
     };
     // A run that found no upload or usable image for its Services says to upload.
     let needs_upload = matches!(
-        &view.outcome,
+        &view.deployment.outcome,
         Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) if !needs_upload.is_empty()
     );
     let hint = if needs_upload {
@@ -653,7 +653,7 @@ pub(super) fn say_view(view: &DeploymentView) {
             reason: Some(reason),
             ..
         },
-    ) = &view.outcome
+    ) = &view.deployment.outcome
     {
         say!("  {reason}");
     }
