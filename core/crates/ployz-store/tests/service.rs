@@ -309,14 +309,22 @@ fn a_service_keeps_the_template_it_was_created_from_until_unset() {
         value: json!({ "id": "postgres", "version": 2 }),
     })
     .unwrap();
+    edit(Change::Set {
+        path: SettingPath::parse("db.env.MODE").unwrap(),
+        value: json!("fast"),
+    })
+    .unwrap();
+    // Every row says whether `discard` takes its path.
     let diff = store.read(&who, &DiffQuery::default()).unwrap();
-    assert!(
-        diff.changes
-            .iter()
-            .flat_map(|change| &change.settings)
-            .any(|row| row.path == "db.template"),
-        "{diff:?}"
-    );
+    let rows: Vec<(&str, bool)> = diff
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .map(|row| (row.path.as_str(), row.can_restore))
+        .collect();
+    for row in [("db.template", true), ("db.env.MODE", true)] {
+        assert!(rows.contains(&row), "{rows:?}");
+    }
     let refused = edit(Change::Set {
         path: SettingPath::parse("db.template").unwrap(),
         value: json!({ "id": "Not A Label", "version": 1 }),
