@@ -131,16 +131,22 @@ export function StoreNetworkingSection({ organizationSlug, environment, service,
         </div>
         {editor?.kind === "generate" || (editor?.kind === "generated" && generated?.kind === "generated") ? (
           <ManagedDomainDialog
-            mode={editor.kind === "generate" ? "generate" : "port"}
+            mode={editor.kind === "generate" ? "generate" : "edit"}
             managed={{ prefix: generated?.kind === "generated" ? generated.prefix : service.private_dns, targetPort: generated?.port ?? null }}
-            clusterDomain={null}
-            takenPrefixes={[]}
+            clusterDomain={generated?.kind === "generated" && generated.hostname ? generated.hostname.slice(generated.prefix.length + 1) : null}
+            // The Environment's other generated domains; the Store checks the whole Organization and what Servers publish.
+            takenPrefixes={all.flatMap((domain) => domain.kind === "generated" && domain.service !== service.name ? [domain.prefix] : [])}
             defaultTargetPort={null}
             onClose={() => setEditor(null)}
-            onSubmit={({ targetPort }) => {
-              // Adding the generated domain again changes its port, but can't clear one: that takes a fresh domain.
-              if (generated?.kind === "generated" && targetPort === null && generated.port !== null) remove(generated.prefix);
-              add(null, targetPort);
+            onSubmit={({ prefix, targetPort }) => {
+              if (generated?.kind !== "generated") return void add(null, targetPort);
+              if (targetPort !== generated.port) {
+                // Adding the generated domain again changes its port, but can't clear one: that takes a fresh domain.
+                if (targetPort === null) remove(generated.prefix);
+                add(null, targetPort);
+              }
+              // Last, so a fresh domain takes the new subdomain too.
+              if (prefix !== generated.prefix) writer.commit({ command: "set_generated_domain", environment, service: service.name, prefix });
             }}
           />
         ) : null}

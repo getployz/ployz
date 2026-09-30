@@ -85,3 +85,24 @@ it("cancels a queued Deployment at once, and shows a running one cancelling", as
   await applyOptimistic(queryClient, "acme", { command: "cancel", deployment: "r" });
   expect([queued(), running()]).toEqual(["cancelled", "cancelling"]);
 });
+
+it("shows a generated domain's new prefix at once, pink, under the same Cluster Domain", async () => {
+  const { queryClient, read } = cached();
+  const domains = { query: "domains", environment: ref, service: null } as const;
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, domains).queryKey, { ok: true, value: { environment, domains: [
+    { kind: "generated", prefix: "web", hostname: "web.acme.ployz.app", service: "web", port: null, status: "ready", reason: null, action: null },
+  ] } });
+  await applyOptimistic(queryClient, "acme", { command: "set_generated_domain", environment: ref, service: "web", prefix: "shop" });
+  expect(read<DomainsView>(domains)?.domains).toMatchObject([{ prefix: "shop", hostname: "shop.acme.ployz.app" }]);
+  expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toContain("web.managedHostnames");
+});
+
+it("renames a Project in the Projects list at once", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const key = storeViewOptions("acme", scope, { query: "projects" }).queryKey;
+  queryClient.setQueryData<unknown>(key, { ok: true, value: { projects: [{ id: "p", name: "shop", default_environment: "production", environments: [] }] } });
+  await applyOptimistic(queryClient, "acme", { command: "rename_project", project: "shop", name: "store" });
+  expect(queryClient.getQueryData<{ value: { projects: { name: string }[] } }>(key)?.value.projects[0]?.name).toBe("store");
+});

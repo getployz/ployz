@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Schema } from "effect";
 import type { SetupCommand } from "@ployz/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
@@ -11,6 +12,8 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
+import { dnsLabelError } from "#/modules/config-store/store-services";
+import { CanvasInspectorNameEditor } from "./CanvasInspectorNameEditor";
 import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { CreateEnvironmentDialog } from "./create-environment-dialog";
@@ -83,6 +86,9 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
 }
 
 /** A Project's settings over the Config Store: its Default Environment, its Environments, and deleting it. */
+/** A Project's name is one DNS label, as the Store checks it. */
+const projectNameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name) ?? undefined));
+
 export function StoreProjectSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
@@ -95,7 +101,20 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   return (
     <>
       <section aria-labelledby="project-heading" className="flex flex-col gap-4">
-        <h2 id="project-heading" className="text-lg font-semibold">{projectSlug}</h2>
+        <h2 id="project-heading" className="text-lg font-semibold">
+          <CanvasInspectorNameEditor
+            value={projectSlug}
+            schema={projectNameSchema}
+            editTitle="Rename project"
+            editDescription="Its URLs change with it. Servers keep running what's deployed under its old name."
+            placeholder="Project name"
+            onRename={(name) => {
+              // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
+              void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+                navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
+            }}
+          />
+        </h2>
         <Field>
           <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
           <Select value={defaultEnvironment?.name ?? null} onValueChange={(next) => {
