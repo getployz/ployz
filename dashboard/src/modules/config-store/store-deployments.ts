@@ -157,10 +157,10 @@ export function nodeOutcomeLabel(outcome: NodeStatus, deployment: Pick<Deploymen
 /**
  * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
  * Coming off the servers, then Off the servers; one that completed with no Server left to take it off (`forgotten`)
- * says so.
+ * says what it left.
  */
-export function deploymentStatusLabel({ status, remove, outcome }: Pick<DeploymentSummary, "status" | "remove"> & { outcome?: Outcome | null }) {
-  if (outcome?.type === "forgotten") return "Removed from Ployz";
+export function deploymentStatusLabel({ status, remove, outcome }: Pick<DeploymentSummary, "status" | "remove" | "outcome">) {
+  if (outcome?.type === "forgotten") return "Left on old servers";
   if (remove && status === "running") return "Coming off the servers";
   if (remove && status === "applied") return "Off the servers";
   return deploymentStatusLabels[status];

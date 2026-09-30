@@ -21,6 +21,7 @@ import {
 } from "#/modules/config-store/store-deployment.inngest";
 import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
+  createStoreSweepRequested,
 } from "#/modules/config-store/store-github.inngest";
 
 export function createInngestFunctions(inngest: PloyzInngest) {
@@ -45,5 +46,6 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createStorePullRequest(inngest),
     createStorePrCheck(inngest),
     createStoreSweep(inngest),
+    createStoreSweepRequested(inngest),
   ];
 }

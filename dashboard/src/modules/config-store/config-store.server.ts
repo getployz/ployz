@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import type { ConfigCommand, ConfigCommitted, ConfigQuery, ConfigTrusted, ConfigWritten, PullRequestRef, SystemEvent } from "@ployz/sdk";
 import { eq } from "drizzle-orm";
 import { Effect, Option } from "effect";
-import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
+import { gatherDomainEvidence, systemDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
@@ -15,6 +15,7 @@ import {
   createConfigDeploymentAdmittedEvent,
   createConfigDeploymentStartedEvent,
   createConfigPrCheckRequestedEvent,
+  createConfigSweepRequestedEvent,
   type ConfigDeploymentAdmittedEventData,
 } from "#/modules/inngest/events";
 import { Database } from "#/server/database.server";
@@ -128,11 +129,12 @@ export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (o
   return loaded.kind === "ready" ? loaded.connections : [];
 });
 
-/** Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits. */
+/** Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits and the hostnames other Namespaces publish. */
 export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
   const store = yield* cloudStore;
   const servers = yield* countOrganizationMachines(organizationId);
-  return yield* storeTry(() => store.system(organizationId, event, { servers }));
+  const domains = yield* systemDomainEvidence(organizationId);
+  return yield* storeTry(() => store.system(organizationId, event, { servers, domains }));
 });
 
 /**
@@ -177,10 +179,9 @@ const afterWrite = Effect.fn("ConfigStore.afterWrite")(function* (
     yield* dispatchAdmitted(organizationId, written, command.command === "start");
   }
   // A closing Branch whose removal applied at admission (nothing on a Server) goes now: no worker will sweep after it.
-  // ponytail: what else this sweep leaves to do waits for the hourly one.
   if (command.command === "admit" && command.admit === "remove" && command.close === true
     && written.written === "deployment" && written.status === "applied") {
-    yield* storeSystem(organizationId, { event: "sweep", now: Math.floor(Date.now() / 1000) });
+    yield* sendInngestEvent(createConfigSweepRequestedEvent({ organizationId }));
   }
   yield* requestChecks(organizationId, written.checks);
 });
