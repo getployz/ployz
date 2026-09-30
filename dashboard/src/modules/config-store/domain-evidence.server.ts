@@ -91,6 +91,13 @@ const recentlyPublished = (organizationId: string) => Effect.map(Clock.currentTi
   return last?.seen && now - last.at < PUBLISHED_TTL_MS ? last.seen.published : null;
 });
 
+/** The published hostnames a Store's own Deploy is gated on (`system`): the recent observation, else none. */
+export const systemDomainEvidence = (organizationId: string) => Effect.map(recentlyPublished(organizationId), (published) => {
+  const evidence: ConfigDomainEvidence = { ...nothing };
+  if (published) evidence.published = published;
+  return evidence;
+});
+
 /** A name that doesn't resolve answers nothing; any other failure (a timeout, SERVFAIL) is no answer at all. */
 const absent = (error: NodeJS.ErrnoException) =>
   error.code === "ENOTFOUND" || error.code === "ENODATA" ? [] : Promise.reject(error);
