@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
+import type { BranchView, DeploymentStatus, DifferRow, EnvironmentRef, EnvironmentsView, MoveRow, MoveView } from "@ployz/sdk";
 import type { StoreResult } from "#/modules/config-store/store.contract";
-import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, CircleCheckIcon, EqualNotIcon, MoreVerticalIcon, PowerOffIcon } from "lucide-react";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { getDashboardDestination } from "#/components/dashboard-navigation-model";
 import { Button } from "#/components/ui/button";
@@ -79,7 +79,7 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
     // A PR Environment saves into each Destination for the merge, not into its Parent now.
     branch.pull_request ? pr && <StorePullRequestNews key="pr" store={store} view={pr} lead={!removal} onShutDown={() => void closing.shutDown()} /> : saveView?.rows.length ? (
       <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`${plural(saveView.rows.length, "change")} to save`}
-        detail={nodeNames(saveView)}
+        detail={nodeNames(saveView.rows)}
         action={<Button size="sm" variant={actionVariant(!removal)} onClick={() => setSaving(true)}>Save to {branch.parent}</Button>}
         changes={saveView.rows.map((row) => (
           <ChangeRowItem key={row.row} row={presentMoveRow(row)} conflict={row.conflict ? branch.parent : undefined} />
@@ -87,12 +87,17 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
     ) : !save.ok ? (
       // What it would save couldn't be read: say why, never "Up to date".
       <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`Save to ${branch.parent}`} detail={save.refusal.message} />
+    ) : saveView?.differ.length ? (
+      // Nothing moves, but it isn't the same: sizing, domains and the Git branch stay each Environment's own.
+      <NewsRow key="differ" lead={!removal} icon={<EqualNotIcon />} title={`${plural(saveView.differ.length, "setting")} kept apart from ${branch.parent}`}
+        detail={`${nodeNames(saveView.differ.map(differAsRow))} · Save doesn't carry these`}
+        changes={saveView.differ.map((row) => <ChangeRowItem key={row.row} row={presentMoveRow(differAsRow(row))} />)} />
     ) : null,
     branch.update.length ? (
       <NewsRow key="update" lead={!removal && !saveView?.rows.length} icon={<ArrowDownIcon />}
         title={`${plural(branch.update.length, "update")} from ${branch.parent}`}
         detail={update.ok ? <>
-          {nodeNames(update.value)}
+          {nodeNames(update.value.rows)}
           {conflicts(update.value) ? <span className="text-warning"> · {conflicts(update.value)} changed in {name} too</span> : null}
         </> : update.refusal.message}
         action={update.ok ? (
@@ -172,10 +177,13 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   );
 }
 
+/** A setting that stays different, worded like a row that moves. */
+const differAsRow = ({ row, from, into }: DifferRow): MoveRow => ({ row, conflict: false, from, into });
+
 const conflicts = (view: MoveView) => view.rows.filter((row) => row.conflict).length;
 
 /** "web, api": the nodes the rows touch, once each. */
-const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => presentMoveRow(row).node))].join(", ");
+const nodeNames = (rows: readonly MoveRow[]) => [...new Set(rows.map((row) => presentMoveRow(row).node))].join(", ");
 
 /**
  * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
