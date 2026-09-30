@@ -1,6 +1,6 @@
 import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
-import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeServiceRecord, RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import type { Lit } from "../deployment-page";
@@ -75,11 +75,36 @@ export function runtimeLine(
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
 export type NodeIssues = { count: number; tone: "bad" | "warn" };
 
-/** What on a node the user can fix: a Service that's down or struggling, and domains that need them. */
-export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status">[]): NodeIssues | null {
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length;
+/**
+ * What on a node the user can fix: a Service that's down or struggling, domains that need them, and Volumes filling up
+ * (`fills`, each Volume's `volumeFill`).
+ */
+export function nodeIssues(status: Pick<RuntimeLine, "down" | "tone">, domains: readonly Pick<DomainRow, "status">[], fills: readonly (number | null)[]): NodeIssues | null {
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length
+    + fills.filter((fill) => fillTone(fill) !== null).length;
   return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
 }
+
+/** The Docker Volume holding a Volume's data on each Server: lowering names it `vol-{id}`, scoped to the Namespace. */
+export const dockerVolumeName = (namespace: string, volumeId: string) => `${namespace}_vol-${volumeId}`;
+
+/**
+ * How full a Volume is, 0 to 1, on the fullest Server holding it (one per Server); null when none reports a bound, as
+ * plain Docker storage never does.
+ */
+export function volumeFill(volumes: readonly Pick<RuntimeVolumeRecord, "name" | "usedBytes" | "boundBytes">[], dockerVolume: string): number | null {
+  const fills = volumes.filter((volume) => volume.name === dockerVolume && volume.boundBytes > 0).map((volume) => volume.usedBytes / volume.boundBytes);
+  return fills.length === 0 ? null : Math.min(1, Math.max(...fills));
+}
+
+/** A fill that needs the user: amber from 80%, red from 95%; null below. */
+export function fillTone(fill: number | null): "warn" | "bad" | null {
+  if (fill === null || fill < 0.8) return null;
+  return fill < 0.95 ? "warn" : "bad";
+}
+
+/** A fill as copy: "92% full". Rounded down, so 99.6% never reads full. */
+export const fillText = (fill: number) => `${Math.floor(fill * 100)}% full`;
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */
 export function publicDomain(domains: readonly DomainRow[]) {

@@ -1,3 +1,4 @@
+import { use } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
@@ -9,15 +10,21 @@ import { useNodeLighting } from "../deployment-page";
 import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { NOT_MOUNTED, stagedChip, stagedSurface } from "./node-status";
-import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
+import { NOT_MOUNTED, fillText, fillTone, nodeIssues, stagedChip, stagedSurface } from "./node-status";
+import { DeployChip, FILL_CLASSES, STAGED_CLASSES, StatusLine } from "./node-status-view";
+import { VolumeFillContext } from "./RuntimeLensProvider";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
-/** A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. */
+/**
+ * A Volume no Service here mounts, on the canvas and in its phone list: the one kind of Volume that is its own node. It
+ * shows how full it is, when its Servers say.
+ */
 export function StoreVolumeCard({ volume, selected, className }: { volume: VolumeListing; selected: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const light = useNodeLighting(volume.id);
   const surface = stagedSurface(light, volume.change);
+  const fill = use(VolumeFillContext)(volume.id);
+  const tone = FILL_CLASSES[fillTone(fill) ?? "ok"];
   return (
     <Link
       to={ENVIRONMENT_RESOURCE_ROUTE_TO}
@@ -37,7 +44,17 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
             <DeployChip light={light} chip={volume.change === null ? null : stagedChip(volume.change, 0)} />
           </div>
         </CardHeader>
-        <CardContent><StatusLine status={NOT_MOUNTED} issues={null} /></CardContent>
+        <CardContent className="flex flex-col gap-2">
+          {fill === null ? null : (
+            <div className={cn("flex items-center gap-2 text-xs", tone.text)}>
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
+                <div className="h-full bg-current" style={{ width: `${fill * 100}%` }} />
+              </div>
+              {fillText(fill)}
+            </div>
+          )}
+          <StatusLine status={NOT_MOUNTED} issues={nodeIssues(NOT_MOUNTED, [], [fill])} />
+        </CardContent>
       </Card>
     </Link>
   );
