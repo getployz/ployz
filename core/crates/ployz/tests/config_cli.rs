@@ -415,6 +415,7 @@ fn an_agent_renames_a_project() {
         ok(store, &["project", "new", "blog"]);
         let renamed = ok(store, &["project", "rename", "shop", "store"]);
         assert_eq!(renamed["project"]["name"], json!("store"));
+        assert_eq!(renamed["links"], json!(0));
         let listed = ok(store, &["project", "ls"]);
         assert_eq!(listed["projects"][1]["name"], json!("store"));
         let taken = error(store, &["project", "rename", "blog", "store"]);
