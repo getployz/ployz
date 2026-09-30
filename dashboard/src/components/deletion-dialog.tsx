@@ -12,6 +12,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "#/components/ui/alert-dialog";
+import { CopyButton } from "#/components/copy-button";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Field, FieldLabel } from "#/components/ui/field";
@@ -150,7 +151,10 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
         {items.length > 0 ? <DeletionList items={items} fresh={fresh} /> : null}
         <Field>
           <FieldLabel htmlFor={inputId} className="font-normal">
-            Type <strong className="font-mono font-medium">{place}</strong> to confirm
+            Type <strong className="font-mono font-medium">{place}</strong>
+            {/* A button inside the label copies without focusing the input. */}
+            <CopyButton value={place} label={`Copy ${place}`} />
+            to confirm
           </FieldLabel>
           <Input id={inputId} autoFocus autoComplete="off" spellCheck={false} placeholder={place} value={typed}
             onChange={(event) => setTyped(event.target.value)} />
