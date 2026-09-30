@@ -5,14 +5,16 @@
 //! asks for `--accept-volume-loss NAME`.
 
 use clap::{ArgAction, ArgMatches, Command};
-use ployz_core::ServiceName;
+use ployz_core::config::VolumeKind;
+use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
 use ployz_store::{
-    CreateVolume, Mount, RemoveVolume, VolumeId, VolumeQuery, VolumeStaged, VolumesQuery,
+    CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeId, VolumeQuery, VolumeStaged,
+    VolumesQuery,
 };
 
 use super::store::{self, Next};
 use super::{Error, leaf_matches};
-use crate::cli::{base, positional, value};
+use crate::cli::{base, positional, switch, value};
 use crate::failure::USAGE_EXIT;
 use crate::output::{self, say};
 
@@ -20,14 +22,33 @@ pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
         .arg_required_else_help(true)
         .subcommand(
-            store::scoped(Command::new("add").about("Add a Volume; it is staged until a Deploy"))
-                .arg(positional("name", true).help("Volume name, unique in the Environment"))
-                .arg(
-                    value("mount", None)
-                        .action(ArgAction::Append)
-                        .value_name("SERVICE:/PATH")
-                        .help("Mount it into a Service at an absolute path; repeatable"),
-                ),
+            storage_flags(store::scoped(
+                Command::new("add")
+                    .about("Add a Volume with managed storage; staged until you deploy"),
+            ))
+            .arg(positional("name", true).help("Volume name, unique in the Environment"))
+            .arg(
+                value("mount", None)
+                    .action(ArgAction::Append)
+                    .value_name("SERVICE:/PATH")
+                    .help("Mount it into a Service at an absolute path; repeatable"),
+            ),
+        )
+        .subcommand(
+            storage_flags(store::scoped(
+                Command::new("set").about("Change a Volume's storage before its first deployment"),
+            ))
+            .arg(positional("volume", true))
+            .arg(
+                switch("managed", None)
+                    .help("Use managed storage with the default 5 GB limit")
+                    .conflicts_with("docker"),
+            )
+            .group(
+                clap::ArgGroup::new("storage-change")
+                    .args(["size", "docker", "managed"])
+                    .required(true),
+            ),
         )
         .subcommand(
             store::scoped(Command::new("inspect").about("Show a Volume and where it is mounted"))
@@ -49,6 +70,7 @@ pub(crate) fn command() -> Command {
 pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "add" => add,
+        "set" => set,
         "inspect" => inspect,
         "ls" => list,
         "rm" => remove,
@@ -86,10 +108,86 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             id: VolumeId::parse(store::mint())?,
             environment: store::environment(matches)?,
             name: name.clone(),
+            storage: requested_storage(matches),
             mounts,
         })
         .map_err(store::failed(matches, &words))?;
     staged(matches, &created, "Staged new Volume")
+}
+
+fn storage_flags(command: Command) -> Command {
+    command
+        .arg(
+            value("size", None)
+                .value_name("SIZE")
+                .value_parser(parse_size)
+                .help("Storage limit, such as 500MB or 10GB; new managed Volumes default to 5GB"),
+        )
+        .arg(
+            switch("docker", None)
+                .conflicts_with("size")
+                .help("Advanced: use a Docker volume without an enforced storage limit"),
+        )
+}
+
+fn parse_size(value: &str) -> Result<ProvisionedVolumeMaximumBytes, String> {
+    let units = [
+        ("GiB", 1_073_741_824),
+        ("MiB", 1_048_576),
+        ("GB", 1_000_000_000),
+        ("MB", 1_000_000),
+        ("B", 1),
+    ];
+    let (number, multiplier) = units
+        .iter()
+        .find_map(|(suffix, multiplier)| {
+            value
+                .strip_suffix(suffix)
+                .map(|number| (number, *multiplier))
+        })
+        .unwrap_or((value, 1));
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(multiplier))
+        .and_then(|bytes| ProvisionedVolumeMaximumBytes::try_from(bytes).ok())
+        .ok_or_else(|| "Use a positive whole-number size, such as 500MB, 5GB or 10GiB".into())
+}
+
+fn requested_storage(matches: &ArgMatches) -> VolumeKind {
+    if matches.get_flag("docker") {
+        VolumeKind::Local {}
+    } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
+        VolumeKind::Provisioned {
+            maximum_bytes: *maximum_bytes,
+        }
+    } else {
+        VolumeKind::managed_default()
+    }
+}
+
+fn set(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let changed = store::store(root)?
+        .set_volume_storage(&SetVolumeStorage {
+            environment: store::environment(matches)?,
+            volume: volume.clone(),
+            storage: requested_storage(matches),
+            expect: None,
+        })
+        .map_err(store::failed(matches, &["volume", "set", volume.as_str()]))?;
+    staged(matches, &changed, "Staged Volume storage")
+}
+
+fn storage_word(storage: VolumeKind) -> String {
+    match storage {
+        VolumeKind::Local {} => "Docker (no enforced storage limit)".into(),
+        VolumeKind::Provisioned { maximum_bytes } => format!(
+            "Managed ({} GB limit)",
+            maximum_bytes.get() as f64 / 1_000_000_000.0
+        ),
+    }
 }
 
 fn list(root: &ArgMatches) -> Result<(), Error> {
@@ -100,7 +198,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         })
         .map_err(store::failed(matches, &["volume", "ls"]))?;
     output::finish(&view, || {
-        say!("VOLUME\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
+        say!("VOLUME\tSTORAGE\tMOUNTS\tDEPLOYED\tNEXT DEPLOY");
         for listing in &view.volumes {
             let mounts: Vec<String> = listing
                 .mounts
@@ -108,8 +206,9 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
                 .map(|mount| format!("{}:{}", mount.service, mount.path))
                 .collect();
             say!(
-                "{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}",
                 listing.volume.name,
+                storage_word(listing.volume.storage),
                 if mounts.is_empty() {
                     "-".to_owned()
                 } else {
@@ -140,6 +239,15 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     output::finish(&view, || {
         let listing = &view.volume;
         say!("Volume {} ({})", listing.volume.name, listing.volume.id);
+        say!("Storage: {}", storage_word(listing.volume.storage));
+        say!(
+            "Storage settings: {}",
+            if listing.storage_locked {
+                "locked after deployment was requested"
+            } else {
+                "editable before deployment"
+            }
+        );
         say!("Deployed: {}", if listing.deployed { "yes" } else { "no" });
         if let Some(change) = &listing.change {
             say!("Next Deploy: {}", super::store::word(change));
@@ -173,7 +281,22 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
             result.environment.name,
             result.environment.revision
         );
+        say!("Storage: {}", storage_word(result.volume.storage));
     })
 }
 
 use super::store::volume_name;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn storage_sizes_are_positive_exact_and_cannot_overflow() {
+        assert_eq!(parse_size("5GB").unwrap().get(), 5_000_000_000);
+        assert_eq!(parse_size("500MB").unwrap().get(), 500_000_000);
+        assert_eq!(parse_size("1GiB").unwrap().get(), 1_073_741_824);
+        for value in ["0", "-1GB", "1.5GB", "unknown", "18446744073709551615GB"] {
+            assert!(parse_size(value).is_err());
+        }
+    }
+}

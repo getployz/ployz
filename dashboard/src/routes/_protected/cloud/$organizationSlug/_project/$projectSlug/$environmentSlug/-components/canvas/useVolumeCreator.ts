@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import type { VolumeKind } from "@ployz/sdk";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData } from "@tanstack/react-router";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
@@ -66,11 +67,12 @@ export function useVolumeCreator(
   /** On the canvas at once, saved in the background; a refused create goes again with a toast. */
   function createVolume(input: {
     name: string;
+    storage: VolumeKind;
     position: FlowPosition;
   }) {
     const id = crypto.randomUUID();
     place({ environmentId, resourceType: "volume", resourceId: id, ...input.position });
-    writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data"));
+    writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data", input.storage));
   }
 
   return {

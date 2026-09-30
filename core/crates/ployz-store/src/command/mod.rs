@@ -27,8 +27,13 @@ pub use review::{Discard, Discarded, Publish, Published};
 pub(crate) use review::{discard, publish};
 pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
 pub(crate) use service::{create_service, insert_service, remove_service, rename_service, summary};
-pub use volume::{CreateVolume, Mount, RemoveVolume, VolumeStaged, VolumeSummary};
-pub(crate) use volume::{create_volume, remove_volume, summary as volume_summary};
+pub use volume::{
+    CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
+};
+pub(crate) use volume::{
+    check_storage, create_volume, locked_storage, remove_volume, set_storage,
+    summary as volume_summary,
+};
 
 use crate::error;
 use crate::storage::Tx;
@@ -53,6 +58,8 @@ pub enum Command {
     RemoveService(RemoveService),
     /// Create a Volume, optionally mounted into Services.
     CreateVolume(CreateVolume),
+    /// Change a Volume's storage before its first Deployment is requested.
+    SetVolumeStorage(SetVolumeStorage),
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume),
     /// Set and unset Settings in one Environment.
@@ -110,6 +117,7 @@ impl Command {
             | Self::RenameService(_)
             | Self::RemoveService(_)
             | Self::RemoveVolume(_)
+            | Self::SetVolumeStorage(_)
             | Self::Publish(_)
             | Self::Discard(_)
             | Self::Start(_)
@@ -143,7 +151,7 @@ pub enum Written {
     ServiceRenamed(ServiceStaged),
     /// A Service was removed from Working State.
     ServiceRemoved(ServiceStaged),
-    /// A Volume was created.
+    /// A Volume was created or its draft storage changed.
     Volume(VolumeStaged),
     /// A Volume was removed from Working State.
     VolumeRemoved(VolumeStaged),
@@ -198,6 +206,7 @@ pub(crate) fn run(
             remove_service(tx, who, remove).map(Written::ServiceRemoved)
         }
         Command::CreateVolume(create) => create_volume(tx, who, create).map(Written::Volume),
+        Command::SetVolumeStorage(set) => set_storage(tx, who, set).map(Written::Volume),
         Command::RemoveVolume(remove) => remove_volume(tx, who, remove).map(Written::VolumeRemoved),
         Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => {

@@ -226,12 +226,22 @@ pub(in crate::handlers) fn requested_storage(matches: &ArgMatches) -> StorageCho
     matches
         .get_one::<StorageChoice>("storage")
         .copied()
-        .unwrap_or(StorageChoice::None)
+        .unwrap_or(StorageChoice::Zfs)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_enrollment_defaults_to_managed_storage_with_an_explicit_opt_out() {
+        let managed = command().try_get_matches_from(["add"]).unwrap();
+        assert_eq!(requested_storage(&managed), StorageChoice::Zfs);
+        let docker = command()
+            .try_get_matches_from(["add", "--storage", "none"])
+            .unwrap();
+        assert_eq!(requested_storage(&docker), StorageChoice::None);
+    }
 
     #[test]
     fn pasted_command_pins_this_release_and_names_a_non_default_cloud() {

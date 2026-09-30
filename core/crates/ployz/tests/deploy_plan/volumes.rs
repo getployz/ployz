@@ -225,8 +225,11 @@ fn stateless_explicit_target_requires_storage_preparation() {
     .to_string();
 
     assert!(error.contains("first"), "{error}");
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+    assert!(error.contains("cannot host managed volumes"), "{error}");
+    assert!(
+        error.contains("enable managed volumes when adding the Server"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -253,9 +256,9 @@ fn existing_plain_volume_is_not_adopted_as_provisioned() {
     .to_string();
 
     assert!(error.contains("app_data"), "{error}");
-    assert!(error.contains("Plain Docker Volume"), "{error}");
+    assert!(error.contains("already uses Docker storage"), "{error}");
     assert!(
-        error.contains("outside the Provisioned Volume MVP"),
+        error.contains("Automatic conversion to managed storage is unavailable"),
         "{error}"
     );
 }
@@ -523,7 +526,7 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
     assert!(error.contains("app_data"), "{error}");
     assert!(error.contains("pinned"), "{error}");
     assert!(
-        error.contains("outside the Provisioned Volume MVP"),
+        error.contains("Automatic conversion to managed storage is unavailable"),
         "{error}"
     );
 }
