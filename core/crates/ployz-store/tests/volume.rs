@@ -175,37 +175,68 @@ fn observed(holders: &[char]) -> VolumeObservation {
     }
 }
 
-/// Claim Deployment `n`, record a Deploy Preview of `web`, then a success that
-/// deleted `removed`.
-fn run(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) -> ployz_store::Claimed {
+/// The operation a preview of `web` plans.
+fn remove_web() -> Value {
+    json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)})
+}
+
+/// Claim Deployment `n` and record a Deploy Preview that plans `web` if `web`, else nothing.
+fn prepare(store: &ConfigStore, n: u8, web: bool) -> ployz_store::Claimed {
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id(n), &runner).unwrap();
-    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
+    let operations: Vec<Value> = web
+        .then(|| {
+            json!({
+                "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+                "operation": remove_web(), "status": {"type": "pending"}
+            })
+        })
+        .into_iter()
+        .collect();
     let preview: DeployPreview = serde_json::from_value(json!({
-        "namespace": "shop-production",
-        "operations": [{
-            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
-            "operation": operation, "status": {"type": "pending"}
-        }],
+        "namespace": "shop-production", "operations": operations,
         "warnings": [], "would_remove": [], "preserved_volumes": []
     }))
     .unwrap();
     store
         .record(&id(n), &runner, RunEvidence::Prepared(preview))
         .unwrap();
+    claimed
+}
+
+/// Record that Deployment `n` succeeded at removing `web` and deleted `removed`.
+fn execute(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) {
     let outcome: DeployOutcome<ployz_core::ExecutionError> =
-        serde_json::from_value(json!({ "type": "success", "completed": [operation] })).unwrap();
+        serde_json::from_value(json!({ "type": "success", "completed": [remove_web()] })).unwrap();
     store
         .record(
             &id(n),
-            &runner,
+            &RunnerId::parse("runner").unwrap(),
             RunEvidence::Executed {
                 outcome: Box::new(outcome),
                 removed,
             },
         )
         .unwrap();
+}
+
+/// Claim Deployment `n`, record a Deploy Preview of `web`, then a success that
+/// deleted `removed`.
+fn run(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) -> ployz_store::Claimed {
+    let claimed = prepare(store, n, true);
+    execute(store, n, removed);
     claimed
+}
+
+/// Deployment `n`'s Node Outcomes by node name.
+fn outcomes(store: &ConfigStore, who: &Actor, n: u8) -> Vec<(String, NodeStatus)> {
+    store
+        .read(who, &ployz_store::DeploymentQuery { id: id(n) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect()
 }
 
 fn code(result: Result<impl std::fmt::Debug, RpcError>) -> RpcErrorCode {
@@ -711,4 +742,31 @@ fn a_renamed_volume_keeps_its_mounts_and_refuses_a_taken_name() {
     assert_eq!(listed(&store, &who)[0].mounts[0].path, "/data");
     let gone = rename("other").unwrap_err();
     assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
+
+#[test]
+fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that_mounts_it() {
+    let (store, who) = shop();
+    // A new Volume waits with the Service that mounts it.
+    admit(&store, &who, 1, &[], None).unwrap();
+    prepare(&store, 1, true);
+    assert_eq!(
+        outcomes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Pending),
+            ("data".to_owned(), NodeStatus::Pending),
+        ]
+    );
+    execute(&store, 1, Vec::new());
+
+    // Once deployed, a Deploy whose preview plans nothing for `web` settles both.
+    admit(&store, &who, 2, &[], None).unwrap();
+    prepare(&store, 2, false);
+    assert_eq!(
+        outcomes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Unchanged),
+            ("data".to_owned(), NodeStatus::Unchanged),
+        ]
+    );
 }

@@ -434,11 +434,11 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
-            let preview = serde_json::to_value(preview)
+            let parsed = serde_json::to_value(preview)
                 .ok()
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
-            let preview = serde_json::to_value(preview).expect("a Deploy Preview is JSON");
+            let preview = serde_json::to_value(&parsed).expect("a Deploy Preview is JSON");
             match &stored.run.preview {
                 Some(recorded) if *recorded == preview => return Ok(stored.summary),
                 Some(_) => {
@@ -450,6 +450,15 @@ pub(crate) fn record(
                 None => {}
             }
             running(&stored)?;
+            let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+            let applied = applied_state(tx, &stored.environment, &saved)?;
+            // What the preview already settles shows while it runs; the rest reads
+            // as Pending until what executing it did replaces these.
+            stored.run.nodes =
+                node_outcomes(&stored.nodes, &saved, &applied, &Evidence::Planned(&parsed))
+                    .into_iter()
+                    .filter(|(_, status)| *status == NodeStatus::Unchanged)
+                    .collect();
             stored.run.preview = Some(preview);
             save(tx, &stored)?;
             Ok(stored.summary)
@@ -614,13 +623,11 @@ pub(super) fn node_outcomes(
 ) -> BTreeMap<String, NodeStatus> {
     let service = |name: &ServiceName, kept: bool| match evidence {
         Evidence::Planned(preview) => {
-            let planned = preview.operations.iter().any(|row| {
-                row.service_name
-                    .as_ref()
-                    .or_else(|| row.operation.service_name())
-                    == Some(name)
-            });
-            if planned {
+            if preview
+                .operations
+                .iter()
+                .any(|row| row.service() == Some(name))
+            {
                 NodeStatus::Pending
             } else {
                 NodeStatus::Unchanged
@@ -678,20 +685,19 @@ pub(super) fn node_outcomes(
             })
             .map(|mounting| service(&mounting.config.private_dns, true))
             .collect();
-        [
-            NodeStatus::Failed,
-            NodeStatus::NotAttempted,
-            NodeStatus::Pending,
-        ]
-        .into_iter()
-        .find(|status| mounting.contains(status))
-        .unwrap_or(if applied.volumes.contains(volume) {
+        if mounting.contains(&NodeStatus::Failed) {
+            NodeStatus::Failed
+        } else if mounting.contains(&NodeStatus::NotAttempted) {
+            NodeStatus::NotAttempted
+        } else if mounting.contains(&NodeStatus::Pending) {
+            NodeStatus::Pending
+        } else if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
         } else if matches!(evidence, Evidence::Planned(_)) {
             NodeStatus::Pending
         } else {
             NodeStatus::Deployed
-        })
+        }
     };
     nodes
         .iter()
@@ -716,47 +722,6 @@ pub(super) fn node_outcomes(
             (node.id().to_owned(), status)
         })
         .collect()
-}
-
-/// Each of `stored`'s target nodes' Node Outcome as it reads now: what its run
-/// recorded once it ended; while it runs, what its Deploy Preview already settles
-/// and Pending before that; Not attempted when it ended without running, Unknown
-/// when its runner vanished.
-pub(crate) fn current_outcomes(
-    tx: &mut dyn Tx,
-    stored: &Stored,
-) -> Result<Vec<NodeOutcome>, RpcError> {
-    let status = stored.summary.status;
-    let fallback = if status.in_flight() {
-        NodeStatus::Pending
-    } else if status == DeploymentStatus::Unknown {
-        NodeStatus::Unknown
-    } else {
-        NodeStatus::NotAttempted
-    };
-    let planned = match &stored.run.preview {
-        Some(preview) if status.in_flight() && stored.run.nodes.is_empty() => {
-            let preview: DeployPreview = serde_json::from_value(preview.clone())
-                .map_err(|_| error::corrupt("Deploy Preview"))?;
-            let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-            let applied = applied_state(tx, &stored.environment, &saved)?;
-            node_outcomes(
-                &stored.nodes,
-                &saved,
-                &applied,
-                &Evidence::Planned(&preview),
-            )
-        }
-        _ => stored.run.nodes.clone(),
-    };
-    Ok(stored
-        .nodes
-        .iter()
-        .map(|node| NodeOutcome {
-            node: node.shown(),
-            outcome: planned.get(node.id()).copied().unwrap_or(fallback),
-        })
-        .collect())
 }
 
 pub(super) fn finish(

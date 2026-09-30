@@ -638,9 +638,7 @@ fn logs_service(row: &OperationRow) -> Option<ServiceName> {
     if let DeployOperation::WaitHealthy { dependency, .. } = &row.operation {
         return Some(dependency.name.clone());
     }
-    row.service_name
-        .clone()
-        .or_else(|| row.operation.service_name().cloned())
+    row.service().cloned()
 }
 
 fn is_hex_len(value: &str, len: usize) -> bool {

@@ -164,7 +164,30 @@ pub(crate) fn view(
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
     let environment = scope::load_by_id(tx, &stored.environment)?;
-    let nodes = current_outcomes(tx, &stored)?;
+    let nodes = stored
+        .nodes
+        .iter()
+        .map(|node| NodeOutcome {
+            node: node.shown(),
+            outcome: match (stored.run.nodes.get(node.id()), stored.summary.status) {
+                (Some(status), _) => *status,
+                (None, DeploymentStatus::Unknown) => NodeStatus::Unknown,
+                (
+                    None,
+                    DeploymentStatus::Queued
+                    | DeploymentStatus::Running
+                    | DeploymentStatus::Cancelling,
+                ) => NodeStatus::Pending,
+                (
+                    None,
+                    DeploymentStatus::Superseded
+                    | DeploymentStatus::Applied
+                    | DeploymentStatus::Failed
+                    | DeploymentStatus::Cancelled,
+                ) => NodeStatus::NotAttempted,
+            },
+        })
+        .collect();
     let builds = build::views(tx, &stored)?;
     Ok(DeploymentView {
         builds,

@@ -811,6 +811,14 @@ pub enum OperationPhase {
 }
 
 impl OperationRow {
+    /// The Service this operation belongs to: the row's, else its operation's.
+    #[must_use]
+    pub fn service(&self) -> Option<&ServiceName> {
+        self.service_name
+            .as_ref()
+            .or_else(|| self.operation.service_name())
+    }
+
     /// A not-yet-started row for one planned operation.
     #[must_use]
     pub fn pending(
