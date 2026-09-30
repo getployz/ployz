@@ -102,7 +102,7 @@ async fn through_cloud(matches: &ArgMatches, credential: &Credential) -> Result<
     Ok(crate::connect::connect_selected_with(selected, Arc::new(connector)).await?)
 }
 
-fn no_reachable_server(unreachable: Vec<String>) -> Error {
+fn no_reachable_server(unreachable: Vec<ployz_core::MachineId>) -> Error {
     if unreachable.is_empty() {
         return Error::detailed(
             RpcErrorCode::NotFound,
@@ -114,7 +114,7 @@ fn no_reachable_server(unreachable: Vec<String>) -> Error {
         RpcErrorCode::Unavailable,
         format!(
             "no Server of this Organization is reachable now: {}",
-            unreachable.join(", ")
+            super::env::joined(&unreachable)
         ),
         json!({ "unreachable": unreachable }),
     )
