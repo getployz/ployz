@@ -615,7 +615,8 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed,
 /// none ran is Not attempted, none planned is Unchanged. A kept Volume follows the
 /// targeted Services mounting it, and is Unchanged when Applied State already holds
-/// it as saved. A removed Volume is Removed once the Deploy succeeded and every
+/// it as saved; one no targeted Service mounts is Deployed only by a Deploy that
+/// succeeded. A removed Volume is Removed once the Deploy succeeded and every
 /// Docker Volume it deletes is gone; Failed when one wasn't deleted, and Not
 /// attempted when the Deploy failed first.
 pub(super) fn node_outcomes(
@@ -668,6 +669,9 @@ pub(super) fn node_outcomes(
             NodeStatus::NotAttempted
         } else if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
+        } else if mounting.is_empty() && !success {
+            // No Service's work confirms it: only a Deploy that fully ran does.
+            NodeStatus::NotAttempted
         } else {
             NodeStatus::Deployed
         }

@@ -745,3 +745,66 @@ fn a_deployed_volume_rename_discards_by_its_row() {
     assert!(diff(&store, &who).changes.is_empty());
     assert_eq!(texts(&[listed(&store, &who)[0].volume.name.clone()]), ["data"]);
 }
+
+#[test]
+fn an_unmounted_volume_deploys_only_with_a_deploy_that_succeeded() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateVolume {
+                storage: ployz_core::config::VolumeKind::Local {},
+                id: VolumeId::parse("00000000-0000-4000-8000-000000000009").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: VolumeName::parse("spare").unwrap(),
+                mounts: Vec::new(),
+            },
+        )
+        .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let runner = RunnerId::parse("runner").unwrap();
+    store.claim(&id(1), &runner).unwrap();
+    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
+    let preview: DeployPreview = serde_json::from_value(json!({
+        "namespace": "shop-production",
+        "operations": [{
+            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+            "operation": operation, "status": {"type": "pending"}
+        }],
+        "warnings": [], "would_remove": [], "preserved_volumes": []
+    }))
+    .unwrap();
+    store
+        .record(&id(1), &runner, RunEvidence::Prepared(preview))
+        .unwrap();
+    let failed: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
+        "type": "failed", "completed": [],
+        "failed": {"type": "operation", "operation": operation, "error": {
+            "type": "machine", "action": "RemoveContainer",
+            "error": {"code": "internal", "message": "busy", "details": {}}
+        }},
+        "unexecuted": []
+    }))
+    .unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Executed {
+                outcome: Box::new(failed),
+                removed: Vec::new(),
+            },
+        )
+        .unwrap();
+    let outcomes: Vec<(String, NodeStatus)> = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| (node.node.name().to_owned(), node.outcome))
+        .collect();
+    assert!(
+        outcomes.contains(&("spare".to_owned(), NodeStatus::NotAttempted)),
+        "{outcomes:?}"
+    );
+}
