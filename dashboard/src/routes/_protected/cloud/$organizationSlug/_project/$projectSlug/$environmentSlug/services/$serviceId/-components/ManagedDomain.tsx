@@ -20,18 +20,16 @@ import { parseServiceSetting, type ServiceManagedHostname } from "@ployz/sdk/con
 import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
 
-/** Why core refuses `value`, in its words, or undefined when it admits it. */
-function coreRefusal(parse: (value: unknown) => unknown, value: unknown) {
-  try { parse(value); return undefined; } catch (cause) { return cause instanceof Error ? cause.message : "Invalid domain"; }
-}
-
 /** A field core admits: Effect owns the form's envelope, Rust the rule and its message. */
 function coreSetting<T>(parse: <Input>(value: Input) => T) {
-  const admitted = (value: unknown): value is T => coreRefusal(parse, value) === undefined;
+  /** Why core refuses `value`, in its words, or undefined when it admits it. */
+  const refusal = <Input,>(value: Input) => {
+    try { parse(value); return undefined; } catch (cause) { return cause instanceof Error ? cause.message : "Invalid domain"; }
+  };
   // The input side lets anything through to the check, so a refusal shows core's reason, not the declaration's
   // generic "Expected <Declaration>".
-  const input = Schema.declare<T>((_value): _value is T => true).check(Schema.makeFilter((value) => coreRefusal(parse, value)));
-  return input.pipe(Schema.decodeTo(Schema.declare<T>(admitted), {
+  const input = Schema.declare<T>((_value): _value is T => true).check(Schema.makeFilter((value) => refusal(value)));
+  return input.pipe(Schema.decodeTo(Schema.declare<T>((value): value is T => refusal(value) === undefined), {
     decode: SchemaGetter.transform((value) => parse(value)),
     encode: SchemaGetter.transform((value) => value),
   }));
