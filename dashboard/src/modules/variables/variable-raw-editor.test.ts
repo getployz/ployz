@@ -49,8 +49,6 @@ function plain(key: string, value: string, id = `id-${key}`): VariableRecord {
     description: null,
     exported: false,
     value: { type: "plain", value },
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
   };
 }
 
@@ -62,9 +60,7 @@ function sealed(key: string, id = `id-${key}`): VariableRecord {
     key,
     description: null,
     exported: false,
-    value: { type: "sealed", hasValue: true, fingerprint: `fp-${key}` },
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
+    value: { type: "sealed" },
   };
 }
 

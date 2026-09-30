@@ -32,8 +32,6 @@ function plainVariable(
       type: "plain",
       value: "super-secret",
     },
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
     ...overrides,
   };
 }
@@ -43,8 +41,6 @@ function sealedVariable(): VariableRecord {
     ...plainVariable(),
     value: {
       type: "sealed",
-      hasValue: true,
-      fingerprint: "fingerprint",
     },
   };
 }

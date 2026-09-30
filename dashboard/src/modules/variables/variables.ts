@@ -1,7 +1,7 @@
 /** A variable's value as the panel shows it: plain text, or sealed (never read back). */
 export type VariableValue =
   | { type: "plain"; value: string }
-  | { type: "sealed"; hasValue: true; fingerprint: string };
+  | { type: "sealed" };
 
 /** One of a Service's variables, as the variables panel shows and edits it. */
 export type VariableRecord = {
@@ -14,8 +14,6 @@ export type VariableRecord = {
   description: string | null;
   exported: boolean;
   value: VariableValue;
-  createdAt: Date;
-  updatedAt: Date;
 };
 
 export type PlainVariableRecord = Omit<VariableRecord, "value"> & { value: Extract<VariableValue, { type: "plain" }> };

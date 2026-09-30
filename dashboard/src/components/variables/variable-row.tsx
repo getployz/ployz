@@ -49,7 +49,6 @@ export function VariableRow({
   function handleSave() {
     collection.update(variable.id, (draft) => {
       draft.value = { type: "plain", value: state.editValue };
-      draft.updatedAt = new Date();
     });
     dispatch({ type: "saveSucceeded" });
   }
