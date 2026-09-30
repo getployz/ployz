@@ -197,6 +197,13 @@ fn deploy(
     let id = &environment.summary.id;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
+    domain::check_published(
+        tx,
+        who,
+        &saved_intent,
+        (cluster_domain, &namespace),
+        trusted,
+    )?;
     // A full Deploy removes what Saved State dropped; publishing puts a removal in
     // Saved State. Either runs the destructive review; only the first deletes.
     let publishes = review

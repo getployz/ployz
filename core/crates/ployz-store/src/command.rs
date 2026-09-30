@@ -11,6 +11,7 @@ use ts_rs::TS;
 pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
+    RenameProject,
 };
 pub use crate::review::publish::{Discard, Discarded, Publish, Published};
 pub use crate::service::{
@@ -157,6 +158,9 @@ commands! {
     CreateProject(CreateProject) -> Project(ProjectCreated)
         keyed [c.id.as_str(), c.default_environment.as_str()]
         => crate::project::create_project(tx, who, c);
+    /// Rename a Project; its Namespaces stay.
+    RenameProject(RenameProject) -> ProjectRenamed(ProjectSummary)
+        => crate::project::rename_project(tx, who, c);
     /// Create an empty Environment.
     CreateEnvironment(CreateEnvironment) -> Environment(EnvironmentCreated)
         keyed [c.id.as_str()] => crate::project::create_environment(tx, who, c);
@@ -204,6 +208,9 @@ commands! {
     /// Give a Service a generated or custom public domain.
     AddDomain(crate::AddDomain) -> Domain(crate::DomainStaged)
         => crate::domain::add_domain(tx, who, c, trusted);
+    /// Change the prefix of a Service's generated domain.
+    SetGeneratedDomain(crate::SetGeneratedDomain) -> Domain(crate::DomainStaged)
+        => crate::domain::set_generated_domain(tx, who, c, trusted);
     /// Take a public domain off its Service.
     RemoveDomain(crate::RemoveDomain) -> Domain(crate::DomainStaged)
         => crate::domain::remove_domain(tx, who, c, trusted);
@@ -248,6 +255,8 @@ commands! {
 pub enum Written {
     /// A Project was created.
     Project(ProjectCreated),
+    /// A Project was renamed.
+    ProjectRenamed(ProjectSummary),
     /// An Environment was created.
     Environment(EnvironmentCreated),
     /// A Service was created.
