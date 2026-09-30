@@ -25,14 +25,3 @@ export function PloyzMark({
     </svg>
   )
 }
-
-export function PloyzLogo({ className }: { className?: string }) {
-  return (
-    <span className={cn('inline-flex items-center gap-2', className)}>
-      <PloyzMark className="size-7" />
-      <span className="font-heading text-lg font-bold tracking-tight">
-        ployz
-      </span>
-    </span>
-  )
-}

@@ -102,11 +102,8 @@ export function LoginPanel() {
 
   return (
     <div className="flex flex-col items-center gap-6 px-2 py-4 text-center">
-      <span className="flex size-12 items-center justify-center rounded-2xl bg-primary text-base font-semibold text-primary-foreground shadow-sm">
-        P
-      </span>
       <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold">Login to Ployz</h2>
+        <h2 className="text-xl font-semibold">Sign in to Ployz</h2>
         <p className="text-sm text-muted-foreground">
           Push-to-deploy on your own servers.
         </p>

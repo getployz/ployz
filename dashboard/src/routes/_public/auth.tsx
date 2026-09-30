@@ -24,12 +24,13 @@ export const Route = createFileRoute('/_public/auth')({
   component: RouteComponent,
 })
 
+// The header and footer come from the _public layout; the panel sits between them.
 function RouteComponent() {
   return (
-    <div className="flex min-h-screen items-center justify-center px-4 py-12">
+    <main className="flex flex-1 items-center justify-center px-5 py-20 md:py-28">
       <div className="w-full max-w-md">
         <LoginPanel />
       </div>
-    </div>
+    </main>
   )
 }
