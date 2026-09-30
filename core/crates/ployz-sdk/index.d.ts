@@ -93,6 +93,8 @@ export declare const RpcError: {
 /** Private build evidence; never proof that content still exists on a Machine. */
 export type BuildReceipt = {
   fingerprint: string;
+  /** The variables the build read: every one, or an uploaded Dockerfile's declared `ARG`s. */
+  variables: "all" | { declared: string[] };
   image: { reference: string; tags: string[]; platforms: string[]; location: string };
   machine_id: MachineId;
 };
@@ -116,13 +118,15 @@ export type PreparationInput = {
     /** Service ID by lineage, from the frozen variable producers; references through it order the deploy. */
     lineages?: Record<string, string>;
     snapshots: readonly { serviceId?: string; config: import("./generated/payloads").ServiceConfig; replicas?: number; resolvedEnv?: Record<string, string>; setupCommands?: readonly string[] }[];
-    volumes?: readonly { volumeResourceId: string }[];
+    volumes?: readonly { volumeResourceId: string; storage: import("./generated/payloads").VolumeKind }[];
   };
   sources: Record<string, string>;
   source_commits?: Record<string, string>;
   /** Uploaded Source content digests, keyed by config.privateDns. A `sources` directory must hold exactly that content; without one only a matching, usable receipt serves it. */
   uploads?: Record<string, string>;
   build_receipts?: BuildReceipts;
+  /** More receipts to try, in order, when a Service's own doesn't match. */
+  borrowed?: Record<string, BuildReceipt[]>;
   /** This build's position among its attempt's builds; builds without a warm Machine spread across Machines by it. */
   build_index?: number;
   /** The Service's Preferred Machine, the Cluster's first choice to build. */
