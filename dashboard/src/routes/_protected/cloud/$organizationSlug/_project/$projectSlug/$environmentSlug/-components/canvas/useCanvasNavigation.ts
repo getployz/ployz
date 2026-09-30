@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  getViewportForBounds,
   useNodesInitialized,
   useReactFlow,
 } from "@xyflow/react";
 import {
+  CANVAS_FIT_VIEW,
+  CANVAS_MAX_ZOOM,
   CANVAS_MIN_ZOOM,
   SERVICE_NODE_WIDTH,
   SERVICE_NODE_HEIGHT,
@@ -165,7 +168,8 @@ export function blurClickedNodeLink(event: Pick<MouseEvent, "detail" | "target">
 
 /**
  * Keeps the canvas focus in view beside the inspector pane: the selected node, else the nodes an open Deployment Page
- * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes.
+ * lights. Each is brought into view when it opens, when the node moves, and when the pane resizes; closing a node's
+ * drawer fits the whole canvas again.
  */
 export function useCanvasNavigation(
   selectedNodeId: string | null,
@@ -196,9 +200,15 @@ export function useCanvasNavigation(
       return;
     }
 
-    if (selectedNodeId === null) {
-      if (previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
-        void flow.setViewport(flow.getViewport(), { duration: 0 });
+    // A closed drawer gives the canvas back whole: undo the pan that opening it caused, and show every node again.
+    // A Deployment Page or the New branch panel opening instead keeps its own focus.
+    if (selectedNodeId === null && !pageOpen && previousSelectedNodeId.current !== UNSET && previousSelectedNodeId.current !== null) {
+      // Not `fitView`: over controlled nodes it waits for a node change that may never come.
+      const wrapper = document.querySelector<HTMLElement>(".react-flow");
+      const nodes = flow.getNodes();
+      if (wrapper && nodes.length) {
+        void flow.setViewport(getViewportForBounds(flow.getNodesBounds(nodes), wrapper.clientWidth, wrapper.clientHeight,
+          CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM, CANVAS_FIT_VIEW.padding), { duration: prefersReducedMotion() ? 0 : 360 });
       }
     }
     previousSelectedNodeId.current = selectedNodeId;
@@ -217,7 +227,7 @@ export function useCanvasNavigation(
         };
       }),
     );
-  }, [flow, flowReady, nodesInitialized, selectedNodeId]);
+  }, [flow, flowReady, nodesInitialized, selectedNodeId, pageOpen]);
 
   useEffect(() => {
     if (!flowReady) {

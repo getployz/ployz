@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { BranchView, DeploymentStatus, EnvironmentRef, EnvironmentsView, MoveView } from "@ployz/sdk";
@@ -83,6 +83,9 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
         changes={saveView.rows.map((row) => (
           <ChangeRowItem key={row.row} row={presentMoveRow(row)} conflict={row.conflict ? branch.parent : undefined} />
         ))} />
+    ) : !save.ok ? (
+      // What it would save couldn't be read: say why, never "Up to date".
+      <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`Save to ${branch.parent}`} detail={save.refusal.message} />
     ) : null,
     branch.update.length ? (
       <NewsRow key="update" lead={!removal && !saveView?.rows.length} icon={<ArrowDownIcon />}
@@ -144,6 +147,9 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
         {closing.dialog}
         {/* Everything that goes, by name, and the user types where: a closed Branch doesn't come back. */}
         <DeletionDialog open={asking} onOpenChange={setAsking} title={`Close ${name}?`} place={`${params.projectSlug}/${name}`}
+          sentence={saveView?.rows.length && !branch.pull_request ? <>
+            <span className="text-destructive">{plural(saveView.rows.length, "change")} not saved to {branch.parent}</span> go with it, and:
+          </> : undefined}
           confirmLabel="Close branch" callbacks={{
             load: async () => {
               const [services, volumes] = await Promise.all([fetchStoreView(params.organizationSlug, scope, servicesQuery(store)),
@@ -264,9 +270,14 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   const [loss, setLoss] = useState<DeletionCheck<Acceptance> | null>(null);
   // Shutting down takes it off the Servers and keeps it; closing then removes it.
   const [shutting, setShutting] = useState(false);
+  // Closing started taking it off the Servers: once it's off, the panel finishes closing it.
+  const [closing, setClosing] = useState(false);
   const name = branch.environment.name;
   const latest = deployments[0];
   const offServers = latest === undefined || (latest.remove && latest.status === "applied");
+  useEffect(() => {
+    if (closing && offServers) void close();
+  }, [closing, offServers]);
 
   const leave = () => navigate(getDashboardDestination({
     kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.parent,
@@ -300,9 +311,12 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
   async function close() {
     setShutting(false);
     if (!offServers) {
-      setLoss(await takeOff({ accept: [], version: null }, false));
+      const asked = await takeOff({ accept: [], version: null }, false);
+      setLoss(asked);
+      setClosing(asked === null);
       return;
     }
+    setClosing(false);
     try {
       // Awaited: the page leaves the Branch once it's gone.
       await writer.commit({ command: "remove_environment", environment: store }).isPersisted.promise;
@@ -327,7 +341,11 @@ function useStoreBranchClose(params: Params, store: EnvironmentRef, branch: Bran
         items={loss?.items}
         callbacks={{
           load: () => Promise.resolve(loss ?? { items: [], evidence: { accept: [], version: "" } }),
-          confirm: async (evidence) => (await takeOff(evidence)) ?? undefined,
+          confirm: async (evidence) => {
+            const again = await takeOff(evidence);
+            if (again === null && !shutting) setClosing(true);
+            return again ?? undefined;
+          },
         }}
       />
     ),

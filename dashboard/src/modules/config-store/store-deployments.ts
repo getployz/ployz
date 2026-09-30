@@ -22,6 +22,8 @@ export type ChangeGroup = {
   nodeType: NodeChange["type"];
   nodeId: string;
   nodeName: string;
+  /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
+  discardPath: string;
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
@@ -34,7 +36,9 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (nodeType === "volume") return setting === "node" ? "Volume" : setting === "name" ? "Name" : setting;
   if (setting.startsWith("env.")) return `Environment variable ${setting.slice(4)}`;
   if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
-  if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Public route";
+  if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
+  if (setting === "managedHostnames") return "Generated domain";
+  if (setting === "source") return "Source";
   return setting;
 }
 
@@ -48,9 +52,10 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
+    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.name,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
-    canDiscard: node.type === "service",
+    canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
     rows: node.settings.map((row) => {
       // `SERVICE.SETTING`, or `volumes.VOLUME.SETTING`.
@@ -63,8 +68,8 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
-        // Only a catalog Setting discards alone; a variable, mount, domain or rename goes with its Service.
-        canDiscard: node.type === "service" && row.canRestore && title !== undefined,
+        // A Setting, variable or mount discards alone; a domain or a rename goes with its node.
+        canDiscard: node.type === "service" && (row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting)),
       };
     }),
   }));
@@ -73,14 +78,28 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
 /** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */
 const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
+  Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
+  Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
+  // A whole source, when a Service connects or disconnects one.
+  Schema.Struct({ type: Schema.Literals(["image", "git", "empty"]), image: Schema.optional(Schema.String), repository: Schema.optional(Schema.String) }),
 ]));
 
-/** A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, else its JSON. */
-function shownValue(value: JsonValue): string {
+/**
+ * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
+ * path and timeout, generated domains by name and port; else its JSON.
+ */
+export function shownValue(value: JsonValue): string {
   if (value === null) return "";
   return Option.match(decodeShown(value), {
     onNone: () => JSON.stringify(value),
-    onSome: (shown) => Schema.is(Schema.String)(shown) ? shown : "secret" in shown ? "Sealed" : shown.hostname,
+    onSome: (shown) => {
+      if (Schema.is(Schema.String)(shown)) return shown;
+      if ("hostname" in shown) return shown.hostname;
+      if ("secret" in shown) return "Sealed";
+      if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
+      if ("type" in shown) return shown.image ?? shown.repository ?? "None";
+      return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
+    },
   });
 }
 
@@ -164,10 +183,34 @@ export function deploymentActions(status: DeploymentStatus) {
   };
 }
 
-/** Why a Deployment didn't run, and the CLI line that gives it an upload it needs. */
+/** Why a Deployment didn't run, and the Services that had nothing to run (each needs an image or a repository). */
 export function notExecuted(outcome: Outcome | null) {
   if (outcome?.type !== "not_executed") return null;
-  return { reason: outcome.reason, next: outcome.needs_upload.length ? "ployz deploy --upload ." : null };
+  return { reason: outcome.reason, needsSource: outcome.needs_upload };
+}
+
+/** What a failed step's kind means, in plain words, when the runner gave no message of its own. */
+const FAILURE_WORDS = {
+  machine: "A Server couldn't carry out a step.",
+  health: "A new container failed its health check.",
+  dependency_health: "A Service it depends on isn't healthy.",
+  hook: "The pre-deploy command failed.",
+  cancelled: "It was cancelled.",
+} as const;
+const FailedSummary = Schema.Struct({
+  type: Schema.Literal("failed"),
+  reason: Schema.Literals(["machine", "health", "dependency_health", "hook", "cancelled"]),
+  message: Schema.optional(Schema.NullOr(Schema.String)),
+});
+const decodeFailed = Schema.decodeUnknownOption(FailedSummary);
+
+/** Why an executed Deployment failed, from its recorded outcome: the runner's message, else its step's kind. */
+export function failureReason(outcome: Outcome | null) {
+  if (outcome?.type !== "executed") return null;
+  return Option.match(decodeFailed(outcome.summary), {
+    onNone: () => null,
+    onSome: (failed) => failed.message || FAILURE_WORDS[failed.reason],
+  });
 }
 
 /** The part of a recorded Deploy Preview the page shows; the Store keeps the rest. */
@@ -190,7 +233,7 @@ export function previewLines(preview: JsonValue | null): string[] | null {
   const counts = new Map<string, number>();
   for (const { service_name } of operations) counts.set(service_name ?? "Environment", (counts.get(service_name ?? "Environment") ?? 0) + 1);
   return [
-    operations.length === 0 ? "Nothing to change" : `${plural(operations.length, "operation")}: ${[...counts].map(([name, n]) => `${name} ${n}`).join(", ")}`,
+    operations.length === 0 ? "Nothing to change" : [...counts].map(([name, n]) => `${name}: ${plural(n, "operation")}`).join(" · "),
     ...(volumes_to_create.length ? [`Creates ${plural(volumes_to_create.length, "volume")}`] : []),
     ...(would_remove.length ? [`Removes ${plural(would_remove.length, "service")}`] : []),
     ...warnings.map((warning) => warning.message ?? warning.type.replaceAll("_", " ")),

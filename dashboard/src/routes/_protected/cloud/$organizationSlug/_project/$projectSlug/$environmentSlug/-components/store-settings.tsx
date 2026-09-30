@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { SetupCommand } from "@ployz/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { BranchIndent } from "#/components/environment-tree";
@@ -7,7 +8,8 @@ import { Button } from "#/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { environmentsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
+import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
@@ -20,13 +22,19 @@ type Place = { organizationSlug: string; projectSlug: string; environmentSlug: s
 /** An Environment's settings over the Config Store: deleting it, once it is neither the Default nor a Parent. */
 export function StoreEnvironmentSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
-  const { environments } = requireView(useStoreView(organizationSlug, environmentsQuery(projectSlug)));
+  const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
+  // Deleted (here, or elsewhere) while open: nothing to show while the page moves on.
+  if (!listing.ok) return null;
+  const { environments } = listing.value;
   const environment = environments.find((row) => row.name === environmentSlug);
   const branches = environments.filter((row) => row.parent === environmentSlug).map((row) => row.name);
   const disabledReason = environment?.default
     ? `${environmentSlug} is ${projectSlug}'s default environment. Make another the default to delete it, or delete the project.`
     : branches.length > 0 ? `Delete its branches first: ${branches.join(", ")}.` : undefined;
   return (
+    <>
+    <StoreBranchSetup organizationSlug={organizationSlug} projectSlug={projectSlug} environmentSlug={environmentSlug}
+      saved={environment?.branch_setup ?? []} />
     <StoreTeardownSection
       organizationSlug={organizationSlug}
       target={{ project: projectSlug, environment: environmentSlug }}
@@ -41,6 +49,36 @@ export function StoreEnvironmentSettings({ organizationSlug, projectSlug, enviro
       // The project opens its Default Environment, which this isn't.
       onCompleted={() => void navigate({ to: "/cloud/$organizationSlug/$projectSlug", params: { organizationSlug, projectSlug }, replace: true })}
     />
+    </>
+  );
+}
+
+/**
+ * What a new Branch of this Environment runs once, before its services start, when it names no Setup Commands of its
+ * own: seeds its fresh data. Saved at once, never staged.
+ */
+function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, saved }: Place & { saved: SetupCommand[] }) {
+  const writer = useStoreWriter(organizationSlug);
+  const environment = { project: projectSlug, environment: environmentSlug };
+  const listed = useStoreView(organizationSlug, servicesQuery(environment));
+  const services = (listed.ok ? listed.value.services : [])
+    .filter((service) => service.change !== "delete").map((service) => ({ lineageId: service.name, name: service.name }));
+  const setup = useSavedSetupCommands(saved.map((command) => ({ lineageId: command.service, command: command.command })),
+    (whole) => writer.commit({ command: "set_branch_setup", environment,
+      setup: whole.map((command) => ({ service: command.lineageId, command: command.command })) }));
+  return (
+    <section aria-labelledby="branch-setup-heading" className="flex flex-col gap-4">
+      <div>
+        <h2 id="branch-setup-heading" className="text-lg font-semibold">Branches of {environmentSlug}</h2>
+        <p className="text-sm text-muted-foreground">
+          Setup commands a new branch runs once, in its own copies, before they start: use them to seed fresh data.
+        </p>
+      </div>
+      {services.length ? (
+        <SetupCommandsField id="environment-branch-setup" commands={setup.commands} services={services}
+          onChange={setup.onChange} onBlur={setup.onBlur} />
+      ) : <p className="text-sm text-muted-foreground">Add a service first; commands run in one.</p>}
+    </section>
   );
 }
 
@@ -49,7 +87,10 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   const navigate = useNavigate();
   const writer = useStoreWriter(organizationSlug);
   const [creating, setCreating] = useState(false);
-  const { environments } = requireView(useStoreView(organizationSlug, environmentsQuery(projectSlug)));
+  const listing = useStoreView(organizationSlug, environmentsQuery(projectSlug));
+  // Deleted while open: nothing to show while the page moves on.
+  if (!listing.ok) return null;
+  const { environments } = listing.value;
   const defaultEnvironment = environments.find((row) => row.default);
   return (
     <>

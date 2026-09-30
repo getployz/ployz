@@ -4,13 +4,16 @@ import { toast } from "sonner";
 import { ConfirmDialog } from "#/components/confirm-dialog";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
-import { Field, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Field, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
+
+/** A variable's name, as the Store takes it (the settings catalog's `env` keys). */
+const VARIABLE_KEY = /^[A-Z_][A-Z0-9_]{0,127}$/u;
 import type { VariableAddInput } from "#/components/variables/variables-panel";
 
 type VariableAddFormDefaults = {
@@ -107,9 +110,14 @@ export function VariableAddForm({
     onCancel();
   }
 
+  const typedKey = state.key.trim().toUpperCase();
+  const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
+    ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
+
   function handleAdd() {
-    const key = state.key.trim().toUpperCase();
-    if (!key) return;
+    const key = typedKey;
+    // Invalid keys stay in the form, as typed, with the reason under them.
+    if (!key || keyError) return;
 
     const existing = variables.find((variable) => variable.key === key);
     if (existing) {
@@ -166,7 +174,9 @@ export function VariableAddForm({
               dispatch({ type: "keyChanged", value: event.target.value })
             }
             className="font-mono text-xs uppercase"
+            aria-invalid={keyError ? true : undefined}
           />
+          {keyError ? <FieldError>{keyError}</FieldError> : null}
         </Field>
         <Field>
           <FieldLabel htmlFor="variable-value">Value</FieldLabel>
@@ -237,7 +247,7 @@ export function VariableAddForm({
         <div className="flex items-center gap-2">
           <Button
             type="submit"
-            disabled={!state.key.trim()}
+            disabled={!typedKey || keyError !== null}
           >
             <CheckIcon data-icon="inline-start" />
             Add

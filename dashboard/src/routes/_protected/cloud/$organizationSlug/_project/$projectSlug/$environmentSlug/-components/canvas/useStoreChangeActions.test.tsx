@@ -28,7 +28,7 @@ const admittedIds: string[] = [];
 function Deploy() {
   const { deploy, discard, dialog } = useStoreChangeActions("acme", ref, "2:1:0", (id) => admittedIds.push(id));
   return <>
-    <button type="button" onClick={deploy}>Deploy now</button>
+    <button type="button" onClick={() => deploy("  Ship the api  ")}>Deploy now</button>
     <button type="button" onClick={() => discard("web.replicas")}>Discard replicas</button>
     {dialog}
   </>;
@@ -61,7 +61,10 @@ it("asks before a Deploy deletes Volume data, then admits accepting exactly what
   fireEvent.click(screen.getByRole("button", { name: "Deploy" }));
 
   await waitFor(() => expect(test.write).toHaveBeenCalledTimes(2));
-  expect(test.admits()).toMatchObject([{ accept_volume_loss: [], version: "2:1:0" }, { accept_volume_loss: ["pg-data"], version: "9:1:0.1" }]);
+  expect(test.admits()).toMatchObject([
+    { accept_volume_loss: [], version: "2:1:0", message: "Ship the api" },
+    { accept_volume_loss: ["pg-data"], version: "9:1:0.1", message: "Ship the api" },
+  ]);
   await waitFor(() => expect(screen.queryByText("pg-data")).toBeNull());
   expect(toast.error).not.toHaveBeenCalled();
   // The admitted Deploy, the second admission's own id, opens.
@@ -87,4 +90,18 @@ it("fails closed when the Servers can't be checked: nothing to accept, and the S
   expect(screen.queryByPlaceholderText("shop/production")).toBeNull();
   expect(test.write).toHaveBeenCalledTimes(1);
   expect(admittedIds).toEqual([]);
+});
+
+it("admits one Deployment for a double click", async () => {
+  const test = setup();
+  let admit: (value: typeof admitted) => void = () => {};
+  test.write.mockReturnValueOnce(new Promise<typeof admitted>((resolve) => { admit = resolve; }));
+
+  act(() => {
+    fireEvent.click(screen.getByText("Deploy now"));
+    fireEvent.click(screen.getByText("Deploy now"));
+  });
+  admit(admitted);
+  await waitFor(() => expect(admittedIds).toHaveLength(1));
+  expect(test.write).toHaveBeenCalledTimes(1);
 });

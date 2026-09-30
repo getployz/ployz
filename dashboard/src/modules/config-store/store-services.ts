@@ -17,9 +17,12 @@ function sourceName(source: NewServiceSource) {
   return randomName();
 }
 
-/** What a Store name must be (a Service's, Environment's or Project's): a lowercase DNS label. */
-export const isDnsLabel = (name: string) => /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/u.test(name);
-export const DNS_LABEL_RULE = "Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
+/** Why a name isn't what a Store name must be (a Service's, Volume's, Environment's or Project's): a DNS label. */
+export function dnsLabelError(name: string): string | null {
+  if (name.length > 63) return "Use at most 63 characters.";
+  return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/u.test(name) ? null
+    : "Use lowercase letters, digits and hyphens, starting and ending with a letter or digit.";
+}
 
 /** A name for something nobody named yet, like `brave-otter`: a DNS label. */
 export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives, animals], separator: "-", length: 2, style: "lowerCase" });

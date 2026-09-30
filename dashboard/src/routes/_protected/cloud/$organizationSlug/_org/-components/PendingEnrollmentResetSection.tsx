@@ -67,29 +67,19 @@ export function PendingEnrollmentResetSection({
     });
   }
 
+  // Only a stuck first Server is something to act on here; the Servers page shows the rest.
+  if (status !== "pending") return null;
   return (
     <>
-      <Alert variant={status === "pending" ? "destructive" : "default"}>
-        <AlertTitle>
-          {status === "unclaimed"
-            ? "Server setup not started"
-            : status === "pending"
-              ? "Founding attempt pending"
-              : "Organization enrollment ready"}
-        </AlertTitle>
+      <Alert variant="destructive">
+        <AlertTitle>Your first server didn’t finish joining</AlertTitle>
         <AlertDescription>
-          {status === "unclaimed"
-            ? "Connect your first server when you’re ready to deploy this organization’s projects."
-            : status === "pending"
-              ? "Another Server cannot found this Organization until the current attempt finishes or is safely reset."
-              : "This Organization has an enrolled Cluster."}
+          No other server can join until it finishes, or you reset it.
         </AlertDescription>
-        {status === "pending" ? (
-          <Button className="mt-3 w-fit" variant="destructive" onClick={() => setOpen(true)}>
-            <RotateCcwIcon data-icon="inline-start" />
-            Reset founding attempt
-          </Button>
-        ) : null}
+        <Button className="mt-3 w-fit" variant="destructive" onClick={() => setOpen(true)}>
+          <RotateCcwIcon data-icon="inline-start" />
+          Reset founding attempt
+        </Button>
       </Alert>
 
       {status === "pending" ? (
