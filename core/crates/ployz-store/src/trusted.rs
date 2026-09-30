@@ -34,13 +34,18 @@ pub struct Trusted {
 impl Trusted {
     /// Refuse to admit a Deployment no Server could run.
     pub(crate) fn runnable(&self) -> Result<(), RpcError> {
-        match self.servers {
-            Some(0) => Err(crate::error::unobserved(
+        if self.no_servers() {
+            return Err(crate::error::unobserved(
                 NO_SERVERS,
                 serde_json::json!({ "next": "ployz server add" }),
-            )),
-            Some(_) | None => Ok(()),
+            ));
         }
+        Ok(())
+    }
+
+    /// Cloud counted no Server: nothing runs, and nothing is left on one.
+    pub(crate) const fn no_servers(&self) -> bool {
+        matches!(self.servers, Some(0))
     }
 }
 

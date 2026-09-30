@@ -752,3 +752,53 @@ fn a_closed_branch_goes_on_its_own_once_its_removal_applied() {
     sweep();
     assert_eq!(listed(&store, &who), ["production*", "staging"]);
 }
+
+#[test]
+fn with_no_server_left_a_removal_applies_at_once() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    set_default(&store, &who, "staging");
+    let none_left = Trusted {
+        servers: Some(0),
+        ..Trusted::default()
+    };
+    // Nothing runs it and no data is left to lose, so no review and no runner.
+    let removal = store
+        .write_trusted(
+            &who,
+            &Admit::Remove(Removal {
+                id: id(2),
+                environment: at("production"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+                close: false,
+            }),
+            &none_left,
+        )
+        .unwrap();
+    assert_eq!(removal.status, DeploymentStatus::Applied);
+    removed(remove(&store, &who, "production"));
+
+    // A Deploy still needs a Server to run it.
+    let refused = refusal(store.write_trusted(
+        &who,
+        &Admit::Deploy(Deploy {
+            id: id(3),
+            environment: at("staging"),
+            services: Vec::new(),
+            version: None,
+            upload: None,
+            accept_volume_loss: Vec::new(),
+            message: None,
+        }),
+        &none_left,
+    ));
+    assert_eq!(refused.code, RpcErrorCode::Unavailable);
+}
+
+#[test]
+fn shutting_down_what_never_ran_applies_at_once() {
+    let (store, who) = shop();
+    let shutdown = admit(&store, &who, "staging", 1, true, &[], None).unwrap();
+    assert_eq!(shutdown.status, DeploymentStatus::Applied);
+}
