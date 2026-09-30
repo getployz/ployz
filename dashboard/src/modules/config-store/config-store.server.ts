@@ -53,7 +53,8 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   read: StoreRead,
   started: boolean,
 ) {
-  if (written.written !== "deployment") return;
+  // A removal with nothing on a Server applied at admission: no worker runs it.
+  if (written.written !== "deployment" || written.status === "applied") return;
   const view = yield* storeTry(() => read({ query: "deployment", id: written.id }));
   const data = { organizationId, environmentId: view.environment.id, deploymentId: written.id };
   const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
