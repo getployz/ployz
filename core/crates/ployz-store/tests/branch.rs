@@ -791,7 +791,24 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
         json!("web:hot")
     );
 
-    let version = store.read(&who, &query).unwrap().version;
+    // Sizing differs and stays: the review lists it apart from what moves.
+    let review = store.read(&who, &query).unwrap();
+    let differ: Vec<(&str, Value)> = review
+        .differ
+        .iter()
+        .map(|row| (row.row.as_str(), json!(row.why)))
+        .collect();
+    assert_eq!(differ, [("web.replicas", json!("sizing"))]);
+    // A choice not offered is refused in the words a pick uses.
+    let refused = store
+        .write(&who, &save(&[("web.env.NEW", Some("parent"))], None))
+        .unwrap_err();
+    assert!(
+        refused.message.contains("from") && !refused.message.contains("From"),
+        "{}",
+        refused.message
+    );
+    let version = review.version;
     let saved = store
         .write(
             &who,

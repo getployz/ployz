@@ -907,6 +907,40 @@ fn renaming_a_deployed_service_is_a_staged_change_discard_undoes() {
 }
 
 #[test]
+fn a_successful_deploy_applies_a_rename_the_runtime_had_nothing_to_do_for() {
+    let (store, who) = shop();
+    let a = runner("runner-a");
+    admit(&store, &who, 1, &[], None).unwrap();
+    store.claim(&id(1), &a).unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, succeeded(&["web", "api"]))
+        .unwrap();
+    store
+        .write(
+            &who,
+            &Command::RenameService(RenameService {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                name: ServiceName::parse("front").unwrap(),
+            }),
+        )
+        .unwrap();
+    assert_eq!(changed(&store, &who), ["front"]);
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&[])))
+        .unwrap();
+    // Nothing ran, yet the Deploy covered the rename: Applied State holds it.
+    store.record(&id(2), &a, succeeded(&[])).unwrap();
+    assert_eq!(status(&store, &who, 2), DeploymentStatus::Applied);
+    assert!(changed(&store, &who).is_empty());
+}
+
+#[test]
 fn an_environments_namespace_is_the_one_its_deployments_use() {
     let (store, who) = shop();
     let query: Query = serde_json::from_value(json!({"query": "namespace"})).unwrap();

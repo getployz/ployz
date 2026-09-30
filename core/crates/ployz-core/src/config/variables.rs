@@ -85,6 +85,8 @@ pub struct ParsedTemplate {
     pub parts: Vec<ValuePart>,
     /// Names in `${{ name.KEY }}` that `lineage` did not know; their tokens stay text.
     pub unresolved: Vec<String>,
+    /// Whether a `${{` (not `$${{`) has no `}}` after it.
+    pub unterminated: bool,
 }
 
 /// Parse display text into template parts: `${{ KEY }}` reads the owner's own
@@ -98,6 +100,7 @@ pub fn parse_variable_template(
 ) -> ParsedTemplate {
     let mut parts = Vec::new();
     let mut unresolved = Vec::new();
+    let mut unterminated = false;
     let mut pending = String::new();
     let mut rest = text;
     while !rest.is_empty() {
@@ -113,6 +116,7 @@ pub fn parse_variable_template(
             continue;
         };
         let Some((owner, key, after)) = template_token(after) else {
+            unterminated |= !after.contains("}}");
             pending.push_str("${{");
             rest = after;
             continue;
@@ -143,7 +147,11 @@ pub fn parse_variable_template(
     if !pending.is_empty() {
         parts.push(ValuePart::Text { value: pending });
     }
-    ParsedTemplate { parts, unresolved }
+    ParsedTemplate {
+        parts,
+        unresolved,
+        unterminated,
+    }
 }
 
 /// `[name.]KEY }}` after a `${{`, with optional whitespace inside the braces.
@@ -292,6 +300,9 @@ mod tests {
         ] {
             assert_eq!(parse(malformed).parts, [text(malformed)], "{malformed}");
         }
+        assert!(parse("${{ db.URL").unterminated);
+        assert!(!parse("${{ oops ${{ db.URL }}").unterminated);
+        assert!(!parse("$${{ literal").unterminated);
         assert!(parse("").parts.is_empty());
         assert_eq!(parse("é${{ K }}ü").parts.last(), Some(&text("ü")));
     }
