@@ -694,7 +694,7 @@ pub(super) enum Evidence<'run> {
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
 /// none ran is Not attempted. A kept Volume follows the targeted Services mounting
-/// it: Deployed once one of them is. It is Unchanged when Applied State already
+/// it: Deployed once one of them is, whatever the others do. It is Unchanged when Applied State already
 /// holds it as saved. One no targeted Service mounts is Not attempted when new
 /// (nothing creates its storage), and a held one is Deployed only by a Deploy that
 /// succeeded. A removed
@@ -777,7 +777,10 @@ pub(super) fn node_outcomes(
             })
             .map(|mounting| service(&mounting.config.private_dns, true))
             .collect();
-        if mounting.contains(&NodeStatus::Failed) {
+        // Confirmed storage advances whatever its siblings do.
+        if mounting.contains(&NodeStatus::Deployed) && !applied.volumes.contains(volume) {
+            NodeStatus::Deployed
+        } else if mounting.contains(&NodeStatus::Failed) {
             NodeStatus::Failed
         } else if mounting.contains(&NodeStatus::NotAttempted) {
             NodeStatus::NotAttempted
