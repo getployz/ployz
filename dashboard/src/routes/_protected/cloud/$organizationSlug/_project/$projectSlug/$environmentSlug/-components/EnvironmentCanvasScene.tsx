@@ -26,7 +26,7 @@ import { liveNodes } from "#/modules/config-store/store-branches";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
-import { RuntimeLensProvider, VolumeFillProvider } from "./canvas/RuntimeLensProvider";
+import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
 
 export function PendingCanvas() {
   return (
@@ -98,7 +98,6 @@ function CanvasWithData() {
   const initialEdges = buildStoreEdges(store);
 
   return (
-    <VolumeFillProvider namespace={namespace.ok ? namespace.value.namespace : null}>
     <ReactFlowProvider
       key={`${projectSlug}/${environmentSlug}`}
       initialNodes={initialNodes}
@@ -118,7 +117,6 @@ function CanvasWithData() {
         store={store}
       />
     </ReactFlowProvider>
-    </VolumeFillProvider>
   );
 }
 

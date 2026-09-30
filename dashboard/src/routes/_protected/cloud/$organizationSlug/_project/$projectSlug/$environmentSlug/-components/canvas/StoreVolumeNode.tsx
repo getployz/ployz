@@ -1,10 +1,10 @@
-import { use } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Link, useParams } from "@tanstack/react-router";
 import { HardDriveIcon } from "lucide-react";
 import type { VolumeListing } from "@ployz/sdk";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "#/components/ui/card";
+import { Progress } from "#/components/ui/progress";
 import { cn } from "#/lib/utils";
 import { useNodeLighting } from "../deployment-page";
 import { PickedNode } from "./PickableNode";
@@ -12,7 +12,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { NOT_MOUNTED, fillText, fillTone, nodeIssues, stagedChip, stagedSurface } from "./node-status";
 import { DeployChip, FILL_CLASSES, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { VolumeFillContext } from "./RuntimeLensProvider";
+import { useVolumeFill } from "./RuntimeLensProvider";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 
 /**
@@ -23,7 +23,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const light = useNodeLighting(volume.id);
   const surface = stagedSurface(light, volume.change);
-  const fill = use(VolumeFillContext)(volume.id);
+  const fill = useVolumeFill()(volume.id);
   const tone = FILL_CLASSES[fillTone(fill) ?? "ok"];
   return (
     <Link
@@ -47,9 +47,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
         <CardContent className="flex flex-col gap-2">
           {fill === null ? null : (
             <div className={cn("flex items-center gap-2 text-xs", tone.text)}>
-              <div className="h-1 flex-1 overflow-hidden rounded-full bg-muted">
-                <div className="h-full bg-current" style={{ width: `${fill * 100}%` }} />
-              </div>
+              <Progress value={fill * 100} aria-label="Fill" className="flex-1 **:data-[slot=progress-indicator]:bg-current" />
               {fillText(fill)}
             </div>
           )}

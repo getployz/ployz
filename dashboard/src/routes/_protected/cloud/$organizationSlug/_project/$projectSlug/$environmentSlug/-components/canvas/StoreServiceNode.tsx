@@ -12,7 +12,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { publicDomain, stagedSurface } from "./node-status";
-import { useServiceStatus } from "./ServiceIssues";
+import { useServiceStatus } from "./use-service-status";
 import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";

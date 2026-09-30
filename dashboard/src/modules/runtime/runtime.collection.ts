@@ -17,14 +17,13 @@ export type RuntimeLensStatus = typeof runtimeLensStatusSchema.Type;
 
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
-export const runtimeContainerStateSchema = Schema.Struct({
-  state: Schema.String,
-  health: Schema.optionalKey(Schema.String),
-  /** An exited container's exit code, when it stopped (RFC 3339) and whether it ran out of memory. */
-  code: Schema.optionalKey(Schema.Number),
-  stopped_at: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  oom_killed: Schema.optionalKey(Schema.Boolean),
-});
+/** A container's state as the Engine's `ContainerRuntimeObservation` says it, less an unrecognized state's raw value. */
+export const runtimeContainerStateSchema = Schema.Union([
+  Schema.Struct({ state: Schema.Literal("running"), health: Schema.String }),
+  /** Its exit code, when it stopped (RFC 3339, null when Docker gave no time) and whether it ran out of memory. */
+  Schema.Struct({ state: Schema.Literal("exited"), code: Schema.Number, stopped_at: Schema.NullOr(Schema.String), oom_killed: Schema.Boolean }),
+  Schema.Struct({ state: Schema.Literals(["created", "paused", "restarting", "removing", "dead", "unrecognized"]) }),
+]);
 
 /** Direct container evidence, without historical specs or inferred Service state. */
 export const runtimeContainerRecordSchema = Schema.Struct({

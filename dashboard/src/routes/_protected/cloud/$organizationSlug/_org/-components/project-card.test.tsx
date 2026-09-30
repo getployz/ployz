@@ -14,8 +14,9 @@ const environment: NonNullable<ComponentProps<typeof ProjectCard>["environment"]
   })),
 };
 
-function container(id: string, state: string, health = "healthy"): RuntimeContainerRecord {
-  return { id, displayName: id, machineId: "machine", namespace: "store-production", kind: "service_container", runtime: { state, health } };
+function container(id: string, state: "running" | "exited", health = "healthy"): RuntimeContainerRecord {
+  const runtime = state === "running" ? { state, health } : { state, code: 1, stopped_at: null, oom_killed: false };
+  return { id, displayName: id, machineId: "machine", namespace: "store-production", kind: "service_container", runtime };
 }
 
 function runtimeService(identity: string, containers: RuntimeContainerRecord[], hookContainers: RuntimeContainerRecord[] = []): RuntimeServiceRecord {

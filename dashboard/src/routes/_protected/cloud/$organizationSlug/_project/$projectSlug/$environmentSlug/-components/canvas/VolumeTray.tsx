@@ -8,7 +8,7 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { ENVIRONMENT_RESOURCE_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { fillText, fillTone, stagedSurface } from "./node-status";
 import { FILL_CLASSES, STAGED_CLASSES } from "./node-status-view";
-import { VolumeFillContext } from "./RuntimeLensProvider";
+import { useVolumeFill } from "./RuntimeLensProvider";
 import type { MountedVolume } from "./types";
 
 /** The Volume whose trays are lit: hovering a shared Volume's tray lights it under every Service that mounts it. */
@@ -29,7 +29,7 @@ export function VolumeTray({ tray: { volume, sharedWith, mountChanged }, selecte
   const [litVolumeId, setLitVolumeId] = use(LitVolume);
   const lighting = useNodeLighting(volume.id);
   const pick = useNodePick(volume.name);
-  const fill = use(VolumeFillContext)(volume.id);
+  const fill = useVolumeFill()(volume.id);
   const tone = fillTone(fill);
   // Staged by its own lifecycle first, else by the next Deploy adding or changing this mount of it.
   const surface = stagedSurface(lighting, volume.change ?? (mountChanged ? "update" : null));

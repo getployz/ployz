@@ -170,7 +170,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
         {/* Domain statuses need a look at the Cluster, so the tabs don't wait for them. */}
-        <Suspense fallback={null}><ServiceIssues serviceId={service.id} /></Suspense>
+        <Suspense fallback={null}><ServiceIssues service={service} settings={settings} diff={diff} /></Suspense>
         <Tabs value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });

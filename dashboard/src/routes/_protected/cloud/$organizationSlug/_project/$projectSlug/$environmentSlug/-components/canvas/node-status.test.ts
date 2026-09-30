@@ -4,8 +4,9 @@ import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collectio
 import { deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
-const container = (state: string, health?: string): RuntimeContainerRecord =>
-  ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: health ? { state, health } : { state } });
+const container = (state: "running" | "exited" | "restarting", health = "healthy"): RuntimeContainerRecord =>
+  ({ id: state, displayName: "web", machineId: "m", namespace: "n", kind: "service", runtime: state === "running" ? { state, health }
+    : state === "exited" ? { state, code: 1, stopped_at: null, oom_killed: false } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
 const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false };
 const seen = { lens: observed, desiredReplicas: null, chip: null };
@@ -27,7 +28,7 @@ describe("runtimeLine", () => {
       .toEqual({ word: "Crashed", tone: "crashed", down: true, since: new Date("2026-09-30T09:58:00.000Z"), code: 137 });
     expect(runtimeLine(service, runtime(stopped("2026-09-30T09:50:00.000Z", false), stopped("2026-09-30T09:58:00.000Z", true)), seen))
       .toMatchObject({ word: "Out of memory", since: new Date("2026-09-30T09:58:00.000Z") });
-    expect(runtimeLine(service, runtime(stopped(null, false)), seen)).toMatchObject({ word: "Crashed", since: null });
+    expect(runtimeLine(service, runtime(stopped(null, false)), seen)).toMatchObject({ word: "Crashed", since: null, code: 137 });
   });
 
   it("says a grey Starting while its containers run but none serves or fails a health check yet", () => {
@@ -57,7 +58,7 @@ describe("runtimeLine", () => {
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
-    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since, code: null });
+    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since, code: 1 });
     expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since, code: null });
     expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null })).tone).toBe("pending");
     expect(runtimeLine(service, null, watch({ status: "unreachable" }))).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
@@ -116,7 +117,7 @@ describe("volume fill", () => {
     const online = runtimeLine(service, runtime(container("running", "healthy")), seen);
     const volume = (name: string) => ({ id: name, name, storage_locked: true });
     expect(nodeIssues(online, [], [0.5, 0.85, 0.97, null].map((fill, i) => ({ volume: volume(`v${i}`), fill }))))
-      .toEqual([{ kind: "volume", volume: volume("v1"), fill: 0.85 }, { kind: "volume", volume: volume("v2"), fill: 0.97 }]);
+      .toEqual([{ kind: "volume", volume: volume("v1"), fill: 0.85, tone: "warn" }, { kind: "volume", volume: volume("v2"), fill: 0.97, tone: "bad" }]);
   });
 });
 
@@ -133,18 +134,18 @@ describe("publicDomain", () => {
 });
 
 describe("deployChip", () => {
-  const deployment = (status: "queued" | "running", services: string[], nodes: string[] | null = null) =>
-    ({ status, services, nodes, started_at: status === "running" ? 100 : null, admitted_at: 90 });
+  const deployment = (status: "queued" | "running", nodes: string[] | null) =>
+    ({ status, nodes, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
-  it("puts a Deploy in flight first: running, else queued, when it targets the Service or every Service", () => {
-    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", []), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
+  it("puts a Deploy in flight that targets the Service first: running, else queued", () => {
+    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", ["web"]), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
     expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
     expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
   });
 
-  it("follows the nodes a Deploy targets once its view arrives: a Service created after it gets no chip", () => {
-    expect(deployChip(service, 0, [deployment("running", [], ["api"])])).toBeNull();
-    expect(deployChip(service, 0, [deployment("running", [], ["web", "api"])])).toEqual({ kind: "deploying", since: 100 });
+  it("targets nothing while a Deploy's nodes haven't arrived", () => {
+    expect(deployChip(service, 0, [deployment("running", null)])).toBeNull();
+    expect(deployChip({ ...service, change: "update" }, 1, [deployment("queued", null)])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
   });
 
   it("says what the next Deploy does otherwise", () => {

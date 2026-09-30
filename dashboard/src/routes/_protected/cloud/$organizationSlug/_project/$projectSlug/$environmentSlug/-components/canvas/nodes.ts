@@ -12,6 +12,7 @@ import type {
   CanvasStoreVolumeNode,
   MountedVolume,
   StoreCanvas,
+  StoreCanvasService,
   StoreLiveNode,
   CanvasStoreLiveNode,
 } from "./types";
@@ -64,32 +65,33 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
 const isReplicaCount = Schema.is(Schema.Int);
 
 /**
- * Each Service with what its card shows, and the Volumes no Service here mounts. `namespace`: the Environment's, null
- * when it has none, so no runtime evidence names its Services.
+ * A Service with what its card shows, given the Environment's views. `namespace`: the Environment's, null when it has
+ * none, so no runtime evidence names its Services. `trays`: the Volumes it mounts.
  */
-export function storeCanvasServices({ services, settings, diff, volumes, domains, namespace }: {
-  services: readonly ServiceListing[]; settings: EnvironmentView; diff: DiffView; volumes: readonly VolumeListing[];
-  domains: readonly DomainRow[]; namespace: string | null;
-}) {
-  const { trays, unmounted } = volumeTrays(services, volumes, diff);
+export function storeCanvasService(service: ServiceListing, { settings, diff, domains, namespace, trays }: {
+  settings: EnvironmentView; diff: DiffView; domains: readonly DomainRow[]; namespace: string | null; trays: MountedVolume[];
+}): StoreCanvasService {
+  const changes = serviceChanges(diff, service.id);
+  // What runs asks for the deployed count, not one the next Deploy would set.
+  const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
+  // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
+  const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
   return {
-    services: services.map((service) => {
-      const changes = serviceChanges(diff, service.id);
-      // What runs asks for the deployed count, not one the next Deploy would set.
-      const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
-      // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
-      const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
-      return {
-        service,
-        domains: domains.filter((domain) => domain.service === service.name),
-        changeCount: changes.size,
-        runtimeIdentity: namespace === null ? null : `${namespace}/${privateDns}`,
-        desiredReplicas: isReplicaCount(replicas) ? replicas : null,
-        trays: trays.get(service.id) ?? [],
-      };
-    }),
-    unmounted,
+    service,
+    domains: domains.filter((domain) => domain.service === service.name),
+    changeCount: changes.size,
+    runtimeIdentity: namespace === null ? null : `${namespace}/${privateDns}`,
+    desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+    trays,
   };
+}
+
+/** Each Service with what its card shows (see `storeCanvasService`), and the Volumes no Service here mounts. */
+export function storeCanvasServices({ services, volumes, ...views }: Omit<Parameters<typeof storeCanvasService>[1], "trays"> & {
+  services: readonly ServiceListing[]; volumes: readonly VolumeListing[];
+}) {
+  const { trays, unmounted } = volumeTrays(services, volumes, views.diff);
+  return { services: services.map((service) => storeCanvasService(service, { ...views, trays: trays.get(service.id) ?? [] })), unmounted };
 }
 
 /**

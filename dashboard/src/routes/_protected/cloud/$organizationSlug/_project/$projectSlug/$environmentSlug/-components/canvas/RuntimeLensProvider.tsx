@@ -1,6 +1,9 @@
 import { createContext, use, type ReactNode } from "react";
+import { useLoaderData, useParams } from "@tanstack/react-router";
+import { namespaceQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import type { RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { dockerVolumeName, volumeFill, type RuntimeLens } from "./node-status";
 
 /**
@@ -13,12 +16,11 @@ export function RuntimeLensProvider({ organizationSlug, children }: { organizati
   return <RuntimeLensContext value={useRuntimeLens(organizationSlug)}>{children}</RuntimeLensContext>;
 }
 
-/** How full a Volume here is, by its id, as `volumeFill` reads it. Without a provider, none reports. */
-export const VolumeFillContext = createContext<(volumeId: string) => number | null>(() => null);
-
-/** The Environment's Volume fills; `namespace`, null when the Environment has none, so nothing names its Volumes. */
-export function VolumeFillProvider({ namespace, children }: { namespace: string | null; children: ReactNode }) {
+/** How full a Volume here is, by its id, as `volumeFill` reads it; none when the Environment has no Namespace to name it by. */
+export function useVolumeFill() {
+  const { organizationSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const namespace = useStoreView(organizationSlug, namespaceQuery(store));
   const { volumes } = use(RuntimeLensContext);
-  const fillOf = (volumeId: string) => namespace === null ? null : volumeFill(volumes, dockerVolumeName(namespace, volumeId));
-  return <VolumeFillContext value={fillOf}>{children}</VolumeFillContext>;
+  return (volumeId: string) => namespace.ok ? volumeFill(volumes, dockerVolumeName(namespace.value.namespace, volumeId)) : null;
 }
