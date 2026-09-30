@@ -481,10 +481,10 @@ fn admit(
                 who.organization.as_str().into(),
                 push.head.as_str().into(),
                 serde_json::to_string(&services)
-                    .expect("JSON")
+                    .expect("Service IDs are JSON")
                     .as_str()
                     .into(),
-                serde_json::to_string(saves).expect("JSON").as_str().into(),
+                serde_json::to_string(saves).expect("Conditional Save IDs are JSON").as_str().into(),
             ],
         )?;
         return Ok(Some(Deploy::Waiting));

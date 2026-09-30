@@ -1256,3 +1256,27 @@ fn a_deployment_is_found_by_its_number() {
     assert_eq!(by_number(1).unwrap().deployment.id, id(1));
     assert_eq!(code(by_number(2)), RpcErrorCode::NotFound);
 }
+
+#[test]
+fn unclaimed_lists_queued_deployments_no_runner_took() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let later = i64::MAX;
+    let unclaimed = store.unclaimed(later).unwrap();
+    assert_eq!(
+        unclaimed
+            .iter()
+            .map(|unclaimed| &unclaimed.deployment)
+            .collect::<Vec<_>>(),
+        [&id(1)]
+    );
+    assert!(store.unclaimed(0).unwrap().is_empty());
+    store.claim(&id(1), &runner("runner-a")).unwrap();
+    assert!(store.unclaimed(later).unwrap().is_empty());
+}
+
+#[test]
+fn sources_of_an_unknown_deployment_are_not_found() {
+    let (store, _) = shop();
+    assert_eq!(code(store.sources(&id(9))), RpcErrorCode::NotFound);
+}

@@ -286,8 +286,7 @@ impl ConfigStore {
     /// the pull requests that merged, then which merge commits the head contains.
     ///
     /// # Errors
-    ///
-    /// `invalid_argument` for an ID out of range; `internal` on storage failure.
+    /// Returns a storage error.
     pub fn pending_saves(
         &self,
         organization: &OrganizationId,
