@@ -484,7 +484,10 @@ fn admit(
                     .expect("Service IDs are JSON")
                     .as_str()
                     .into(),
-                serde_json::to_string(saves).expect("Conditional Save IDs are JSON").as_str().into(),
+                serde_json::to_string(saves)
+                    .expect("Conditional Save IDs are JSON")
+                    .as_str()
+                    .into(),
             ],
         )?;
         return Ok(Some(Deploy::Waiting));
@@ -597,4 +600,3 @@ fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcErro
     }
     Ok(passed)
 }
-

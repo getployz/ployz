@@ -657,7 +657,6 @@ pub(crate) fn saved_at(
         .map(canonicalize_environment_intent)
 }
 
-
 fn parse_stored<T: TryFrom<String, Error = RpcError>>(value: &str) -> Result<T, RpcError> {
     T::try_from(value.to_owned()).map_err(|_| error::corrupt("identity"))
 }

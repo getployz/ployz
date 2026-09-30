@@ -514,8 +514,14 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     assert_eq!(
         statuses(&failed),
         BTreeMap::from([
-            (ployz_core::ServiceName::parse("api").unwrap(), BuildStatus::Failed),
-            (ployz_core::ServiceName::parse("web").unwrap(), BuildStatus::Built),
+            (
+                ployz_core::ServiceName::parse("api").unwrap(),
+                BuildStatus::Failed
+            ),
+            (
+                ployz_core::ServiceName::parse("web").unwrap(),
+                BuildStatus::Built
+            ),
         ])
     );
     let log = store
@@ -539,8 +545,14 @@ async fn cloud_s_runner_builds_git_services_and_a_retry_rebuilds_only_what_faile
     assert_eq!(
         statuses(&retried),
         BTreeMap::from([
-            (ployz_core::ServiceName::parse("api").unwrap(), BuildStatus::Built),
-            (ployz_core::ServiceName::parse("web").unwrap(), BuildStatus::Reused),
+            (
+                ployz_core::ServiceName::parse("api").unwrap(),
+                BuildStatus::Built
+            ),
+            (
+                ployz_core::ServiceName::parse("web").unwrap(),
+                BuildStatus::Reused
+            ),
         ])
     );
 }

@@ -3,8 +3,8 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
-use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::config::SavedEnvironmentIntent;
+use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -129,9 +129,6 @@ pub struct Start {
     pub deployment: DeploymentId,
 }
 
-
-
-
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -207,7 +204,11 @@ fn deploy(
     let losses = review::destructive(
         who,
         &review,
-        (&saved_intent, &namespace, review::Shipping::Deploy(&admit.services)),
+        (
+            &saved_intent,
+            &namespace,
+            review::Shipping::Deploy(&admit.services),
+        ),
         (admit.version.as_deref(), &admit.accept_volume_loss),
         trusted.volumes.as_ref(),
     )?;

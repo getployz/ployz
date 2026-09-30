@@ -70,7 +70,8 @@ pub(crate) fn set(
                 None => false,
             };
             if !unchanged {
-                let sealed = sealing.seal(&serde_json::to_string(&new).expect("a registry credential is JSON"));
+                let sealed = sealing
+                    .seal(&serde_json::to_string(&new).expect("a registry credential is JSON"));
                 store(tx, who, &environment_id, &node.id, &sealed)?;
             }
             !unchanged

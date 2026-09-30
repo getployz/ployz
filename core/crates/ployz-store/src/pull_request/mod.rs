@@ -31,10 +31,10 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::project::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
+use crate::project::ProjectSummary;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::NodeName;
 use crate::storage::Tx;

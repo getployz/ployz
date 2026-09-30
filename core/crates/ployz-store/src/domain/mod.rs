@@ -486,7 +486,6 @@ pub(crate) fn set_generated_domain(
     })
 }
 
-
 /// The Cluster Domain `environment`'s generated domains live under: the one Cloud
 /// reserved, else the one its last Deploy used.
 fn cluster_of(

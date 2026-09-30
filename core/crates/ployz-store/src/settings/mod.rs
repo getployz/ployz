@@ -10,9 +10,10 @@ use std::fmt;
 
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
-    HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX, MEM_LIMIT_MAX, REPLICAS_MAX,
-    RESTART_POLICIES, SavedVolumeIntent, ServiceHealthcheck, ServiceImageCredentials, ServiceSource,
-    default_max_retries, default_replicas, parse_service_setting,
+    HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX,
+    MEM_LIMIT_MAX, REPLICAS_MAX, RESTART_POLICIES, SavedVolumeIntent, ServiceHealthcheck,
+    ServiceImageCredentials, ServiceSource, default_max_retries, default_replicas,
+    parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -793,11 +794,7 @@ impl SettingPath {
     /// Core's change-row `field` of Service `service` as a path: `SERVICE.SETTING`,
     /// `SERVICE.env.KEY` or `SERVICE.mounts.VOLUME`, naming a Volume by
     /// `volume(id)`. Text, not a parsed path: a row may name a field no path does.
-    pub(crate) fn from_core(
-        service: &str,
-        field: &str,
-        volume: impl Fn(&str) -> String,
-    ) -> String {
+    pub(crate) fn from_core(service: &str, field: &str, volume: impl Fn(&str) -> String) -> String {
         let key = field
             .strip_prefix("env.")
             .or_else(|| field.strip_prefix("variables."));

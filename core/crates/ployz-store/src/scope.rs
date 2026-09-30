@@ -126,7 +126,11 @@ impl Environment {
             .volumes
             .iter()
             .position(|volume| volume.name == name.as_str())
-            .ok_or_else(|| self.volume(name).err().unwrap_or_else(|| error::corrupt("Volume")))?;
+            .ok_or_else(|| {
+                self.volume(name)
+                    .err()
+                    .unwrap_or_else(|| error::corrupt("Volume"))
+            })?;
         Ok(self
             .working
             .volumes

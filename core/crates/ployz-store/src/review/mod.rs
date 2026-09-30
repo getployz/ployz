@@ -197,7 +197,11 @@ pub(crate) enum Shipping<'a> {
 pub(crate) fn destructive(
     who: &Actor,
     review: &Review,
-    (target, namespace, shipping): (&SavedEnvironmentIntent, &ployz_core::Namespace, Shipping<'_>),
+    (target, namespace, shipping): (
+        &SavedEnvironmentIntent,
+        &ployz_core::Namespace,
+        Shipping<'_>,
+    ),
     (version, accepted): (Option<&str>, &[crate::id::VolumeName]),
     observed: Option<&crate::VolumeObservation>,
 ) -> Result<Vec<crate::VolumeLoss>, RpcError> {
@@ -383,7 +387,6 @@ pub(crate) fn latest_saved(
         intent: canonicalize_environment_intent(intent),
     }))
 }
-
 
 fn projection(
     environment: &EnvironmentId,
