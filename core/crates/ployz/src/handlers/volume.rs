@@ -6,7 +6,9 @@
 
 use clap::{ArgAction, ArgMatches, Command};
 use ployz_core::config::VolumeKind;
-use ployz_core::{ProvisionedVolumeMaximumBytes, ServiceName};
+use ployz_core::{
+    MachineObservation, MachineStorageObservation, ProvisionedVolumeMaximumBytes, ServiceName,
+};
 use ployz_store::{
     CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeId, VolumeQuery, VolumeStaged,
     VolumesQuery,
@@ -101,14 +103,43 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    let storage = requested_storage(matches);
     let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
         name: name.clone(),
-        storage: requested_storage(matches),
+        storage,
         mounts,
     })?;
-    staged(matches, &created, "Staged new Volume")
+    let warning = (matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches))
+        .then_some(NO_MANAGED_HOST);
+    staged_warning(matches, &created, "Staged new Volume", warning)
+}
+
+const NO_MANAGED_HOST: &str = "No Server here can host managed Volumes yet, so a Deploy of this one fails until one can: add a Server with managed volumes enabled, or use --docker instead.";
+
+/// Best effort, bounded: whether every Server this reaches reports it can't host
+/// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
+fn no_managed_host(matches: &ArgMatches) -> bool {
+    let Ok(runtime) = super::runtime() else {
+        return false;
+    };
+    let context = matches.try_get_one::<String>("context").ok().flatten();
+    runtime.block_on(async {
+        let observe = async {
+            let mut client = super::server::connect(matches, context.map(String::as_str))
+                .await
+                .ok()?;
+            let mut machines = client.machines().await.ok()?;
+            client.observe_machine_storage(&mut machines).await;
+            Some(none_hosts_managed(&machines))
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), observe)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(false)
+    })
 }
 
 fn storage_flags(command: Command) -> Command {
@@ -243,9 +274,41 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// A staged Volume change and `ployz diff` to review it.
+/// Servers were seen and each says it keeps Docker volumes only; one not
+/// answering might host them.
+fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
+    !machines.is_empty()
+        && machines
+            .iter()
+            .all(|machine| machine.storage == Some(MachineStorageObservation::Stateless))
+}
+
 fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(), Error> {
+    staged_warning(matches, result, what, None)
+}
+
+fn staged_warning(
+    matches: &ArgMatches,
+    result: &VolumeStaged,
+    what: &str,
+    warning: Option<&str>,
+) -> Result<(), Error> {
+    #[derive(serde::Serialize)]
+    struct Out<'a> {
+        #[serde(flatten)]
+        staged: Next<'a, VolumeStaged>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        warning: Option<&'a str>,
+    }
     let hint = store::next(matches, &["diff"]);
-    output::finish(&Next::new(result, Some(hint)), || {
+    let out = Out {
+        staged: Next::new(result, Some(hint)),
+        warning,
+    };
+    if let Some(warning) = warning {
+        eprintln!("WARNING: {warning}");
+    }
+    output::finish(&out, || {
         say!(
             "{what} {} in {}/{} (revision {}).",
             result.volume.name,
@@ -258,3 +321,53 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
 }
 
 use super::store::volume_name;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ployz_core::{Machine, MembershipObservation, WireGuardPublicKey};
+
+    fn server(seed: u8, storage: Option<MachineStorageObservation>) -> MachineObservation {
+        let mut observed = MachineObservation::new(
+            Machine {
+                labels: Default::default(),
+                accepts_builds: true,
+                accepts_services: true,
+                accepts_ingress: true,
+                id: char::from(b'a' + seed)
+                    .to_string()
+                    .repeat(32)
+                    .parse()
+                    .unwrap(),
+                name: format!("node-{seed}").parse().unwrap(),
+                subnet: format!("10.210.{seed}.0/24").parse().unwrap(),
+                public_key: WireGuardPublicKey([seed; 32]),
+                public_ip: None,
+                advertised_endpoints: Vec::new(),
+                runtime: Default::default(),
+                build_concurrency: None,
+            },
+            MembershipObservation::Up,
+        );
+        observed.storage = storage;
+        observed
+    }
+
+    #[test]
+    fn only_servers_that_all_say_docker_only_warn() {
+        let stateless = Some(MachineStorageObservation::Stateless);
+        assert!(none_hosts_managed(&[
+            server(0, stateless),
+            server(1, stateless)
+        ]));
+        assert!(!none_hosts_managed(&[]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, None)
+        ]));
+        assert!(!none_hosts_managed(&[
+            server(0, stateless),
+            server(1, Some(MachineStorageObservation::Ready)),
+        ]));
+    }
+}

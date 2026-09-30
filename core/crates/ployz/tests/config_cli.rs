@@ -290,8 +290,7 @@ fn an_agent_creates_and_edits_an_image_service() {
                 "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
-                "web.startCommand",
-                "web.template"
+                "web.startCommand"
             ]))
         );
         assert!(added.get("immediate").is_none());

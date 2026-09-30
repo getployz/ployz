@@ -810,7 +810,8 @@ fn with_no_server_left_a_removal_applies_at_once() {
         }),
         &none_left,
     ));
-    assert_eq!(refused.code, RpcErrorCode::Unavailable);
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(refused.details["next"], "ployz server add");
 }
 
 #[test]

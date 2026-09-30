@@ -161,11 +161,9 @@ async fn remove_machine_refuses_the_last_managed_machine_before_mutation() {
         .remove_machine(entry.machine.name.as_str(), &confirmation)
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
     assert!(
-        error
-            .message
-            .contains("Delete the Cluster from Cloud instead"),
+        error.message.contains("ployz org rm ORGANIZATION"),
         "{}",
         error.message
     );
@@ -188,11 +186,9 @@ async fn remove_machine_refuses_the_last_machine_with_a_management_client() {
         )
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
     assert!(
-        error
-            .message
-            .contains("Delete the Cluster from Cloud instead"),
+        error.message.contains("ployz org rm ORGANIZATION"),
         "{}",
         error.message
     );
@@ -211,12 +207,12 @@ async fn last_machine_refusal_names_non_cloud_holders_without_cloud_teardown() {
         .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
         "this is the last Machine in the Cluster and it is still managed by `cli` and `ops`; \
          removing it would leave `cli` and `ops` managing a Cluster that no longer exists. \
-         Disconnect `cli` and `ops` from this Machine first."
+         No changes made. Disconnect `cli` and `ops` from this Machine first."
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
     server.abort();
@@ -239,11 +235,9 @@ async fn remove_machine_membership_refuses_the_last_machine_with_a_management_cl
         .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
     assert!(
-        error
-            .message
-            .contains("Delete the Cluster from Cloud instead"),
+        error.message.contains("ployz org rm ORGANIZATION"),
         "{}",
         error.message
     );
