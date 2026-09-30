@@ -202,10 +202,10 @@ fn staged(
     Ok(VolumeStaged {
         volume: summary(environment.volume(name)?)?,
         environment: environment.summary,
-        staged: match changed {
-            true => vec![SettingPath::volume(name)],
-            false => Vec::new(),
-        },
+        staged: changed
+            .then(|| SettingPath::volume(name))
+            .into_iter()
+            .collect(),
     })
 }
 

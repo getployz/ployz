@@ -239,11 +239,10 @@ pub(crate) fn refuse_taken(
 }
 
 fn staged(changed: bool, name: &ServiceName) -> Vec<SettingPath> {
-    if changed {
-        vec![SettingPath::whole(name)]
-    } else {
-        Vec::new()
-    }
+    changed
+        .then(|| SettingPath::whole(name))
+        .into_iter()
+        .collect()
 }
 
 pub(crate) fn summary(node: &SavedServiceIntent) -> Result<ServiceSummary, RpcError> {

@@ -434,11 +434,10 @@ pub(crate) fn add_domain(
             name,
             port,
         },
-        staged: if changed {
-            vec![SettingPath::whole(&add.service)]
-        } else {
-            Vec::new()
-        },
+        staged: changed
+            .then(|| SettingPath::whole(&add.service))
+            .into_iter()
+            .collect(),
     })
 }
 
@@ -484,10 +483,10 @@ pub(crate) fn set_generated_domain(
             name: generated(prefix.to_owned(), trusted),
             port,
         },
-        staged: match changed {
-            true => vec![SettingPath::whole(&set.service)],
-            false => Vec::new(),
-        },
+        staged: changed
+            .then(|| SettingPath::whole(&set.service))
+            .into_iter()
+            .collect(),
     })
 }
 
