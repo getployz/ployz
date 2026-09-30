@@ -1,5 +1,6 @@
 import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
+import { Schema } from "effect";
 import {
   Background,
   BackgroundVariant,
@@ -19,14 +20,18 @@ import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
-import type { StoreCanvasService } from "./canvas/types";
-import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { buildStoreEdges, buildStoreNodes, volumeTrays } from "./canvas/nodes";
+import type { StoreCanvas } from "./canvas/types";
+import { branchQuery, diffQuery, domainsQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { liveNodes } from "#/modules/config-store/store-branches";
 import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
+import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
+
+/** A `replicas` Setting that says how many. */
+const isReplicaCount = Schema.is(Schema.Int);
 
 export function PendingCanvas() {
   return (
@@ -65,8 +70,8 @@ function CanvasWithData() {
   const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
   // The branch view is refused unless this is a Branch.
-  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
-    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -75,25 +80,38 @@ function CanvasWithData() {
       .select(({ position }) => position),
   });
   // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
-  if ([servicesResult, settingsResult, diffResult, volumesResult].some((r) => !r.ok && r.refusal.code === "not_found")) return <PendingCanvas />;
+  if ([servicesResult, settingsResult, diffResult, volumesResult, domainsResult].some((r) => !r.ok && r.refusal.code === "not_found")) {
+    return <PendingCanvas />;
+  }
   const services = requireView(servicesResult);
   const settings = requireView(settingsResult);
   const diff = requireView(diffResult);
   const volumes = requireView(volumesResult);
+  const domains = requireView(domainsResult).domains;
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
-  const store = {
-    services: services.services.map((service): StoreCanvasService => ({
-      service,
-      subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
-      changeCount: serviceChanges(diff, service.id).size,
-      runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
-      uploaded: service.source === "uploaded",
-    })),
+  const { trays, unmounted } = volumeTrays(services.services, volumes.volumes, diff);
+  const store: StoreCanvas = {
+    services: services.services.map((service) => {
+      const changes = serviceChanges(diff, service.id);
+      // What runs asks for the deployed count, not one the next Deploy would set.
+      const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
+      // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
+      const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
+      return {
+        service,
+        domains: domains.filter((domain) => domain.service === service.name),
+        changeCount: changes.size,
+        runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${privateDns}` : null,
+        desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+        trays: trays.get(service.id) ?? [],
+      };
+    }),
     volumes: volumes.volumes,
+    unmountedVolumes: unmounted,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
   };
-  const initialNodes = buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId);
+  const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
   const initialEdges = buildStoreEdges(store);
 
   return (
@@ -145,7 +163,9 @@ export function EnvironmentCanvasScene() {
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
           <Suspense fallback={<PendingCanvas />}>
-            <CanvasWithData key={canvasKey} />
+            <RuntimeLensProvider organizationSlug={organizationSlug}>
+              <CanvasWithData key={canvasKey} />
+            </RuntimeLensProvider>
           </Suspense>
         </DeploymentLightingProvider>
         <div ref={setBottomBarSlot} className="contents" />

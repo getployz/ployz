@@ -277,13 +277,13 @@ function SiteMock({ pricing }: { pricing?: boolean }) {
   );
 }
 
-// ---- review: an edit waits in pink until Deploy -------------------------------------------------------
+// ---- review: an edit waits until Deploy -------------------------------------------------------
 
 // One service's card through a deploy, as ServiceNode shows it (getServiceDeploymentSemantics).
-type CardLook = { tone: Tone; state?: "changed"; status: string };
+type CardLook = { tone: Tone; state?: "info"; status: string };
 type ReviewFrame = { ms: number; card: CardLook; bar: "staged" | "deploying" | null };
-// Staged is where it rests: the pink trail, card to Deploy, in one still.
-const REVIEW_STAGED: ReviewFrame = { ms: 3000, card: { tone: "changed", state: "changed", status: "1 change" }, bar: "staged" };
+// Staged is where it rests: the changed card in blue, the pink Apply bar and Deploy, in one still.
+const REVIEW_STAGED: ReviewFrame = { ms: 3000, card: { tone: "quiet", state: "info", status: "1 change" }, bar: "staged" };
 const REVIEW_FRAMES: readonly [ReviewFrame, ...ReviewFrame[]] = [
   { ms: 2200, card: { tone: "quiet", status: "Deployed · 1 container observed" }, bar: null },
   REVIEW_STAGED,

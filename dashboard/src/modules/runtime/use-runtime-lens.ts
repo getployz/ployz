@@ -21,6 +21,8 @@ export function useRuntimeLens(organizationSlug: string) {
     status,
     error,
     incomplete: statusRows[0] ? isIncompleteObservation(statusRows[0].incompleteIds) : false,
+    /** When the evidence shown was current; kept when the connection drops, null before any. */
+    observedAt: statusRows[0]?.observedAt ?? null,
     isLoading,
   };
 }

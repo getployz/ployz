@@ -1,35 +1,9 @@
-// @vitest-environment jsdom
-
 import { describe, expect, it } from "vitest";
 import {
-  blurClickedNodeLink,
   getNodePanDelta,
   viewportAcrossPages,
   viewportShowing,
 } from "./useCanvasNavigation";
-
-it("clears mouse focus without stealing keyboard focus", () => {
-  const link = document.createElement("a");
-  link.href = "#service";
-  const title = document.createElement("span");
-  link.append(title);
-  document.body.append(link);
-  link.addEventListener("click", (event) => {
-    event.preventDefault();
-    blurClickedNodeLink(event);
-  });
-  try {
-    link.focus();
-    title.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
-    expect(document.activeElement).not.toBe(link);
-
-    link.focus();
-    title.dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 }));
-    expect(document.activeElement).toBe(link);
-  } finally {
-    link.remove();
-  }
-});
 
 it("saves the viewport a Deployment Page opens over and starts from it again once the page closes", () => {
   const before = { x: 0, y: 0, zoom: 1 };

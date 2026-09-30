@@ -12,39 +12,3 @@ export function getServiceIcon(service: { source: { type: "empty" | "uploaded" |
       return <PackageIcon />;
   }
 }
-
-/** A card's status dot by its state. */
-export function getServiceStatusClasses(state: "success" | "changed" | "warning" | "destructive" | undefined) {
-  if (state === "success") {
-    return {
-      dot: "bg-success-soft",
-      innerDot: "bg-success",
-    };
-  }
-
-  if (state === "changed") {
-    return {
-      dot: "bg-changed-soft",
-      innerDot: "bg-changed",
-    };
-  }
-
-  if (state === "warning") {
-    return {
-      dot: "bg-warning-soft",
-      innerDot: "bg-warning",
-    };
-  }
-
-  if (state === "destructive") {
-    return {
-      dot: "bg-destructive-soft",
-      innerDot: "bg-destructive",
-    };
-  }
-
-  return {
-    dot: "bg-muted",
-    innerDot: "bg-muted-foreground",
-  };
-}

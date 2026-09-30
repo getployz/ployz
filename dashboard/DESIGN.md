@@ -150,14 +150,14 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 
 - **Intent Pink** (`#d0268c`): the saturated anchor for staged intent and focus. It is deliberately warm and unmistakably pink, never violet or purple.
 - **Intent Deep** (`#a80068`): accessible intent text and compact indicators on pale staged surfaces.
-- **Intent Soft** (`#fff0f7`) and **Intent Border** (`#efb3ce`): the background and boundary applied to autosaved fields, resources, and diff rows that differ from deployed truth.
+- **Intent Soft** (`#fff0f7`) and **Intent Border** (`#efb3ce`): the background and boundary applied to autosaved fields and diff rows that differ from deployed truth.
 
 ### Tertiary
 
-- **Evidence Green** (`#42946e`): successful or healthy runtime evidence.
+- **Evidence Green** (`#42946e`): successful or healthy runtime evidence. It also marks a canvas node the next Deploy creates.
 - **Attention Amber** (`#ad871f`): warnings and consequences that require consideration.
 - **Failure Red** (`#b62d2b`): errors, invalid state, and destructive intent.
-- **Information Blue** (`#2057c5`): neutral informational state and links where surrounding context does not already establish interactivity.
+- **Information Blue** (`#2057c5`): neutral informational state and links where surrounding context does not already establish interactivity. It also marks a canvas node the next Deploy changes, and a Deploy in flight.
 - Each semantic hue has a pale companion surface. Text, iconography, and state language must accompany the color.
 
 ### Neutral
@@ -170,7 +170,7 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 
 **The Neutral Action Rule.** Ordinary primary actions are ink on light surfaces and white on dark surfaces. Chromatic fills never become a generic importance shortcut. The one exception is the bottom bar's **Deploy**, solid Intent Pink: it is where a staged change's pink trail ends.
 
-**The Visible Intent Rule.** Pink follows an autosaved change from its field to its resource, diff, and apply surface. Saturated pink is rare; most staged state uses the soft surface, border, and deep text.
+**The Visible Intent Rule.** Pink follows an autosaved change from its field through the diff to the apply surface; on the canvas a node takes the staged colour of what the Deploy does to it. Saturated pink is rare; most staged state uses the soft surface, border, and deep text.
 
 **The Semantic Honesty Rule.** Pink never means success, warning, failure, runtime drift, or informational status. No semantic state relies on color alone.
 
@@ -233,11 +233,13 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 A node answers two questions in two places, and neither ever stands in for the other.
 
 - **Card:** the icon, the name, and the public domain when there is one: its first custom domain, else its generated one, muted until the Deploy that adds it lands. Source, image, replicas, ports and reasons live in its panel.
-- **Status line: what runs now.** One word from runtime evidence: Online, Degraded, Unhealthy, "Crashed 2 min ago", Not deployed, No source, or a grey "Deployed" while there is no evidence. Staged or in-flight work never replaces it. It ends in **⚠ N** when there is something to fix, red if any of them is a crash and amber otherwise, and that opens the list. Crashed alone also turns the border red.
-- **Chip: anything about Deploys.** The first that applies: "Deploying 0:42" or "Queued"; "New", "N changes" or "Removing"; on an open Deployment Page, its Node Outcome. Otherwise nothing. A staged node takes the staged-intent surface and a staged removal the Failure Red one; nothing else fills a card.
-- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: pink when staged, "Removing", "N% full". A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
+- **Status line: what runs now.** One word from runtime evidence: Online, Degraded, Unhealthy, "Crashed 2 min ago", Not running, Not deployed, No source, a grey Starting while its containers run but none serves yet, or a grey "Deployed" while a Server is missing from the evidence. Staged or in-flight work never replaces it. It ends in **⚠ N** when there is something to fix, red if any of them is a crash and amber otherwise, and the card opens its panel. A service that should run and doesn't, Crashed or Not running, also turns the border red.
+- **It never guesses.** Before the first evidence it shimmers. When the connection drops, it keeps the last word in grey with its age, "Online 2 minutes ago", and a grey word is never red, never an issue. When the Servers can't be reached it says "Can't reach servers"; with no Server at all, "Needs a server".
+- **Chip: anything about Deploys.** The first that applies: "Deploying 1m 12s" or "Queued"; a green "New", a blue "N changes" or a red "Removing"; on an open Deployment Page, its Node Outcome. Otherwise nothing. A node the Deploy creates, changes or removes takes the green, blue or red surface; nothing else fills a card.
+- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: green, blue or red when staged, "Removing", "N% full". A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
 - **Selected**, while its panel is open: a two-pixel ink ring. **Keyboard focus:** an Intent Pink outline, drawn only while the user navigates by keyboard. A pointer press ends that, so a closed panel hands focus back to its node without drawing it.
 - Only a node being dragged casts a shadow.
+- **On phones** the canvas is a list of the same cards, compact: the name and chip on one row, the domain and status line on the next. Trays follow their cards.
 
 ### Projects
 
@@ -343,7 +345,7 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 ### Do:
 
 - **Do** use neutral ink and white for ordinary action hierarchy.
-- **Do** carry Intent Pink from changed field through resource, diff, and Apply Changes without gaps.
+- **Do** carry Intent Pink from changed field through diff and Apply Changes without gaps.
 - **Do** keep normal runtime state visually quiet and raise only timely, actionable evidence.
 - **Do** distinguish authored product context from runtime truth, especially when testimony is stale or missing.
 - **Do** prevent invalid states upstream so Deploy is a confident final action.

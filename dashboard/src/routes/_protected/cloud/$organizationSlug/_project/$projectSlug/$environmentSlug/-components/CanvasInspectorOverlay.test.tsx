@@ -48,7 +48,7 @@ function Architecture() {
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
-      <CanvasNodeList services={[]} volumes={[volume]} selectedNodeId={nodeId} />
+      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume] }} selectedNodeId={nodeId} />
     </div>}
   >
     <Outlet />
@@ -180,7 +180,7 @@ describe("canvas inspector presentation", () => {
   it("exposes the Volume editor in the mobile Canvas list", async () => {
     vi.stubGlobal("innerWidth", 390);
     const router = await openInspector();
-    expect(screen.getByText("Volume")).toBeTruthy();
+    expect(screen.getByText("Not mounted")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: /Database data/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/cloud/acme/shop/production/resources/data"));
     expect(screen.getByRole("link", { name: /Database data/ }).getAttribute("aria-current")).toBe("page");
