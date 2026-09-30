@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use super::{Command, replayable};
+use crate::command::{Command, replayable};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;

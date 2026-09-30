@@ -200,6 +200,14 @@ impl Store {
         self.call("write", &request, |store, who| store.write(who, remove))
     }
 
+    pub(crate) fn rename_volume(
+        &self,
+        rename: &ployz_store::RenameVolume,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::RenameVolume(rename.clone());
+        self.call("write", &request, |store, who| store.write(who, rename))
+    }
+
     pub(crate) fn set_volume_storage(
         &self,
         set: &ployz_store::SetVolumeStorage,
@@ -360,6 +368,14 @@ impl Store {
     ) -> Result<EnvironmentsView, StoreCallError> {
         let request = Query::Environments(query.clone());
         self.call("read", &request, |store, who| store.read(who, query))
+    }
+
+    pub(crate) fn set_branch_setup(
+        &self,
+        set: &ployz_store::SetBranchSetup,
+    ) -> Result<EnvironmentsView, StoreCallError> {
+        let request = Command::SetBranchSetup(set.clone());
+        self.call("write", &request, |store, who| store.write(who, set))
     }
 
     pub(crate) fn set_default_environment(

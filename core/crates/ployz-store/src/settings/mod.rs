@@ -3,6 +3,9 @@
 //! directly. Each Setting carries what `get`, `explain`, `schema`, validation and
 //! completion need; [`crate::catalog`] renders them as JSON Schema.
 
+pub(crate) mod edit;
+pub(crate) mod query;
+
 use std::fmt;
 
 use ployz_core::config::{

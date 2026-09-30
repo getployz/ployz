@@ -52,6 +52,8 @@ pub struct EnvironmentListing {
     pub parent: Option<EnvironmentName>,
     /// Its latest Deployment, when that removes it from the Servers.
     pub removal: Option<DeploymentSummary>,
+    /// What a new Branch of it runs when it names no Setup Commands.
+    pub branch_setup: Vec<crate::SetupCommand>,
 }
 
 /// Make an Environment its Project's Default Environment.
@@ -59,6 +61,16 @@ pub struct EnvironmentListing {
 #[serde(deny_unknown_fields)]
 pub struct SetDefaultEnvironment {
     pub environment: EnvironmentRef,
+}
+
+/// Set the Setup Commands a new Branch of an Environment runs when it names none:
+/// each runs if the Branch copies its Service. Empty clears them. Takes effect at once.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct SetBranchSetup {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    pub setup: Vec<crate::SetupCommand>,
 }
 
 /// Delete an Environment from the Store: its Working and Saved State, Deployments
@@ -125,7 +137,7 @@ pub(crate) fn environments(
 ) -> Result<EnvironmentsView, RpcError> {
     let project = scope::project(tx, who, query.project.as_ref())?;
     let rows = tx.query(
-        "SELECT e.id, e.name, p.name FROM config_environment e \
+        "SELECT e.id, e.name, p.name, e.branch_setup FROM config_environment e \
          LEFT JOIN config_environment_branch b ON b.environment_id = e.id \
          LEFT JOIN config_environment p ON p.id = b.parent_id \
          WHERE e.project_id = ?1 ORDER BY e.name",
@@ -140,6 +152,10 @@ pub(crate) fn environments(
             name: row.parse::<EnvironmentName>(1, "Environment")?,
             parent,
             removal: removal(tx, &id)?,
+            branch_setup: match row.optional_text(3)? {
+                Some(_) => row.json(3, "Branch setup")?,
+                None => Vec::new(),
+            },
             id,
         });
     }
@@ -177,6 +193,46 @@ pub(crate) fn set_default(
             project: Some(environment.summary.project),
         },
     )
+}
+
+pub(crate) fn set_branch_setup(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    set: &SetBranchSetup,
+) -> Result<EnvironmentsView, RpcError> {
+    let environment = scope::lock(tx, who, &set.environment)?;
+    for setup in &set.setup {
+        crate::branch::setup_command(setup)?;
+    }
+    let setup = (!set.setup.is_empty())
+        .then(|| serde_json::to_string(&set.setup).expect("Setup Commands are JSON"));
+    tx.execute(
+        "UPDATE config_environment SET branch_setup = ?1 WHERE id = ?2",
+        &[
+            setup.as_deref().into(),
+            environment.summary.id.as_str().into(),
+        ],
+    )?;
+    environments(
+        tx,
+        who,
+        &EnvironmentsQuery {
+            project: Some(environment.summary.project),
+        },
+    )
+}
+
+/// What a new Branch of `parent` runs when it names no Setup Commands.
+pub(crate) fn branch_setup(
+    tx: &mut dyn Tx,
+    parent: &EnvironmentId,
+) -> Result<Vec<crate::SetupCommand>, RpcError> {
+    let rows = tx.query(
+        "SELECT branch_setup FROM config_environment WHERE id = ?1 AND branch_setup IS NOT NULL",
+        &[parent.as_str().into()],
+    )?;
+    rows.first()
+        .map_or(Ok(Vec::new()), |row| row.json(0, "Branch setup"))
 }
 
 pub(crate) fn remove(
