@@ -81,10 +81,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             <h2 className="min-w-0 text-base font-medium break-words">{deployment.message ?? `Deploys ${targetsLabel(deployment)}`}</h2>
             <StoreDeploymentActions deployment={deployment} focused={focused} />
           </div>
+          {deployment.message ? <p className="text-muted-foreground">Deploys {targetsLabel(deployment)}</p> : null}
           <p className="flex items-center gap-1 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
           </p>
-          {deployment.message ? <p className="text-muted-foreground">Deploys {targetsLabel(deployment)}</p> : null}
           {skipped ? (
             <div className="flex flex-col items-start gap-2">
               <p className="break-words text-destructive">{skipped.reason}</p>
