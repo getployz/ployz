@@ -164,12 +164,7 @@ fn unconfirmed(
             "Removing Project {project} deletes every Environment in it ({}) with its \
              configuration, history, Services and Volumes; this can't be undone. No changes \
              made.\nRetry: {retry}",
-            listing
-                .environments
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            super::env::joined(&listing.environments)
         ),
         json!({ "project": project, "environments": environments, "next": retry }),
     ))
@@ -190,12 +185,7 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
         say!(
             "Removed Project {} and its Environments ({}).",
             removed.project.name,
-            removed
-                .environments
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            super::env::joined(&removed.environments)
         );
     })
 }
