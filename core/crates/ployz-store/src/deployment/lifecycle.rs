@@ -576,7 +576,7 @@ fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceNam
             TargetNode::Service {
                 name, runtime: of, ..
             } if of == runtime => Some(name.as_str()),
-            _ => None,
+            TargetNode::Service { .. } | TargetNode::Volume { .. } => None,
         })
         .unwrap_or(runtime.as_str())
 }
