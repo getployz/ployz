@@ -1,12 +1,9 @@
-use std::net::Ipv4Addr;
-
 use clap::ArgMatches;
 use ployz_core::{
     InspectMachineUpgradeRequest, InspectRequest, MachineObservation, MachineStorageObservation,
     MachineTarget, RpcErrorCode, op,
 };
-use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::with_client;
 use crate::{
@@ -21,14 +18,7 @@ pub(in crate::handlers) fn list(root: &ArgMatches) -> Result<(), Error> {
             let mut machines = client.machines().await?;
             let storage = client.observe_machine_storage(&mut machines).await;
             let warning = daemon_skew_warning(&machines, env!("CARGO_PKG_VERSION"));
-            let listed = machines
-                .iter()
-                .map(|observation| MachineObservationOutput {
-                    gateway: observation.machine.subnet.gateway().0,
-                    public_key: observation.machine.public_key.to_string(),
-                    observation,
-                })
-                .collect::<Vec<_>>();
+            let listed = machines.iter().map(observation_json).collect::<Vec<_>>();
             let mut gaps = Gaps::default();
             gaps.extend(&storage.failures, &storage.omissions);
             let finished = output::finish_fanout("servers", &listed, &gaps, || {
@@ -136,18 +126,30 @@ pub(in crate::handlers) fn inspect(root: &ArgMatches) -> Result<(), Error> {
                 Err(ConnectError::Remote(error)) if error.code == RpcErrorCode::NotFound => None,
                 Err(error) => return Err(error.into()),
             };
-            output::show(&json!({ "server": details, "upgrade": upgrade }))
+            let mut server = serde_json::to_value(&details)?;
+            if let Value::Object(fields) = &mut server {
+                fields.insert("public_key".into(), json!(details.public_key.to_string()));
+                if let Some(machine) = &details.machine {
+                    fields.insert("machine".into(), super::machine_json(machine));
+                }
+            }
+            output::show(&json!({ "server": server, "upgrade": upgrade }))
         })
     })
 }
 
-#[derive(Serialize)]
-struct MachineObservationOutput<'a> {
-    #[serde(flatten)]
-    observation: &'a MachineObservation,
-    gateway: Ipv4Addr,
-    /// The WireGuard public key in base64, as `wg` prints it.
-    public_key: String,
+/// One `server ls` row: the observation, its Machine as every `server` command prints
+/// it, and the gateway of its subnet.
+fn observation_json(observation: &MachineObservation) -> Value {
+    let mut value = serde_json::to_value(observation).expect("a Machine observation serializes");
+    if let Value::Object(fields) = &mut value {
+        fields.insert("machine".into(), super::machine_json(&observation.machine));
+        fields.insert(
+            "gateway".into(),
+            json!(observation.machine.subnet.gateway().0),
+        );
+    }
+    value
 }
 
 #[cfg(test)]
@@ -195,16 +197,16 @@ mod tests {
             },
             ployz_core::MembershipObservation::Up,
         );
-        let output = serde_json::to_value(MachineObservationOutput {
-            gateway: observation.machine.subnet.gateway().0,
-            public_key: observation.machine.public_key.to_string(),
-            observation: &observation,
-        })
-        .unwrap();
-        assert_eq!(output.get("gateway").unwrap(), "10.210.7.1");
+        let output = observation_json(&observation);
+        assert_eq!(output.pointer("/gateway"), Some(&json!("10.210.7.1")));
+        assert_eq!(output.pointer("/machine/name"), Some(&json!("node-a")));
         assert_eq!(
-            output.get("public_key").unwrap(),
-            "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="
+            output.pointer("/machine/public_key"),
+            Some(&json!("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="))
+        );
+        assert_eq!(
+            output.get("machine"),
+            Some(&super::super::machine_json(&observation.machine))
         );
     }
 }

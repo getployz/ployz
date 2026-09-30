@@ -975,7 +975,13 @@ async fn remove_volumes_on(
     .await
 }
 
-async fn refuse_last_managed(
+/// Refuse removing the last Machine while a Management Client still holds a key:
+/// the holder would be left managing a Cluster that no longer exists. Cloud lets go
+/// of its Servers only when its Organization is deleted (`ployz org rm`).
+///
+/// # Errors
+/// Returns `conflict` naming the holders and what releases them.
+pub(crate) async fn refuse_last_managed(
     client: &Client,
     machines: &[MachineObservation],
     selected: MachineId,
@@ -1010,19 +1016,27 @@ async fn refuse_last_managed(
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
         None => unreachable!("holders is not empty"),
     };
-    let next = if cloud {
-        "Delete the Cluster from Cloud instead.".to_owned()
+    let (next, details) = if cloud {
+        (
+            "Delete its Organization (ployz org rm ORGANIZATION, once its Projects are \
+             removed), which unpairs this Server, then remove it."
+                .to_owned(),
+            serde_json::json!({ "next": "ployz org rm ORGANIZATION" }),
+        )
     } else {
-        format!("Disconnect {who} from this Machine first.")
+        (
+            format!("Disconnect {who} from this Machine first."),
+            Value::Null,
+        )
     };
-    let message = format!(
-        "this is the last Machine in the Cluster and it is still managed by {who}; \
-         removing it would leave {who} managing a Cluster that no longer exists. {next}"
-    );
     Err(RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
-        details: Value::Null,
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "this is the last Machine in the Cluster and it is still managed by {who}; \
+             removing it would leave {who} managing a Cluster that no longer exists. \
+             No changes made. {next}"
+        ),
+        details,
     })
 }
 

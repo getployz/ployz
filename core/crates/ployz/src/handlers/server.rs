@@ -10,11 +10,11 @@ use crate::cli::{
     base, env, log_flags, machine_policy_flags, many, positional, switch, value, volume_acceptance,
 };
 use ployz_core::{
-    AdvertisedEndpoint, BuildConcurrencyUpdate, MachineName, MachineTarget, MachineUpdate,
+    AdvertisedEndpoint, BuildConcurrencyUpdate, Machine, MachineName, MachineTarget, MachineUpdate,
     PublicIpUpdate, RpcErrorCode, UpdateMachineRequest, op,
 };
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::{
     cloud_account::{self, Credential},
@@ -173,6 +173,22 @@ pub(super) fn target<'a>(matches: &'a ArgMatches, name: &str) -> Result<&'a str,
         .ok_or_else(|| Error::usage(format!("{name} is required")))
 }
 
+/// A Machine as every `server` command prints it: its WireGuard public key in base64,
+/// as `wg` prints it.
+pub(super) fn machine_json(machine: &Machine) -> Value {
+    let mut value = serde_json::to_value(machine).expect("a Machine serializes");
+    if let Value::Object(fields) = &mut value {
+        fields.insert("public_key".into(), json!(machine.public_key.to_string()));
+    }
+    value
+}
+
+/// A Server as `server add`, `init`, `set` and `rm` print it: the `server ls` and
+/// `server inspect` shape, its Machine under `machine`.
+pub(super) fn server_json(machine: &Machine) -> Value {
+    json!({ "machine": machine_json(machine) })
+}
+
 fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?;
@@ -205,7 +221,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             say!("Updated Server {} ({})", machine.name, machine.id);
             // The update is committed; the Ingress Proxy following a role change is a follow-up.
             let Some(accepts) = accepts_ingress else {
-                return output::emit(&json!({ "server": machine }));
+                return output::emit(&json!({ "server": server_json(&machine) }));
             };
             let followed = async {
                 wait_for_ingress_role(client, &machine.id, accepts).await?;
@@ -213,7 +229,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             }
             .await;
             output::emit_committed(
-                json!({ "server": machine, "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
+                json!({ "server": server_json(&machine), "ingress": followed.as_ref().ok().and_then(Option::as_ref) }),
                 followed
                     .map(drop)
                     .map_err(|error| ingress_incomplete("Server updated", &error, rerun)),

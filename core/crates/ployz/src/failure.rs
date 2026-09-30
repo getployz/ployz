@@ -525,13 +525,36 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
             if crate::output::json() {
                 crate::output::error(&error.report());
             } else {
-                eprintln!("{error}");
+                let report = error.report();
+                eprintln!("{}", report.message);
+                for line in human_hints(&report) {
+                    eprintln!("{line}");
+                }
             }
             match error.inner {
                 Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
             }
         }
     }
+}
+
+/// The `details` a person acts on, as the lines success output prints them; a
+/// `next` the message already spells out (as its `Retry:`) isn't repeated.
+fn human_hints(report: &RpcError) -> Vec<String> {
+    let details = &report.details;
+    let mut lines = Vec::new();
+    if let Some(children) = details.get("valid_children").and_then(Value::as_array) {
+        let names: Vec<&str> = children.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            lines.push(format!("valid: {}", names.join(", ")));
+        }
+    }
+    if let Some(next) = details.get("next").and_then(Value::as_str)
+        && !report.message.contains(next)
+    {
+        lines.push(format!("next: {next}"));
+    }
+    lines
 }
 
 macro_rules! from_error {
@@ -803,6 +826,33 @@ mod tests {
     fn bad_log_tail_is_invalid_argument() {
         let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
         assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn human_errors_print_next_and_valid_children() {
+        let details = serde_json::json!({
+            "deployment": "d1",
+            "next": "ployz deployment show d1",
+            "valid_children": ["web", "db"],
+        });
+        let report = |message: &str, details: Value| RpcError {
+            code: RpcErrorCode::Conflict,
+            message: message.into(),
+            details,
+        };
+        assert_eq!(
+            human_hints(&report("already ended", details)),
+            ["valid: web, db", "next: ployz deployment show d1"]
+        );
+        assert!(human_hints(&report("boom", Value::Null)).is_empty());
+        let spelled = serde_json::json!({ "next": "ployz org rm acme --confirm acme" });
+        assert!(
+            human_hints(&report(
+                "No changes made.\nRetry: ployz org rm acme --confirm acme",
+                spelled
+            ))
+            .is_empty()
+        );
     }
 
     #[test]

@@ -87,7 +87,19 @@ async fn signed_in_server_add_founds_the_cluster_over_ssh_with_a_minted_token() 
     );
     let result = stdout_json(&output);
     assert_eq!(result.pointer("/founded"), Some(&json!(true)));
-    assert_eq!(result.pointer("/server/id"), Some(&json!(founder.id)));
+    assert_eq!(
+        result.pointer("/server/machine/id"),
+        Some(&json!(founder.id))
+    );
+    assert_eq!(
+        result.pointer("/server/machine/public_key"),
+        Some(&json!(founder.public_key.to_string()))
+    );
+    assert_eq!(
+        result.pointer("/deploys_saved_environments"),
+        Some(&json!(true))
+    );
+    assert_eq!(result.pointer("/next"), Some(&json!("ployz deployment ls")));
     assert_eq!(daemon.initialize_request().name.as_str(), "founder");
     assert_eq!(
         enroll.cli_calls(),
