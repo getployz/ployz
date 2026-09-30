@@ -376,3 +376,25 @@ fn references_and_exports_round_trip_through_get_and_patch() {
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert!(error.message.contains("web.env.A"), "{}", error.message);
 }
+
+#[test]
+fn diff_and_plan_show_a_plain_template_opener_escaped_as_get_does() {
+    let store = backend::open();
+    shop(&store);
+    set(&store, &[("web.env.RAW", json!("echo $${{ HOME }}"))]).unwrap();
+    assert_eq!(value(&store, "web.env.RAW"), "echo $${{ HOME }}");
+    let after = |read: Value| {
+        read["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|change| change["settings"].as_array().unwrap())
+            .find(|row| row["path"] == "web.env.RAW")
+            .map(|row| row["after"].clone())
+    };
+    let diff = json!(store.read(&who(), &DiffQuery::default()).unwrap());
+    assert_eq!(after(diff), Some(json!("echo $${{ HOME }}")));
+    let plan = json!(store.read(&who(), &PlanQuery::default()).unwrap());
+    assert!(plan.to_string().contains("echo $${{ HOME }}"), "{plan}");
+    assert!(!plan.to_string().contains("echo ${{ HOME }}"), "{plan}");
+}
