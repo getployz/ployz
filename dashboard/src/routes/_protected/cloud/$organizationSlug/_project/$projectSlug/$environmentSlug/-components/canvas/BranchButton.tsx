@@ -17,7 +17,9 @@ export function BranchButton() {
   const [branch, save] = useStoreViews(params.organizationSlug, [branchQuery(store), saveQuery(store)] as const);
   if (!branch.ok) return null;
   const toSave = save.ok ? save.value.rows.length : 0;
-  const status = toSave ? `${toSave} to save` : branch.value.update.length ? plural(branch.value.update.length, "update") : "Up to date";
+  const apart = save.ok ? save.value.differ.length : 0;
+  const status = toSave ? `${toSave} to save` : branch.value.update.length ? plural(branch.value.update.length, "update")
+    : apart ? `${apart} kept apart` : "Up to date";
   return (
     <Link to={ENVIRONMENT_BRANCH_REVIEW_ROUTE_TO} params={params} aria-label={`Branch: ${status}`}
       className={cn(buttonVariants({ variant: "outline" }), "pointer-events-auto")}>
