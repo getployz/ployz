@@ -803,6 +803,10 @@ export type DeploymentStatus = "queued" | "superseded" | "running" | "applied" |
 
 export type DeploymentSummary = { id: DeploymentId,
 /**
+ * The Environment it deploys.
+ */
+environment_id: EnvironmentId,
+/**
  * Counts from 1 within its Environment.
  */
 number: number, status: DeploymentStatus,
@@ -848,7 +852,11 @@ ended_at: number | null,
 /**
  * What whoever admitted it said it ships.
  */
-message: string | null, };
+message: string | null,
+/**
+ * Whether it may still run: queued, or claimed by a runner still there.
+ */
+in_flight: boolean, };
 
 export type DeploymentView = { environment: EnvironmentSummary,
 /**
@@ -873,6 +881,10 @@ builds: Array<BuildView>,
  */
 runtime_names: { [key in ServiceName]: ServiceName }, id: DeploymentId,
 /**
+ * The Environment it deploys.
+ */
+environment_id: EnvironmentId,
+/**
  * Counts from 1 within its Environment.
  */
 number: number, status: DeploymentStatus,
@@ -918,7 +930,11 @@ ended_at: number | null,
 /**
  * What whoever admitted it said it ships.
  */
-message: string | null, };
+message: string | null,
+/**
+ * Whether it may still run: queued, or claimed by a runner still there.
+ */
+in_flight: boolean, };
 
 export type DeploymentsQuery = { environment: EnvironmentRef,
 /**

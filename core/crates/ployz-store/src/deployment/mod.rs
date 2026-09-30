@@ -80,6 +80,8 @@ impl DeploymentStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 pub struct DeploymentSummary {
     pub id: DeploymentId,
+    /// The Environment it deploys.
+    pub environment_id: EnvironmentId,
     /// Counts from 1 within its Environment.
     pub number: u64,
     pub status: DeploymentStatus,
@@ -109,6 +111,8 @@ pub struct DeploymentSummary {
     pub ended_at: Option<i64>,
     /// What whoever admitted it said it ships.
     pub message: Option<String>,
+    /// Whether it may still run: queued, or claimed by a runner still there.
+    pub in_flight: bool,
 }
 
 /// The most characters a Deployment message has.
@@ -429,7 +433,6 @@ struct Run {
 
 pub(crate) struct Stored {
     pub(crate) summary: DeploymentSummary,
-    pub(crate) environment: EnvironmentId,
     namespace: Namespace,
     cluster_domain: Option<Hostname>,
     pub(crate) nodes: Vec<TargetNode>,
@@ -542,7 +545,7 @@ fn owned(tx: &mut dyn Tx, who: &Actor, id: &DeploymentId) -> Result<Stored, RpcE
 /// Load a Deployment with its Environment locked, so admissions, claims and records
 /// of one Environment apply in turn.
 pub(crate) fn locked(tx: &mut dyn Tx, id: &DeploymentId) -> Result<Stored, RpcError> {
-    let environment = load(tx, id)?.environment;
+    let environment = load(tx, id)?.summary.environment_id;
     scope::lock_all(tx, [environment])?;
     // A lapsed lease reads unknown; writing it down keeps the rows saying so too.
     tx.execute(
@@ -578,6 +581,7 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     Ok(Stored {
         summary: DeploymentSummary {
             id: row.parse(0, "identity")?,
+            environment_id: row.parse(1, "identity")?,
             number: row.number(2, "Deployment")?,
             status,
             saved: revision(row.int(4)?)?,
@@ -590,8 +594,8 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
             started_at: row.optional_int(15)?,
             ended_at: row.optional_int(16)?,
             message: row.optional_text(17)?.map(str::to_owned),
+            in_flight: status.in_flight(),
         },
-        environment: row.parse(1, "identity")?,
         nodes: row.json(6, "Deployment")?,
         namespace: row.parse::<Namespace>(7, "Namespace")?,
         run: row.json(8, "Deployment run")?,
@@ -600,7 +604,9 @@ fn stored(row: &Row) -> Result<Stored, RpcError> {
     })
 }
 
-fn save(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
+/// Write `stored`'s status and run, keeping `in_flight` in step with its status.
+fn save(tx: &mut dyn Tx, stored: &mut Stored) -> Result<(), RpcError> {
+    stored.summary.in_flight = stored.summary.status.in_flight();
     tx.execute(
         "UPDATE config_deployment SET status = ?1, run = ?2, runner = ?4, lease = ?5, \
          started = ?6, ended = ?7 WHERE id = ?3",
