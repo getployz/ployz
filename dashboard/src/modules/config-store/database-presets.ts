@@ -62,6 +62,9 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   },
 ];
 
+/** A Service Template as people read it: its preset's label, else its id. */
+export const templateLabel = ({ id }: { id: string }) => DATABASE_PRESETS.find((preset) => preset.id === id)?.label ?? id;
+
 const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /** 32 random letters, as Railway's `secret(32, a-zA-Z)`. */
