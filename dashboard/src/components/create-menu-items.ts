@@ -1,5 +1,6 @@
 import type { ComponentType, SVGProps } from "react";
 import {
+  DatabaseIcon,
   HardDriveIcon,
   PackageIcon,
   SquareTerminalIcon,
@@ -9,6 +10,7 @@ import { GitHubMarkIcon } from "#/components/icons/github-mark";
 export type CreateMenuItemId =
   | "git-repository"
   | "container-image"
+  | "database"
   | "empty-service"
   | "volume"
   | "empty-project";
@@ -22,6 +24,7 @@ export type CreateMenuItem = {
 export const SERVICE_CREATE_MENU_ITEMS: CreateMenuItem[] = [
   { id: "git-repository", icon: GitHubMarkIcon, label: "GitHub repository" },
   { id: "container-image", icon: PackageIcon, label: "Docker image" },
+  { id: "database", icon: DatabaseIcon, label: "Database" },
   { id: "empty-service", icon: SquareTerminalIcon, label: "Empty service" },
   { id: "volume", icon: HardDriveIcon, label: "Volume" },
 ];

@@ -95,6 +95,48 @@ pub enum Command {
     RemoveProject(crate::RemoveProject),
     /// Change a Project's PR plan for one repository.
     SetPrPlan(crate::SetPrPlan),
+    /// Creates and edits applied together, all or none.
+    Batch(Batch),
+}
+
+/// Creates and edits in one transaction, in order: all apply or none do. Each create
+/// keeps its own caller-minted ID, so a retry replays it; an edit applies again. Cloud
+/// gathers no trusted evidence inside a Batch, so an edit that needs some (a repository
+/// or branch) is refused.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct Batch {
+    /// The commands, applied in order.
+    pub commands: Vec<BatchCommand>,
+}
+
+/// A command a [`Batch`] may hold.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+#[serde(tag = "command", rename_all = "snake_case")]
+pub enum BatchCommand {
+    /// See [`Command::CreateService`].
+    CreateService(CreateService),
+    /// See [`Command::CreateVolume`].
+    CreateVolume(CreateVolume),
+    /// See [`Command::Edit`].
+    Edit(Edit),
+}
+
+impl From<BatchCommand> for Command {
+    fn from(command: BatchCommand) -> Self {
+        match command {
+            BatchCommand::CreateService(create) => Self::CreateService(create),
+            BatchCommand::CreateVolume(create) => Self::CreateVolume(create),
+            BatchCommand::Edit(edit) => Self::Edit(edit),
+        }
+    }
+}
+
+/// What each command of a [`Batch`] did, in order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+pub struct Batched {
+    /// One result per command.
+    pub results: Vec<Written>,
 }
 
 impl Command {
@@ -131,7 +173,8 @@ impl Command {
             | Self::SetDefaultEnvironment(_)
             | Self::RemoveEnvironment(_)
             | Self::RemoveProject(_)
-            | Self::SetPrPlan(_) => Vec::new(),
+            | Self::SetPrPlan(_)
+            | Self::Batch(_) => Vec::new(),
         }
     }
 }
@@ -183,6 +226,8 @@ pub enum Written {
     ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
     /// A PR plan changed: the Project's PR plans after it.
     PrPlans(crate::PrPlansView),
+    /// What each command of a Batch did.
+    Batch(Batched),
 }
 
 pub(crate) fn run(
@@ -250,6 +295,12 @@ pub(crate) fn run(
         Command::SetPrPlan(set) => {
             crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)
         }
+        Command::Batch(batch) => batch
+            .commands
+            .iter()
+            .map(|command| run(tx, who, sealing, &command.clone().into(), trusted))
+            .collect::<Result<_, _>>()
+            .map(|results| Written::Batch(Batched { results })),
     }
 }
 
@@ -363,4 +414,5 @@ tells!(
     crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
     crate::RemoveProject => RemoveProject / ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
     crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),
+    Batch => Batch / Batch(Batched),
 );

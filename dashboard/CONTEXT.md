@@ -207,6 +207,10 @@ _Avoid_: CI pipeline, build config, GitHub integration
 One unit of an Image Build: a BuildKit step (a Dockerfile instruction, image resolution, or context transfer) or a Ployz-owned phase such as source upload, waiting for a runner, installing ployz, pushing, or sending the image to a Machine. Each is recorded where it happens, so its timing is honest: Cloud times the wait for a runner, the runner its install and push, the Engine the rest. A Build Step is keyed stably within one Builder's go at its Image Build, changes state until it completes, and owns the output attributed to it. Each go is a section of the Image Build's one log; a later one opens with why the build moved there. Build Steps are retained with the attempt, separately from lifecycle history.
 _Avoid_: Build log line, vertex, build stage (a Cloud Deployment Stage is not a Build Step)
 
+**Database Preset**:
+A built-in shortcut that creates an ordinary image Service, its Volume, and its variables for a common database (PostgreSQL, Redis, MongoDB, MySQL), mirroring Railway's templates. Nothing records the preset afterwards; the result is edited, deployed, and removed like any other Service.
+_Avoid_: Database (as a resource kind), template, add-on
+
 Git repository identity and access are separate. Cloud can read a public GitHub repository anonymously or use an Organization member's connected GitHub App installation. Public access never falls back to installation credentials. Both paths pin a commit per Deployment and materialize it through the same source acquisition module. Automatic Git deployment and CI gating require installation access; public sources deploy manually.
 
 Cloud infers deployment ordering from bound Service variable references in the frozen Attempt Target. Dependencies complete normal startup monitoring before dependent hooks and containers; explicitly configured HTTP health checks also gate unchanged dependencies. Edges within reference cycles are ignored, while dependencies entering or leaving those cycles remain. Literal text, self references, and references to empty Services do not impose ordering.

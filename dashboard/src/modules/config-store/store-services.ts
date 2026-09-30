@@ -32,10 +32,15 @@ export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives
  * Private DNS. The Store refuses a name taken meanwhile.
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
-  const taken = new Set(services.flatMap((service) => [service.name, service.private_dns]));
-  const base = slugifySegment(sourceName(source)).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
+  return uniqueName(sourceName(source) || "service", services.flatMap((service) => [service.name, service.private_dns]));
+}
+
+/** `wanted` as a DNS label, numbered (`postgres-2`) until it is none of `taken`. */
+export function uniqueName(wanted: string, taken: Iterable<string>) {
+  const used = new Set(taken);
+  const base = slugifySegment(wanted).slice(0, MAX_NAME).replace(/-+$/u, "") || "service";
   let name = base;
-  for (let n = 2; taken.has(name); n += 1) name = `${base.slice(0, MAX_NAME - String(n).length - 1).replace(/-+$/u, "")}-${n}`;
+  for (let n = 2; used.has(name); n += 1) name = `${base.slice(0, MAX_NAME - String(n).length - 1).replace(/-+$/u, "")}-${n}`;
   return name;
 }
 
