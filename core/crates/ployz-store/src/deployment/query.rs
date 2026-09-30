@@ -8,7 +8,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::deployment::{self, DeploymentSummary};
+use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::removal::{self, VolumeLoss};
@@ -89,6 +89,39 @@ pub struct DeploymentsView {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentQuery {
     pub id: DeploymentId,
+}
+
+/// One Deployment, by its number in an Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NumberedDeploymentQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    pub number: u64,
+}
+
+pub(crate) fn numbered(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &NumberedDeploymentQuery,
+) -> Result<DeploymentView, RpcError> {
+    let environment = scope::environment(tx, who, &query.environment)?;
+    let number = i64::try_from(query.number).unwrap_or(i64::MAX);
+    let rows = tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND number = ?2",
+        &[environment.summary.id.as_str().into(), number.into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Err(error::not_found(
+            format!(
+                "{}/{} has no Deployment #{}",
+                environment.summary.project, environment.summary.name, query.number
+            ),
+            json!({ "next": "ployz deployment ls" }),
+        ));
+    };
+    let id = row.parse(0, "identity")?;
+    deployment::view(tx, who, &id)
 }
 
 pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {

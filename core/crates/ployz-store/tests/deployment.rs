@@ -1239,3 +1239,20 @@ fn live_commands_find_containers_by_the_runtime_name_that_deployed() {
         .unwrap();
     assert_eq!(deployment.runtime_names.get(&web), Some(&web));
 }
+
+#[test]
+fn a_deployment_is_found_by_its_number() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let by_number = |number| {
+        store.read(
+            &who,
+            &ployz_store::NumberedDeploymentQuery {
+                environment: EnvironmentRef::default(),
+                number,
+            },
+        )
+    };
+    assert_eq!(by_number(1).unwrap().deployment.id, id(1));
+    assert_eq!(code(by_number(2)), RpcErrorCode::NotFound);
+}

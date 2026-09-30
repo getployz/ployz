@@ -177,6 +177,11 @@ fn digest(who: &Actor, environment: &EnvironmentId, lost: &[&VolumeLoss]) -> Str
         "environment": environment,
         "volumes": lost,
     });
-    let digest = ring::digest::digest(&ring::digest::SHA256, bound.to_string().as_bytes());
+    short_digest(&bound.to_string())
+}
+
+/// The first 8 bytes of `text`'s SHA-256, in hex: enough to tell reviews apart.
+pub(crate) fn short_digest(text: &str) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, text.as_bytes());
     hex::encode(digest.as_ref().get(..8).unwrap_or_default())
 }

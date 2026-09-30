@@ -515,19 +515,20 @@ pub(crate) fn pending(
     )?;
     let mut pending = PendingSaves::default();
     for row in rows {
-        match row.text(0)? {
-            "standing" => {
+        match row.variant(0, "Conditional Save")? {
+            SaveState::Standing => {
                 let number = row.number(1, "Conditional Save")?;
                 if !pending.standing.contains(&number) {
                     pending.standing.push(number);
                 }
             }
-            _ => {
+            SaveState::Frozen => {
                 let commit = row.parse(2, "Conditional Save")?;
                 if !pending.merged.contains(&commit) {
                     pending.merged.push(commit);
                 }
             }
+            SaveState::Landed => return Err(error::corrupt("Conditional Save")),
         }
     }
     Ok(pending)
