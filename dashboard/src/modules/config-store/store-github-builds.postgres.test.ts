@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { it } from "@effect/vitest";
 import type { ConfigCommand } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
+import type { StoreCall } from "./store.contract";
 import { expect } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import { callStore, gatherTrusted } from "#/modules/config-store/config-store.server";
@@ -132,7 +133,7 @@ it.live(
       const admission = { operation: "write", command: {
         command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: { project: null, environment: null },
         services: [], version: null, accept_volume_loss: [],
-      } } as const;
+      } } satisfies StoreCall;
       const trusted = yield* provided(gatherTrusted(ORGANIZATION, admission, (query) => store.read(ORGANIZATION, query)));
       expect(trusted.servers).toBe(0);
     }),
