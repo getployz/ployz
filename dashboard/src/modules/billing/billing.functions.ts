@@ -5,6 +5,7 @@ import {
   createEmbeddedCheckout,
   getBillingState,
 } from "#/modules/billing/billing.server";
+import { getCustomDomainsAllowed } from "#/modules/billing/custom-domain-capability";
 import { trimmedString } from "#/lib/schema";
 import {
   actorMiddleware,
@@ -37,4 +38,11 @@ export const createCustomerPortalServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, createCustomerPortal(context.actor, data)),
+  );
+
+export const getCustomDomainsAllowedServerFn = createServerFn({ method: "GET" })
+  .middleware(middleware)
+  .validator(strictValidator(BillingStateRequest))
+  .handler(({ context, data }) =>
+    runActor(context, getCustomDomainsAllowed(context.actor, data)),
   );
