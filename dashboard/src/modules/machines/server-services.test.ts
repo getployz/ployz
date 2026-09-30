@@ -4,8 +4,9 @@ import { servicesOnServers } from "./server-services";
 const container = (machineId: string) => ({ id: `c-${machineId}`, displayName: "web", machineId, namespace: "shop-production", kind: "service" });
 
 describe("servicesOnServers", () => {
-  it("names each running Service by its Namespace and name, and skips ones with no container", () => {
+  it("names each running Service by its Namespace and name, and skips ones with no container and Ployz's own", () => {
     const services = servicesOnServers([
+      { identity: "ployz-system/ingress", containers: [container("m1")] },
       { identity: "shop-production/web", containers: [container("m1"), container("m2")] },
       { identity: "grafana", containers: [container("m1")] },
       { identity: "shop-production/idle", containers: [] },
