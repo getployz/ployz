@@ -60,6 +60,7 @@ pub(crate) fn admit(
     let number = queue(tx, environment)?;
     let summary = DeploymentSummary {
         id: id.clone(),
+        environment_id: environment.clone(),
         number,
         status: DeploymentStatus::Queued,
         saved,
@@ -72,6 +73,7 @@ pub(crate) fn admit(
         started_at: None,
         ended_at: None,
         message,
+        in_flight: true,
     };
     tx.execute(
         "INSERT INTO config_deployment \
@@ -170,10 +172,10 @@ pub(crate) fn retry(
         DeploymentStatus::Superseded => return Err(superseded(source)),
     }
     if stored.summary.remove {
-        let environment = scope::load_by_id(tx, &stored.environment)?;
+        let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
         crate::teardown::guard_removal(tx, &environment)?;
     }
-    let number = queue(tx, &stored.environment)?;
+    let number = queue(tx, &stored.summary.environment_id)?;
     let admitted_at = now();
     // Every frozen column comes from the source, so a retry never re-reads authored state.
     tx.execute(
@@ -211,6 +213,7 @@ pub(crate) fn retry(
         admitted_at,
         started_at: None,
         ended_at: None,
+        in_flight: true,
         ..stored.summary
     })
 }
@@ -258,7 +261,7 @@ pub(crate) fn claim(
         {
             if stored.run.preview.is_some() {
                 stored.summary.status = DeploymentStatus::Unknown;
-                save(tx, &stored)?;
+                save(tx, &mut stored)?;
                 return Ok(Err(error::conflict(
                     "This Deployment's runner lost track of it after preparing it, so what \
                      ran is unknown. Start a new Deployment",
@@ -266,7 +269,7 @@ pub(crate) fn claim(
                 )));
             }
             stored.lease = now() + LEASE;
-            save(tx, &stored)?;
+            save(tx, &mut stored)?;
         }
         DeploymentStatus::Running | DeploymentStatus::Cancelling => {
             return Ok(Err(owned_elsewhere(id)));
@@ -280,22 +283,22 @@ pub(crate) fn claim(
             tx.execute(
                 "UPDATE config_deployment SET status = 'unknown' \
                  WHERE environment_id = ?1 AND status IN ('running', 'cancelling')",
-                &[stored.environment.as_str().into()],
+                &[stored.summary.environment_id.as_str().into()],
             )?;
             let started = now();
             stored.summary.status = DeploymentStatus::Running;
             stored.summary.runner = Some(runner.clone());
             stored.summary.started_at = Some(started);
             stored.lease = started + LEASE;
-            save(tx, &stored)?;
+            save(tx, &mut stored)?;
         }
     }
     let sources = build::sources_of(tx, &stored)?;
     let uploads = build::uploads_of(tx, &stored)?;
-    let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-    let branch = crate::branch::lowering(tx, &stored.environment, &saved)?;
+    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (input, mut intent) = lower(
-        &stored.environment,
+        &stored.summary.environment_id,
         &saved,
         &stored.summary.services,
         (stored.namespace, stored.cluster_domain.as_ref()),
@@ -314,7 +317,7 @@ pub(crate) fn claim(
             serde_json::from_str(text).map_err(|_| error::corrupt("Deployment credentials"))
         })?;
     intent.registry_auth = registry::unseal(credentials, sealing)?;
-    let receipts = receipts(tx, &stored.environment)?;
+    let receipts = receipts(tx, &stored.summary.environment_id)?;
     let deletes = stored
         .nodes
         .iter()
@@ -392,10 +395,10 @@ pub(crate) fn input(
     stored: &Stored,
     sealing: &SealingKey,
 ) -> Result<Value, RpcError> {
-    let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-    let branch = crate::branch::lowering(tx, &stored.environment, &saved)?;
+    let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+    let branch = crate::branch::lowering(tx, &stored.summary.environment_id, &saved)?;
     let (input, _) = lower(
-        &stored.environment,
+        &stored.summary.environment_id,
         &saved,
         &stored.summary.services,
         (stored.namespace.clone(), stored.cluster_domain.as_ref()),
@@ -427,7 +430,7 @@ pub(crate) fn cancel(
         | DeploymentStatus::Failed
         | DeploymentStatus::Unknown => return Err(ended(id)),
     };
-    save(tx, &stored)?;
+    save(tx, &mut stored)?;
     Ok(stored.summary)
 }
 
@@ -453,7 +456,7 @@ pub(crate) fn record(
     match evidence {
         RunEvidence::Alive => {
             running(&stored)?;
-            save(tx, &stored)?;
+            save(tx, &mut stored)?;
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
@@ -474,7 +477,7 @@ pub(crate) fn record(
             }
             running(&stored)?;
             stored.run.preview = Some(preview);
-            save(tx, &stored)?;
+            save(tx, &mut stored)?;
             Ok(stored.summary)
         }
         RunEvidence::Executed { outcome, removed } => {
@@ -489,8 +492,8 @@ pub(crate) fn record(
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
-            let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
-            let applied = applied_state(tx, &stored.environment, &saved)?;
+            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             let nodes = node_outcomes(&stored.nodes, &saved, &applied, &projection, &removed);
             // A Deploy that left a Volume's data behind didn't finish: a retry removes it.
             let status = if success && nodes.values().all(|status| *status != NodeStatus::Failed) {
@@ -515,7 +518,7 @@ pub(crate) fn record(
         RunEvidence::Built(receipts) => {
             running(&stored)?;
             for (service, receipt) in &receipts {
-                save_receipt(tx, &stored.environment, service, receipt)?;
+                save_receipt(tx, &stored.summary.environment_id, service, receipt)?;
             }
             Ok(stored.summary)
         }
@@ -573,7 +576,7 @@ pub(crate) fn record(
                 );
             }
             stored.summary.status = DeploymentStatus::Unknown;
-            save(tx, &stored)?;
+            save(tx, &mut stored)?;
             Ok(stored.summary)
         }
     }
@@ -735,7 +738,7 @@ pub(super) fn finish(
         })
         .collect();
     if !advanced.is_empty() {
-        let saved = saved_at(tx, &stored.environment, stored.summary.saved)?;
+        let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
         for node in advanced {
             let applied = match node {
                 TargetNode::Service { .. } => saved
@@ -761,12 +764,12 @@ pub(super) fn finish(
                         stored.summary.id.as_str().into(),
                         node.id().into(),
                         applied.document().as_str().into(),
-                        applied.node_type().into(),
+                        name_of(applied.node_type()).as_str().into(),
                     ],
                 )?,
                 None => tx.execute(
                     "DELETE FROM config_applied WHERE environment_id = ?1 AND node_id = ?2",
-                    &[stored.environment.as_str().into(), node.id().into()],
+                    &[stored.summary.environment_id.as_str().into(), node.id().into()],
                 )?,
             };
         }
@@ -778,6 +781,6 @@ pub(super) fn finish(
     };
     stored.summary.ended_at = Some(now());
     stored.run.outcome = Some(outcome);
-    save(tx, &stored)?;
+    save(tx, &mut stored)?;
     Ok(stored.summary)
 }

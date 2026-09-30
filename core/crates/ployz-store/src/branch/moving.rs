@@ -233,11 +233,10 @@ pub(super) fn moving(tx: &mut dyn Tx, sides: &Sides) -> Result<Moving, RpcError>
 
 /// A Move's guard: the receiver's revision and core's review of the changes.
 pub(crate) fn version(into: &Environment, review: &str) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, review.as_bytes());
     format!(
         "{}:{}",
         into.summary.revision,
-        hex::encode(digest.as_ref().get(..8).unwrap_or_default())
+        crate::removal::short_digest(review)
     )
 }
 

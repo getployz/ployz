@@ -66,7 +66,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             applied,
         });
     };
-    let saved = saved_at(tx, id, revision(row.int(1)?)?)?;
+    let saved = saved_at(tx, id, row.number(1, "revision")?)?;
     let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
     let mut intent = applied.clone();
     for node in nodes {
@@ -164,7 +164,7 @@ pub(crate) fn view(
     id: &DeploymentId,
 ) -> Result<DeploymentView, RpcError> {
     let stored = owned(tx, who, id)?;
-    let environment = scope::load_by_id(tx, &stored.environment)?;
+    let environment = scope::load_by_id(tx, &stored.summary.environment_id)?;
     let nodes = stored
         .nodes
         .iter()

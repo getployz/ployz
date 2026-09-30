@@ -7,8 +7,8 @@ use serde_json::Value;
 use ts_rs::TS;
 
 pub use crate::deployment::query::{
-    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView, PlanQuery,
-    PlanView,
+    DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
+    NumberedDeploymentQuery, PlanQuery, PlanView,
 };
 pub use crate::review::diff::DiffQuery;
 pub use crate::service::query::{
@@ -142,6 +142,9 @@ queries! {
     /// One Deployment.
     Deployment(DeploymentQuery) -> crate::DeploymentView as *
         => crate::deployment::view(tx, who, &q.id);
+    /// One Deployment, by its number in an Environment.
+    NumberedDeployment(NumberedDeploymentQuery) -> crate::DeploymentView as *
+        => crate::deployment::query::numbered(tx, who, q);
     /// One Git build of a Deployment, with its log.
     BuildLog(crate::BuildLogQuery) -> crate::BuildLogView
         => crate::deployment::build_log(tx, who, q);

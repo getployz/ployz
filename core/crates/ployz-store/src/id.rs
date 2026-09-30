@@ -12,13 +12,10 @@ use crate::error;
 // `ValueError` that quotes the rejected value, and the Store never echoes input.
 macro_rules! store_string {
     ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr) => {
-        store_string!($(#[$doc])* $name, $what, $valid, "String");
-    };
-    ($(#[$doc:meta])* $name:ident, $what:literal, $valid:expr, $ts:literal) => {
         $(#[$doc])*
         #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
         #[serde(try_from = "String", into = "String")]
-        #[ts(as = $ts)]
+        #[ts(as = "String")]
         pub struct $name(String);
 
         impl $name {
@@ -270,6 +267,12 @@ github_number!(
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 pub struct Revision(pub u64);
+
+impl From<u64> for Revision {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
 
 impl Revision {
     /// The revision a change to Working State at this one produces.
