@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::command::{Command, replayable};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;
@@ -130,33 +129,10 @@ pub struct Start {
     pub deployment: DeploymentId,
 }
 
-pub(crate) fn start(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    start: &Start,
-) -> Result<DeploymentSummary, RpcError> {
-    deployment::start(tx, who, &start.deployment)
-}
 
-pub(crate) fn cancel(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    cancel: &Cancel,
-) -> Result<DeploymentSummary, RpcError> {
-    deployment::cancel(tx, who, &cancel.deployment)
-}
+
 
 pub(crate) fn admit(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    admit: &Admit,
-    trusted: &Trusted,
-) -> Result<DeploymentSummary, RpcError> {
-    let command = Command::Admit(admit.clone());
-    replayable(tx, who, &command, |tx| admitted(tx, who, admit, trusted))
-}
-
-fn admitted(
     tx: &mut dyn Tx,
     who: &Actor,
     admit: &Admit,

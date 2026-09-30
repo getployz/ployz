@@ -1,139 +1,244 @@
-//! `write`'s commands: each feature module adds one [`Command`] variant, one
-//! [`Written`] variant and one arm in [`run`].
+//! `write`'s commands, registered once in the [`commands!`] table: each row is a
+//! [`Command`] variant, the [`Written`] variant that answers it, the IDs a create is
+//! replayed by, and the call that runs it.
 
 use ployz_core::RpcError;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use ts_rs::TS;
 
 pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
-pub(crate) use crate::deployment::admit::{admit, cancel, start};
 pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
 };
-pub(crate) use crate::project::{create_environment, create_project, insert_environment};
 pub use crate::review::publish::{Discard, Discarded, Publish, Published};
-pub(crate) use crate::review::publish::{discard, publish};
 pub use crate::service::{
     CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
-pub(crate) use crate::service::{
-    create_service, insert_service, remove_service, rename_service, summary,
-};
-pub(crate) use crate::settings::edit::edit;
 pub use crate::settings::edit::{Change, Edit, Edited};
 pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
 };
-pub(crate) use crate::volume::{
-    create_volume, remove_volume, rename_volume, set_storage,
-    summary as volume_summary,
-};
 
 use crate::error;
 use crate::storage::Tx;
-use crate::{Actor, CreateGitService, Trusted};
+use crate::{Actor, SealingKey, Trusted};
 
-/// One change to authored configuration, applied in one transaction.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[serde(tag = "command", rename_all = "snake_case")]
-#[ts(rename = "ConfigCommand")]
-pub enum Command {
-    /// Create a Project with its Default Environment.
-    CreateProject(CreateProject),
-    /// Create an empty Environment.
-    CreateEnvironment(CreateEnvironment),
-    /// Create an image Service, or an empty one.
-    CreateService(CreateService),
-    /// Create a Service that builds a GitHub repository.
-    CreateGitService(CreateGitService),
-    /// Rename a Service, keeping its Private DNS name.
-    RenameService(RenameService),
-    /// Remove a Service from Working State; a Deploy removes it.
-    RemoveService(RemoveService),
-    /// Create a Volume, optionally mounted into Services.
-    CreateVolume(CreateVolume),
-    /// Change a Volume's storage before its first Deployment is requested.
-    SetVolumeStorage(SetVolumeStorage),
-    /// Remove a Volume from Working State; a Deploy deletes its data.
-    RemoveVolume(RemoveVolume),
-    RenameVolume(RenameVolume),
-    /// Set and unset Settings in one Environment.
-    Edit(Edit),
-    /// Save Working State as the next Saved revision.
-    Publish(Publish),
-    /// Return Working State, or part of it, to what is deployed.
-    Discard(Discard),
-    /// Freeze Saved State into a queued Deployment, publishing Working State first,
-    /// or queue again what an ended Deployment froze.
-    Admit(Admit),
-    /// Hand a queued Deployment to a runner now.
-    Start(Start),
-    /// Cancel a queued or running Deployment.
-    Cancel(Cancel),
-    /// Give a Service a generated or custom public domain.
-    AddDomain(crate::AddDomain),
-    /// Take a public domain off its Service.
-    RemoveDomain(crate::RemoveDomain),
-    /// Make a Branch of an Environment.
-    CreateBranch(crate::CreateBranch),
-    /// Move changes between a Branch and its Parent: Save or Update.
-    Move(crate::Move),
-    /// Turn a Branch's Live Node into an Own Copy.
-    CopyNode(crate::CopyNode),
-    /// Keep a Branch, or stop keeping it.
-    KeepBranch(crate::KeepBranch),
-    /// Set the Organization's Build Order, at once.
-    SetBuildOrder(crate::SetBuildOrder),
-    /// Make an Environment its Project's Default Environment.
-    SetDefaultEnvironment(crate::SetDefaultEnvironment),
-    SetBranchSetup(crate::SetBranchSetup),
-    /// Delete an Environment nothing of which runs on the Servers.
-    RemoveEnvironment(crate::RemoveEnvironment),
-    /// Delete a Project nothing of which runs on the Servers.
-    RemoveProject(crate::RemoveProject),
-    /// Change a Project's PR plan for one repository.
-    SetPrPlan(crate::SetPrPlan),
+/// What a command or query runs with: one open transaction, its caller, and the
+/// evidence Cloud gathered. Only the Store makes one.
+pub struct Call<'s> {
+    pub(crate) tx: &'s mut dyn Tx,
+    pub(crate) who: &'s Actor,
+    pub(crate) sealing: &'s SealingKey,
+    pub(crate) trusted: &'s Trusted,
 }
 
-impl Command {
-    /// The caller-minted IDs a create is keyed by, so a retry replays it. Empty
-    /// for commands that create nothing.
-    fn create_ids(&self) -> Vec<&str> {
-        match self {
-            Self::CreateProject(create) => {
-                vec![create.id.as_str(), create.default_environment.as_str()]
-            }
-            Self::CreateEnvironment(create) => vec![create.id.as_str()],
-            Self::CreateService(create) => vec![create.id.as_str()],
-            Self::Admit(admit) => vec![admit.id().as_str()],
-            Self::CreateGitService(create) => vec![create.id.as_str()],
-            Self::CreateVolume(create) => vec![create.id.as_str()],
-            Self::CreateBranch(create) => vec![create.id.as_str()],
-            Self::Edit(_)
-            | Self::RenameService(_)
-            | Self::RemoveService(_)
-            | Self::RemoveVolume(_)
-            | Self::RenameVolume(_)
-            | Self::SetBranchSetup(_)
-            | Self::SetVolumeStorage(_)
-            | Self::Publish(_)
-            | Self::Discard(_)
-            | Self::Start(_)
-            | Self::Cancel(_)
-            | Self::AddDomain(_)
-            | Self::RemoveDomain(_)
-            | Self::Move(_)
-            | Self::CopyNode(_)
-            | Self::KeepBranch(_)
-            | Self::SetBuildOrder(_)
-            | Self::SetDefaultEnvironment(_)
-            | Self::RemoveEnvironment(_)
-            | Self::RemoveProject(_)
-            | Self::SetPrPlan(_) => Vec::new(),
+/// A [`Command`], or one of its payloads, and what it answers with.
+pub trait Tell: Serialize {
+    /// What it answers with.
+    type Written: Serialize + DeserializeOwned;
+
+    /// Run it in `at`'s transaction, once for a create's IDs.
+    ///
+    /// # Errors
+    /// What running it refuses.
+    #[doc(hidden)]
+    fn apply(&self, at: &mut Call<'_>) -> Result<Self::Written, RpcError>;
+
+    /// The whole command, tagged, as `write` takes it over HTTPS.
+    fn to_command(&self) -> Value;
+
+    /// Its result out of a [`Written`], as this command's own.
+    ///
+    /// # Errors
+    /// `internal` for the result of another command.
+    fn written(written: Written) -> Result<Self::Written, RpcError>;
+}
+
+/// `CreateProject` as serde names it: `create_project`.
+pub(crate) fn snake(name: &str) -> String {
+    let mut snake = String::with_capacity(name.len() + 4);
+    for (index, letter) in name.char_indices() {
+        if letter.is_ascii_uppercase() && index > 0 {
+            snake.push('_');
         }
+        snake.push(letter.to_ascii_lowercase());
     }
+    snake
+}
+
+/// Register every command. A row reads:
+/// `/// doc` `Variant(Payload) -> WrittenVariant(Answer) [as *] [keyed [IDS]] => CALL;`
+/// where `keyed` lists the caller-minted IDs a create replays by, and `CALL` runs it
+/// with the names bound in the table's header.
+macro_rules! commands {
+    (
+        |$tx:ident, $who:ident, $sealing:ident, $trusted:ident, $c:ident|
+        $(
+            $(#[doc = $doc:literal])*
+            $variant:ident($payload:ty) -> $written:ident($answer:ty) $(as $unbox:tt)?
+            $(keyed [$($id:expr),*])? => $call:expr;
+        )*
+    ) => {
+        /// One change to authored configuration, applied in one transaction.
+        #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
+        #[serde(tag = "command", rename_all = "snake_case")]
+        #[ts(rename = "ConfigCommand")]
+        pub enum Command {
+            $($(#[doc = $doc])* $variant($payload),)*
+        }
+
+        impl Tell for Command {
+            type Written = Written;
+
+            fn apply(&self, at: &mut Call<'_>) -> Result<Written, RpcError> {
+                match self {
+                    $(Self::$variant(command) => {
+                        command.apply(at).map(|answer| Written::$written(answer.into()))
+                    })*
+                }
+            }
+
+            fn to_command(&self) -> Value {
+                serde_json::to_value(self).expect("commands are JSON")
+            }
+
+            fn written(written: Written) -> Result<Written, RpcError> {
+                Ok(written)
+            }
+        }
+
+        $(
+            impl Tell for $payload {
+                type Written = $answer;
+
+                fn apply(&self, at: &mut Call<'_>) -> Result<$answer, RpcError> {
+                    let ids: Vec<&str> = {
+                        let $c = self;
+                        let _ = $c;
+                        vec![$($($id),*)?]
+                    };
+                    let run = |at: &mut Call<'_>| -> Result<$answer, RpcError> {
+                        let $c = self;
+                        let $tx: &mut dyn Tx = &mut *at.tx;
+                        let ($who, $sealing, $trusted) = (at.who, at.sealing, at.trusted);
+                        let _ = ($sealing, $trusted);
+                        $call
+                    };
+                    match ids.is_empty() {
+                        true => run(at),
+                        false => replayable(at, self, &ids, run),
+                    }
+                }
+
+                fn to_command(&self) -> Value {
+                    let mut command = serde_json::to_value(self).expect("commands are JSON");
+                    if let Some(fields) = command.as_object_mut() {
+                        fields.insert("command".to_owned(), snake(stringify!($variant)).into());
+                    }
+                    command
+                }
+
+                fn written(written: Written) -> Result<$answer, RpcError> {
+                    match written {
+                        Written::$written(answer) => Ok($($unbox)? answer),
+                        _ => Err(error::internal("The Store answered another command")),
+                    }
+                }
+            }
+        )*
+    };
+}
+
+commands! {
+    |tx, who, sealing, trusted, c|
+    /// Create a Project with its Default Environment.
+    CreateProject(CreateProject) -> Project(ProjectCreated)
+        keyed [c.id.as_str(), c.default_environment.as_str()]
+        => crate::project::create_project(tx, who, c);
+    /// Create an empty Environment.
+    CreateEnvironment(CreateEnvironment) -> Environment(EnvironmentCreated)
+        keyed [c.id.as_str()] => crate::project::create_environment(tx, who, c);
+    /// Create an image Service, or an empty one.
+    CreateService(CreateService) -> Service(ServiceStaged)
+        keyed [c.id.as_str()] => crate::service::create_service(tx, who, c);
+    /// Create a Service that builds a GitHub repository.
+    CreateGitService(crate::CreateGitService) -> Service(ServiceStaged)
+        keyed [c.id.as_str()] => crate::git::create_git_service(tx, who, c, trusted);
+    /// Rename a Service, keeping its Private DNS name.
+    RenameService(RenameService) -> ServiceRenamed(ServiceStaged)
+        => crate::service::rename_service(tx, who, c);
+    /// Remove a Service from Working State; a Deploy removes it.
+    RemoveService(RemoveService) -> ServiceRemoved(ServiceStaged)
+        => crate::service::remove_service(tx, who, c);
+    /// Create a Volume, optionally mounted into Services.
+    CreateVolume(CreateVolume) -> Volume(VolumeStaged)
+        keyed [c.id.as_str()] => crate::volume::create_volume(tx, who, c);
+    /// Change a Volume's storage before its first Deployment is requested.
+    SetVolumeStorage(SetVolumeStorage) -> Volume(VolumeStaged)
+        => crate::volume::set_storage(tx, who, c);
+    /// Remove a Volume from Working State; a Deploy deletes its data.
+    RemoveVolume(RemoveVolume) -> VolumeRemoved(VolumeStaged)
+        => crate::volume::remove_volume(tx, who, c);
+    /// Rename a Volume; mounts follow it.
+    RenameVolume(RenameVolume) -> VolumeRenamed(VolumeStaged)
+        => crate::volume::rename_volume(tx, who, c);
+    /// Set and unset Settings in one Environment.
+    Edit(Edit) -> Edited(Edited) => crate::settings::edit::edit(tx, who, sealing, c, trusted);
+    /// Save Working State as the next Saved revision.
+    Publish(Publish) -> Published(Published)
+        => crate::review::publish::publish(tx, who, c, trusted);
+    /// Return Working State, or part of it, to what is deployed.
+    Discard(Discard) -> Discarded(Discarded) => crate::review::publish::discard(tx, who, c);
+    /// Freeze Saved State into a queued Deployment, publishing Working State first,
+    /// or queue again what an ended Deployment froze.
+    Admit(Admit) -> Deployment(crate::DeploymentSummary)
+        keyed [c.id().as_str()] => crate::deployment::admit::admit(tx, who, c, trusted);
+    /// Hand a queued Deployment to a runner now.
+    Start(Start) -> Deployment(crate::DeploymentSummary)
+        => crate::deployment::start(tx, who, &c.deployment);
+    /// Cancel a queued or running Deployment.
+    Cancel(Cancel) -> Deployment(crate::DeploymentSummary)
+        => crate::deployment::cancel(tx, who, &c.deployment);
+    /// Give a Service a generated or custom public domain.
+    AddDomain(crate::AddDomain) -> Domain(crate::DomainStaged)
+        => crate::domain::add_domain(tx, who, c, trusted);
+    /// Take a public domain off its Service.
+    RemoveDomain(crate::RemoveDomain) -> Domain(crate::DomainStaged)
+        => crate::domain::remove_domain(tx, who, c, trusted);
+    /// Make a Branch of an Environment.
+    CreateBranch(crate::CreateBranch) -> Branch(crate::Branched)
+        keyed [c.id.as_str()] => crate::branch::create_branch(tx, who, c);
+    /// Move changes between a Branch and its Parent: Save or Update.
+    Move(crate::Move) -> Moved(crate::Moved) as *
+        => crate::branch::move_changes(tx, who, sealing, c);
+    /// Turn a Branch's Live Node into an Own Copy.
+    CopyNode(crate::CopyNode) -> Branch(crate::Branched) => crate::branch::copy_node(tx, who, c);
+    /// Keep a Branch, or stop keeping it.
+    KeepBranch(crate::KeepBranch) -> Branch(crate::Branched)
+        => crate::branch::keep_branch(tx, who, c);
+    /// Set the Organization's Build Order, at once.
+    SetBuildOrder(crate::SetBuildOrder) -> BuildOrder(crate::BuildOrderView)
+        => crate::builders::set_build_order(tx, who, c);
+    /// Make an Environment its Project's Default Environment.
+    SetDefaultEnvironment(crate::SetDefaultEnvironment)
+        -> DefaultEnvironment(crate::EnvironmentsView)
+        => crate::teardown::set_default(tx, who, c);
+    /// Set the Setup Commands a Branch of an Environment runs once it is made.
+    SetBranchSetup(crate::SetBranchSetup) -> BranchSetup(crate::EnvironmentsView)
+        => crate::teardown::set_branch_setup(tx, who, c);
+    /// Delete an Environment nothing of which runs on the Servers.
+    RemoveEnvironment(crate::RemoveEnvironment)
+        -> EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>)
+        => crate::teardown::remove(tx, who, c);
+    /// Delete a Project nothing of which runs on the Servers.
+    RemoveProject(crate::RemoveProject)
+        -> ProjectRemoved(crate::Teardown<crate::ProjectRemoved>)
+        => crate::teardown::remove_project(tx, who, c);
+    /// Change a Project's PR plan for one repository.
+    SetPrPlan(crate::SetPrPlan) -> PrPlans(crate::PrPlansView)
+        => crate::pull_request::set_plan(tx, who, c);
 }
 
 /// What a command did.
@@ -155,6 +260,7 @@ pub enum Written {
     Volume(VolumeStaged),
     /// A Volume was removed from Working State.
     VolumeRemoved(VolumeStaged),
+    /// A Volume was renamed.
     VolumeRenamed(VolumeStaged),
     /// Settings were edited.
     Edited(Edited),
@@ -176,6 +282,7 @@ pub enum Written {
     Moved(Box<crate::Moved>),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
+    /// A Branch setup changed: the Project's Environments after it.
     BranchSetup(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
@@ -185,92 +292,25 @@ pub enum Written {
     PrPlans(crate::PrPlansView),
 }
 
-pub(crate) fn run(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    sealing: &crate::SealingKey,
-    command: &Command,
-    trusted: &Trusted,
-) -> Result<Written, RpcError> {
-    match command {
-        Command::CreateProject(create) => create_project(tx, who, create).map(Written::Project),
-        Command::CreateEnvironment(create) => {
-            create_environment(tx, who, create).map(Written::Environment)
-        }
-        Command::CreateService(create) => create_service(tx, who, create).map(Written::Service),
-        Command::CreateGitService(create) => {
-            crate::git::create_git_service(tx, who, create, trusted).map(Written::Service)
-        }
-        Command::RenameService(rename) => {
-            rename_service(tx, who, rename).map(Written::ServiceRenamed)
-        }
-        Command::RemoveService(remove) => {
-            remove_service(tx, who, remove).map(Written::ServiceRemoved)
-        }
-        Command::CreateVolume(create) => create_volume(tx, who, create).map(Written::Volume),
-        Command::SetVolumeStorage(set) => set_storage(tx, who, set).map(Written::Volume),
-        Command::RemoveVolume(remove) => remove_volume(tx, who, remove).map(Written::VolumeRemoved),
-        Command::RenameVolume(rename) => rename_volume(tx, who, rename).map(Written::VolumeRenamed),
-        Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
-        Command::Publish(publish) => {
-            self::publish(tx, who, publish, trusted).map(Written::Published)
-        }
-        Command::Discard(discard) => self::discard(tx, who, discard).map(Written::Discarded),
-        Command::Admit(request) => admit(tx, who, request, trusted).map(Written::Deployment),
-        Command::Start(request) => start(tx, who, request).map(Written::Deployment),
-        Command::Cancel(request) => cancel(tx, who, request).map(Written::Deployment),
-        Command::AddDomain(add) => {
-            crate::domain::add_domain(tx, who, add, trusted).map(Written::Domain)
-        }
-        Command::RemoveDomain(remove) => {
-            crate::domain::remove_domain(tx, who, remove, trusted).map(Written::Domain)
-        }
-        Command::CreateBranch(create) => {
-            crate::branch::create_branch(tx, who, create).map(Written::Branch)
-        }
-        Command::Move(request) => crate::branch::move_changes(tx, who, sealing, request)
-            .map(|moved| Written::Moved(Box::new(moved))),
-        Command::CopyNode(copy) => crate::branch::copy_node(tx, who, copy).map(Written::Branch),
-        Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
-        Command::SetBuildOrder(set) => {
-            crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
-        }
-        Command::SetBranchSetup(set) => {
-            crate::teardown::set_branch_setup(tx, who, set).map(Written::BranchSetup)
-        }
-        Command::SetDefaultEnvironment(set) => {
-            crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
-        }
-        Command::RemoveEnvironment(remove) => {
-            crate::teardown::remove(tx, who, remove).map(Written::EnvironmentRemoved)
-        }
-        Command::RemoveProject(remove) => {
-            crate::teardown::remove_project(tx, who, remove).map(Written::ProjectRemoved)
-        }
-        Command::SetPrPlan(set) => {
-            crate::pull_request::set_plan(tx, who, set).map(Written::PrPlans)
-        }
-    }
-}
 
-/// Run a create keyed by its caller-minted IDs once. Replaying the identical
-/// command returns what the first run wrote; any of its IDs reused with another
-/// body, or from another Organization, is `conflict`.
-pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    command: &Command,
-    create: impl FnOnce(&mut dyn Tx) -> Result<T, RpcError>,
-) -> Result<T, RpcError> {
-    let body = serde_json::to_string(command).expect("commands are JSON");
-    let ids = command.create_ids();
-    for id in &ids {
-        let rows = tx.query(
+/// Run `create` once for the caller-minted `ids`. Replaying the identical command
+/// returns what the first run wrote; any of its IDs reused with another body, or
+/// from another Organization, is `conflict`.
+fn replayable<C: Tell + ?Sized>(
+    at: &mut Call<'_>,
+    command: &C,
+    ids: &[&str],
+    create: impl FnOnce(&mut Call<'_>) -> Result<C::Written, RpcError>,
+) -> Result<C::Written, RpcError> {
+    let body = command.to_command().to_string();
+    let organization = at.who.organization.as_str();
+    for id in ids {
+        let rows = at.tx.query(
             "SELECT organization_id, command, written FROM config_create WHERE id = ?1",
             &[(*id).into()],
         )?;
         if let Some(row) = rows.first() {
-            if row.text(0)? != who.organization.as_str() || row.text(1)? != body {
+            if row.text(0)? != organization || row.text(1)? != body {
                 return Err(error::conflict(
                     "This ID was already used by a different create",
                     json!({ "id": id }),
@@ -279,15 +319,15 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
             return row.json(2, "create result");
         }
     }
-    let written = create(tx)?;
+    let written = create(at)?;
     let written_json = serde_json::to_string(&written).expect("results are JSON");
     for id in ids {
-        tx.execute(
+        at.tx.execute(
             "INSERT INTO config_create (id, organization_id, command, written) \
              VALUES (?1, ?2, ?3, ?4)",
             &[
-                id.into(),
-                who.organization.as_str().into(),
+                (*id).into(),
+                organization.into(),
                 body.as_str().into(),
                 written_json.as_str().into(),
             ],
@@ -295,72 +335,3 @@ pub(crate) fn replayable<T: Serialize + DeserializeOwned>(
     }
     Ok(written)
 }
-
-/// A [`Command`], or one of its payloads, and what it answers with.
-pub trait Tell: Clone {
-    type Written;
-    fn command(self) -> Command;
-    /// The result, as this command's own.
-    ///
-    /// # Errors
-    /// `internal` for the result of another command.
-    fn written(written: Written) -> Result<Self::Written, RpcError>;
-}
-
-impl Tell for Command {
-    type Written = Written;
-    fn command(self) -> Command {
-        self
-    }
-    fn written(written: Written) -> Result<Written, RpcError> {
-        Ok(written)
-    }
-}
-
-macro_rules! tells {
-    ($($command:ty => $variant:ident / $written:ident($answer:ty) $(as $unbox:tt)?),* $(,)?) => {$(
-        impl Tell for $command {
-            type Written = $answer;
-            fn command(self) -> Command {
-                Command::$variant(self)
-            }
-            fn written(written: Written) -> Result<$answer, RpcError> {
-                match written {
-                    Written::$written(answer) => Ok($($unbox)? answer),
-                    _ => Err(crate::error::internal("The Store answered another command")),
-                }
-            }
-        }
-    )*};
-}
-
-tells!(
-    CreateProject => CreateProject / Project(ProjectCreated),
-    CreateEnvironment => CreateEnvironment / Environment(EnvironmentCreated),
-    CreateService => CreateService / Service(ServiceStaged),
-    crate::CreateGitService => CreateGitService / Service(ServiceStaged),
-    RenameService => RenameService / ServiceRenamed(ServiceStaged),
-    RemoveService => RemoveService / ServiceRemoved(ServiceStaged),
-    CreateVolume => CreateVolume / Volume(VolumeStaged),
-    RemoveVolume => RemoveVolume / VolumeRemoved(VolumeStaged),
-    RenameVolume => RenameVolume / VolumeRenamed(VolumeStaged),
-    SetVolumeStorage => SetVolumeStorage / Volume(VolumeStaged),
-    Edit => Edit / Edited(Edited),
-    Publish => Publish / Published(Published),
-    Discard => Discard / Discarded(Discarded),
-    Admit => Admit / Deployment(crate::DeploymentSummary),
-    Start => Start / Deployment(crate::DeploymentSummary),
-    Cancel => Cancel / Deployment(crate::DeploymentSummary),
-    crate::AddDomain => AddDomain / Domain(crate::DomainStaged),
-    crate::RemoveDomain => RemoveDomain / Domain(crate::DomainStaged),
-    crate::CreateBranch => CreateBranch / Branch(crate::Branched),
-    crate::Move => Move / Moved(crate::Moved) as *,
-    crate::CopyNode => CopyNode / Branch(crate::Branched),
-    crate::KeepBranch => KeepBranch / Branch(crate::Branched),
-    crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
-    crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
-    crate::SetBranchSetup => SetBranchSetup / BranchSetup(crate::EnvironmentsView),
-    crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::Teardown<crate::EnvironmentRemoved>),
-    crate::RemoveProject => RemoveProject / ProjectRemoved(crate::Teardown<crate::ProjectRemoved>),
-    crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),
-);

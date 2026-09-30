@@ -14,7 +14,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::ServiceLineageId;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
@@ -90,24 +89,21 @@ pub(crate) fn create_service(
     who: &Actor,
     create: &CreateService,
 ) -> Result<ServiceStaged, RpcError> {
-    let command = Command::CreateService(create.clone());
-    replayable(tx, who, &command, |tx| {
-        let source = match &create.image {
-            Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
-            None => ServiceSource::Empty {
-                version: 1,
-                root_dir: "/".to_owned(),
-            },
-        };
-        insert_service(
-            tx,
-            who,
-            &create.id,
-            &create.environment,
-            &create.name,
-            source,
-        )
-    })
+    let source = match &create.image {
+        Some(image) => image_source(image.clone(), ServiceImageCredentials::None)?,
+        None => ServiceSource::Empty {
+            version: 1,
+            root_dir: "/".to_owned(),
+        },
+    };
+    insert_service(
+        tx,
+        who,
+        &create.id,
+        &create.environment,
+        &create.name,
+        source,
+    )
 }
 
 /// Stage a new Service running `source` and capture its Node Introduction.

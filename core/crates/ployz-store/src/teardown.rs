@@ -18,7 +18,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::ProjectSummary;
+use crate::project::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName};

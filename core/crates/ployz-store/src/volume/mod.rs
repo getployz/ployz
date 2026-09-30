@@ -14,7 +14,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
@@ -117,38 +116,35 @@ pub(crate) fn create_volume(
     who: &Actor,
     create: &CreateVolume,
 ) -> Result<VolumeStaged, RpcError> {
-    let command = Command::CreateVolume(create.clone());
-    replayable(tx, who, &command, |tx| {
-        let mut environment = scope::lock(tx, who, &create.environment)?;
-        taken(&environment, &create.name)?;
-        let node = SavedVolumeIntent {
-            resource_id: create.id.to_string(),
-            // A new Volume starts its own lineage; Branch copies keep it.
-            resource_lineage_id: create.id.to_string(),
-            name: create.name.to_string(),
-            storage: create.storage,
-        };
-        environment.working.volumes.push(node.clone());
-        let mut staged = vec![SettingPath::volume(&create.name)];
-        for mount in &create.mounts {
-            if attach(&mut environment, &mount.service, &create.name, &mount.path)? {
-                staged.push(SettingPath::at(
-                    &mount.service,
-                    Target::Mount(create.name.clone()),
-                ));
-            }
+    let mut environment = scope::lock(tx, who, &create.environment)?;
+    taken(&environment, &create.name)?;
+    let node = SavedVolumeIntent {
+        resource_id: create.id.to_string(),
+        // A new Volume starts its own lineage; Branch copies keep it.
+        resource_lineage_id: create.id.to_string(),
+        name: create.name.to_string(),
+        storage: create.storage,
+    };
+    environment.working.volumes.push(node.clone());
+    let mut staged = vec![SettingPath::volume(&create.name)];
+    for mount in &create.mounts {
+        if attach(&mut environment, &mount.service, &create.name, &mount.path)? {
+            staged.push(SettingPath::at(
+                &mount.service,
+                Target::Mount(create.name.clone()),
+            ));
         }
-        scope::save_working(tx, &mut environment)?;
-        scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
-        Ok(VolumeStaged {
-            volume: VolumeSummary {
-                id: create.id.clone(),
-                name: create.name.clone(),
-                storage: create.storage,
-            },
-            environment: environment.summary,
-            staged,
-        })
+    }
+    scope::save_working(tx, &mut environment)?;
+    scope::introduce(tx, who, &environment.summary.id, scope::Node::Volume(&node))?;
+    Ok(VolumeStaged {
+        volume: VolumeSummary {
+            id: create.id.clone(),
+            name: create.name.clone(),
+            storage: create.storage,
+        },
+        environment: environment.summary,
+        staged,
     })
 }
 
