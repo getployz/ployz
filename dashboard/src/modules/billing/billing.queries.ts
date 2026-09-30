@@ -1,5 +1,8 @@
 import { queryOptions } from "@tanstack/react-query";
-import { getBillingStateServerFn } from "#/modules/billing/billing.functions";
+import {
+  getBillingStateServerFn,
+  getCustomDomainCapabilityServerFn,
+} from "#/modules/billing/billing.functions";
 
 export const billingKeys = {
   all: ["billing"] as const,
@@ -7,6 +10,8 @@ export const billingKeys = {
     [...billingKeys.all, organizationSlug] as const,
   state: (organizationSlug: string) =>
     [...billingKeys.org(organizationSlug), "state"] as const,
+  customDomainCapability: (organizationSlug: string) =>
+    [...billingKeys.org(organizationSlug), "customDomainCapability"] as const,
 };
 
 export function billingStateQueryOptions(organizationSlug: string) {
@@ -14,6 +19,18 @@ export function billingStateQueryOptions(organizationSlug: string) {
     queryKey: billingKeys.state(organizationSlug),
     queryFn: ({ signal }) =>
       getBillingStateServerFn({
+        data: { organizationSlug },
+        signal,
+      }),
+    staleTime: 60_000,
+  });
+}
+
+export function customDomainCapabilityQueryOptions(organizationSlug: string) {
+  return queryOptions({
+    queryKey: billingKeys.customDomainCapability(organizationSlug),
+    queryFn: ({ signal }) =>
+      getCustomDomainCapabilityServerFn({
         data: { organizationSlug },
         signal,
       }),

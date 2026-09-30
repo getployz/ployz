@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 
 import { eq, sql } from "drizzle-orm";
-import { Data, Effect } from "effect";
+import { Data, Effect, Schedule } from "effect";
 import { user } from "#/modules/identity/tables";
 
 import {
@@ -14,6 +14,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import type { Actor } from "#/modules/identity/actor";
 import { AppConfig } from "#/server/config.server";
+import { Conflict } from "#/server/public-error";
 import { Database } from "#/server/database.server";
 import {
   organizationBillingState as schemaOrganizationBillingState,
@@ -105,7 +106,7 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
   return snapshot;
 });
 
-const getAuthorizedBillingScope = Effect.fn("Billing.authorizeScope")(
+export const getAuthorizedBillingScope = Effect.fn("Billing.authorizeScope")(
   function* (actor: Actor, organizationSlug: string) {
     const organization = yield* getOrganizationForUserBySlug(
       actor.userId,
@@ -171,6 +172,10 @@ export const createEmbeddedCheckout = Effect.fn("Billing.createCheckout")(
       actor,
       input.organizationSlug,
     );
+    // Never sell Pro twice: the CLI and the dashboard both start checkout here.
+    if (yield* hasCachedActiveSubscription(organization.id)) {
+      return yield* new Conflict({ message: "This Organization already holds Pro.", userFacing: true });
+    }
     const profile = yield* getBillingUser(actor.userId);
     const config = yield* AppConfig;
     return yield* polar.createCheckout({
@@ -194,5 +199,22 @@ export const createCustomerPortal = Effect.fn("Billing.createPortal")(
       externalCustomerId: actor.userId,
       returnUrl: billingPage(config.app.url, input.organizationSlug),
     });
+  },
+);
+
+/**
+ * Right after a checkout succeeds: reads Pro from Polar and saves it to the billing row, so the dashboard need not
+ * wait for the webhook. The saved row is what counts: the Store and every reader still judge Pro from it, never from
+ * this live read. Polar can create the subscription a moment after checkout succeeds, so it asks for about ten seconds.
+ */
+export const syncBillingAfterCheckout = Effect.fn("Billing.syncAfterCheckout")(
+  function* (actor: Actor, input: { readonly organizationSlug: string }) {
+    const organization = yield* getAuthorizedBillingScope(actor, input.organizationSlug);
+    const snapshot = yield* getActiveManagedSubscriptionSnapshot(organization.id).pipe(
+      Effect.repeat({ schedule: Schedule.spaced("1 second"), times: 9, until: (next) => next.hasActiveSubscription }),
+    );
+    // An inactive read is left to the webhook: saving it could overwrite a Pro the webhook just recorded.
+    if (snapshot.hasActiveSubscription) yield* persistOrganizationBillingStateSnapshot(organization.id, snapshot);
+    return snapshot.hasActiveSubscription;
   },
 );
