@@ -1,1 +1,0 @@
-ALTER TABLE "machine_enrollment_token" ADD COLUMN "joined_machine_id" text;
