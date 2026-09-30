@@ -1,6 +1,5 @@
 import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
 import type { Node } from "@xyflow/react";
-import type { CreatePanel } from "#/components/create-menu-items";
 
 export type CanvasResourceType = "service" | "volume";
 
@@ -60,4 +59,3 @@ export type CanvasResourceNode =
   | CanvasStoreLiveNode;
 
 export type FlowPosition = { x: number; y: number };
-export type CreatorPanel = CreatePanel;

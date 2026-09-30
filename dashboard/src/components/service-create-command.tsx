@@ -41,8 +41,7 @@ import { environmentsQuery, fetchStoreView } from "#/modules/config-store/store-
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import type { EnvironmentId, ProjectId } from "@ployz/sdk";
 
-type InitialPanel = CreatePanel;
-type Panel = { kind: InitialPanel };
+type Panel = { kind: CreatePanel };
 type CreateMode = "project" | "service";
 
 function pickerPresentation(panel: Panel, mode: CreateMode) {
@@ -70,7 +69,7 @@ function pickerPresentation(panel: Panel, mode: CreateMode) {
 type ProjectCommandProps = {
   mode?: "project";
   organizationSlug: string;
-  initialPanel?: InitialPanel;
+  initialPanel?: CreatePanel;
 };
 
 type ServiceCommandProps = {
@@ -82,7 +81,7 @@ type ServiceCommandProps = {
     x: number;
     y: number;
   };
-  initialPanel?: InitialPanel;
+  initialPanel?: CreatePanel;
   /** `stillHere` is false once the user moved on: close up, but don't take them anywhere. */
   onCreated?: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
   onCreateVolume?: () => void;
@@ -208,7 +207,7 @@ function useServiceCreateActions({
     setFailure(null);
   }
 
-  function setActivePanel(nextPanel: InitialPanel) {
+  function setActivePanel(nextPanel: CreatePanel) {
     resetPanelState();
     setPanel({ kind: nextPanel });
   }
