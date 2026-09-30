@@ -240,6 +240,17 @@ fn plan(matches: &ArgMatches, verb: &str, view: &MoveView) -> Result<(), Error> 
             };
             say!("  {}: {} → {}{notes}", row.row, row.into, row.from);
         }
+        // Meant to differ: a Move never carries them, so they don't count as moving.
+        for row in &view.differ {
+            say!(
+                "  {} stays {} ({}; {} has {})",
+                row.row,
+                row.into,
+                store::word(&row.why),
+                view.from.name,
+                row.from
+            );
+        }
     })
 }
 
