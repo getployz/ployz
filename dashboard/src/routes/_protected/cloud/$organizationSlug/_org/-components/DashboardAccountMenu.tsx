@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { Building2Icon, LogOutIcon } from "lucide-react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { Building2Icon, ChevronsUpDownIcon, HouseIcon, LogOutIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import {
   getSignOutErrorMessage,
@@ -47,13 +47,19 @@ const themes = [
   { value: "dark", label: "Dark" },
 ] as const;
 
-/** The avatar menu: switching organization, Theme and Log out. The organization's pages are places. */
+/**
+ * The account menu: switching organization, Theme, Home (the public page) and Log out. The organization's
+ * pages are places. As a `row` (the wide rail) its trigger names you and the organization beside the
+ * avatar; otherwise it's the avatar alone.
+ */
 export default function DashboardAccountMenu({
   scope,
   side = "bottom",
+  variant = "avatar",
 }: {
   scope: DashboardScope;
   side?: "bottom" | "right";
+  variant?: "avatar" | "row";
 }) {
   const auth = useAuth();
   const signOut = useSignOut();
@@ -78,18 +84,31 @@ export default function DashboardAccountMenu({
   const userEmail = auth.user.email || "";
   const userInitials = getInitials(userName);
   const userImage = auth.user.image ?? undefined;
+  const organizationName = organizations.find((candidate) => candidate.slug === scope.organizationSlug)?.name ?? scope.organizationSlug;
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label="Open account menu"
-        title={userName}
-        render={<Button variant="ghost" size="icon-lg" />}
+        title={variant === "row" ? undefined : userName}
+        render={variant === "row"
+          // The narrow rail's 40px avatar slot, widened: the avatar and the links above it hold still as the rail changes width.
+          ? <button type="button" className="flex h-10 w-full min-w-0 items-center gap-2.5 rounded-md px-1 text-left outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 aria-expanded:bg-muted" />
+          : <Button variant="ghost" size="icon-lg" />}
       >
         <Avatar>
           <AvatarImage src={userImage} alt={userName} />
           <AvatarFallback>{userInitials}</AvatarFallback>
         </Avatar>
+        {variant === "row" ? (
+          <>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium">{userName}</span>
+              <span className="block truncate text-xs text-muted-foreground">{organizationName}</span>
+            </span>
+            <ChevronsUpDownIcon className="size-4 shrink-0 text-muted-foreground" />
+          </>
+        ) : null}
       </DropdownMenuTrigger>
       <DropdownMenuContent side={side} align="end" className="w-auto min-w-56">
         <div className="flex items-center gap-3 p-2">
@@ -141,6 +160,10 @@ export default function DashboardAccountMenu({
 
         <DropdownMenuSeparator />
 
+        <DropdownMenuItem render={<Link to="/home" />}>
+          <HouseIcon />
+          Home
+        </DropdownMenuItem>
         <DropdownMenuItem
           variant="destructive"
           onClick={() => void handleSignOut()}

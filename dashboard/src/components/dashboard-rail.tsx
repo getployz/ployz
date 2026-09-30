@@ -21,8 +21,9 @@ const rowLink = "text-muted-foreground outline-none hover:bg-muted hover:text-fo
 
 /**
  * Desktop: the logo, the scope's places, on an Environment the way back to the organization below a divider, and the
- * avatar at the bottom. Each place is an icon beside its label, and the current place lists its page's sections.
- * `narrow` (wherever the canvas shows) leaves only the icons, each naming itself on hover, so the canvas gets the room.
+ * account at the bottom. Each place is an icon beside its label, and the current place lists its page's sections; the
+ * account row names you and the organization beside your avatar. `narrow` (wherever the canvas shows) leaves only the
+ * icons and the avatar, each naming itself on hover, so the canvas gets the room.
  */
 export function Rail({ organizationSlug, places, organization, narrow, account }: {
   organizationSlug: string;
@@ -44,7 +45,7 @@ export function Rail({ organizationSlug, places, organization, narrow, account }
         {organization.length ? <div role="separator" className="mx-2 mt-auto mb-1 h-px shrink-0 bg-border" /> : null}
         {organization.map(railPlace)}
       </TooltipProvider>
-      <div className={cn("flex size-10 shrink-0 items-center justify-center", !organization.length && "mt-auto")}>{account}</div>
+      <div className={cn("flex shrink-0", narrow ? "size-10 items-center justify-center" : "w-full", !organization.length && "mt-auto")}>{account}</div>
     </nav>
   );
 }

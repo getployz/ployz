@@ -15,6 +15,7 @@ import { Route as ProtectedCloudRouteRouteImport } from './routes/_protected/clo
 import { Route as ProtectedDashboardRouteImport } from './routes/_protected/dashboard'
 import { Route as PublicIndexRouteImport } from './routes/_public/index'
 import { Route as PublicAuthRouteImport } from './routes/_public/auth'
+import { Route as PublicHomeRouteImport } from './routes/_public/home'
 import { Route as ProtectedCloudIndexRouteImport } from './routes/_protected/cloud/index'
 import { Route as ProtectedCloudOrganizationSlugRouteRouteImport } from './routes/_protected/cloud/$organizationSlug/route'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -77,6 +78,11 @@ const PublicIndexRoute = PublicIndexRouteImport.update({
 const PublicAuthRoute = PublicAuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => PublicRouteRoute,
+} as any)
+const PublicHomeRoute = PublicHomeRouteImport.update({
+  id: '/home',
+  path: '/home',
   getParentRoute: () => PublicRouteRoute,
 } as any)
 const ProtectedCloudIndexRoute = ProtectedCloudIndexRouteImport.update({
@@ -321,6 +327,7 @@ export interface FileRoutesByFullPath {
   '/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/home': typeof PublicHomeRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -358,6 +365,7 @@ export interface FileRoutesByTo {
   '/': typeof PublicIndexRoute
   '/dashboard': typeof ProtectedDashboardRoute
   '/auth': typeof PublicAuthRoute
+  '/home': typeof PublicHomeRoute
   '/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/auth/github': typeof ApiAuthGithubRoute
@@ -396,6 +404,7 @@ export interface FileRoutesById {
   '/_protected/cloud': typeof ProtectedCloudRouteRouteWithChildren
   '/_protected/dashboard': typeof ProtectedDashboardRoute
   '/_public/auth': typeof PublicAuthRoute
+  '/_public/home': typeof PublicHomeRoute
   '/_public/': typeof PublicIndexRoute
   '/_protected/cloud/$organizationSlug': typeof ProtectedCloudOrganizationSlugRouteRouteWithChildren
   '/api/auth/$': typeof ApiAuthSplatRoute
@@ -440,6 +449,7 @@ export interface FileRouteTypes {
     | '/cloud'
     | '/dashboard'
     | '/auth'
+    | '/home'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -477,6 +487,7 @@ export interface FileRouteTypes {
     | '/'
     | '/dashboard'
     | '/auth'
+    | '/home'
     | '/cloud/$organizationSlug'
     | '/api/auth/$'
     | '/api/auth/github'
@@ -514,6 +525,7 @@ export interface FileRouteTypes {
     | '/_protected/cloud'
     | '/_protected/dashboard'
     | '/_public/auth'
+    | '/_public/home'
     | '/_public/'
     | '/_protected/cloud/$organizationSlug'
     | '/api/auth/$'
@@ -608,6 +620,13 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof PublicAuthRouteImport
+      parentRoute: typeof PublicRouteRoute
+    }
+    '/_public/home': {
+      id: '/_public/home'
+      path: '/home'
+      fullPath: '/home'
+      preLoaderRoute: typeof PublicHomeRouteImport
       parentRoute: typeof PublicRouteRoute
     }
     '/_protected/cloud/': {
@@ -1029,11 +1048,13 @@ const ProtectedRouteRouteWithChildren = ProtectedRouteRoute._addFileChildren(
 
 interface PublicRouteRouteChildren {
   PublicAuthRoute: typeof PublicAuthRoute
+  PublicHomeRoute: typeof PublicHomeRoute
   PublicIndexRoute: typeof PublicIndexRoute
 }
 
 const PublicRouteRouteChildren: PublicRouteRouteChildren = {
   PublicAuthRoute: PublicAuthRoute,
+  PublicHomeRoute: PublicHomeRoute,
   PublicIndexRoute: PublicIndexRoute,
 }
 
