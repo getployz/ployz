@@ -66,7 +66,7 @@ pub(crate) fn head(tx: &mut dyn Tx, environment: &Environment) -> Result<Head, R
             applied,
         });
     };
-    let saved = saved_at(tx, id, revision(row.int(1)?)?)?;
+    let saved = saved_at(tx, id, row.number(1, "revision")?)?;
     let nodes: Vec<TargetNode> = row.json(2, "Deployment")?;
     let mut intent = applied.clone();
     for node in nodes {
