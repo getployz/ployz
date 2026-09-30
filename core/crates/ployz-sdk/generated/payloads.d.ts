@@ -2977,7 +2977,7 @@ export type Sweep = {
  */
 now: number, };
 
-export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep;
+export type SystemEvent = { "event": "branch_head" } & BranchHead | { "event": "check_suite" } & CheckSuite | { "event": "pull_request" } & PullRequest | { "event": "sweep" } & Sweep | { "event": "cluster_forgotten" };
 
 export type Take = {
 /**

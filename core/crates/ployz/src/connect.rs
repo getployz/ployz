@@ -36,7 +36,7 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
-pub use crate::cluster::{Client, MachineImagesObservation};
+pub use crate::cluster::{Client, MachineImagesObservation, Remover};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 

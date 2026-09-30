@@ -815,6 +815,56 @@ fn with_no_server_left_a_removal_applies_at_once() {
 }
 
 #[test]
+fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    let data_deployed = || {
+        store
+            .read(
+                &who,
+                &ployz_store::VolumesQuery {
+                    environment: at("production"),
+                },
+            )
+            .unwrap()
+            .volumes[0]
+            .deployed
+    };
+    assert!(data_deployed());
+
+    store
+        .system(
+            &who.organization,
+            &SystemEvent::ClusterForgotten,
+            &Trusted::default(),
+        )
+        .unwrap();
+    // Nothing reads Deployed; the configuration stays.
+    assert!(!data_deployed());
+    assert_eq!(listed(&store, &who), ["production*", "staging"]);
+
+    // What ran is still counted as ran, so its removal says it was left where it ran.
+    set_default(&store, &who, "staging");
+    let removal = store
+        .write_trusted(
+            &who,
+            &Admit::Remove(Removal {
+                id: id(2),
+                environment: at("production"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+                close: false,
+            }),
+            &Trusted {
+                servers: Some(0),
+                ..Trusted::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(removal.outcome, Some(ployz_store::Outcome::Forgotten));
+}
+
+#[test]
 fn shutting_down_what_never_ran_applies_at_once() {
     let (store, who) = shop();
     let shutdown = admit(&store, &who, "staging", 1, true, &[], None).unwrap();

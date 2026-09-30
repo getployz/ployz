@@ -12,6 +12,7 @@ import {
 } from "#/modules/machines/machine-removal.functions";
 import { withMissingDataLossIdentities, type DataLossList } from "#/modules/runtime/data-loss-confirm";
 import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
+import type { MachineRemoveResult } from "#/modules/machines/machine-removal";
 import type { RuntimeMachineRecord } from "#/modules/runtime/runtime.collection";
 import { DangerRow } from "#/routes/_protected/cloud/$organizationSlug/-components/danger-row";
 
@@ -20,7 +21,7 @@ async function waitForMachineRemoveAttempt(
   organizationSlug: string,
   attemptId: string,
   stopped: () => boolean,
-): Promise<"removed" | "aborted" | { missing: DataLossIdentity[] }> {
+): Promise<MachineRemoveResult | "aborted" | { missing: DataLossIdentity[] }> {
   for (;;) {
     if (stopped()) return "aborted";
     const attempt = await getMachineRemoveAttemptServerFn({
@@ -33,7 +34,7 @@ async function waitForMachineRemoveAttempt(
         await new Promise((resolve) => setTimeout(resolve, 1_000));
         continue;
       case "succeeded":
-        return "removed";
+        return attempt.result;
       case "missing_identities":
         return { missing: attempt.missingIdentities };
       case "failed":
@@ -113,8 +114,11 @@ export function RemoveServerSection({ machine, organizationSlug, last }: {
             const result = await waitForMachineRemoveAttempt(organizationSlug, queued.id,
               () => abort.signal.aborted || !stillHere());
             if (result === "aborted") return;
-            if (result === "removed") {
-              toast(`${machine.name} removed`);
+            if ("release" in result) {
+              const { release } = result;
+              if (release.kind === "kept") toast.warning(`${machine.name} left the cluster. Cloud keeps its hold: ${release.reason}`);
+              else if (release.kind === "released") toast(`${machine.name} removed. Add a server to deploy again.`);
+              else toast(`${machine.name} removed`);
               void navigate({ to: "/cloud/$organizationSlug/~/servers", params: { organizationSlug } });
               return;
             }

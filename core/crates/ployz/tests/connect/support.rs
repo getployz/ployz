@@ -177,6 +177,8 @@ pub(super) struct DiscoveryService {
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
+    /// Inspect fails, so who manages the Machine can't be read.
+    pub(super) inspect_fails: bool,
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
@@ -221,6 +223,7 @@ impl DiscoveryService {
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             management_clients: Arc::default(),
+            inspect_fails: false,
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
@@ -500,6 +503,9 @@ impl MachineRpc for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inspect_calls.fetch_add(1, Ordering::SeqCst);
+        if self.inspect_fails {
+            return Err(Status::unavailable("inspect is down"));
+        }
         let request = request
             .into_inner()
             .decode_request()

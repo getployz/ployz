@@ -23,7 +23,9 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { removeServerForCli } from "#/modules/machines/machine-removal.server";
+import { startMachineRemove } from "#/modules/machines/machine-removal.server";
+import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
+import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
 import { dataLossIdentitySchema } from "#/modules/runtime/data-loss-identity";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
 import { NotFound, Validation } from "#/server/public-error";
@@ -33,10 +35,11 @@ const NewToken = Schema.Struct({
   expires_in_days: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 365 })),
 });
 
-/** `server rm`'s DataLossConfirmation: the Volumes the user accepted losing. */
-const RemoveServer = Schema.Struct({
-  confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }),
-});
+/** `server rm`: reset, with its DataLossConfirmation (the Volumes the user accepted losing), or `--no-reset`. */
+const RemoveServer = Schema.Union([
+  Schema.Struct({ confirm_data_loss: Schema.Struct({ confirmed: Schema.Array(dataLossIdentitySchema) }) }),
+  Schema.Struct({ no_reset: Schema.Literal(true) }),
+]);
 
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, request: Request, message: string) =>
   Effect.tryPromise({ try: () => request.json(), catch: () => new Validation({ message, userFacing: true }) }).pipe(
@@ -46,7 +49,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections, billing), and removing a Server Cloud holds as its last. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections, billing), and removing a Server Cloud manages, through the dashboard's durable removal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -89,12 +92,22 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       const machineId = decodeURIComponent(id ?? "");
       if (!Schema.is(rustMachineIdSchema)(machineId)) return yield* new NotFound({ message: "No such Server." });
       const input = yield* decodeBody(RemoveServer, request, "Removing a Server takes the Data Loss it confirms.");
-      const removed = yield* removeServerForCli(caller.organization.id, machineId, input.confirm_data_loss.confirmed);
-      return removed.kind === "removed" ? { removed: { id: machineId } } : refusal({
-        code: "invalid_argument",
-        message: "The Server holds Volumes this removal didn't confirm. No changes made.",
-        details: { missing: removed.identities },
+      const started = yield* startMachineRemove({
+        organizationId: caller.organization.id,
+        requestedByUserId: caller.userId,
+        machineId,
+        ...("no_reset" in input
+          ? { confirmDataLoss: [], noReset: true }
+          : { confirmDataLoss: [...input.confirm_data_loss.confirmed] }),
       });
+      return { id: started.id };
+    }
+    case "GET server-removals/:id": {
+      const attempt = Schema.is(Uuid)(id)
+        ? yield* loadAuthorizedMachineRemoveAttempt({ attemptId: id, organizationId: caller.organization.id })
+        : null;
+      if (attempt === null) return yield* new NotFound({ message: "No such Server removal." });
+      return serverRemoval(attempt);
     }
     case "POST server-access":
       return yield* provideServerAccess(caller);
@@ -125,6 +138,30 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
       return yield* new NotFound({ message: "Not found." });
   }
 });
+
+/** A Server removal as `ployz server rm` follows it: under way, settled, or refused as it ended. */
+function serverRemoval(attempt: MachineRemoveAttemptView) {
+  switch (attempt.state) {
+    case "pending":
+    case "running":
+      return { state: attempt.state };
+    case "succeeded":
+      return { state: attempt.state, reset_warning: attempt.result.resetWarning, release: attempt.result.release };
+    case "missing_identities":
+      return refusal({
+        code: "invalid_argument",
+        message: "The Server holds Volumes this removal didn't confirm. No changes made.",
+        details: { missing: attempt.missingIdentities },
+      });
+    case "failed":
+    case "cancelled":
+      return refusal({ code: "unavailable", message: attempt.failureMessage, details: null });
+    default: {
+      const _exhaustive: never = attempt;
+      throw new Error(`Unhandled machine remove attempt: ${String(_exhaustive)}`);
+    }
+  }
+}
 
 /** Rerunning `token rm` on a credential already gone retries the Clears its Servers haven't confirmed. */
 const pendingRevocation = Effect.fn("Cli.pendingRevocation")(function* (caller: Caller, id: string, missing: NotFound) {

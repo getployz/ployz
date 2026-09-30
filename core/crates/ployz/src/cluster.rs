@@ -589,19 +589,21 @@ impl Client {
     /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
     /// Refused before reset or membership mutation when this is the last Machine
-    /// and a Management Client other than Cloud holds a key.
+    /// and a Management Client other than Cloud holds a key, or Cloud holds it and
+    /// `remover` isn't Cloud.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
     /// the current entry while another Machine is visible, when the Machine
-    /// is the last Machine and a Management Client other than Cloud holds a key, when the Machine
+    /// is the last Machine and its holders refuse it or can't be read, when the Machine
     /// did not respond so Data Loss cannot be listed, when the confirmation does not cover the
     /// fresh Data Loss, or when reset or shared-row removal fails.
     pub async fn remove_machine(
         &mut self,
         machine: &MachineTarget,
         confirm_data_loss: &DataLossConfirmation,
+        remover: Remover,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
@@ -620,20 +622,23 @@ impl Client {
                 details: Value::Null,
             });
         }
-        refuse_last_managed(self, &machines, selected).await?;
+        let hold = refuse_last_managed(self, &machines, selected).await?;
+        if hold == CloudHold::Last && remover == Remover::Operator {
+            return Err(cloud_holds_last(selected));
+        }
         evict_machine(self, observation, confirm_data_loss, current).await
     }
 
     /// Remove Cluster membership for `machine` without resetting it.
     ///
-    /// Refused before membership mutation when this is the last Machine and a
-    /// Management Client other than Cloud holds a key.
+    /// Refused before membership mutation when this is the last Machine and any
+    /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
-    /// it is the last Machine and a Management Client other than Cloud holds a key, or when
-    /// shared-row removal fails.
+    /// it is the last Machine and a Management Client holds a key or its holders
+    /// can't be read, or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -641,7 +646,9 @@ impl Client {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
         let selected = observation.machine.id;
-        refuse_last_managed(self, &machines, selected).await?;
+        if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
+            return Err(cloud_holds_last(selected));
+        }
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
                 machine_id: selected,
@@ -983,13 +990,38 @@ pub(crate) enum CloudHold {
     Last,
 }
 
+/// Who removes a Machine. Only Cloud may remove the last Machine it holds: it sees the
+/// reset, and only then lets go of the Cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Remover {
+    /// Cloud, through its own Management Client.
+    Cloud,
+    /// Anyone else: the CLI, whatever it connects through.
+    Operator,
+}
+
+/// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
+/// with a Cluster that no longer exists.
+fn cloud_holds_last(machine: MachineId) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
+             lets go of it too. No changes made."
+        ),
+        details: Value::Null,
+    }
+}
+
 /// Refuse removing the last Machine while a Management Client other than Cloud still
 /// holds a key: that holder would be left managing a Cluster that no longer exists.
 /// Cloud's own hold (`cloud` and the `cli-*` device keys it provisions) goes with the
 /// Machine when Cloud removes it, so it only shows in the returned [`CloudHold`].
+/// Holders that can't be read refuse too: they may be anyone's.
 ///
 /// # Errors
-/// Returns `conflict` naming the other holders.
+/// Returns `conflict` naming the other holders, or `unavailable` when the last
+/// Machine's holders can't be read.
 pub(crate) async fn refuse_last_managed(
     client: &Client,
     machines: &[MachineObservation],
@@ -998,7 +1030,6 @@ pub(crate) async fn refuse_last_managed(
     if machines.len() != 1 {
         return Ok(CloudHold::None);
     }
-    // Inspect errors must not block unmanaged last-Machine removal.
     let holders = client
         .invoke::<op::Inspect>(
             InspectRequest::default(),
@@ -1006,8 +1037,15 @@ pub(crate) async fn refuse_last_managed(
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map(|details| details.management_clients)
-        .unwrap_or_default();
+        .map_err(|error| RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "cannot read who manages Machine {selected}, the last Machine: {}. No changes made.",
+                error.message
+            ),
+            details: Value::Null,
+        })?
+        .management_clients;
     let cloud = holders.iter().any(|label| label.as_str() == "cloud");
     let names: Vec<String> = holders
         .iter()
