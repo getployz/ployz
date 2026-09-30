@@ -1159,6 +1159,15 @@ fn an_ambiguous_project_names_the_rerun() {
             next(&["get", "--all"]),
             json!("ployz get --all --project PROJECT")
         );
+        // The rerun is the command that ran, never another one's words.
+        assert_eq!(
+            next(&["deployment", "show", "1"]),
+            json!("ployz deployment show 1 --project PROJECT")
+        );
+        assert_eq!(
+            next(&["env", "rm", "staging", "--confirm", "x/staging"]),
+            json!("ployz env rm staging --project PROJECT")
+        );
     }
 }
 

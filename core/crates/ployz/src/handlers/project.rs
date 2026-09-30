@@ -9,8 +9,8 @@ use ployz_store::{
 };
 use serde_json::json;
 
-use super::store::{self, Store, failed, mint, store};
-use super::teardown::{accepted, confirmed, inventory, remove_all};
+use super::store::{self, Store, mint, store};
+use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
 use crate::output::say;
@@ -62,14 +62,13 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?;
+    let store = store(root)?.args([name.as_str()]);
     let create = CreateProject {
         id: ProjectId::parse(mint())?,
         name,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let words = ["project", "new", create.name.as_str()];
-    let created = store.write(&create).map_err(failed(matches, &words))?;
+    let created = store.write(&create)?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",
@@ -80,10 +79,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 }
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let listed = store(root)?
-        .read(&ployz_store::ProjectsQuery {})
-        .map_err(failed(matches, &["project", "ls"]))?;
+    let listed = store(root)?.read(&ployz_store::ProjectsQuery {})?;
     crate::output::finish(&listed, || {
         if listed.projects.is_empty() {
             say!("No Projects yet. Create one: ployz project new NAME");
@@ -115,23 +111,16 @@ struct Removal<'a> {
 fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?;
-    let words = ["project", "rm", name.as_str()];
-    let accept = accepted(matches)?;
-    let mut again = vec!["project", "rm", name.as_str(), "--confirm", name.as_str()];
+    let store = store(root)?.args([name.as_str()]);
+    let again = ["project", "rm", name.as_str(), "--confirm", name.as_str()];
     if !confirmed(matches, name.as_str(), "Project")? {
         return Err(unconfirmed(matches, &store, &name, &again)?);
     }
-    again.extend(
-        accept
-            .iter()
-            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-    );
     let remove = RemoveProject {
         project: name.clone(),
     };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &name, events, &words, &again)? {
+    match remove_all(matches, &store, &remove, &name, events, &again)? {
         Some((removed, ran)) => finish(&removed, &ran),
         None => Ok(()),
     }
@@ -145,10 +134,7 @@ fn unconfirmed(
     project: &ProjectName,
     again: &[&str],
 ) -> Result<Error, Error> {
-    let words = ["project", "rm"];
-    let listed = store
-        .read(&ployz_store::ProjectsQuery {})
-        .map_err(failed(matches, &words))?;
+    let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
         .iter()
@@ -168,7 +154,7 @@ fn unconfirmed(
                 project: Some(project.clone()),
                 environment: Some(environment.clone()),
             };
-            inventory(matches, store, &at)
+            inventory(store, &at)
         })
         .collect::<Result<Vec<_>, _>>()?;
     let retry = store::next(matches, again);

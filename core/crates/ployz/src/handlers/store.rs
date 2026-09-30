@@ -3,9 +3,12 @@
 
 use clap::{Arg, ArgMatches};
 use ployz_core::RpcErrorCode;
+use std::path::Path;
+
 use ployz_store::{
     Actor, Admit, Ask, ConfigStore, DeploymentId, DeploymentSummary, DomainEvidence,
-    EnvironmentRef, OrganizationId, ProjectName, SealingKey, Tell, Trusted, View, Written,
+    EnvironmentRef, OrganizationId, ProjectName, RemovalsQuery, SealingKey, Tell, Trusted, View,
+    VolumeObservation, Written,
 };
 use serde_json::json;
 
@@ -52,15 +55,14 @@ pub(crate) fn environment(matches: &ArgMatches) -> Result<EnvironmentRef, Error>
     Ok(super::link::scope(matches)?.at())
 }
 
-/// The Config Store a command reads and writes: Cloud's over HTTPS, as
-/// `PLOYZ_TOKEN` or this device's sign-in, or the hidden in-process SQLite Store
-/// when `PLOYZ_STORE` is set.
-pub(crate) enum Store {
+/// Where the Config Store is: Cloud's over HTTPS, as `PLOYZ_TOKEN` or this device's
+/// sign-in, or the hidden in-process SQLite Store when `PLOYZ_STORE` is set.
+pub(crate) enum Backend {
     Local(std::sync::Arc<ConfigStore>, Actor),
     Cloud(tokio::runtime::Runtime, Credential),
 }
 
-impl Store {
+impl Backend {
     /// Answer `query`: a Store query payload, read as its own view.
     pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
         match self {
@@ -78,33 +80,8 @@ impl Store {
         }
     }
 
-    /// Apply `command`: a Store command payload, answered as its own result.
-    pub(crate) fn write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
-        self.write_trusted(command, self_hosted())
-    }
-
-    /// Admit a Deployment. Only the in-process Store takes `volumes`, the Servers
-    /// this CLI observed: over HTTPS, Cloud gathers its own evidence.
-    pub(crate) fn admit(
-        &self,
-        admit: &Admit,
-        volumes: Option<ployz_store::VolumeObservation>,
-    ) -> Result<DeploymentSummary, StoreCallError> {
-        self.write_trusted(
-            admit,
-            Trusted {
-                volumes,
-                ..self_hosted()
-            },
-        )
-    }
-
     /// `trusted` is the in-process Store's evidence; Cloud gathers its own.
-    fn write_trusted<C: Tell>(
-        &self,
-        command: &C,
-        trusted: Trusted,
-    ) -> Result<C::Written, StoreCallError> {
+    fn write<C: Tell>(&self, command: &C, trusted: Trusted) -> Result<C::Written, StoreCallError> {
         match self {
             Self::Local(store, who) => store
                 .write_trusted(who, command, &trusted)
@@ -119,31 +96,138 @@ impl Store {
             }
         }
     }
+}
 
-    /// Hand Cloud `archive`, the source Deployment `deployment` builds from, before
-    /// admitting it. The hidden local Store's runner reads the directory itself.
-    pub(crate) fn upload(
+/// The Config Store as one command sees it: a refusal becomes this command's
+/// failure, and an ambiguous Project names this same command with `--project`.
+pub(crate) struct Store<'m> {
+    backend: Backend,
+    matches: &'m ArgMatches,
+    /// The command's words, then its accepted arguments: never raw input.
+    words: Vec<String>,
+}
+
+impl<'m> Store<'m> {
+    /// Name the command's accepted arguments, which its rerun repeats.
+    pub(crate) fn args<'a>(mut self, args: impl IntoIterator<Item = &'a str>) -> Self {
+        self.words.extend(args.into_iter().map(str::to_owned));
+        self
+    }
+
+    /// Answer `query` as its own view.
+    pub(crate) fn read<Q: Ask>(&self, query: &Q) -> Result<Q::View, Error> {
+        self.try_read(query).map_err(|error| self.fail(error))
+    }
+
+    /// Apply `command`, answered as its own result.
+    pub(crate) fn write<C: Tell>(&self, command: &C) -> Result<C::Written, Error> {
+        self.try_write(command).map_err(|error| self.fail(error))
+    }
+
+    /// [`Self::read`], leaving the refusal for the caller to add a next step to.
+    pub(crate) fn try_read<Q: Ask>(&self, query: &Q) -> Result<Q::View, StoreCallError> {
+        self.backend.read(query)
+    }
+
+    /// [`Self::write`], leaving the refusal for the caller to add a next step to.
+    pub(crate) fn try_write<C: Tell>(&self, command: &C) -> Result<C::Written, StoreCallError> {
+        self.backend.write(command, self_hosted())
+    }
+
+    /// Admit a Deployment. The in-process Store reviews Volume loss against the
+    /// Servers this CLI observes; over HTTPS, Cloud gathers its own evidence.
+    pub(crate) fn admit(&self, admit: &Admit) -> Result<DeploymentSummary, StoreCallError> {
+        let volumes = match (&self.backend, admit) {
+            (Backend::Local(..), Admit::Deploy(deploy)) if deploy.services.is_empty() => {
+                self.observe(&deploy.environment, false)?
+            }
+            (Backend::Local(..), Admit::Remove(removal)) => {
+                self.observe(&removal.environment, true)?
+            }
+            _ => None,
+        };
+        self.backend.write(
+            admit,
+            Trusted {
+                volumes,
+                ..self_hosted()
+            },
+        )
+    }
+
+    /// Which Servers hold the data of the Volumes a Deploy (or a removal: `remove`)
+    /// deletes. A Cluster this can't reach leaves the evidence out, so the Store refuses.
+    fn observe(
         &self,
-        deployment: &DeploymentId,
-        archive: Vec<u8>,
-    ) -> Result<(), StoreCallError> {
-        match self {
-            Self::Local(..) => Ok(()),
-            Self::Cloud(runtime, credential) => runtime.block_on(cloud_account::upload(
+        environment: &EnvironmentRef,
+        remove: bool,
+    ) -> Result<Option<VolumeObservation>, StoreCallError> {
+        let removals = self.backend.read(&RemovalsQuery {
+            environment: environment.clone(),
+            remove,
+        })?;
+        if removals.volumes.is_empty() {
+            return Ok(None);
+        }
+        let sought = removals
+            .volumes
+            .into_iter()
+            .map(|volume| volume.docker_volume)
+            .collect();
+        let context = self
+            .matches
+            .get_one::<String>("context")
+            .map(String::as_str);
+        let Ok(runtime) = runtime() else {
+            return Ok(None);
+        };
+        Ok(runtime.block_on(async {
+            let mut client = super::server::connect(self.matches, context).await.ok()?;
+            client.observe_volumes(sought).await.ok()
+        }))
+    }
+
+    /// Hand Cloud the archive of `dir`, the source Deployment `deployment` builds
+    /// from, before admitting it. The in-process Store's runner reads `dir` itself.
+    pub(crate) fn upload(&self, deployment: &DeploymentId, dir: &Path) -> Result<(), Error> {
+        let Backend::Cloud(runtime, credential) = &self.backend else {
+            return Ok(());
+        };
+        let archive = crate::build::upload_archive(dir).map_err(super::deploy::unreadable(dir))?;
+        runtime
+            .block_on(cloud_account::upload(
                 credential,
                 deployment.as_str(),
                 archive,
-            )),
-        }
+            ))
+            .map_err(|error| self.fail(error))
+    }
+
+    /// Where this Store is.
+    pub(crate) const fn backend(&self) -> &Backend {
+        &self.backend
     }
 
     /// The in-process Store, which only the hidden test mode has: there this CLI
     /// runs Deployments itself. `claim` and `record` never cross HTTPS.
     pub(crate) fn local(&self) -> Option<&std::sync::Arc<ConfigStore>> {
-        match self {
-            Self::Local(store, _) => Some(store),
-            Self::Cloud(..) => None,
+        match &self.backend {
+            Backend::Local(store, _) => Some(store),
+            Backend::Cloud(..) => None,
         }
+    }
+
+    /// This command's failure for a Store error: an ambiguous Project is fixed by
+    /// rerunning it with `--project`.
+    pub(crate) fn fail(&self, error: StoreCallError) -> Error {
+        with_next(
+            error,
+            |refusal| {
+                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
+            },
+            || rerun(self.matches, &self.words),
+        )
+        .into()
     }
 }
 
@@ -159,22 +243,35 @@ fn self_hosted() -> Trusted {
     }
 }
 
-pub(crate) fn store(root: &ArgMatches) -> Result<Store, Error> {
-    store_at(&config_path(leaf_matches(root))?)
-}
-
-/// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
-pub(crate) fn store_at(config: &std::path::Path) -> Result<Store, Error> {
-    reachable_at(config)?.ok_or_else(|| LoginError::SignedOut.into())
+/// The Config Store `root`'s command reads and writes.
+pub(crate) fn store(root: &ArgMatches) -> Result<Store<'_>, Error> {
+    reachable(root)?.ok_or_else(|| LoginError::SignedOut.into())
 }
 
 /// The Store, or `None` when there's none to reach: signed out, no `PLOYZ_TOKEN`
 /// and no `PLOYZ_STORE`.
-pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store>, Error> {
-    reachable_at(&config_path(leaf_matches(root))?)
+pub(crate) fn reachable(root: &ArgMatches) -> Result<Option<Store<'_>>, Error> {
+    let matches = leaf_matches(root);
+    let mut words = Vec::new();
+    let mut at = root;
+    while let Some((word, child)) = at.subcommand() {
+        words.push(word.to_owned());
+        at = child;
+    }
+    Ok(backend_at(&config_path(matches)?)?.map(|backend| Store {
+        backend,
+        matches,
+        words,
+    }))
 }
 
-fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
+/// Whether commands use the hidden in-process Store (`PLOYZ_STORE`).
+pub(crate) fn local_mode() -> bool {
+    std::env::var_os(env::STORE).is_some()
+}
+
+/// The Store as seen with the CLI config at `config` (where a device's sign-in lives).
+pub(crate) fn backend_at(config: &Path) -> Result<Option<Backend>, Error> {
     if let Ok(url) = std::env::var(env::STORE) {
         let actor = Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).expect("a valid ID"));
         // The hidden test mode keeps its sealing key beside its database.
@@ -186,7 +283,7 @@ fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
             None => config.with_file_name("store.key"),
         };
         let key = SealingKey::from_file(&key)?;
-        return Ok(Some(Store::Local(
+        return Ok(Some(Backend::Local(
             std::sync::Arc::new(ConfigStore::open(&url, key)?),
             actor,
         )));
@@ -194,7 +291,7 @@ fn reachable_at(config: &std::path::Path) -> Result<Option<Store>, Error> {
     let credentials = CredentialStore::beside(config);
     let runtime = runtime()?;
     match runtime.block_on(cloud_account::from_env(&credentials)) {
-        Ok(credential) => Ok(Some(Store::Cloud(runtime, credential))),
+        Ok(credential) => Ok(Some(Backend::Cloud(runtime, credential))),
         Err(LoginError::SignedOut) => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -236,11 +333,8 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
 /// This same command again with `--project`. It keeps every guard flag it was given
 /// (`--expect`, `--version`, `--all`): dropping one would make a guarded write blind.
 /// Only [`next`]'s scope flags travel to other commands, so this stays separate.
-fn rerun(matches: &ArgMatches, words: &[&str]) -> String {
-    let mut rerun = words
-        .iter()
-        .map(|word| (*word).to_owned())
-        .collect::<Vec<_>>();
+fn rerun(matches: &ArgMatches, words: &[String]) -> String {
+    let mut rerun = words.to_vec();
     for flag in ["expect", "version"] {
         if let Ok(Some(value)) = matches.try_get_one::<String>(flag) {
             rerun.extend([format!("--{flag}"), value.clone()]);
@@ -286,25 +380,6 @@ pub(crate) fn with_next(
     StoreCallError::Refused(error)
 }
 
-/// Turn a Store error into this command's failure, adding the next step only the
-/// command line can name: an ambiguous Project is fixed by rerunning `words` with
-/// `--project`. `words` are the command and its accepted arguments, never raw input.
-pub(crate) fn failed<'matches>(
-    matches: &'matches ArgMatches,
-    words: &'matches [&'matches str],
-) -> impl FnOnce(StoreCallError) -> Error + 'matches {
-    move |error| {
-        with_next(
-            error,
-            |refusal| {
-                refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
-            },
-            || rerun(matches, words),
-        )
-        .into()
-    }
-}
-
 /// A unit enum variant as the word its JSON uses, such as `not_applied`.
 pub(crate) fn word(value: &impl serde::Serialize) -> String {
     serde_json::to_value(value)
@@ -323,6 +398,52 @@ pub(crate) fn service_name(
         Error::usage("Expected a Service name: lowercase letters, digits and -, like web")
             .with_exit(crate::failure::USAGE_EXIT)
     })
+}
+
+/// Every value of argument `arg`, Service names.
+pub(crate) fn service_names(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<Vec<ployz_core::ServiceName>, Error> {
+    names(
+        matches,
+        arg,
+        |name| ployz_core::ServiceName::parse(name).ok(),
+        "Service",
+    )
+}
+
+/// Every value of argument `arg`, Volume names.
+pub(crate) fn volume_names(
+    matches: &ArgMatches,
+    arg: &str,
+) -> Result<Vec<ployz_store::VolumeName>, Error> {
+    names(
+        matches,
+        arg,
+        |name| ployz_store::VolumeName::parse(name).ok(),
+        "Volume",
+    )
+}
+
+/// A rejected value is never echoed.
+fn names<T>(
+    matches: &ArgMatches,
+    arg: &str,
+    parse: impl Fn(String) -> Option<T>,
+    what: &str,
+) -> Result<Vec<T>, Error> {
+    super::string_values(matches, arg)
+        .into_iter()
+        .map(|name| {
+            parse(name).ok_or_else(|| {
+                Error::usage(format!(
+                    "Expected {what} names: lowercase letters, digits and -"
+                ))
+                .with_exit(crate::failure::USAGE_EXIT)
+            })
+        })
+        .collect()
 }
 
 /// Argument `arg`, a Volume name.

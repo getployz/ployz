@@ -59,7 +59,7 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
     let id = ServiceLineageId::parse(store::mint())?;
     let environment = store::environment(matches)?;
     let name = service_name(matches, "name")?;
-    let store = store::store(root)?;
+    let store = store::store(root)?.args([name.as_str()]);
     let created = if let Some(repo) = matches.get_one::<String>("repo") {
         let (repository, branch) = match repo.split_once('@') {
             Some((repository, branch)) => {
@@ -67,30 +67,26 @@ pub(super) fn add(root: &ArgMatches) -> Result<(), Error> {
             }
             None => (repo.as_str(), None),
         };
-        let words = ["service", "add", name.as_str(), "--repo", "OWNER/REPO"];
         store
+            .args(["--repo", "OWNER/REPO"])
             .write(&CreateGitService {
                 id,
                 environment,
                 name: name.clone(),
                 repository: ployz_store::RepositoryName::parse(repository)?,
                 branch,
-            })
-            .map_err(store::failed(matches, &words))?
+            })?
     } else {
         let image = matches.get_one::<String>("image").cloned();
-        let mut words = vec!["service", "add", name.as_str()];
-        if image.is_some() {
-            words.extend(["--image", "REF"]);
-        }
+        let flag = image.as_ref().map(|_| ["--image", "REF"]);
         store
+            .args(flag.into_iter().flatten())
             .write(&CreateService {
                 id,
                 environment,
                 name: name.clone(),
                 image,
-            })
-            .map_err(store::failed(matches, &words))?
+            })?
     };
     staged(matches, &created, "Staged new Service")
 }
@@ -101,9 +97,7 @@ pub(super) fn list(root: &ArgMatches) -> Result<(), Error> {
     let query = ServicesQuery {
         environment: store::environment(matches)?,
     };
-    let view = store::store(root)?
-        .read(&query)
-        .map_err(store::failed(matches, &["service", "ls"]))?;
+    let view = store::store(root)?.read(&query)?;
     output::finish(&view, || {
         say!("SERVICE\tPRIVATE DNS\tSOURCE\tNEXT DEPLOY");
         for listing in &view.services {
@@ -128,10 +122,9 @@ pub(super) fn inspect(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let view = store::store(root)?.read(&query).map_err(store::failed(
-        matches,
-        &["service", "inspect", query.service.as_str()],
-    ))?;
+    let view = store::store(root)?
+        .args([query.service.as_str()])
+        .read(&query)?;
     output::finish(&view, || {
         let service = &view.service.service;
         say!("Service {} ({})", service.name, service.id);
@@ -165,15 +158,9 @@ pub(super) fn rename(root: &ArgMatches) -> Result<(), Error> {
         service: service_name(matches, "service")?,
         name: service_name(matches, "name")?,
     };
-    let words = [
-        "service",
-        "rename",
-        rename.service.as_str(),
-        rename.name.as_str(),
-    ];
     let renamed = store::store(root)?
-        .write(&rename)
-        .map_err(store::failed(matches, &words))?;
+        .args([rename.service.as_str(), rename.name.as_str()])
+        .write(&rename)?;
     staged(matches, &renamed, "Staged rename of Service")
 }
 
@@ -184,10 +171,9 @@ pub(super) fn remove(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service: service_name(matches, "service")?,
     };
-    let removed = store::store(root)?.write(&remove).map_err(store::failed(
-        matches,
-        &["service", "rm", remove.service.as_str()],
-    ))?;
+    let removed = store::store(root)?
+        .args([remove.service.as_str()])
+        .write(&remove)?;
     staged(matches, &removed, "Staged removal of Service")
 }
 

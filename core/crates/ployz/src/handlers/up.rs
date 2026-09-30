@@ -17,7 +17,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::deploy::{Request, open_events, say_view, upload_and_ship};
-use super::store::{failed, mint, scoped, store};
+use super::store::{mint, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::{base, value};
 use crate::failure::USAGE_EXIT;
@@ -75,16 +75,14 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         Some(_) => scope,
         None => found_project(&store, &name, scope.environment)?,
     };
-    let listed = store
-        .read(&ServicesQuery { environment })
-        .map_err(failed(matches, &["up"]))?;
+    let listed = store.read(&ServicesQuery { environment })?;
     let linked = super::link::record_unless_linked(&config, listed.environment.clone())?;
     let environment = EnvironmentRef {
         project: Some(listed.environment.project.clone()),
         environment: Some(listed.environment.name.clone()),
     };
     if listed.services.is_empty() {
-        add_service(matches, &store, &environment, name, &directory)?;
+        add_service(&store, &environment, name, &directory)?;
     }
     let identity = super::link::identity(&store)?;
     let shipped = upload_and_ship(
@@ -97,6 +95,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
+            again: vec!["up".to_owned()],
         },
         events,
     )?;
@@ -191,8 +190,8 @@ fn found_project(
         name: ProjectName::parse(name.as_str().to_owned())?,
         default_environment: EnvironmentId::parse(mint())?,
     };
-    let created = store.write(&create).map_err(|error| {
-        Error::from(super::store::with_next(
+    let created = store.try_write(&create).map_err(|error| {
+        store.fail(super::store::with_next(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
             || shell_words::join(["ployz", "up", "--project", name.as_str()]),
@@ -209,44 +208,37 @@ fn found_project(
 /// generated domain for it. A root `Dockerfile` builds it, and its first `EXPOSE`d
 /// port is the domain's.
 fn add_service(
-    matches: &ArgMatches,
     store: &super::store::Store,
     environment: &EnvironmentRef,
     name: ServiceName,
     directory: &Path,
 ) -> Result<(), Error> {
-    store
-        .write(&CreateService {
-            id: ServiceLineageId::parse(mint())?,
-            environment: environment.clone(),
-            name: name.clone(),
-            image: None,
-        })
-        .map_err(failed(matches, &["up"]))?;
+    store.write(&CreateService {
+        id: ServiceLineageId::parse(mint())?,
+        environment: environment.clone(),
+        name: name.clone(),
+        image: None,
+    })?;
     say!("Added Service {name}.");
     let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();
     if dockerfile.is_some() {
-        store
-            .write(&Edit {
-                environment: environment.clone(),
-                expect: None,
-                changes: vec![Change::Set {
-                    path: SettingPath::parse(&format!("{name}.buildMethod"))?,
-                    value: json!("dockerfile"),
-                }],
-            })
-            .map_err(failed(matches, &["up"]))?;
+        store.write(&Edit {
+            environment: environment.clone(),
+            expect: None,
+            changes: vec![Change::Set {
+                path: SettingPath::parse(&format!("{name}.buildMethod"))?,
+                value: json!("dockerfile"),
+            }],
+        })?;
     }
     // The hidden local Store has no Cluster Domain to generate one under.
     if store.local().is_none() {
-        store
-            .write(&AddDomain {
-                environment: environment.clone(),
-                service: name,
-                hostname: None,
-                port: dockerfile.as_deref().and_then(exposed_port),
-            })
-            .map_err(failed(matches, &["up"]))?;
+        store.write(&AddDomain {
+            environment: environment.clone(),
+            service: name,
+            hostname: None,
+            port: dockerfile.as_deref().and_then(exposed_port),
+        })?;
     }
     Ok(())
 }
@@ -297,7 +289,10 @@ mod tests {
             ("FROM x\n  expose 3000/tcp 9000", Some(3000)),
             ("FROM x\nEXPOSE $PORT", None),
             ("FROM x", None),
-            ("FROM node AS build\nEXPOSE 3000\nFROM nginx\nEXPOSE 80", Some(80)),
+            (
+                "FROM node AS build\nEXPOSE 3000\nFROM nginx\nEXPOSE 80",
+                Some(80),
+            ),
             ("FROM node AS build\nEXPOSE 3000\nFROM nginx", None),
         ] {
             assert_eq!(exposed_port(dockerfile), port, "{dockerfile}");

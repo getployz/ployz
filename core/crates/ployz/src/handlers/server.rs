@@ -76,7 +76,7 @@ pub(super) async fn connect(matches: &ArgMatches, context: Option<&str>) -> Resu
                         let no_config = std::error::Error::source(&error)
                             .and_then(|source| source.downcast_ref::<ContextError>())
                             .is_some_and(|source| *source == ContextError::NoConfig);
-                        if no_config && std::env::var_os(env::STORE).is_none() {
+                        if no_config && !super::store::local_mode() {
                             LoginError::SignedOut.into()
                         } else {
                             error
