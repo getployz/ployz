@@ -12,7 +12,7 @@ use ployz_core::{
 };
 use ployz_store::{
     Actor, Admit, Change, ConfigStore, CreateProject, CreateService, CreateVolume, DataEffect,
-    Deploy, Discard, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Edit, EnvironmentId,
+    Deploy, DeploymentId, DeploymentStatus, DiffQuery, DiffView, Discard, Edit, EnvironmentId,
     EnvironmentQuery, EnvironmentRef, Mount, NodeStatus, OrganizationId, ProjectId, ProjectName,
     Publish, RemovalsQuery, RemoveVolume, Retry, RunEvidence, RunnerId, ServiceLineageId,
     SetVolumeStorage, SettingPath, Trusted, VolumeId, VolumeListing, VolumeName, VolumeObservation,
