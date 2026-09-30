@@ -33,9 +33,14 @@ export type PolarService =
       readonly createCheckout: (
         input: CreatePolarCheckout,
       ) => Effect.Effect<{ readonly url: string }, PolarFailure>;
-      /** A customer portal session for the user who paid, where plans are changed or cancelled. */
+      /**
+       * A customer portal session for the user who paid, where plans are changed or cancelled. Failing that, the
+       * portal of the customer holding their email: Polar keys customers by email and never re-points `external_id`,
+       * so after the user deleted their account and signed up again, their checkout lands on the old customer.
+       */
       readonly createCustomerPortal: (input: {
         readonly externalCustomerId: string;
+        readonly customerEmail: string;
         readonly returnUrl: string;
       }) => Effect.Effect<{ readonly customerPortalUrl: string }, PolarFailure>;
     };
@@ -130,10 +135,17 @@ export function makePolarService(
       call(
         "create customer portal",
         () =>
-          client.customerSessions.create({
-            external_customer_id: input.externalCustomerId,
-            return_url: input.returnUrl,
-          }),
+          client.customerSessions
+            .create({
+              external_customer_id: input.externalCustomerId,
+              return_url: input.returnUrl,
+            })
+            .catch(async (cause: unknown) => {
+              const { items } = await client.customers.list({ email: input.customerEmail, limit: 1 });
+              const customer = items[0];
+              if (customer === undefined) throw cause;
+              return client.customerSessions.create({ customer_id: customer.id, return_url: input.returnUrl });
+            }),
         CustomerPortal,
       ),
   };
