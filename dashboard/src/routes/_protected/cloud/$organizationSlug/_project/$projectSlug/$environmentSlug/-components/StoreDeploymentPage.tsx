@@ -18,7 +18,7 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
+  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, failureReason, previewLines,
   targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
@@ -54,7 +54,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const build = buildOf(focused);
   // A build still going or failed is where to look; else how it deployed.
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
-  const skipped = notExecuted(deployment.outcome);
+  const failure = failureReason(deployment.outcome);
   const preview = previewLines(deployment.preview);
   const admitted = admission(deployment);
   const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
@@ -82,11 +82,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
           <p className="flex items-center gap-1 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
           </p>
-          {skipped ? (
-            <p className="break-words text-destructive">
-              {skipped.reason}{skipped.next ? <> Run <code className="font-mono">{skipped.next}</code> from its directory.</> : null}
-            </p>
-          ) : null}
+          {failure ? <p className="break-words text-destructive">{failure}</p> : null}
         </header>
 
         {preview ? (

@@ -462,6 +462,7 @@ pub(crate) fn record(
                 ));
             };
             let success = matches!(*outcome, DeployOutcome::Success { .. });
+            let reason = failure(&outcome, &stored.nodes);
             let projection =
                 project_runtime_outcome(preview, json!({ "version": 1, "outcome": outcome }))
                     .map_err(|_| invalid_evidence("Deploy Outcome"))?;
@@ -476,6 +477,7 @@ pub(crate) fn record(
             };
             let outcome = Outcome::Executed {
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
+                reason,
             };
             stored.run.nodes = nodes;
             finish(tx, stored, outcome, status)
@@ -507,7 +509,7 @@ pub(crate) fn record(
         RunEvidence::UploadNeeded(services) => {
             let names = services
                 .iter()
-                .map(ServiceName::as_str)
+                .map(|service| current_name(&stored.nodes, service))
                 .collect::<Vec<_>>()
                 .join(", ");
             finish(
@@ -515,8 +517,8 @@ pub(crate) fn record(
                 stored,
                 Outcome::NotExecuted {
                     reason: format!(
-                        "Upload the source again: {names} has no upload to build from and no \
-                         usable image to reuse"
+                        "{names} has no source to build: its last upload is gone and no \
+                         image is left to reuse. Upload it again or add an image."
                     ),
                     needs_upload: services,
                 },
@@ -545,6 +547,38 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
     }
+}
+
+/// Why a Deploy failed, for users: the failed operation's Service, by its current
+/// name, and its error. None when it succeeded.
+fn failure(outcome: &DeployOutcome<ExecutionError>, nodes: &[TargetNode]) -> Option<String> {
+    let DeployOutcome::Failed { failed, .. } = outcome else {
+        return None;
+    };
+    let (service, error) = match failed {
+        FailedOperation::Operation { operation, error } => (operation.service_name(), error),
+        FailedOperation::Replacement {
+            operation, error, ..
+        } => (Some(&operation.spec.name), error),
+    };
+    let reason = match service {
+        Some(service) => format!("{}: {error}", current_name(nodes, service)),
+        None => error.to_string(),
+    };
+    Some(reason.chars().take(500).collect())
+}
+
+/// The current name of the target Service that lowers to runtime Service `runtime`.
+fn current_name<'nodes>(nodes: &'nodes [TargetNode], runtime: &'nodes ServiceName) -> &'nodes str {
+    nodes
+        .iter()
+        .find_map(|node| match node {
+            TargetNode::Service {
+                name, runtime: of, ..
+            } if of == runtime => Some(name.as_str()),
+            _ => None,
+        })
+        .unwrap_or(runtime.as_str())
 }
 
 /// Each target node's Node Outcome. A Service's comes from its operations: all
