@@ -5,7 +5,7 @@ import { serviceSetting, settingChange, settingError } from "./catalog";
 import { domainChanged, newServiceName, serviceChanges } from "./store-services";
 
 const listed = (name: string, privateDns = name): ServiceListing =>
-  ({ id: `${name}-id`, name, private_dns: privateDns, source: "image", change: null });
+  ({ id: `${name}-id`, name, private_dns: privateDns, source: "image", change: null, template: null });
 
 describe("newServiceName", () => {
   it("names a Service from its image or repository, with a random suffix past names and Private DNS already taken", () => {

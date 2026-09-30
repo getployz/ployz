@@ -49,6 +49,7 @@ fn create_service(id: &str, name: &str, image: &str) -> CreateService {
         environment: EnvironmentRef::default(),
         name: ServiceName::parse(name).unwrap(),
         image: Some(image.into()),
+        template: None,
     }
 }
 
