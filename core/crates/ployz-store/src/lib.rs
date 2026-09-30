@@ -17,6 +17,7 @@ mod error;
 mod git;
 mod id;
 mod policy;
+mod project;
 mod pull_request;
 mod query;
 mod registry;
@@ -24,11 +25,13 @@ mod removal;
 mod review;
 mod scope;
 mod sealing;
+mod service;
 mod settings;
 mod storage;
 mod teardown;
 mod trusted;
 mod variables;
+mod volume;
 
 use ployz_core::RpcError;
 
@@ -69,7 +72,7 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveProject, SetDefaultEnvironment,
+    RemoveEnvironment, RemoveProject, SetBranchSetup, SetDefaultEnvironment,
 };
 pub use trusted::{Trusted, VolumeObservation};
 

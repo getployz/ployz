@@ -1,13 +1,5 @@
-//! `write`'s commands. Each family lives in its own module and adds one
-//! [`Command`] variant, one [`Written`] variant, one arm in [`run`], and a typed
-//! method on [`ConfigStore`](crate::ConfigStore) that calls the same function.
-
-mod admit;
-mod edit;
-mod project;
-mod review;
-mod service;
-mod volume;
+//! `write`'s commands: each feature module adds one [`Command`] variant, one
+//! [`Written`] variant and one arm in [`run`].
 
 use ployz_core::RpcError;
 use serde::de::DeserializeOwned;
@@ -15,23 +7,27 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
-pub(crate) use admit::{admit, cancel, start};
-pub(crate) use edit::edit;
-pub use edit::{Change, Edit, Edited};
-pub use project::{
+pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
+pub(crate) use crate::deployment::admit::{admit, cancel, start};
+pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
 };
-pub(crate) use project::{create_environment, create_project, insert_environment};
-pub use review::{Discard, Discarded, Publish, Published};
-pub(crate) use review::{discard, publish};
-pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
-pub(crate) use service::{create_service, insert_service, remove_service, rename_service, summary};
-pub use volume::{
-    CreateVolume, Mount, RemoveVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
+pub(crate) use crate::project::{create_environment, create_project, insert_environment};
+pub use crate::review::publish::{Discard, Discarded, Publish, Published};
+pub(crate) use crate::review::publish::{discard, publish};
+pub use crate::service::{
+    CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
 };
-pub(crate) use volume::{
-    check_storage, create_volume, locked_storage, remove_volume, set_storage,
+pub(crate) use crate::service::{
+    create_service, insert_service, remove_service, rename_service, summary,
+};
+pub(crate) use crate::settings::edit::edit;
+pub use crate::settings::edit::{Change, Edit, Edited};
+pub use crate::volume::{
+    CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
+};
+pub(crate) use crate::volume::{
+    check_storage, create_volume, locked_storage, remove_volume, rename_volume, set_storage,
     summary as volume_summary,
 };
 
@@ -62,6 +58,7 @@ pub enum Command {
     SetVolumeStorage(SetVolumeStorage),
     /// Remove a Volume from Working State; a Deploy deletes its data.
     RemoveVolume(RemoveVolume),
+    RenameVolume(RenameVolume),
     /// Set and unset Settings in one Environment.
     Edit(Edit),
     /// Save Working State as the next Saved revision.
@@ -91,6 +88,7 @@ pub enum Command {
     SetBuildOrder(crate::SetBuildOrder),
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
+    SetBranchSetup(crate::SetBranchSetup),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
     /// Delete a Project nothing of which runs on the Servers.
@@ -117,6 +115,8 @@ impl Command {
             | Self::RenameService(_)
             | Self::RemoveService(_)
             | Self::RemoveVolume(_)
+            | Self::RenameVolume(_)
+            | Self::SetBranchSetup(_)
             | Self::SetVolumeStorage(_)
             | Self::Publish(_)
             | Self::Discard(_)
@@ -155,6 +155,7 @@ pub enum Written {
     Volume(VolumeStaged),
     /// A Volume was removed from Working State.
     VolumeRemoved(VolumeStaged),
+    VolumeRenamed(VolumeStaged),
     /// Settings were edited.
     Edited(Edited),
     /// Working State was published.
@@ -175,6 +176,7 @@ pub enum Written {
     Moved(Box<crate::Moved>),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
+    BranchSetup(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
     /// A Project was deleted.
@@ -208,6 +210,7 @@ pub(crate) fn run(
         Command::CreateVolume(create) => create_volume(tx, who, create).map(Written::Volume),
         Command::SetVolumeStorage(set) => set_storage(tx, who, set).map(Written::Volume),
         Command::RemoveVolume(remove) => remove_volume(tx, who, remove).map(Written::VolumeRemoved),
+        Command::RenameVolume(rename) => rename_volume(tx, who, rename).map(Written::VolumeRenamed),
         Command::Edit(edit) => self::edit(tx, who, sealing, edit, trusted).map(Written::Edited),
         Command::Publish(publish) => {
             self::publish(tx, who, publish, trusted).map(Written::Published)
@@ -231,6 +234,9 @@ pub(crate) fn run(
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
         Command::SetBuildOrder(set) => {
             crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
+        }
+        Command::SetBranchSetup(set) => {
+            crate::teardown::set_branch_setup(tx, who, set).map(Written::BranchSetup)
         }
         Command::SetDefaultEnvironment(set) => {
             crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
@@ -337,6 +343,7 @@ tells!(
     RemoveService => RemoveService / ServiceRemoved(ServiceStaged),
     CreateVolume => CreateVolume / Volume(VolumeStaged),
     RemoveVolume => RemoveVolume / VolumeRemoved(VolumeStaged),
+    RenameVolume => RenameVolume / VolumeRenamed(VolumeStaged),
     SetVolumeStorage => SetVolumeStorage / Volume(VolumeStaged),
     Edit => Edit / Edited(Edited),
     Publish => Publish / Published(Published),
@@ -352,6 +359,7 @@ tells!(
     crate::KeepBranch => KeepBranch / Branch(crate::Branched),
     crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
     crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
+    crate::SetBranchSetup => SetBranchSetup / BranchSetup(crate::EnvironmentsView),
     crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::EnvironmentRemoved),
     crate::RemoveProject => RemoveProject / ProjectRemoved(crate::ProjectRemoved),
     crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),

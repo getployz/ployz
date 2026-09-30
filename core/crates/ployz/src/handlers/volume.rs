@@ -59,6 +59,13 @@ pub(crate) fn command() -> Command {
         ))
         .subcommand(
             store::scoped(
+                Command::new("rename").about("Rename a Volume: staged; its data and mounts stay"),
+            )
+            .arg(positional("volume", true))
+            .arg(positional("name", true)),
+        )
+        .subcommand(
+            store::scoped(
                 Command::new("rm").about(
                     "Remove a Volume and detach it; a Deploy of the removal deletes its data",
                 ),
@@ -73,6 +80,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "set" => set,
         "inspect" => inspect,
         "ls" => list,
+        "rename" => rename,
         "rm" => remove,
         _ => return None,
     })
@@ -256,6 +264,23 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
             say!("Mounted by {} at {}", mount.service, mount.path);
         }
     })
+}
+
+fn rename(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let volume = volume_name(matches, "volume")?;
+    let name = volume_name(matches, "name")?;
+    let renamed = store::store(root)?
+        .rename_volume(&ployz_store::RenameVolume {
+            environment: store::environment(matches)?,
+            volume: volume.clone(),
+            name,
+        })
+        .map_err(store::failed(
+            matches,
+            &["volume", "rename", volume.as_str()],
+        ))?;
+    staged(matches, &renamed, "Staged rename of Volume")
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
