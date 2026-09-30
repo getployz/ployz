@@ -78,12 +78,12 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
         || remove_on_close.is_some()
         || include_bots.is_some();
     let view = match changing {
-        false => store.pr_plans(&query).map_err(failed(matches, &words))?,
+        false => store.read(&query).map_err(failed(matches, &words))?,
         true => {
             let repository = match repository {
                 Some(repository) => repository,
                 None => {
-                    let plans = store.pr_plans(&query).map_err(failed(matches, &words))?;
+                    let plans = store.read(&query).map_err(failed(matches, &words))?;
                     match plans.plans.as_slice() {
                         [only] => only.repository.clone(),
                         _ => {
@@ -105,7 +105,7 @@ pub(super) fn pr(root: &ArgMatches) -> Result<(), Error> {
                 remove_on_close,
                 include_bots,
             };
-            store.set_pr_plan(&set).map_err(failed(matches, &words))?
+            store.write(&set).map_err(failed(matches, &words))?
         }
     };
     let mut json = serde_json::to_value(&view).expect("PR plans are JSON");

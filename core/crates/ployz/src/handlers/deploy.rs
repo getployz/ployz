@@ -307,7 +307,9 @@ pub(super) fn execute(
     };
     let view = if runner.is_none() && matches.get_flag("detach") {
         store
-            .deployment(&admitted.id)
+            .read(&ployz_store::DeploymentQuery {
+                id: admitted.id.clone(),
+            })
             .map_err(failed(matches, words))?
     } else {
         follow(matches, store, admitted, events, runner.as_ref(), words)?
@@ -403,7 +405,9 @@ fn follow(
     let mut last = None;
     loop {
         let view = store
-            .deployment(&admitted.id)
+            .read(&ployz_store::DeploymentQuery {
+                id: admitted.id.clone(),
+            })
             .map_err(failed(matches, words))?;
         let progress = serde_json::json!({
             "type": "deployment",
@@ -439,7 +443,7 @@ fn follow(
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
     let plan = store
-        .plan(&PlanQuery {
+        .read(&PlanQuery {
             environment: environment(matches)?,
             services,
         })
@@ -548,7 +552,7 @@ pub(super) fn observe(
     remove: bool,
 ) -> Result<Option<VolumeObservation>, Error> {
     let removals = store
-        .removals(&RemovalsQuery {
+        .read(&RemovalsQuery {
             environment: environment.clone(),
             remove,
         })
@@ -638,7 +642,7 @@ pub(super) fn accepting(
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let page = store(root)?
-        .deployments(&DeploymentsQuery {
+        .read(&DeploymentsQuery {
             environment: environment(matches)?,
             limit: matches.get_one::<usize>("limit").copied(),
             cursor: matches.get_one::<String>("cursor").cloned(),
@@ -688,7 +692,7 @@ pub(super) fn deployment_id(
     };
     // Pages hold Deployments numbered below the cursor, newest first.
     let page = store
-        .deployments(&DeploymentsQuery {
+        .read(&DeploymentsQuery {
             environment: environment(matches)?,
             limit: Some(1),
             cursor: number.checked_add(1).map(|cursor| cursor.to_string()),
@@ -747,7 +751,7 @@ fn start(root: &ArgMatches) -> Result<(), Error> {
     let events = open_events(matches)?;
     let words = ["deployment", "start"];
     let queued = store
-        .start(&Start {
+        .write(&Start {
             deployment: id.clone(),
         })
         .map_err(refused(matches, &id, &words))?;
@@ -759,12 +763,12 @@ fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     store
-        .cancel(&Cancel {
+        .write(&Cancel {
             deployment: id.clone(),
         })
         .map_err(refused(matches, &id, &["deployment", "cancel"]))?;
     let view = store
-        .deployment(&id)
+        .read(&ployz_store::DeploymentQuery { id: id.clone() })
         .map_err(failed(matches, &["deployment", "cancel"]))?;
     let hint = shell_words::join(["ployz", "deployment", "show", id.as_str()]);
     finish_view(&view, Some(hint))
@@ -775,7 +779,7 @@ fn show(root: &ArgMatches) -> Result<(), Error> {
     let store = store(root)?;
     let id = deployment_id(matches, &store, "id")?;
     let view = store
-        .deployment(&id)
+        .read(&ployz_store::DeploymentQuery { id: id.clone() })
         .map_err(failed(matches, &["deployment", "show"]))?;
     finish_view(&view, None)
 }

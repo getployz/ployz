@@ -220,7 +220,7 @@ fn stored_paths() -> Vec<String> {
             path: None,
             all: true,
         };
-        let view = store.environment(&query).ok()?;
+        let view = store.read(&query).ok()?;
         Some(
             view.settings
                 .into_iter()
