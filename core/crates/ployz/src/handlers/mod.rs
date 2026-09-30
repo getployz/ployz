@@ -126,6 +126,15 @@ fn command_path(mut matches: &ArgMatches) -> String {
     parts.join(" ")
 }
 
+/// Items as one line of text: `a, b, c`.
+pub(crate) fn joined<T: ToString>(items: &[T]) -> String {
+    items
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn leaf_matches(mut matches: &ArgMatches) -> &ArgMatches {
     while let Some((_, child)) = matches.subcommand() {
         matches = child;

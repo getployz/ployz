@@ -201,7 +201,7 @@ where
             ))
     {
         return Err(Error::conflict(
-            "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+            "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
         ));
     }
     let pairing = join.pairing;
@@ -282,20 +282,22 @@ where
     let state = match (mode, details.phase) {
         (InitializeMode::Resume, LocalMachinePhase::Participating) => FounderLocalState::Resume {
             machine: Box::new(details.machine.ok_or_else(|| {
-                Error::usage("matching founding Machine has no participating identity".to_owned())
+                Error::usage(
+                    "the matching founding Server has no participating identity".to_owned(),
+                )
             })?),
         },
         (InitializeMode::Resume, LocalMachinePhase::Uninitialized)
         | (InitializeMode::New, LocalMachinePhase::Uninitialized) => FounderLocalState::Initialize,
         (InitializeMode::New, phase) => {
             return Err(Error::conflict(format!(
-                "new founding claim requires an uninitialized Machine, but the local phase is {}",
+                "a new founding claim requires an uninitialized Server, but its local phase is {}",
                 phase.as_str().escape_debug()
             )));
         }
         (InitializeMode::Resume, phase) => {
             return Err(Error::conflict(format!(
-                "matching founding Machine cannot resume from local phase {}",
+                "the matching founding Server cannot resume from local phase {}",
                 phase.as_str().escape_debug()
             )));
         }
@@ -304,7 +306,7 @@ where
         && !initial_policy.matches(machine)
     {
         return Err(Error::conflict(
-            "initial policy differs from the currently observed Machine; enrollment does not edit an existing Machine",
+            "initial policy differs from the currently observed Server; enrollment does not edit an existing Server",
         ));
     }
     let accepts_ingress = match &state {

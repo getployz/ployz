@@ -37,6 +37,8 @@ impl CapturedBuild {
     }
 }
 
+/// The first of `receipts` for `captured` whose image covers its platforms, runs
+/// everywhere it may be placed, and a Machine still holds.
 fn reusable(
     captured: &CapturedTarget,
     intent: &DeployIntent,
@@ -44,24 +46,28 @@ fn reusable(
     receipts: &[BuiltService],
     stores: &PartialResult<crate::cluster::MachineImagesObservation, RpcError>,
 ) -> Option<BuiltService> {
-    let receipt = receipts
-        .iter()
-        .find(|receipt| receipt.name == captured.name)?;
     let spec = intent
         .target
         .iter()
         .find(|spec| spec.name == captured.name)?;
-    let covers_platforms = captured
-        .target
-        .platforms
+    receipts
         .iter()
-        .all(|platform| receipt.built.platforms.contains(platform));
-    if !covers_platforms || !runs_everywhere(&receipt.built, spec, &intent.namespace, machines) {
-        return None;
-    }
-    let mut image = receipt.clone();
-    image.machine_id = holder(stores, &receipt.built, receipt.machine_id)?;
-    Some(image)
+        .filter(|receipt| receipt.name == captured.name)
+        .find_map(|receipt| {
+            let covers_platforms = captured
+                .target
+                .platforms
+                .iter()
+                .all(|platform| receipt.built.platforms.contains(platform));
+            if !covers_platforms
+                || !runs_everywhere(&receipt.built, spec, &intent.namespace, machines)
+            {
+                return None;
+            }
+            let mut image = receipt.clone();
+            image.machine_id = holder(stores, &receipt.built, receipt.machine_id)?;
+            Some(image)
+        })
 }
 
 /// Whether `built` has a platform for every Machine `spec` may be placed on.

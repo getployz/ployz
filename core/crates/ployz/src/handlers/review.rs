@@ -139,8 +139,7 @@ pub(super) fn discard(root: &ArgMatches) -> Result<(), Error> {
         path: path.clone(),
         version: matches.get_one::<String>("version").cloned(),
     };
-    let path_word = path.as_ref().map(ToString::to_string);
-    let store = store(root)?.args(path_word.as_deref());
+    let store = store(root)?;
     let discarded = store
         .try_write(&discard)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "diff")))?;

@@ -188,7 +188,6 @@ async fn prepare(
             source_commits: BTreeMap::from([(name, "a".repeat(40))]),
             uploads: BTreeMap::new(),
             build_receipts: BTreeMap::new(),
-            borrowed: BTreeMap::new(),
             build_index: 0,
             preferred_machine: None,
         })

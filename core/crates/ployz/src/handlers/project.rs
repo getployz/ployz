@@ -9,7 +9,7 @@ use ployz_store::{
 };
 use serde_json::json;
 
-use super::store::{self, Store, mint, store};
+use super::store::{Store, mint, store};
 use super::teardown::{confirmed, inventory, remove_all};
 use super::{Error, deploy, leaf_matches, required};
 use crate::cli::{base, positional, value};
@@ -69,7 +69,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?.args([name.as_str()]);
+    let store = store(root)?;
     let create = CreateProject {
         id: ProjectId::parse(mint())?,
         name,
@@ -111,9 +111,8 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
         project: ProjectName::parse(required(matches, "project")?)?,
         name: ProjectName::parse(required(matches, "name")?)?,
     };
-    let renamed = store(root)?
-        .args([rename.project.as_str(), rename.name.as_str()])
-        .write(&rename)?;
+    let store = store(root)?;
+    let renamed = store.write(&rename)?;
     let links = super::link::rename_project(
         &super::config_path(matches)?,
         &rename.project,
@@ -140,16 +139,15 @@ struct Removal<'a> {
 fn rm(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = ProjectName::parse(required(matches, "name")?)?;
-    let store = store(root)?.args([name.as_str()]);
-    let again = ["project", "rm", name.as_str(), "--confirm", name.as_str()];
+    let store = store(root)?.args([name.as_str(), "--confirm", name.as_str()]);
     if !confirmed(matches, name.as_str(), "Project")? {
-        return Err(unconfirmed(matches, &store, &name, &again)?);
+        return Err(unconfirmed(&store, &name)?);
     }
     let remove = RemoveProject {
         project: name.clone(),
     };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &name, events, &again)? {
+    match remove_all(matches, &store, &remove, &name, events)? {
         Some((removed, ran)) => finish(&removed, &ran),
         None => Ok(()),
     }
@@ -157,12 +155,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
 
 /// Refuse an unconfirmed `project rm`, naming every Environment with what goes
 /// with it, and the exact retry.
-fn unconfirmed(
-    matches: &ArgMatches,
-    store: &Store,
-    project: &ProjectName,
-    again: &[&str],
-) -> Result<Error, Error> {
+fn unconfirmed(store: &Store, project: &ProjectName) -> Result<Error, Error> {
     let listed = store.read(&ployz_store::ProjectsQuery {})?;
     let Some(listing) = listed
         .projects
@@ -186,14 +179,14 @@ fn unconfirmed(
             inventory(store, &at)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let retry = store::next(matches, again);
+    let retry = store.again(&[]);
     Ok(Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(
             "Removing Project {project} deletes every Environment in it ({}) with its \
              configuration, history, Services and Volumes; this can't be undone. No changes \
              made.\nRetry: {retry}",
-            super::env::joined(&listing.environments)
+            super::joined(&listing.environments)
         ),
         json!({ "project": project, "environments": environments, "next": retry }),
     ))
@@ -214,7 +207,7 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
         say!(
             "Removed Project {} and its Environments ({}).",
             removed.project.name,
-            super::env::joined(&removed.environments)
+            super::joined(&removed.environments)
         );
     })
 }

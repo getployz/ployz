@@ -172,9 +172,9 @@ fn token_list(root: &ArgMatches) -> Result<(), Error> {
         for revoking in &listed.revoking {
             say!(
                 "{}\t{}\trevoked; not yet cleared on {}\t-",
-                revoking.kind,
+                super::store::word(&revoking.kind),
                 revoking.id,
-                joined(&revoking.unconfirmed)
+                super::joined(&revoking.unconfirmed)
             );
         }
     })
@@ -232,7 +232,7 @@ pub(super) fn say_clears(servers: &ServerClears, next: Option<&str>) {
     if let Some(next) = next {
         say!(
             "Not yet confirmed on Server(s) {}; Cloud already refuses it. Retry: {next}",
-            joined(&servers.unconfirmed)
+            super::joined(&servers.unconfirmed)
         );
     }
 }
@@ -336,7 +336,7 @@ fn org_remove(root: &ArgMatches) -> Result<(), Error> {
             Some(next) => say!(
                 "Organization {} is disabled but stays until Server(s) {} confirm unpairing. Retry: {next}",
                 removal.organization,
-                joined(&removal.servers.unconfirmed)
+                super::joined(&removal.servers.unconfirmed)
             ),
         }
     })?;
@@ -395,9 +395,4 @@ fn billing_page(root: &ArgMatches, page: BillingPage) -> Result<(), Error> {
             open_browser(&url);
         }
     })
-}
-
-/// Server IDs as one line of text.
-fn joined(machines: &[ployz_core::MachineId]) -> String {
-    super::env::joined(machines)
 }

@@ -357,6 +357,53 @@ impl CapturedBuild {
     }
 }
 
+/// Each instruction of `dockerfile` as its upper-cased keyword and its arguments:
+/// lines continued with the escape character (`\\`, or a `# escape=` directive's)
+/// joined, and comment and blank lines dropped, as Docker reads them.
+// ponytail: heredoc bodies read as instructions; a stray `ARG` there only adds a build
+// input, a stray `FROM` hides an `EXPOSE`. Use BuildKit's parser if that bites.
+pub(crate) fn dockerfile_instructions(dockerfile: &str) -> Vec<(String, String)> {
+    let mut escape = '\\';
+    let mut lines = dockerfile.lines().peekable();
+    // Parser directives are the leading `# key=value` comments.
+    while let Some((key, value)) = lines
+        .peek()
+        .and_then(|line| line.trim().strip_prefix('#')?.split_once('='))
+    {
+        if key.trim().eq_ignore_ascii_case("escape")
+            && let Some(character) = value.trim().chars().next()
+        {
+            escape = character;
+        }
+        lines.next();
+    }
+    let mut instructions = Vec::new();
+    let mut current = String::new();
+    for line in lines {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (text, continued) = match line.strip_suffix(escape) {
+            Some(text) => (text, true),
+            None => (line, false),
+        };
+        current.push_str(text);
+        current.push(' ');
+        if !continued {
+            instructions.extend(instruction(&std::mem::take(&mut current)));
+        }
+    }
+    instructions.extend(instruction(&current));
+    instructions
+}
+
+fn instruction(text: &str) -> Option<(String, String)> {
+    let text = text.trim();
+    let (keyword, arguments) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    (!keyword.is_empty()).then(|| (keyword.to_ascii_uppercase(), arguments.trim().to_owned()))
+}
+
 /// Use each Service's completed content for Containers and hooks. A tag
 /// overwritten by another Service or client cannot substitute its image.
 ///
@@ -417,6 +464,25 @@ fn invalid(message: impl Into<String>) -> Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dockerfile_instructions_join_continuations_and_drop_comments() {
+        let instructions = super::dockerfile_instructions(
+            "# syntax=docker/dockerfile:1\n# escape=`\nFROM node\nARG `\n  # a comment\n  API_URL `\n\n  MODE=x\nexpose 80",
+        );
+        assert_eq!(
+            instructions,
+            [
+                ("FROM".to_owned(), "node".to_owned()),
+                ("ARG".to_owned(), "API_URL  MODE=x".to_owned()),
+                ("EXPOSE".to_owned(), "80".to_owned()),
+            ]
+        );
+        assert_eq!(
+            super::dockerfile_instructions("ARG \\\n API_URL"),
+            [("ARG".to_owned(), "API_URL".to_owned())]
+        );
+    }
+
     use super::*;
     use std::{fs, os::unix::fs::symlink};
 
