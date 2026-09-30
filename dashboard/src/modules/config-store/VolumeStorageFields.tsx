@@ -1,5 +1,7 @@
 import { useId } from "react";
+import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 
@@ -21,17 +23,17 @@ export function VolumeStorageFields({ managed, sizeGB, onManagedChange, onSizeCh
         <FieldDescription>The maximum space this volume can use.</FieldDescription>
         {error ? <FieldError>{error}</FieldError> : null}
       </Field> : null}
-      <details open={managed ? undefined : true}>
-        <summary className="cursor-pointer text-sm">Advanced</summary>
-        <Field orientation="horizontal" className="mt-4">
+      <Collapsible defaultOpen={!managed} className="flex flex-col gap-4">
+        <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="self-start" />}>Advanced</CollapsibleTrigger>
+        <CollapsibleContent render={<Field orientation="horizontal" />}>
           <Checkbox id={`${id}-managed`} checked={managed} onCheckedChange={onManagedChange} />
           <FieldContent>
             <FieldLabel htmlFor={`${id}-managed`}>Manage storage with Ployz</FieldLabel>
             <FieldDescription>{managed ? "Ployz prepares storage and enforces this volume’s limit."
               : "Uses a Docker volume on the server, without an enforced storage limit."}</FieldDescription>
           </FieldContent>
-        </Field>
-      </details>
+        </CollapsibleContent>
+      </Collapsible>
     </FieldGroup>
   );
 }

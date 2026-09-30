@@ -83,7 +83,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
         <span className="font-medium">PR environments</span>
         <p className="truncate text-sm text-muted-foreground">{plan.repository}</p>
       </CanvasInspectorHeader>
-      <FieldGroup className="min-h-0 flex-1 gap-8 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4"><FieldGroup>
         {approve && <MissingGrant repository={plan.repository} url={approve} />}
         <div className="flex flex-col items-start gap-3">
           <FieldDescription>Created when a pull request opens. Its merge lands in each environment that deploys the target branch.</FieldDescription>
@@ -154,7 +154,7 @@ function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan
             </Item>
           </FieldSet>
         </>}
-      </FieldGroup>
+      </FieldGroup></div>
     </div>
   );
 }

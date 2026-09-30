@@ -125,7 +125,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         <span className="font-medium">{fix && focus ? `Fix ${focus} on a branch` : "New branch"}</span>
         <p className="text-sm break-words text-muted-foreground">From {parent.name}{fix ? ", with the change that failed" : null}</p>
       </CanvasInspectorHeader>
-      <FieldGroup className="min-h-0 flex-1 gap-8 overflow-y-auto p-4">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4"><FieldGroup>
         <FieldDescription>A copy of {parent.name} to change things in without touching it.</FieldDescription>
         <NameSection name={branchName} onName={setName} error={nameError} addresses={[]} />
         <ServicesSection picking={picking} nameOf={nameOf} target={branchName || "this branch"} who="This branch" />
@@ -138,7 +138,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
             <ItemContent><ItemTitle>Keep it after saving</ItemTitle></ItemContent>
           </Item>
         </FieldSet>
-      </FieldGroup>
+      </FieldGroup></div>
       <div className="flex shrink-0 flex-col gap-2 border-t p-4">
         {blocked ? <Button type="submit" disabled>{blocked}</Button> : (
           <div className="flex gap-2">
