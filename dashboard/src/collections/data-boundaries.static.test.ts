@@ -90,6 +90,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/pr-environments/StorePrPlanPanel.tsx": "optimistic over the plan until the Store answers; a refused Start from moves the panel back over the canvas it was on",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StorePullRequestNews.tsx": "Save for the merge seals values on the server and changes the pull request's check on GitHub, an external service",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "closing a Branch is destructive: it waits for its removal, and a Save that closes the Branch after waits until the Parent has it",
 };
 
@@ -163,10 +164,12 @@ describe("data boundaries", () => {
           const line = source.text.slice(0, node.pos).split("\n").length;
           violations.push(`${relative(SRC, source.fileName)}:${line} ${message}`);
         };
+        /** `x.isPersisted`, or `isPersisted` destructured from a write. */
+        const isPersistedRef = (node: Node) => (isPropertyAccessExpression(node) && node.name.text === "isPersisted")
+          || (isIdentifier(node) && node.text === "isPersisted");
         /** `x.isPersisted.promise`, directly or under `.catch(...)` and the like. */
         const persistenceChain = (node: Node): boolean => isPropertyAccessExpression(node)
-          ? (node.name.text === "promise" && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted")
-            || persistenceChain(node.expression)
+          ? (node.name.text === "promise" && isPersistedRef(node.expression)) || persistenceChain(node.expression)
           : isCallExpression(node) && persistenceChain(node.expression);
         const calleeName = (node: Node) => {
           if (!isCallExpression(node)) return null;
@@ -231,15 +234,13 @@ describe("data boundaries", () => {
             if (isUi && isAwaitExpression(node)) {
               const awaited = node.expression;
               const awaitedName = calleeName(awaited);
-              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise"
-                && isPropertyAccessExpression(awaited.expression) && awaited.expression.name.text === "isPersisted";
+              const persistence = isPropertyAccessExpression(awaited) && awaited.name.text === "promise" && isPersistedRef(awaited.expression);
               if (persistence || (awaitedName && (/ServerFn$/.test(awaitedName) || serverCalls.has(awaitedName)))) {
                 awaitingUi.add(relative(SRC, source.fileName));
               }
             }
             // A save's promise handed on (to a helper that awaits it) waits for it too; `.catch` only rolls back.
-            if (isUi && isPropertyAccessExpression(node) && node.name.text === "promise"
-              && isPropertyAccessExpression(node.expression) && node.expression.name.text === "isPersisted"
+            if (isUi && isPropertyAccessExpression(node) && node.name.text === "promise" && isPersistedRef(node.expression)
               && !(isPropertyAccessExpression(node.parent) && node.parent.name.text === "catch")) {
               awaitingUi.add(relative(SRC, source.fileName));
             }

@@ -16,6 +16,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
 import { dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
+import type { Persistable } from "#/collections/query-collection";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
 import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
@@ -48,7 +49,17 @@ type StoreService = {
   changes: Map<string, ServiceSettingChange>;
   /** Where its image comes from, with pending edits: connecting or disconnecting a source shows at once. */
   source: ServiceListing["source"];
+  /** Setting `name`'s Store path: `SERVICE.name`. */
+  path: (name: string) => string;
+  /** Edits it at once, saved in the background. */
+  edit: (change: Change) => Persistable;
+  /** Sets Setting `name`, or unsets it (null). */
+  set: (name: string, value: JsonValue | null) => Persistable;
 };
+
+/** The pink trail's props for a field whose staged change is `change`: changed, and what is deployed. */
+const changedProps = (change: ServiceSettingChange | undefined, shown: (value: JsonValue) => string = settingText) =>
+  ({ isChanged: change !== undefined, baselineValue: change ? shown(change.before) : undefined });
 
 /** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
 function sourceOf(service: ServiceListing, rows: Map<string, SettingRow>): ServiceListing["source"] {
@@ -98,6 +109,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
   const rows = serviceSettingRows(settings, service.name);
+  const path = (name: string) => `${service.name}.${name}`;
+  const edit = (change: Change) => writer.edit({ environment: store, changes: [change] });
   const state: StoreService = {
     organizationSlug,
     environment: store,
@@ -105,6 +118,9 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     rows,
     changes: serviceChanges(diff, service.id),
     source: sourceOf(service, rows),
+    path,
+    edit,
+    set: (name, value) => edit(value === null ? { op: "unset", path: path(name) } : { op: "set", path: path(name), value }),
   };
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
@@ -128,8 +144,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         {field("buildMethod")}
         {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
         <StorePreferredBuilderField organizationSlug={organizationSlug} value={policyText(state.rows.get("preferredBuilder")?.value)}
-          onSet={(builder) => writer.edit({ environment: store, changes: [builder === null
-            ? { op: "unset", path: `${service.name}.preferredBuilder` } : { op: "set", path: `${service.name}.preferredBuilder`, value: builder }] })} />
+          onSet={(builder) => state.set("preferredBuilder", builder)} />
       </FieldGroup>
     ) : null,
     deploy: (
@@ -229,20 +244,18 @@ const policyText = (value: JsonValue | undefined) => value === null || value ===
 /** One scalar Setting as the catalog describes it: its title, help, bounds and choices. */
 function StoreSettingField({ state, name }: { state: StoreService; name: ServiceSettingName }) {
   const setting: SettingSchema = serviceSetting(name);
-  const writer = useStoreWriter(state.organizationSlug);
   const row = state.rows.get(name);
   // Settings that don't apply to this source (a Dockerfile path on an image) have no row.
   if (!row) return null;
   const change = state.changes.get(name);
-  const path = `${state.service.name}.${name}`;
   const current = settingText(row.value ?? row.default);
-  const edit = (raw: string) => writer.edit({ environment: state.environment, changes: [settingChange(path, setting, raw)] });
+  const edit = (raw: string) => state.edit(settingChange(state.path(name), setting, raw));
 
   if (setting.type === "boolean") {
     const on = (row.value ?? row.default) === true;
     return (
       <SwitchField id={`setting-${name}`} label={setting.title} description={setting.description} checked={on}
-        onChange={(next) => writer.edit({ environment: state.environment, changes: [{ op: "set", path, value: next }] })} />
+        onChange={(next) => state.set(name, next)} />
     );
   }
   if (setting.type === "array") return <StoreListField state={state} name={name} setting={setting} row={row} />;
@@ -251,7 +264,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
     return (
       <ServiceCommandField label={setting.title} addLabel={command.addLabel} description={setting.description} placeholder={command.placeholder}
         compact={command.compact} value={row.value === null || settingText(row.value) === command.unset ? null : settingText(row.value)}
-        isChanged={change !== undefined} baselineValue={change ? settingText(change.before) : undefined}
+        {...changedProps(change)}
         validate={(raw) => settingError(setting, raw)} onCommit={(value) => edit(value === null || value === command.unset ? "" : value)} />
     );
   }
@@ -295,8 +308,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
           suffix={SUFFIXES.get(name)}
           placeholder={settingText(setting.default) || undefined}
           value={settingText(row.value)}
-          isChanged={change !== undefined}
-          baselineValue={change ? settingText(change.before) : undefined}
+          {...changedProps(change)}
           validate={(raw) => settingError(setting, raw)}
           onCommit={edit}
         />
@@ -315,36 +327,31 @@ const changeOf = (changes: Map<string, ServiceSettingChange>, ...names: string[]
  * once on, how long it may take.
  */
 function StoreHealthcheckField({ state }: { state: StoreService }) {
-  const writer = useStoreWriter(state.organizationSlug);
   const row = state.rows.get("healthcheck");
   if (!row) return null;
   const setting = serviceSetting("healthcheck");
   const { path: pathSchema, timeoutSeconds } = setting.properties;
   const on = Schema.is(Healthcheck)(row.value) ? row.value : null;
-  const path = `${state.service.name}.healthcheck`;
   const pathChange = changeOf(state.changes, "healthcheck.path", "healthcheck");
   const timeoutChange = changeOf(state.changes, "healthcheck.timeoutSeconds", "healthcheck");
   const shown = (value: JsonValue | undefined) => Schema.is(Healthcheck)(value) ? `${value.path}, ${value.timeoutSeconds}s`
     : value === null || value === undefined ? "off" : settingText(value);
-  const edit = (change: Change) => writer.edit({ environment: state.environment, changes: [change] });
   return (
     <>
       <ServiceCommandField label={setting.title} addLabel="Healthcheck path" description={setting.description} placeholder="/up"
-        value={on?.path ?? null} isChanged={pathChange !== undefined} baselineValue={pathChange ? shown(pathChange.before) : undefined}
+        value={on?.path ?? null} {...changedProps(pathChange, shown)}
         validate={(raw) => settingError({ ...pathSchema, title: "path", description: "", type: "string" }, raw)
           ?? (raw.startsWith("/") ? null : "Start the path with /.")}
-        onCommit={(next) => edit(next === null ? { op: "unset", path } : { op: "set", path, value: next })} />
+        onCommit={(next) => state.set("healthcheck", next)} />
       {on ? (
         <Field>
           <FieldLabel>Healthcheck timeout</FieldLabel>
           <FieldDescription>How long a new replica may take to pass it.</FieldDescription>
           <ServiceSettingInput ariaLabel="Healthcheck timeout" type="number" inputMode="numeric" min={timeoutSeconds.minimum}
             max={timeoutSeconds.maximum} step={1} suffix="seconds" placeholder={String(timeoutSeconds.default)}
-            value={String(on.timeoutSeconds)} isChanged={timeoutChange !== undefined}
-            baselineValue={timeoutChange ? shown(timeoutChange.before) : undefined}
+            value={String(on.timeoutSeconds)} {...changedProps(timeoutChange, shown)}
             validate={(raw) => settingError({ ...timeoutSeconds, title: "timeout", description: "", type: "integer" }, raw)}
-            onCommit={(raw) => edit({ op: "set", path,
-              value: { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) } })} />
+            onCommit={(raw) => state.set("healthcheck", { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) })} />
         </Field>
       ) : null}
     </>
@@ -353,25 +360,21 @@ function StoreHealthcheckField({ state }: { state: StoreService }) {
 
 /** A Git Service's Dockerfile, with the repository's Dockerfiles as suggestions. */
 function StoreDockerfile({ state }: { state: StoreService }) {
-  const writer = useStoreWriter(state.organizationSlug);
   const repository = settingText(state.rows.get("repository")?.value);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, repository);
-  const path = `${state.service.name}.dockerfilePath`;
   return (
     <StoreDockerfileField gitRef={gitRef} branch={settingText(state.rows.get("branch")?.value)}
       value={settingText(state.rows.get("dockerfilePath")?.value)} change={state.changes.get("dockerfilePath")}
-      onCommit={(raw) => writer.edit({ environment: state.environment, changes: [settingChange(path, serviceSetting("dockerfilePath"), raw)] })} />
+      onCommit={(raw) => state.edit(settingChange(state.path("dockerfilePath"), serviceSetting("dockerfilePath"), raw))} />
   );
 }
 
 /** A list Setting, like watch paths: each entry a removable badge, one added at a time. */
 function StoreListField({ state, name, setting, row }: { state: StoreService; name: ServiceSettingName; setting: SettingSchema; row: SettingRow }) {
-  const writer = useStoreWriter(state.organizationSlug);
   const [adding, setAdding] = useState("");
   const list = Schema.is(Schema.Array(Schema.String))(row.value) ? row.value : [];
   const change = state.changes.get(name);
-  const save = (next: readonly string[]) => writer.edit({ environment: state.environment,
-    changes: [next.length ? { op: "set", path: `${state.service.name}.${name}`, value: [...next] } : { op: "unset", path: `${state.service.name}.${name}` }] });
+  const save = (next: readonly string[]) => state.set(name, next.length ? [...next] : null);
   const add = () => {
     const next = adding.trim();
     if (next && !list.includes(next)) save([...list, next]);
@@ -407,14 +410,12 @@ function StoreListField({ state, name, setting, row }: { state: StoreService; na
 
 /** Where the image comes from: a container image, or a repository with its branch and root directory. */
 function StoreSourceSection({ state }: { state: StoreService }) {
-  const writer = useStoreWriter(state.organizationSlug);
   const [picking, setPicking] = useState<"image" | "repository" | null>(null);
-  const set = (name: "image" | "repository" | "branch", value: string) =>
-    writer.edit({ environment: state.environment, changes: [{ op: "set", path: `${state.service.name}.${name}`, value }] });
+  const set = (name: "image" | "repository" | "branch", value: string) => state.set(name, value);
   const close = (open: boolean) => { if (!open) setPicking(null); };
   const kind = state.source === "git" ? "repository" : "image";
   // Staged: the Service is empty again once deployed; its settings for this source stay until then.
-  const disconnect = () => writer.edit({ environment: state.environment, changes: [{ op: "unset", path: `${state.service.name}.${kind}` }] });
+  const disconnect = () => state.set(kind, null);
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
@@ -500,11 +501,8 @@ function StoreSourceSection({ state }: { state: StoreService }) {
  * keeps the stored secret, which Restore turns back on. Reads show only that there is one.
  */
 function StoreRegistryCredentials({ state, image }: { state: StoreService; image: string }) {
-  const writer = useStoreWriter(state.organizationSlug);
   const row = state.rows.get("registryCredential");
   if (!row) return null;
-  const path = `${state.service.name}.registryCredential`;
-  const edit = (change: Change) => writer.edit({ environment: state.environment, changes: [change] });
   const change = state.changes.get("registryCredential");
   const configured = row.value !== null;
   const shown = (value: JsonValue) => value === null ? "None" : "Configured";
@@ -516,9 +514,9 @@ function StoreRegistryCredentials({ state, image }: { state: StoreService; image
       username={null}
       changed={change !== undefined}
       baselineValue={change ? shown(change.before) : undefined}
-      onSet={({ username, secret }) => edit({ op: "set", path, value: username === null ? { secret } : { username, secret } })}
-      onClear={() => edit({ op: "unset", path })}
-      onRestore={!configured && change?.before != null ? () => edit({ op: "set", path, value: { secret: true } }) : undefined}
+      onSet={({ username, secret }) => state.set("registryCredential", username === null ? { secret } : { username, secret })}
+      onClear={() => state.set("registryCredential", null)}
+      onRestore={!configured && change?.before != null ? () => state.set("registryCredential", { secret: true }) : undefined}
     />
   );
 }
