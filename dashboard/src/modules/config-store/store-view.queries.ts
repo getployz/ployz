@@ -302,6 +302,20 @@ export function useInFlightDeployments(organizationSlug: string, environment: En
   return useStoreDeployments(organizationSlug, environment).data.pages[0]?.deployments.filter((deployment) => deployment.in_flight) ?? [];
 }
 
+/**
+ * An Environment's Deployments in flight, each with the ids of the nodes it targets as its Deployment Page lights them
+ * (`nodes`); null until its view arrives.
+ */
+export function useInFlightTargets(organizationSlug: string, environment: EnvironmentRef) {
+  const scope = useCollectionScope();
+  const inFlight = useInFlightDeployments(organizationSlug, environment);
+  const views = useQueries({ queries: inFlight.map((deployment) => storeViewOptions(organizationSlug, scope, deploymentQuery(deployment.id))) });
+  return inFlight.map((deployment, index) => {
+    const view = views[index]?.data;
+    return { ...deployment, nodes: view?.ok ? view.value.nodes.map((node) => node.id) : null };
+  });
+}
+
 /** A view the page can't show without: a refusal fails the route, whose error component words it. */
 export function requireView<T>(result: StoreResult<T>): T {
   if (!result.ok) throw new Error(result.refusal.message);

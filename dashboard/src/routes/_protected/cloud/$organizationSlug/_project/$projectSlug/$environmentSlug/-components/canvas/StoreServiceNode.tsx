@@ -17,7 +17,7 @@ import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useInFlightTargets } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 
 /**
@@ -31,11 +31,11 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const runtimeLens = use(RuntimeLensContext);
-  const inFlight = useInFlightDeployments(params.organizationSlug, store);
+  const inFlight = useInFlightTargets(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
   const chip = deployChip(service, changeCount, inFlight);
-  const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
+  const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, chip });
   const issues = nodeIssues(status, domains);
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
