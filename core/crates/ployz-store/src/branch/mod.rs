@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::command::{Command, insert_environment, replayable};
+use crate::project::insert_environment;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{

@@ -7,7 +7,6 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{Command, replayable};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectId, ProjectName, Revision};
 use crate::scope::{self, EnvironmentSummary, Project};
@@ -66,16 +65,8 @@ pub struct EnvironmentCreated {
     pub environment: EnvironmentSummary,
 }
 
-pub(crate) fn create_project(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateProject,
-) -> Result<ProjectCreated, RpcError> {
-    let command = Command::CreateProject(create.clone());
-    replayable(tx, who, &command, |tx| insert_project(tx, who, create))
-}
 
-fn insert_project(
+pub(crate) fn create_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
@@ -120,18 +111,8 @@ fn insert_project(
     })
 }
 
-pub(crate) fn create_environment(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateEnvironment,
-) -> Result<EnvironmentCreated, RpcError> {
-    let command = Command::CreateEnvironment(create.clone());
-    replayable(tx, who, &command, |tx| {
-        insert_new_environment(tx, who, create)
-    })
-}
 
-fn insert_new_environment(
+pub(crate) fn create_environment(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateEnvironment,

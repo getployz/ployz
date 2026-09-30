@@ -31,7 +31,7 @@ use ts_rs::TS;
 
 use crate::automation::{AutoDeployed, Automated, Skipped};
 use crate::branch::{self, CreateBranch, SetupCommand};
-use crate::command::ProjectSummary;
+use crate::project::ProjectSummary;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
 use crate::id::{EnvironmentId, EnvironmentName, ProjectName};
@@ -589,7 +589,7 @@ fn create(
         project: Some(start.summary.project.clone()),
         environment: Some(start.summary.name.clone()),
     };
-    branch::insert_branch(
+    branch::create_branch(
         tx,
         who,
         &CreateBranch {
