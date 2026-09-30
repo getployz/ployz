@@ -631,7 +631,9 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
         source.path().join("Dockerfile.alt"),
     )
     .unwrap();
-    let digest = ployz::build::content_digest(source.path()).unwrap();
+    let digest =
+        ployz_core::UploadDigest::parse(ployz::build::content_digest(source.path()).unwrap())
+            .unwrap();
 
     let deploy = |n: u8, upload: bool| {
         let store = Arc::clone(&store);

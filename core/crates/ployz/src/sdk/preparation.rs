@@ -14,48 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-/// An Uploaded Source's content digest: lowercase hex sha256 of its paths, bytes,
-/// modes and links.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct UploadDigest(String);
-
-impl UploadDigest {
-    /// # Errors
-    /// Returns `invalid_argument` unless `value` is a lowercase sha256.
-    pub fn parse(value: impl Into<String>) -> Result<Self, RpcError> {
-        let value = value.into();
-        if !ployz_core::is_lower_hex(&value, 64) {
-            return Err(invalid("upload digest must be a lowercase sha256"));
-        }
-        Ok(Self(value))
-    }
-
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for UploadDigest {
-    type Error = RpcError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        Self::parse(value)
-    }
-}
-
-impl From<UploadDigest> for String {
-    fn from(digest: UploadDigest) -> Self {
-        digest.0
-    }
-}
-
-impl std::fmt::Display for UploadDigest {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
+pub use ployz_core::UploadDigest;
 
 /// Backend-only frozen settings and repository directories, keyed by runtime Service name.
 #[derive(Default, Deserialize)]

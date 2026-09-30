@@ -22,10 +22,7 @@ pub(crate) fn admit(
     let environment_id = environment.as_str();
     // Without a new upload, Services without a source keep building from the latest one.
     let upload = match upload {
-        Some(upload) => {
-            upload.check()?;
-            Some(upload)
-        }
+        Some(upload) => Some(upload),
         None => match tx
             .query(
                 "SELECT upload FROM config_deployment \

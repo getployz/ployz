@@ -141,8 +141,7 @@ pub(crate) const NOTHING: Revision = Revision(0);
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct UploadedSource {
-    /// Lowercase hex sha256 of the uploaded paths, bytes, modes and links.
-    pub digest: String,
+    pub digest: ployz_core::UploadDigest,
     /// The commit the directory was checked out at, if it was a Git checkout.
     /// Provenance only: it never identifies the build.
     #[serde(default)]
@@ -161,18 +160,6 @@ pub struct UploadBase {
     pub commit: CommitSha,
     /// Whether the directory held changes the commit doesn't.
     pub changed: bool,
-}
-
-impl UploadedSource {
-    pub(crate) fn check(&self) -> Result<(), RpcError> {
-        if ployz_core::is_lower_hex(&self.digest, 64) {
-            return Ok(());
-        }
-        Err(error::invalid(
-            "An upload names a lowercase sha256 digest",
-            json!({ "upload": self }),
-        ))
-    }
 }
 
 /// A Deployment with its recorded Deploy Preview and every Node Outcome.

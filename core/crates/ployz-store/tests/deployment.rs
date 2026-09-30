@@ -940,7 +940,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         )
         .unwrap();
     let upload = UploadedSource {
-        digest: "d".repeat(64),
+        digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
         base: Some(UploadBase {
             commit: backend::sha(&"c".repeat(40)),
             changed: true,
@@ -962,9 +962,10 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
             &ployz_store::Trusted::default(),
         )
     };
-    let mut bad = upload.clone();
-    bad.digest = "D".repeat(64);
-    assert_eq!(code(with(1, Some(bad))), RpcErrorCode::InvalidArgument);
+    // A digest is a lowercase sha256, checked as it is read.
+    let mut bad = serde_json::to_value(&upload).unwrap();
+    bad["digest"] = json!("D".repeat(64));
+    assert!(serde_json::from_value::<UploadedSource>(bad).is_err());
     let first = with(1, Some(upload.clone())).unwrap();
     assert_eq!(first.upload.as_ref(), Some(&upload));
     let a = runner("cli-a");
@@ -1025,7 +1026,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     );
     // A retry ships the failed one's upload, not the Environment's latest.
     let mut newer = upload.clone();
-    newer.digest = "e".repeat(64);
+    newer.digest = ployz_core::UploadDigest::parse("e".repeat(64)).unwrap();
     with(3, Some(newer)).unwrap();
     assert_eq!(
         retry(&store, &who, 4, 1).unwrap().upload,
@@ -1097,7 +1098,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
         .unwrap();
     let app = ServiceName::parse("app").unwrap();
     let upload = |uploader: Option<&str>| UploadedSource {
-        digest: "d".repeat(64),
+        digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
         base: None,
         uploader: uploader.map(|name| Principal::parse(name).unwrap()),
     };

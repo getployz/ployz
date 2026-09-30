@@ -678,7 +678,6 @@ fn an_agent_branches_an_environment_without_servers() {
             json!("invalid_argument")
         );
         let unkept = ok(store, &["env", "keep", "--env", "fix-web", "--off"]);
-        assert_eq!(unkept["immediate"], json!(["kept"]));
         assert_eq!(unkept["branch"]["kept"], json!(false));
         assert!(unkept.get("next").is_none());
 

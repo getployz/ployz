@@ -3025,11 +3025,9 @@ export type UploadBase = { commit: CommitSha,
  */
 changed: boolean, };
 
-export type UploadedSource = {
-/**
- * Lowercase hex sha256 of the uploaded paths, bytes, modes and links.
- */
-digest: string,
+export type UploadDigest = string;
+
+export type UploadedSource = { digest: UploadDigest,
 /**
  * The commit the directory was checked out at, if it was a Git checkout.
  * Provenance only: it never identifies the build.
