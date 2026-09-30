@@ -17,7 +17,7 @@ use serde::Deserialize as _;
 use serde_json::Value;
 
 use super::build::BuildOutcome;
-use super::preparation::{BuildReceipt, PreparationInput, UploadDigest};
+use super::preparation::{BuildReceipt, PreparationInput, UploadDigest, needs_upload};
 use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connections};
 use crate::connect::SystemConnector;
 use crate::context::Connection;
@@ -107,19 +107,6 @@ fn receipts(claimed: &Claimed, service: &ServiceName) -> Vec<BuildReceipt> {
         .collect()
 }
 
-/// `candidates` as preparation takes them: the first as the Service's receipt, the
-/// rest borrowed.
-fn hinted(input: &mut PreparationInput, service: &ServiceName, candidates: Vec<BuildReceipt>) {
-    let mut candidates = candidates.into_iter();
-    if let Some(first) = candidates.next() {
-        input.build_receipts.insert(service.clone(), first);
-    }
-    let rest: Vec<_> = candidates.collect();
-    if !rest.is_empty() {
-        input.borrowed.insert(service.clone(), rest);
-    }
-}
-
 /// Run Deployment `deployment` as `runner` on one of `connections`, and
 /// return its summary once its outcome is recorded. Its Git and uploaded Services
 /// build first, at once, each from its checkout or the upload in `checkouts`; then
@@ -146,8 +133,7 @@ pub async fn run_deployment(
     };
     let claimed = {
         let (deployment, runner) = (run.deployment.clone(), run.runner.clone());
-        run.store(move |store| store.claim(&deployment, &runner))
-            .await?
+        super::store_call(&run.store, move |store| store.claim(&deployment, &runner)).await?
     };
     let (targets, built) = match checkouts
         .map_err(Unbuilt::Failed)
@@ -164,13 +150,15 @@ pub async fn run_deployment(
     let session = match connect_connections(connections, Arc::new(SystemConnector::default())).await
     {
         Ok(session) => session,
-        // Users read it on the Deployment: plain words and one action, not transport detail.
-        Err(_) => {
+        // Users read it on the Deployment: plain words and one action first, then
+        // what the connection said.
+        Err(error) => {
             return run
-                .not_executed(
-                    "Ployz couldn't reach your Servers. Check that they're online, then retry."
-                        .into(),
-                )
+                .not_executed(format!(
+                    "Ployz couldn't reach your Servers. Check that they're online, then retry. \
+                     ({})",
+                    error.message
+                ))
                 .await;
         }
     };
@@ -211,7 +199,7 @@ impl Run {
     ) -> Result<DeploymentSummary, RpcError> {
         let deletes = claimed.deletes.clone();
         let prepared = if targets.is_empty() && built.is_empty() {
-            session.preview(claimed.intent).await
+            self.renewing(session.preview(claimed.intent), || ()).await
         } else {
             match self.build(session, &claimed, &targets).await? {
                 Ok(mut receipts) => {
@@ -224,7 +212,7 @@ impl Run {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                return match upload_needed(&error) {
+                return match needs_upload(&error) {
                     Some(services) => self.unbuilt(Unbuilt::UploadNeeded(services)).await,
                     None => self.not_executed(error.message).await,
                 };
@@ -249,7 +237,9 @@ impl Run {
         match outcome {
             Ok(outcome) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
-                    remove_volumes(session, deletes).await
+                    // Deleting is never interrupted: a half-deleted set stays accepted.
+                    self.renewing(remove_volumes(session, deletes), || ())
+                        .await
                 } else {
                     Vec::new()
                 };
@@ -276,15 +266,9 @@ impl Run {
         let mut builds = Vec::new();
         for (index, target) in targets.iter().enumerate() {
             let service = &target.service;
-            let candidates = receipts(claimed, service);
-            let hint = candidates.first().cloned();
             let mut input = PreparationInput {
                 deployment: only(&claimed.input, service),
-                sources: BTreeMap::new(),
-                source_commits: BTreeMap::new(),
-                uploads: BTreeMap::new(),
-                build_receipts: BTreeMap::new(),
-                borrowed: BTreeMap::new(),
+                build_receipts: one(service, Some(receipts(claimed, service))),
                 build_index: index,
                 preferred_machine: match &target.build {
                     Build::Git {
@@ -292,19 +276,19 @@ impl Run {
                     } => *preferred_machine,
                     Build::Upload { .. } => None,
                 },
+                ..PreparationInput::default()
             };
             target.input(&mut input);
-            hinted(&mut input, service, candidates);
-            builds.push((target, hint, session.build(input, None)?));
+            builds.push((target, session.build(input, None)?));
         }
         let all = futures_util::future::join_all(
             builds
                 .iter()
-                .map(|(target, hint, running)| self.follow(target, hint.as_ref(), running)),
+                .map(|(target, running)| self.follow(target, running)),
         );
         let ended = self
             .renewing(all, || {
-                for (_, _, running) in &builds {
+                for (_, running) in &builds {
                     running.abort();
                 }
             })
@@ -312,12 +296,12 @@ impl Run {
         let mut receipts = BTreeMap::new();
         let mut failed = Vec::new();
         let mut uploads = Vec::new();
-        for (ended, (target, _, _)) in ended.into_iter().zip(&builds) {
+        for (ended, (target, _)) in ended.into_iter().zip(&builds) {
             match ended? {
                 Ok(receipt) => {
                     receipts.insert(target.service.clone(), receipt);
                 }
-                Err(error) => match upload_needed(&error) {
+                Err(error) => match needs_upload(&error) {
                     Some(services) => uploads.extend(services),
                     None => failed.push(format!("{}: {}", target.service, error.message)),
                 },
@@ -340,7 +324,6 @@ impl Run {
     async fn follow(
         &self,
         target: &Target,
-        hint: Option<&BuildReceipt>,
         running: &RunningBuild,
     ) -> Result<Result<BuildReceipt, RpcError>, RpcError> {
         let service = &target.service;
@@ -376,10 +359,7 @@ impl Run {
             }
         }
         let (status, message, ended) = match running.finished().await {
-            Ok(BuildOutcome::Built { receipt }) => {
-                // The same image content: reused, even when only its variables changed.
-                let reused =
-                    hint.is_some_and(|hint| hint.image.reference == receipt.image.reference);
+            Ok(BuildOutcome::Built { receipt, reused }) => {
                 let status = if reused {
                     BuildStatus::Reused
                 } else {
@@ -418,13 +398,11 @@ impl Run {
     ) -> Result<PreparedDeploy, RpcError> {
         let mut input = PreparationInput {
             deployment: claimed.input,
-            source_commits: BTreeMap::new(),
-            sources: BTreeMap::new(),
-            uploads: BTreeMap::new(),
-            build_receipts: receipts,
-            borrowed: BTreeMap::new(),
-            build_index: 0,
-            preferred_machine: None,
+            build_receipts: receipts
+                .into_iter()
+                .map(|(service, receipt)| (service, vec![receipt]))
+                .collect(),
+            ..PreparationInput::default()
         };
         for target in &targets {
             target.input(&mut input);
@@ -445,8 +423,6 @@ impl Run {
         self.renewing(running.finished(), || running.abort()).await
     }
 
-    /// Await `work` while renewing this runner's lease on the Deployment; a cancel
-    /// calls `abort`.
     /// Wait for `running`'s outcome, recording each Service once every one of its
     /// planned operations completed: a replaced Service reads Deployed at once, and
     /// stays so if this runner is lost before the outcome.
@@ -486,6 +462,8 @@ impl Run {
         running.finished().await
     }
 
+    /// Await `work` while renewing this runner's lease on the Deployment; a cancel
+    /// calls `abort`.
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
@@ -533,8 +511,10 @@ impl Run {
 
     async fn record(&self, evidence: RunEvidence) -> Result<DeploymentSummary, RpcError> {
         let (deployment, runner) = (self.deployment.clone(), self.runner.clone());
-        self.store(move |store| store.record(&deployment, &runner, evidence))
-            .await
+        super::store_call(&self.store, move |store| {
+            store.record(&deployment, &runner, evidence)
+        })
+        .await
     }
 
     /// Renew this runner's lease on the Deployment and read its status back, which
@@ -545,17 +525,8 @@ impl Run {
             .map(|summary| summary.status)
     }
 
-    /// Store calls block on the database, so they run off the async threads.
-    async fn store<T: Send + 'static>(
-        &self,
-        work: impl FnOnce(&ConfigStore) -> Result<T, RpcError> + Send + 'static,
-    ) -> Result<T, RpcError> {
-        super::store_call(&self.store, work).await
-    }
 }
 
-/// What `claimed` builds: each Git Service from its checkout at its pin, and each
-/// uploaded Service from the upload, if Cloud still holds it.
 /// What to build on the Servers, and the images GitHub already built, by Service.
 /// A build GitHub failed, or one whose walk leaves the Servers out, fails them all.
 fn targets(
@@ -639,15 +610,6 @@ fn one<T>(service: &ServiceName, value: Option<T>) -> BTreeMap<ServiceName, T> {
     value
         .map(|value| BTreeMap::from([(service.clone(), value)]))
         .unwrap_or_default()
-}
-
-/// The uploaded Services `error` says need a new upload, if that's what it says.
-fn upload_needed(error: &RpcError) -> Option<Vec<ServiceName>> {
-    let preparation = error.details.get("preparation")?;
-    if preparation.get("kind")?.as_str()? != "upload_needed" {
-        return None;
-    }
-    serde_json::from_value(preparation.get("services")?.clone()).ok()
 }
 
 /// Lowering input `input` narrowed to Service `service`: what its own build takes.

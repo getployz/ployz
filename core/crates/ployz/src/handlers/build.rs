@@ -74,11 +74,7 @@ pub(super) fn build(root: &ArgMatches) -> Result<(), Error> {
         deployment,
         sources: BTreeMap::from([(service.clone(), source)]),
         source_commits: BTreeMap::from([(service.clone(), commit)]),
-        uploads: BTreeMap::new(),
-        build_receipts: BTreeMap::new(),
-        borrowed: BTreeMap::new(),
-        build_index: 0,
-        preferred_machine: None,
+        ..PreparationInput::default()
     })?;
     if captured
         .fingerprints

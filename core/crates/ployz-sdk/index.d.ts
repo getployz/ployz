@@ -124,9 +124,8 @@ export type PreparationInput = {
   source_commits?: Record<string, string>;
   /** Uploaded Source content digests, keyed by config.privateDns. A `sources` directory must hold exactly that content; without one only a matching, usable receipt serves it. */
   uploads?: Record<string, string>;
-  build_receipts?: BuildReceipts;
-  /** More receipts to try, in order, when a Service's own doesn't match. */
-  borrowed?: Record<string, BuildReceipt[]>;
+  /** Earlier images to try, in order: the Service's own first, then other Environments' of the same build inputs. */
+  build_receipts?: Record<string, BuildReceipt[]>;
   /** This build's position among its attempt's builds; builds without a warm Machine spread across Machines by it. */
   build_index?: number;
   /** The Service's Preferred Machine, the Cluster's first choice to build. */
@@ -166,7 +165,8 @@ export type BuildOptions = WatchOptions & {
 };
 
 /** `queued`: not admitted within `startWithinMs`, withdrawn; nothing started. */
-export type BuildOutcome = { kind: "queued" } | { kind: "built"; receipt: BuildReceipt };
+/** `built`: `reused` when an earlier image of the same build inputs served it and nothing was built. */
+export type BuildOutcome = { kind: "queued" } | { kind: "built"; receipt: BuildReceipt; reused: boolean };
 
 export type RunningBuild = AsyncIterable<PreparationEvent> & {
   abort(): void;

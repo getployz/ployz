@@ -71,7 +71,6 @@ fn input(root: &Path, snapshots: Vec<Value>) -> crate::sdk::PreparationInput {
             .collect(),
         uploads: BTreeMap::new(),
         build_receipts: BTreeMap::new(),
-        borrowed: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
     }
@@ -900,7 +899,7 @@ async fn the_server_named_in_the_latest_receipt_builds_the_service_while_it_can(
         let mut input = input(&root, vec![git("one", "dockerfile")]);
         input
             .build_receipts
-            .insert(ServiceName::parse("one").unwrap(), receipt.clone());
+            .insert(ServiceName::parse("one").unwrap(), vec![receipt.clone()]);
         input.build_index = index;
         input
     };
@@ -1031,13 +1030,15 @@ async fn sdk_reuses_unchanged_git_image_when_another_service_changes() {
         ]
     });
     let name: ployz_core::ServiceName = "one".parse().unwrap();
-    let input = |deployment, receipts, commit| crate::sdk::PreparationInput {
+    let input = |deployment, receipts: BTreeMap<_, _>, commit| crate::sdk::PreparationInput {
         deployment,
         sources: BTreeMap::from([(name.clone(), root.clone())]),
         source_commits: BTreeMap::from([(name.clone(), commit)]),
         uploads: BTreeMap::new(),
-        build_receipts: receipts,
-        borrowed: BTreeMap::new(),
+        build_receipts: receipts
+            .into_iter()
+            .map(|(service, receipt)| (service, vec![receipt]))
+            .collect(),
         build_index: 0,
         preferred_machine: None,
     };
@@ -1178,7 +1179,7 @@ async fn one_image_build_returns_the_receipt_prepare_reuses() {
         .finished()
         .await
         .unwrap();
-    let crate::sdk::BuildOutcome::Built { receipt } = built else {
+    let crate::sdk::BuildOutcome::Built { receipt, .. } = built else {
         panic!("an admitted build must finish with a receipt: {built:?}");
     };
     assert_eq!(
@@ -1190,7 +1191,7 @@ async fn one_image_build_returns_the_receipt_prepare_reuses() {
     let mut prepared = input(&root, vec![git("one", "dockerfile")]);
     prepared
         .build_receipts
-        .insert(name.clone(), receipt.clone());
+        .insert(name.clone(), vec![receipt.clone()]);
     let prepared = session.prepare(prepared).unwrap().finished().await.unwrap();
     assert_eq!(
         builds.definitions.lock().unwrap().len(),
@@ -1240,7 +1241,6 @@ fn uploaded(root: &Path, with_source: bool) -> crate::sdk::PreparationInput {
             super::UploadDigest::parse(crate::build::content_digest(root).unwrap()).unwrap(),
         )]),
         build_receipts: BTreeMap::new(),
-        borrowed: BTreeMap::new(),
         build_index: 0,
         preferred_machine: None,
     }
@@ -1261,23 +1261,30 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
         .finished()
         .await
         .unwrap();
-    let receipts = built.build_receipts().clone();
+    let receipts: BTreeMap<_, _> = built
+        .build_receipts()
+        .iter()
+        .map(|(service, receipt)| (service.clone(), vec![receipt.clone()]))
+        .collect();
     built.close();
     assert_eq!(builds.definitions.lock().unwrap().len(), 1);
 
     // Build and prepare both reuse the held image without the upload.
     let mut sourceless = uploaded(&root, false);
     sourceless.build_receipts = receipts.clone();
-    let crate::sdk::BuildOutcome::Built { receipt } = session
+    let crate::sdk::BuildOutcome::Built {
+        receipt,
+        reused: true,
+    } = session
         .build(sourceless, None)
         .unwrap()
         .finished()
         .await
         .unwrap()
     else {
-        panic!("a usable receipt serves the build");
+        panic!("a usable receipt serves the build, and says it reused");
     };
-    assert_eq!(receipt.fingerprint, receipts[&name].fingerprint);
+    assert_eq!(receipt.fingerprint, receipts[&name][0].fingerprint);
     let mut sourceless = uploaded(&root, false);
     sourceless.build_receipts = receipts.clone();
     let reused = session
@@ -1304,7 +1311,24 @@ async fn an_upload_without_its_source_is_served_only_by_a_usable_receipt() {
 
     // An image that no longer runs on every placement, or is gone, needs a new upload.
     let mut incompatible = receipts.clone();
-    incompatible.get_mut(&name).unwrap().image.platforms = vec!["linux/arm64".into()];
+    incompatible.get_mut(&name).unwrap()[0].image.platforms = vec!["linux/arm64".into()];
+    // ...unless a later candidate still serves it.
+    let mut sourceless = uploaded(&root, false);
+    sourceless.build_receipts = BTreeMap::from([(
+        name.clone(),
+        vec![incompatible[&name][0].clone(), receipts[&name][0].clone()],
+    )]);
+    let fallback = session
+        .prepare(sourceless)
+        .unwrap()
+        .finished()
+        .await
+        .unwrap();
+    assert_eq!(
+        fallback.build_receipts()[&name].image.platforms,
+        receipts[&name][0].image.platforms
+    );
+    fallback.close();
     let gone = || builds.stores.lock().unwrap().clear();
     for (receipts, before) in [(incompatible, (&|| {}) as &dyn Fn()), (receipts, &gone)] {
         before();
@@ -1386,7 +1410,7 @@ async fn an_outside_build_reuses_a_held_unchanged_image_and_never_builds() {
     let (root, service, builds) = fixture();
     let (session, server) = session(service).await;
     let built = input(&root, vec![git("one", "dockerfile")]);
-    let crate::sdk::BuildOutcome::Built { receipt } = session
+    let crate::sdk::BuildOutcome::Built { receipt, .. } = session
         .build(built, None)
         .unwrap()
         .finished()
