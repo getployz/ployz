@@ -11,7 +11,7 @@ use std::fmt;
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
     HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX, MEM_LIMIT_MAX, REPLICAS_MAX,
-    RESTART_POLICIES, ServiceHealthcheck, ServiceImageCredentials, ServiceSource,
+    RESTART_POLICIES, SavedVolumeIntent, ServiceHealthcheck, ServiceImageCredentials, ServiceSource,
     default_max_retries, default_replicas, parse_service_setting,
 };
 use ployz_core::{RpcError, ServiceName};
@@ -637,8 +637,9 @@ impl From<NodeName> for String {
 /// What a request addresses in an Environment: `SERVICE` for a whole Service,
 /// `SERVICE.SETTING` for one of its Settings, `SERVICE.env.KEY` for one of its
 /// variables, `SERVICE.env.KEY.exported` for whether other Services see it,
-/// `SERVICE.mounts.VOLUME` for where it mounts a Volume, or `volumes.VOLUME` for a
-/// whole Volume, which has no Settings.
+/// `SERVICE.mounts.VOLUME` for where it mounts a Volume, `volumes.VOLUME` for a
+/// whole Volume, or `volumes.VOLUME.name` / `volumes.VOLUME.storage` for its name
+/// or storage, which only discard addresses.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(try_from = "String", into = "String")]
 #[ts(as = "String")]
@@ -647,7 +648,39 @@ pub struct SettingPath(Addressed);
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Addressed {
     Service(ServiceName, Option<Target>),
-    Volume(VolumeName),
+    Volume(VolumeName, Option<VolumeField>),
+}
+
+/// A Volume's field a change row names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum VolumeField {
+    Name,
+    Storage,
+}
+
+impl VolumeField {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Storage => "storage",
+        }
+    }
+
+    /// This field of `volume`, as JSON.
+    pub(crate) fn of(self, volume: &SavedVolumeIntent) -> Value {
+        match self {
+            Self::Name => json!(volume.name),
+            Self::Storage => json!(volume.storage),
+        }
+    }
+
+    /// Give `volume` this field as `from` has it.
+    pub(crate) fn restore(self, volume: &mut SavedVolumeIntent, from: &SavedVolumeIntent) {
+        match self {
+            Self::Name => volume.name.clone_from(&from.name),
+            Self::Storage => volume.storage = from.storage,
+        }
+    }
 }
 
 /// What a path addresses inside its Service.
@@ -677,13 +710,18 @@ impl SettingPath {
             ));
         }
         if let Some(volume) = path.strip_prefix("volumes.") {
-            if volume.contains('.') {
-                return Err(error::invalid(
-                    "A Volume has no Settings: address it as volumes.VOLUME",
-                    json!({ "example": "volumes.data" }),
-                ));
-            }
-            return Ok(Self(Addressed::Volume(VolumeName::parse(volume)?)));
+            let (volume, field) = match volume.split_once('.') {
+                None => (volume, None),
+                Some((volume, "name")) => (volume, Some(VolumeField::Name)),
+                Some((volume, "storage")) => (volume, Some(VolumeField::Storage)),
+                Some(_) => {
+                    return Err(error::invalid(
+                        "A Volume has no Settings: address it as volumes.VOLUME",
+                        json!({ "example": "volumes.data" }),
+                    ));
+                }
+            };
+            return Ok(Self(Addressed::Volume(VolumeName::parse(volume)?, field)));
         }
         let (service, rest) = path.split_once('.').unzip();
         let service = ServiceName::parse(service.unwrap_or(path)).map_err(|_| {
@@ -732,8 +770,36 @@ impl SettingPath {
     pub fn node(&self) -> NodeName {
         match &self.0 {
             Addressed::Service(service, _) => NodeName::Service(service.clone()),
-            Addressed::Volume(volume) => NodeName::Volume(volume.clone()),
+            Addressed::Volume(volume, _) => NodeName::Volume(volume.clone()),
         }
+    }
+
+    /// The Volume field it names, if any.
+    pub(crate) const fn volume_field(&self) -> Option<VolumeField> {
+        match &self.0 {
+            Addressed::Volume(_, field) => *field,
+            Addressed::Service(..) => None,
+        }
+    }
+
+    /// Core's change-row `field` of Service `service` as a path: `SERVICE.SETTING`,
+    /// `SERVICE.env.KEY` or `SERVICE.mounts.VOLUME`, naming a Volume by
+    /// `volume(id)`. Text, not a parsed path: a row may name a field no path does.
+    pub(crate) fn from_core(
+        service: &str,
+        field: &str,
+        volume: impl Fn(&str) -> String,
+    ) -> String {
+        let key = field
+            .strip_prefix("env.")
+            .or_else(|| field.strip_prefix("variables."));
+        let field = match (key, field.strip_prefix("mounts.")) {
+            (Some(key), _) => format!("env.{key}"),
+            (_, Some(id)) => format!("mounts.{}", volume(id)),
+            _ => ServiceSetting::of_field(field)
+                .map_or_else(|| field.to_owned(), |setting| setting.name().to_owned()),
+        };
+        format!("{service}.{field}")
     }
 
     /// The Service it is in; none for a Volume.
@@ -741,7 +807,7 @@ impl SettingPath {
     pub const fn service(&self) -> Option<&ServiceName> {
         match &self.0 {
             Addressed::Service(service, _) => Some(service),
-            Addressed::Volume(_) => None,
+            Addressed::Volume(..) => None,
         }
     }
 
@@ -759,7 +825,7 @@ impl SettingPath {
     pub(crate) const fn target(&self) -> Option<&Target> {
         match &self.0 {
             Addressed::Service(_, target) => target.as_ref(),
-            Addressed::Volume(_) => None,
+            Addressed::Volume(..) => None,
         }
     }
 
@@ -770,7 +836,7 @@ impl SettingPath {
 
     /// The path of Volume `volume` as a whole.
     pub(crate) fn volume(volume: &VolumeName) -> Self {
-        Self(Addressed::Volume(volume.clone()))
+        Self(Addressed::Volume(volume.clone(), None))
     }
 
     /// The path of one Setting of `service`.
@@ -785,8 +851,12 @@ impl SettingPath {
 
 impl fmt::Display for SettingPath {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Addressed::Service(service, target) = &self.0 else {
-            return write!(formatter, "{}", self.node());
+        let (service, target) = match &self.0 {
+            Addressed::Service(service, target) => (service, target),
+            Addressed::Volume(volume, Some(field)) => {
+                return write!(formatter, "volumes.{volume}.{}", field.name());
+            }
+            Addressed::Volume(volume, None) => return write!(formatter, "volumes.{volume}"),
         };
         match target {
             Some(Target::Setting(setting)) => write!(formatter, "{service}.{}", setting.name()),
