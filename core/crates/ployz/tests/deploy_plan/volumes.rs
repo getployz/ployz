@@ -225,9 +225,9 @@ fn stateless_explicit_target_requires_storage_preparation() {
     .to_string();
 
     assert!(error.contains("first"), "{error}");
-    assert!(error.contains("cannot host managed volumes"), "{error}");
+    assert!(error.contains("cannot host Managed volumes"), "{error}");
     assert!(
-        error.contains("enable managed volumes when adding the Server"),
+        error.contains("pick a Server with Managed volumes"),
         "{error}"
     );
 }

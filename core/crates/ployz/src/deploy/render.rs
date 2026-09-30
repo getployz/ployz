@@ -121,7 +121,7 @@ fn volumes_to_create_lines(preview: &DeployPreview) -> String {
             Some(maximum_bytes) => {
                 let _ = writeln!(
                     out,
-                    "  + provisioned volume {} (maximum {maximum_bytes}) on {machine}",
+                    "  + Managed volume {} (maximum {maximum_bytes}) on {machine}",
                     item.name
                 );
             }
@@ -232,7 +232,7 @@ fn child_line(row: &OperationRow) -> String {
     let name = report::visible_row_name(row);
     match &row.operation {
         DeployOperation::PrepareVolumes { .. } => {
-            format!("+ prepare provisioned storage on {machine}")
+            format!("+ prepare Managed volume storage on {machine}")
         }
         DeployOperation::WaitHealthy {
             dependent,

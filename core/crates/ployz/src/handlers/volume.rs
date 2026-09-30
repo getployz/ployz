@@ -24,9 +24,10 @@ pub(crate) fn command() -> Command {
     base("volume", "Manage Volumes")
         .arg_required_else_help(true)
         .subcommand(
-            storage_flags(store::scoped(Command::new("add").about(
-                "Add a Provisioned Volume (or --docker); staged until you deploy",
-            )))
+            storage_flags(store::scoped(
+                Command::new("add")
+                    .about("Add a Managed volume (or --docker); staged until you deploy"),
+            ))
             .arg(positional("name", true).help("Volume name, unique in the Environment"))
             .arg(
                 value("mount", None)
@@ -111,12 +112,16 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         storage,
         mounts,
     })?;
-    let warning = (matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches))
-        .then_some(NO_MANAGED_HOST);
-    staged_warning(matches, &created, "Staged new Volume", warning)
+    if matches!(storage, VolumeKind::Provisioned { .. }) && no_managed_host(matches) {
+        output::warn(NO_MANAGED_HOST);
+    }
+    staged(matches, &created, "Staged new Volume")
 }
 
-const NO_MANAGED_HOST: &str = "No Server here can host managed Volumes yet, so a Deploy of this one fails until one can: add a Server with managed volumes enabled, or use --docker instead.";
+const NO_MANAGED_HOST: &str = "No Server here can host Managed volumes yet, so a Deploy of this one fails until one can: add a Server with Managed volumes, or use --docker instead.";
+
+/// Why `--docker` is not recommended; said when a command asks for one.
+const DOCKER_VOLUME: &str = "Docker volume (not recommended): no size limit, and it stays out of backups and Server moves as they arrive.";
 
 /// Best effort, bounded: whether every Server this reaches reports it can't host
 /// managed Volumes. Unreachable or unknown answers `false`; the Deploy still checks.
@@ -151,17 +156,18 @@ fn storage_flags(command: Command) -> Command {
                     ProvisionedVolumeMaximumBytes::parse_gb(size)
                         .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
                 })
-                .help("Provisioned storage limit in GB, such as 10GB; new Volumes default to 5GB"),
+                .help("Managed volume size limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
         .arg(
             switch("docker", None)
                 .conflicts_with("size")
-                .help("Advanced: use a Docker volume without an enforced storage limit"),
+                .help("Use a plain Docker volume, with no size limit (not recommended)"),
         )
 }
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     if matches.get_flag("docker") {
+        output::warn(DOCKER_VOLUME);
         VolumeKind::Docker {}
     } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
         VolumeKind::Provisioned {
@@ -185,8 +191,10 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
 
 fn storage_word(storage: VolumeKind) -> String {
     match storage {
-        VolumeKind::Docker {} => "Docker (no enforced storage limit)".into(),
-        VolumeKind::Provisioned { maximum_bytes } => format!("Managed ({maximum_bytes} limit)"),
+        VolumeKind::Docker {} => "Docker volume (no size limit)".into(),
+        VolumeKind::Provisioned { maximum_bytes } => {
+            format!("Managed volume ({maximum_bytes} limit)")
+        }
     }
 }
 
@@ -274,7 +282,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
 }
 
 /// A staged Volume change and `ployz diff` to review it.
-/// Servers were seen and each says it keeps Docker volumes only; one not
+/// Servers were seen and each says it is Docker only; one not
 /// answering might host them.
 fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
     !machines.is_empty()
@@ -284,31 +292,8 @@ fn none_hosts_managed(machines: &[MachineObservation]) -> bool {
 }
 
 fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(), Error> {
-    staged_warning(matches, result, what, None)
-}
-
-fn staged_warning(
-    matches: &ArgMatches,
-    result: &VolumeStaged,
-    what: &str,
-    warning: Option<&str>,
-) -> Result<(), Error> {
-    #[derive(serde::Serialize)]
-    struct Out<'a> {
-        #[serde(flatten)]
-        staged: Next<'a, VolumeStaged>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        warning: Option<&'a str>,
-    }
     let hint = store::next(matches, &["diff"]);
-    let out = Out {
-        staged: Next::new(result, Some(hint)),
-        warning,
-    };
-    if let Some(warning) = warning {
-        eprintln!("WARNING: {warning}");
-    }
-    output::finish(&out, || {
+    output::finish(&Next::new(result, Some(hint)), || {
         say!(
             "{what} {} in {}/{} (revision {}).",
             result.volume.name,

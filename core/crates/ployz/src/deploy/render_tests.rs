@@ -136,7 +136,7 @@ fn plan_identifies_a_provisioned_volume_and_its_bound() {
 
     assert!(text.contains("Volumes to create\n"), "{text}");
     assert!(
-        text.contains("+ provisioned volume data (maximum 1.073741824 GB) on edge"),
+        text.contains("+ Managed volume data (maximum 1.073741824 GB) on edge"),
         "{text}"
     );
 }
