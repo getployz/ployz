@@ -7,7 +7,7 @@ import { Button } from "#/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "#/components/ui/sheet";
 import { Spinner } from "#/components/ui/spinner";
 import { PRO_PRICE } from "#/modules/billing/billing";
-import { syncCustomDomainCapabilityServerFn } from "#/modules/billing/billing.functions";
+import { syncBillingAfterCheckoutServerFn } from "#/modules/billing/billing.functions";
 import { billingKeys } from "#/modules/billing/billing.queries";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
 
@@ -33,21 +33,21 @@ export function CustomDomainUpsellSheet({
   onClose: () => void;
 }) {
   const checkout = useEmbeddedCheckout(organizationSlug);
-  const syncCapability = useServerFn(syncCustomDomainCapabilityServerFn);
+  const syncBilling = useServerFn(syncBillingAfterCheckoutServerFn);
   const queryClient = useQueryClient();
-  // Paid; Cloud is reading Pro from Polar.
+  // Paid; Cloud is reading Pro from Polar. Custom domains follow from Pro on hosted Cloud.
   const [finishing, setFinishing] = useState(false);
 
   async function finishUpgrade() {
     setFinishing(true);
-    let allowed = false;
+    let pro = false;
     try {
-      allowed = await syncCapability({ data: { organizationSlug } });
+      pro = await syncBilling({ data: { organizationSlug } });
     } catch {
       // Polar's webhook still switches Pro on.
     }
     await queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });
-    if (allowed) {
+    if (pro) {
       toast.success("You're on Pro. Thanks for supporting Ployz!");
       onUpgraded();
     } else {

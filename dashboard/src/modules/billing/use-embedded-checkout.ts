@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
+import { billingKeys } from "#/modules/billing/billing.queries";
 import { openCheckoutWhileHere } from "#/modules/billing/checkout";
+import { toErrorMessage } from "#/lib/error-message";
 
 /**
  * Polar's embedded checkout for an Organization, over the current page. With `onSuccess` the buyer stays where they
@@ -11,6 +14,7 @@ import { openCheckoutWhileHere } from "#/modules/billing/checkout";
 export function useEmbeddedCheckout(organizationSlug: string) {
   const [pending, setPending] = useState(false);
   const createEmbeddedCheckout = useServerFn(createEmbeddedCheckoutServerFn);
+  const queryClient = useQueryClient();
   const activeCheckoutRef = useRef<{ close(): void } | null>(null);
   // Identifies this organization's visit; a checkout that resolves after it ends must not open.
   const visitRef = useRef<object | null>(null);
@@ -56,8 +60,10 @@ export function useEmbeddedCheckout(organizationSlug: string) {
         onSuccess();
       });
       activeCheckoutRef.current = activeCheckout;
-    } catch {
-      toast.error("Unable to start checkout.");
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Unable to start checkout."));
+      // Refused because the Organization already holds Pro, perhaps: the next look shows it.
+      void queryClient.invalidateQueries({ queryKey: billingKeys.org(organizationSlug) });
     } finally {
       setPending(false);
     }

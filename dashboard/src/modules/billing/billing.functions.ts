@@ -4,8 +4,9 @@ import {
   createCustomerPortal,
   createEmbeddedCheckout,
   getBillingState,
+  syncBillingAfterCheckout,
 } from "#/modules/billing/billing.server";
-import { getCustomDomainsAllowed, syncCustomDomainCapability } from "#/modules/billing/custom-domain-capability";
+import { getCustomDomainCapability } from "#/modules/billing/custom-domain-capability";
 import { trimmedString } from "#/lib/schema";
 import {
   actorMiddleware,
@@ -40,16 +41,16 @@ export const createCustomerPortalServerFn = createServerFn({ method: "POST" })
     runActor(context, createCustomerPortal(context.actor, data)),
   );
 
-export const getCustomDomainsAllowedServerFn = createServerFn({ method: "GET" })
+export const getCustomDomainCapabilityServerFn = createServerFn({ method: "GET" })
   .middleware(middleware)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
-    runActor(context, getCustomDomainsAllowed(context.actor, data)),
+    runActor(context, getCustomDomainCapability(context.actor, data)),
   );
 
-export const syncCustomDomainCapabilityServerFn = createServerFn({ method: "POST" })
+export const syncBillingAfterCheckoutServerFn = createServerFn({ method: "POST" })
   .middleware(middleware)
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
-    runActor(context, syncCustomDomainCapability(context.actor, data)),
+    runActor(context, syncBillingAfterCheckout(context.actor, data)),
   );

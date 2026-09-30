@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import {
   getBillingStateServerFn,
-  getCustomDomainsAllowedServerFn,
+  getCustomDomainCapabilityServerFn,
 } from "#/modules/billing/billing.functions";
 
 export const billingKeys = {
@@ -30,7 +30,7 @@ export function customDomainCapabilityQueryOptions(organizationSlug: string) {
   return queryOptions({
     queryKey: billingKeys.customDomainCapability(organizationSlug),
     queryFn: ({ signal }) =>
-      getCustomDomainsAllowedServerFn({
+      getCustomDomainCapabilityServerFn({
         data: { organizationSlug },
         signal,
       }),

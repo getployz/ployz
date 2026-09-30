@@ -23,7 +23,7 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { removeOrganization } from "#/modules/organization/organization-removal.server";
-import { Conflict, NotFound, Validation } from "#/server/public-error";
+import { NotFound, Validation } from "#/server/public-error";
 
 const NewToken = Schema.Struct({
   name: Schema.Trim.check(Schema.isMinLength(1), Schema.isMaxLength(64)),
@@ -127,9 +127,6 @@ const billingSummary = Effect.fn("Cli.billingSummary")(function* (caller: Caller
 });
 
 const checkout = Effect.fn("Cli.checkout")(function* (caller: Caller) {
-  if (yield* hasCachedActiveSubscription(caller.organization.id)) {
-    return yield* new Conflict({ message: "This Organization already holds Pro.", userFacing: true });
-  }
   const created = yield* createEmbeddedCheckout(caller, { organizationSlug: caller.organization.slug });
   return created.url;
 });
