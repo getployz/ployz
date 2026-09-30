@@ -10,7 +10,7 @@ use std::fmt;
 
 use ployz_core::config::{
     AuthoredServiceConfig, COMMAND_MAX, CPU_LIMIT_MAX, HEALTHCHECK_PATH_MAX,
-    HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX, MEM_LIMIT_MAX, REPLICAS_MAX,
+    HEALTHCHECK_TIMEOUT_DEFAULT, HEALTHCHECK_TIMEOUT_MAX, IMAGE_MAX, MAX_RETRIES_MAX, MEM_LIMIT_MAX, REPLICAS_MAX,
     RESTART_POLICIES, SavedVolumeIntent, ServiceHealthcheck, ServiceImageCredentials, ServiceSource,
     default_max_retries, default_replicas, parse_service_setting,
 };
@@ -233,7 +233,7 @@ impl ServiceSetting {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": HEALTHCHECK_TIMEOUT_MAX,
-                        "default": HEALTHCHECK_TIMEOUT_MAX,
+                        "default": HEALTHCHECK_TIMEOUT_DEFAULT,
                     },
                 },
                 "required": ["path"],
@@ -411,10 +411,10 @@ impl ServiceSetting {
             ServiceHealthcheck::Http {
                 timeout_seconds, ..
             } => *timeout_seconds,
-            ServiceHealthcheck::None => HEALTHCHECK_TIMEOUT_MAX,
+            ServiceHealthcheck::None => HEALTHCHECK_TIMEOUT_DEFAULT,
         };
         let (path, timeout) = match value {
-            Value::String(path) => (path, json!(timeout)),
+            Value::String(path) => (path, timeout),
             Value::Object(mut fields)
                 if fields
                     .keys()
@@ -423,8 +423,12 @@ impl ServiceSetting {
                 let Some(Value::String(path)) = fields.remove("path") else {
                     return Err(self.invalid("expected a path starting with /"));
                 };
-                let timeout = fields.remove("timeoutSeconds").unwrap_or(json!(timeout));
-                (path, self.coerce_number(timeout))
+                let timeout = match fields.remove("timeoutSeconds") {
+                    None => timeout,
+                    Some(given) => serde_json::from_value(self.coerce_number(given))
+                        .map_err(|_| self.invalid("timeoutSeconds: expected whole seconds"))?,
+                };
+                (path, timeout)
             }
             Value::Null
             | Value::Bool(_)
@@ -434,7 +438,11 @@ impl ServiceSetting {
                 return Err(self.invalid("expected a path, or {\"path\", \"timeoutSeconds\"}"));
             }
         };
-        Ok(json!({ "type": "http", "path": path, "timeoutSeconds": timeout }))
+        let healthcheck = ServiceHealthcheck::Http {
+            path,
+            timeout_seconds: timeout,
+        };
+        Ok(serde_json::to_value(healthcheck).expect("a healthcheck is JSON"))
     }
 
     /// Return this Setting to its [`default`](Self::default).

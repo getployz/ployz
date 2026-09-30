@@ -53,18 +53,7 @@ pub(crate) fn save(
         return Err(teardown::being_removed(&sides.pr, &removal));
     }
     let moving = moving(tx, &sides)?;
-    let changes = moving.compare(&sides.into.working, None)?;
-    let version = branch::version(&sides.into, &changes.review);
-    if request
-        .version
-        .as_ref()
-        .is_some_and(|asked| *asked != version)
-    {
-        return Err(error::conflict(
-            "Changed since you reviewed: review the move again",
-            json!({ "version": version }),
-        ));
-    }
+    let changes = branch::reviewed(&moving, &sides.into, request.version.as_deref())?;
     let picks = branch::picks(
         &moving,
         &sides.into,
@@ -93,9 +82,7 @@ pub(crate) fn save(
         .collect();
     rows.extend(secret_hints(&moving, &sides.into));
     let names = rows.iter().map(|row| row.shown.row.clone()).collect();
-    let Way::Save { parent, .. } = moving.way else {
-        return Err(error::internal("A Conditional Save moves a Save"));
-    };
+    let parent = moving.parent().cloned();
     let stored = Stored {
         rows,
         picks,
