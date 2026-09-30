@@ -124,7 +124,7 @@ pub(crate) fn service(
             &environment.working,
         ));
     };
-    let values = super::environment::values(tx, &environment, &listed.node)?;
+    let values = crate::settings::query::values(tx, &environment, &listed.node)?;
     Ok(ServiceView {
         environment: environment.summary,
         lineage: ServiceLineageId::parse(listed.node.lineage_id.as_str())

@@ -1,13 +1,5 @@
-//! `write`'s commands. Each family lives in its own module and adds one
-//! [`Command`] variant, one [`Written`] variant, one arm in [`run`], and a typed
-//! method on [`ConfigStore`](crate::ConfigStore) that calls the same function.
-
-mod admit;
-mod edit;
-mod project;
-mod review;
-mod service;
-mod volume;
+//! `write`'s commands: each feature module adds one [`Command`] variant, one
+//! [`Written`] variant and one arm in [`run`].
 
 use ployz_core::RpcError;
 use serde::de::DeserializeOwned;
@@ -15,22 +7,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-pub use admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
-pub(crate) use admit::{admit, cancel, start};
-pub(crate) use edit::edit;
-pub use edit::{Change, Edit, Edited};
-pub use project::{
+pub use crate::deployment::admit::{Admit, Cancel, Deploy, Removal, Retry, Start};
+pub(crate) use crate::deployment::admit::{admit, cancel, start};
+pub use crate::project::{
     CreateEnvironment, CreateProject, EnvironmentCreated, ProjectCreated, ProjectSummary,
 };
-pub(crate) use project::{create_environment, create_project, insert_environment};
-pub use review::{Discard, Discarded, Publish, Published};
-pub(crate) use review::{discard, publish};
-pub use service::{CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary};
-pub(crate) use service::{create_service, insert_service, remove_service, rename_service, summary};
-pub use volume::{
+pub(crate) use crate::project::{create_environment, create_project, insert_environment};
+pub use crate::review::publish::{Discard, Discarded, Publish, Published};
+pub(crate) use crate::review::publish::{discard, publish};
+pub use crate::service::{
+    CreateService, RemoveService, RenameService, ServiceStaged, ServiceSummary,
+};
+pub(crate) use crate::service::{
+    create_service, insert_service, remove_service, rename_service, summary,
+};
+pub(crate) use crate::settings::edit::edit;
+pub use crate::settings::edit::{Change, Edit, Edited};
+pub use crate::volume::{
     CreateVolume, Mount, RemoveVolume, RenameVolume, SetVolumeStorage, VolumeStaged, VolumeSummary,
 };
-pub(crate) use volume::{
+pub(crate) use crate::volume::{
     check_storage, create_volume, locked_storage, remove_volume, rename_volume, set_storage,
     summary as volume_summary,
 };
