@@ -72,19 +72,26 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
  * ponytail: every Organization each hour; list only those with Branches once that costs.
  */
 export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: Date) {
-  const store = yield* cloudStore;
   const { drizzle } = yield* Database;
   const organizations = yield* drizzle.select({ id: organization.id }).from(organization);
   const done: StoreOutcome = { deployments: [], closing: [], check: false };
-  const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
   for (const { id } of organizations) {
-    yield* organizationServers(id).pipe(
-      Effect.flatMap((servers) => storeTry(() => store.system(id, event, { servers }))),
-      Effect.flatMap((written) => collect(id, written, done)),
+    yield* sweepStore(id, now, done).pipe(
       // One Organization's Store failing never holds back the others; the next sweep retries it.
       Effect.catch((error) => Effect.logWarning("A Config Store sweep failed.", { organizationId: id, error })),
     );
   }
+  return done;
+});
+
+/** Sweep one Organization's Store now, gathering what it left Cloud to do into `done`. */
+export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
+  organizationId: string, now: Date, done: StoreOutcome = { deployments: [], closing: [], check: false },
+) {
+  const store = yield* cloudStore;
+  const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
+  const servers = yield* organizationServers(organizationId);
+  yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event, { servers })), done);
   return done;
 });
 

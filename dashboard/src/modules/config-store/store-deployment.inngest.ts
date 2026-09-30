@@ -12,6 +12,8 @@ import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
   startStoreGithubBuild, storeGithubBuildOpen, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
+import { followUp } from "#/modules/config-store/store-github.inngest";
+import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -42,6 +44,10 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
+      // A closed Branch whose removal applied goes now, without its closer coming back for it.
+      if ("ran" in ran && ran.ran.remove && ran.ran.status === "applied") {
+        await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
+      }
       return ran;
     },
   );

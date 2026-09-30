@@ -897,6 +897,7 @@ fn save_moves_the_picked_changes_into_the_parent_and_keeps_the_rest() {
                 environment: at("fix-web"),
                 version: None,
                 accept_volume_loss: Vec::new(),
+                close: false,
             }),
             &Trusted::default(),
         )

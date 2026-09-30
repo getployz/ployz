@@ -22,7 +22,7 @@ import { runInngestEffect } from "#/server/run.server";
  * Each its own step after the Store's, so a failed one retries alone: the observation is already applied. Runs to
  * dispatch go to the worker; Branches the Store is closing come off the Servers.
  */
-async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
+export async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
   if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(createConfigDeploymentAdmittedEvent));
   const removals = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : [];
   if (removals.length > 0) await step.sendEvent("dispatch-removals", removals.map(createConfigDeploymentAdmittedEvent));
