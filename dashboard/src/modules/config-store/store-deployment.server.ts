@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, DeploymentStatus, GitSource } from "@ployz/sdk";
+import type { ConfigStore, GitSource } from "@ployz/sdk";
 import { Data, Effect, Option } from "effect";
 import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
@@ -7,6 +7,7 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
+import { isInFlight } from "#/modules/config-store/store-deployments";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -168,9 +169,6 @@ export const cancelStoreDeploymentRun = Effect.fn("StoreDeployment.cancelRun")(f
 /** How long an admission has to reach its worker before Cloud hands it over again. */
 const UNCLAIMED_AFTER_SECONDS = 60;
 
-/** Statuses of a Deployment still in flight. */
-const IN_FLIGHT: ReadonlySet<DeploymentStatus> = new Set(["queued", "running", "cancelling"]);
-
 /**
  * Queued Deployments whose hand-off to the worker looks lost, in every Organization: the Store's unclaimed ones admitted
  * over a minute ago, less those in an Environment where a recorded worker run holds a Deployment still in flight (a run
@@ -188,7 +186,7 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
   const held = new Set<string>();
   for (const run of runs) {
     const view = yield* storeTry(() => store.read(run.organizationId, { query: "deployment", id: run.deploymentId })).pipe(Effect.option);
-    if (Option.isSome(view) && IN_FLIGHT.has(view.value.status)) held.add(view.value.environment.id);
+    if (Option.isSome(view) && isInFlight(view.value.status)) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
     organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,
