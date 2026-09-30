@@ -22,7 +22,7 @@ use super::{ImageCleanup, PreparedDeploy, RunningBuild, Session, connect_connect
 use crate::connect::SystemConnector;
 use crate::context::Connection;
 
-/// How often a running Deploy checks whether it was cancelled.
+/// How often a running Deployment renews its lease and checks whether it was cancelled.
 const CANCEL_POLL: Duration = Duration::from_secs(2);
 
 /// How often a build's new log output is recorded.
@@ -243,20 +243,7 @@ impl Run {
             Ok(running) => running,
             Err(error) => return self.not_executed(error.message).await,
         };
-        let finished = running.finished();
-        tokio::pin!(finished);
-        let mut poll = tokio::time::interval(CANCEL_POLL);
-        let outcome = loop {
-            tokio::select! {
-                outcome = &mut finished => break outcome,
-                _ = poll.tick() => {
-                    // ponytail: a failed read skips one check; the next tick reads again.
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        running.abort();
-                    }
-                }
-            }
-        };
+        let outcome = self.renewing(running.finished(), || running.abort()).await;
         match outcome {
             Ok(outcome) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
@@ -313,20 +300,13 @@ impl Run {
                 .iter()
                 .map(|(target, hint, running)| self.follow(target, hint.as_ref(), running)),
         );
-        tokio::pin!(all);
-        let mut poll = tokio::time::interval(CANCEL_POLL);
-        let ended = loop {
-            tokio::select! {
-                ended = &mut all => break ended,
-                _ = poll.tick() => {
-                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
-                        for (_, _, running) in &builds {
-                            running.abort();
-                        }
-                    }
+        let ended = self
+            .renewing(all, || {
+                for (_, _, running) in &builds {
+                    running.abort();
                 }
-            }
-        };
+            })
+            .await;
         let mut receipts = BTreeMap::new();
         let mut failed = Vec::new();
         let mut uploads = Vec::new();
@@ -458,10 +438,27 @@ impl Run {
                     .or_insert_with(|| commit.to_string());
             }
         }
-        session
-            .prepare_with(input, claimed.intent.registry_auth)?
-            .finished()
-            .await
+        // Delivering images can outlast the lease: keep renewing it.
+        let running = session.prepare_with(input, claimed.intent.registry_auth)?;
+        self.renewing(running.finished(), || running.abort()).await
+    }
+
+    /// Await `work` while renewing this runner's lease on the Deployment; a cancel
+    /// calls `abort`.
+    async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
+        tokio::pin!(work);
+        let mut poll = tokio::time::interval(CANCEL_POLL);
+        loop {
+            tokio::select! {
+                done = &mut work => return done,
+                _ = poll.tick() => {
+                    // ponytail: a failed read skips one check; the next tick reads again.
+                    if self.status().await.ok() == Some(DeploymentStatus::Cancelling) {
+                        abort();
+                    }
+                }
+            }
+        }
     }
 
     async fn report(
