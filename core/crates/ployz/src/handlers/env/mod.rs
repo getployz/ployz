@@ -11,8 +11,8 @@ mod pr;
 use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
-    CreateEnvironment, DeploymentStatus, DeploymentSummary, EnvironmentId, EnvironmentName,
-    EnvironmentRef, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
+    CreateEnvironment, DeploymentSummary, EnvironmentId, EnvironmentName, EnvironmentRef,
+    EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView, RemoveEnvironment,
     SetDefaultEnvironment,
 };
 use serde_json::json;
@@ -20,10 +20,9 @@ use serde_json::json;
 use super::config::expect;
 use super::deploy;
 use super::store::{self, failed, mint, project, project_arg, store};
-use super::teardown::{Inventory, accepted, confirmed, inventory, take_off, unfinished};
+use super::teardown::{Inventory, accepted, confirmed, inventory, remove_all};
 use super::{Error, leaf_matches, required};
 use crate::cli::{base, positional, repeated, switch, value};
-use crate::cloud_account::StoreCallError;
 use crate::output::say;
 use branch::moving;
 
@@ -325,30 +324,21 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     if !confirmed(matches, &typed, "Environment")? {
         return Err(unconfirmed(matches, inventory, &again));
     }
-    let events = deploy::open_events(matches)?;
-    let remove = RemoveEnvironment {
-        environment: at.clone(),
-    };
-    match store.write(&remove) {
-        Ok(removed) => return finish_removal(&removed, None),
-        Err(StoreCallError::Refused(error))
-            if error.details.get("deployed") == Some(&serde_json::Value::Bool(true)) => {}
-        Err(error) => return Err(failed(matches, &words)(error)),
-    }
     let accept = accepted(matches)?;
-    let (view, ran) = take_off(matches, &store, &at, &accept, events, &words, &again)?;
-    if view.deployment.status != DeploymentStatus::Applied {
-        // Not removed yet: queued, failed, cancelled, or its outcome is unknown. This
-        // same command finishes it once the removal applied, or queues it again.
-        again.extend(
-            accept
-                .iter()
-                .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-        );
-        return unfinished(matches, &view, ran, &again);
+    // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
+    // command finishes it once the removal applied, or queues it again.
+    again.extend(
+        accept
+            .iter()
+            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
+    );
+    let project = inventory.environment.project.clone();
+    let remove = RemoveEnvironment { environment: at };
+    let events = deploy::open_events(matches)?;
+    match remove_all(matches, &store, &remove, &project, events, &words, &again)? {
+        Some((removed, ran)) => finish_removal(&removed, ran.last()),
+        None => Ok(()),
     }
-    let removed = store.write(&remove).map_err(failed(matches, &words))?;
-    finish_removal(&removed, Some(&view.deployment))
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
