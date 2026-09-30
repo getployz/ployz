@@ -345,15 +345,19 @@ fn run_here(
     admitted: &DeploymentSummary,
     source: Option<&Path>,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
-    let connections = crate::connect::resolve_connections(
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    let connections = match crate::connect::resolve_connections(
         &super::config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
-        matches.get_one::<String>("context").map(String::as_str),
+        direct,
+        context,
         Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )
-    .map(|selected| selected.connections)
-    // No Cluster to reach: the runner records that nothing ran.
-    .unwrap_or_default();
+    ) {
+        Ok(selected) => selected.connections,
+        // Nothing named and no Cluster to reach: the runner records that nothing ran.
+        Err(_) if direct.is_none() && context.is_none() => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
     let runner = RunnerId::parse(format!("cli-{}", mint()))?;
     let sources = crate::sdk::Sources {
         checkouts: BTreeMap::new(),
