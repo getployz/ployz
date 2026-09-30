@@ -146,19 +146,13 @@ pub(super) fn clean(root: &ArgMatches) -> Result<(), Error> {
                 "No Server runs Namespace {namespace}"
             )));
         }
-        unanswered(&gaps);
-        return Err(Error::detailed(
-            RpcErrorCode::Unavailable,
-            format!(
+        return crate::output::finish_fanout("namespace", &None::<()>, &gaps, || {
+            say!(
                 "Namespace {namespace} isn't on the Servers that answered, but some didn't; \
-                 run the same command again"
-            ),
-            json!({
-                "namespace": namespace,
-                "failures": gaps.failures,
-                "omitted": gaps.omitted,
-            }),
-        ));
+                 run the same command again."
+            );
+            unanswered(&gaps);
+        });
     };
     if !confirmed(matches, namespace.as_str(), "Namespace")? {
         let next = retry(matches, &namespace);

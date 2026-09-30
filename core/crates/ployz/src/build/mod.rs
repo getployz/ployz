@@ -378,18 +378,24 @@ pub(crate) fn dockerfile_instructions(dockerfile: &str) -> Vec<(String, String)>
         lines.next();
     }
     let mut instructions = Vec::new();
+    // Like BuildKit: continued lines join byte for byte, keeping their leading
+    // whitespace and inserting none, so `ARG API_\` + `URL` reads `ARG API_URL`.
     let mut current = String::new();
     for line in lines {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        let (text, continued) = match line.strip_suffix(escape) {
+        let line = if current.is_empty() {
+            line.trim_start()
+        } else {
+            line
+        };
+        let (text, continued) = match line.trim_end_matches([' ', '\t']).strip_suffix(escape) {
             Some(text) => (text, true),
             None => (line, false),
         };
         current.push_str(text);
-        current.push(' ');
         if !continued {
             instructions.extend(instruction(&std::mem::take(&mut current)));
         }
@@ -473,13 +479,20 @@ mod tests {
             instructions,
             [
                 ("FROM".to_owned(), "node".to_owned()),
-                ("ARG".to_owned(), "API_URL  MODE=x".to_owned()),
+                ("ARG".to_owned(), "API_URL   MODE=x".to_owned()),
                 ("EXPOSE".to_owned(), "80".to_owned()),
             ]
         );
         assert_eq!(
             super::dockerfile_instructions("ARG \\\n API_URL"),
             [("ARG".to_owned(), "API_URL".to_owned())]
+        );
+        assert_eq!(
+            super::dockerfile_instructions("ARG API_\\\nURL\nEXPOSE 80\\\n80"),
+            [
+                ("ARG".to_owned(), "API_URL".to_owned()),
+                ("EXPOSE".to_owned(), "8080".to_owned()),
+            ]
         );
     }
 
