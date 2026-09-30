@@ -7,7 +7,7 @@ resolver = "3"
 version = "0.1.2-beta.52"
 edition = "2024"
 rust-version = "1.97.1"
-repository = "https://github.com/getployz/ployz2"
+repository = "https://github.com/getployz/ployz"
 license = "Apache-2.0"
 
 [workspace.dependencies]

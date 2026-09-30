@@ -29,7 +29,7 @@ done
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -n1)
 [ -n "$version" ] || fail "workspace version is missing"
 tag=v$version
-repo=${GITHUB_REPOSITORY:-getployz/ployz2}
+repo=${GITHUB_REPOSITORY:-getployz/ployz}
 
 (
     cd "$DIST"
