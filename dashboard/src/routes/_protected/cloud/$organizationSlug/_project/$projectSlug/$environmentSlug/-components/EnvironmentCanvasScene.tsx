@@ -1,3 +1,4 @@
+import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
 import {
   Background,
@@ -100,6 +101,7 @@ function CanvasWithData() {
       initialWidth={1200}
       initialHeight={800}
       fitView={!selectedNodeId}
+      initialFitViewOptions={CANVAS_FIT_VIEW}
       initialMaxZoom={1.25}
     >
       <CanvasFlow

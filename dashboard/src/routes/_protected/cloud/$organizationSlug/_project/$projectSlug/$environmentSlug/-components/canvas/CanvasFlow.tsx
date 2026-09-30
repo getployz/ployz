@@ -12,7 +12,7 @@ import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "../branch-review/store-hints";
-import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
+import { CANVAS_FIT_VIEW, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
@@ -118,6 +118,7 @@ export function CanvasFlow({
             elementsSelectable={false}
             nodesFocusable={false}
             fitView={!selectedNodeId}
+            fitViewOptions={CANVAS_FIT_VIEW}
             proOptions={{ hideAttribution: true }}
             snapToGrid
             snapGrid={SNAP_GRID}
