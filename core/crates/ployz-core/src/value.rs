@@ -215,6 +215,13 @@ validated_string_newtype!(
 );
 
 validated_string_newtype!(
+    /// An Uploaded Source's content digest: lowercase hex sha256 of its paths, bytes,
+    /// modes and links.
+    UploadDigest, "upload digest", "a lowercase sha256",
+    |value| is_lower_hex(value, 64)
+);
+
+validated_string_newtype!(
     /// A generated domain's prefix under the Cluster Domain: one DNS label.
     DomainPrefix, "domain prefix", "one DNS label: lowercase letters, digits and '-'",
     |value| is_dns_label(value)

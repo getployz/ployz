@@ -431,7 +431,8 @@ fn provenance(upload: &UploadedSource) -> String {
         .uploader
         .as_ref()
         .map_or("this device", ployz_store::Principal::as_str);
-    let digest = upload.digest.get(..12).unwrap_or(&upload.digest);
+    let digest = upload.digest.as_str();
+    let digest = digest.get(..12).unwrap_or(digest);
     match &upload.base {
         Some(base) => format!(
             "uploaded by {who}, base {}{}",
@@ -461,6 +462,8 @@ pub(super) fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + 
 /// at, if any, with whether it holds changes that commit doesn't.
 fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
     let digest = crate::build::content_digest(dir).map_err(unreadable(dir))?;
+    let digest =
+        ployz_core::UploadDigest::parse(digest).expect("a content digest is a lowercase sha256");
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .arg("-C")

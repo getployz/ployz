@@ -120,7 +120,7 @@ fn admit(store: &ConfigStore, n: u8) -> DeploymentId {
                 version: None,
                 // `blank` has no source of its own: it builds this upload.
                 upload: Some(ployz_store::UploadedSource {
-                    digest: "d".repeat(64),
+                    digest: ployz_core::UploadDigest::parse("d".repeat(64)).unwrap(),
                     base: None,
                     uploader: None,
                 }),

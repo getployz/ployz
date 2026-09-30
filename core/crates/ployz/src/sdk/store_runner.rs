@@ -590,8 +590,7 @@ fn targets(
     let Some(upload) = &claimed.deployment.upload else {
         return Err(Unbuilt::UploadNeeded(claimed.uploads.clone()));
     };
-    let digest = UploadDigest::parse(upload.digest.as_str())
-        .map_err(|error| Unbuilt::Failed(error.message))?;
+    let digest = upload.digest.clone();
     targets.extend(claimed.uploads.iter().map(|service| Target {
         service: service.clone(),
         build: Build::Upload {
