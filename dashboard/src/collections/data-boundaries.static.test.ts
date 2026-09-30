@@ -85,7 +85,6 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
-  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "removing a Namespace no Project owns deletes its Volumes' data: it reads what goes before the user confirms, then waits on the Servers",
