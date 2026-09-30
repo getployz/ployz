@@ -11,9 +11,20 @@ describe("toMachineRemoveAttemptView", () => {
     machineId: entry,
     missingIdentities: null,
     failureMessage: null,
+    result: null,
   };
 
-  it("projects active and succeeded attempts without extra nullable fields", () => {
+  it("projects a succeeded attempt with its result", () => {
+    const result = { resetWarning: null, release: { kind: "released" as const } };
+    expect(toMachineRemoveAttemptView({ ...base, state: "succeeded", result })).toEqual({
+      id: base.id,
+      machineId: entry,
+      state: "succeeded",
+      result,
+    });
+  });
+
+  it("projects active attempts without extra nullable fields", () => {
     expect(toMachineRemoveAttemptView({ ...base, state: "pending" })).toEqual({
       id: base.id,
       machineId: entry,

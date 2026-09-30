@@ -29,7 +29,7 @@ use crate::scope::{self, EnvironmentSummary};
 use crate::storage::{Tx, name_of};
 use crate::{Actor, Trusted, build, registry};
 
-/// An observation Cloud made of GitHub. Never caller testimony: only Cloud's worker
+/// An observation Cloud made, of GitHub or of the Cluster. Never caller testimony: only Cloud's worker
 /// passes one, in-process.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -42,6 +42,12 @@ pub enum SystemEvent {
     PullRequest(crate::PullRequest),
     /// Time passed: close what is due.
     Sweep(crate::Sweep),
+    /// Cloud reset the Organization's last Server itself and forgot its Cluster: nothing
+    /// of any Environment runs anywhere Cloud can reach. Applied State lets go of every
+    /// node, so nothing reads Deployed and the next Deploy runs everything; authored
+    /// configuration and Deployment history stay. A later removal of an Environment
+    /// completes as Forgotten.
+    ClusterForgotten,
 }
 
 /// A branch's head as Cloud read it just now, and what changed since `base`.
@@ -168,6 +174,13 @@ pub(crate) fn system(
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }
         SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep),
+        SystemEvent::ClusterForgotten => {
+            tx.execute(
+                "DELETE FROM config_applied WHERE organization_id = ?1",
+                &[organization.as_str().into()],
+            )?;
+            Ok(Automated::default())
+        }
     }
 }
 

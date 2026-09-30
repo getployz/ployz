@@ -619,8 +619,12 @@ impl Session {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.remove_machine(&target, confirm_data_loss))
-            .await
+        self.until_closed(client.remove_machine(
+            &target,
+            confirm_data_loss,
+            crate::cluster::Remover::Cloud,
+        ))
+        .await
     }
 
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine` and return its updated record.

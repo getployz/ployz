@@ -242,7 +242,13 @@ async fn cloud_removes_its_last_server_for_the_cli() {
             let (status, reply) = if line.starts_with("DELETE /api/cli/servers/") {
                 let body = serde_json::from_slice(&body).unwrap();
                 seen.lock().unwrap().push((line.trim().to_owned(), body));
-                ("200 OK", r#"{"removed":true}"#)
+                ("200 OK", r#"{"id":"r1"}"#)
+            } else if line.starts_with("GET /api/cli/server-removals/r1 ") {
+                // Cloud's removal attempt: it settled, and Cloud let go of the Cluster.
+                (
+                    "200 OK",
+                    r#"{"state":"succeeded","reset_warning":null,"release":{"kind":"released"}}"#,
+                )
             } else {
                 ("404 Not Found", r#"{"code":"NOT_FOUND"}"#)
             };
@@ -280,6 +286,14 @@ async fn cloud_removes_its_last_server_for_the_cli() {
     assert_eq!(
         result.get("next"),
         Some(&json!("ployz server add")),
+        "{result}"
+    );
+    assert_eq!(result.get("cloud_released"), Some(&json!(true)), "{result}");
+    assert!(
+        result
+            .pointer("/warnings/0")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|warning| warning.contains("is the last Server")),
         "{result}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
