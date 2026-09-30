@@ -8,7 +8,7 @@ use serde_json::json;
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::deployment::{self, DeploymentSummary};
+use crate::deployment::{self, DeploymentSummary, DeploymentView};
 use crate::error;
 use crate::id::DeploymentId;
 use crate::removal::{self, VolumeLoss};
@@ -55,8 +55,9 @@ pub struct NamespaceQuery {
 pub struct NamespaceView {
     pub environment: EnvironmentSummary,
     pub namespace: ployz_core::Namespace,
-    /// Each Service's runtime name (its Private DNS name), by the name it has now:
-    /// a renamed Service's containers keep the name it was created with.
+    /// Each deployed Service's runtime name (its Private DNS name, as Applied State
+    /// has it), by the name it has now: a renamed Service's containers keep the name
+    /// it was created with, and a staged Private DNS change isn't live yet.
     pub services: std::collections::BTreeMap<ServiceName, ServiceName>,
 }
 
@@ -88,6 +89,39 @@ pub struct DeploymentsView {
 #[serde(deny_unknown_fields)]
 pub struct DeploymentQuery {
     pub id: DeploymentId,
+}
+
+/// One Deployment, by its number in an Environment.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct NumberedDeploymentQuery {
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    pub number: u64,
+}
+
+pub(crate) fn numbered(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    query: &NumberedDeploymentQuery,
+) -> Result<DeploymentView, RpcError> {
+    let environment = scope::environment(tx, who, &query.environment)?;
+    let number = i64::try_from(query.number).unwrap_or(i64::MAX);
+    let rows = tx.query(
+        "SELECT id FROM config_deployment WHERE environment_id = ?1 AND number = ?2",
+        &[environment.summary.id.as_str().into(), number.into()],
+    )?;
+    let Some(row) = rows.first() else {
+        return Err(error::not_found(
+            format!(
+                "{}/{} has no Deployment #{}",
+                environment.summary.project, environment.summary.name, query.number
+            ),
+            json!({ "next": "ployz deployment ls" }),
+        ));
+    };
+    let id = row.parse(0, "identity")?;
+    deployment::view(tx, who, &id)
 }
 
 pub(crate) fn plan(tx: &mut dyn Tx, who: &Actor, query: &PlanQuery) -> Result<PlanView, RpcError> {
@@ -142,13 +176,20 @@ pub(crate) fn namespace(
 ) -> Result<NamespaceView, RpcError> {
     let environment = scope::environment(tx, who, &query.environment)?;
     let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-    let services = environment
-        .working
+    // Containers run as Applied State has them, under the name the Service has now.
+    let applied = deployment::applied_state(tx, &environment.summary.id, &environment.working)?;
+    let services = applied
         .services
         .iter()
-        .filter_map(|service| {
-            let name = ServiceName::parse(service.slug.as_str()).ok()?;
-            Some((name, service.config.private_dns.clone()))
+        .filter_map(|applied| {
+            let now = environment
+                .working
+                .services
+                .iter()
+                .find(|service| service.id == applied.id)
+                .unwrap_or(applied);
+            let name = ServiceName::parse(now.slug.as_str()).ok()?;
+            Some((name, applied.config.private_dns.clone()))
         })
         .collect();
     Ok(NamespaceView {

@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use super::command::{Command, replayable};
 use crate::error;
 use crate::id::ServiceLineageId;
 use crate::scope::EnvironmentRef;
@@ -83,32 +82,29 @@ pub(crate) fn create_git_service(
     create: &CreateGitService,
     trusted: &Trusted,
 ) -> Result<ServiceStaged, RpcError> {
-    let command = Command::CreateGitService(create.clone());
-    replayable(tx, who, &command, |tx| {
-        let found = authorized(trusted, create.repository.as_str())?;
-        let branch = create.branch.as_ref().unwrap_or(&found.default_branch);
-        if !found.has_branch(branch.as_str()) {
-            return Err(no_branch(found.repository.as_str(), create.name.as_str()));
-        }
-        let source = ServiceSource::Git {
-            version: 2,
-            repository: found.repository.to_string(),
-            repository_id: found.repository_id.get(),
-            access: found.access.clone(),
-            root_dir: "/".into(),
-            branch: ServiceGitBranch::Connected {
-                name: branch.to_string(),
-            },
-        };
-        super::command::insert_service(
-            tx,
-            who,
-            &create.id,
-            &create.environment,
-            &create.name,
-            source,
-        )
-    })
+    let found = authorized(trusted, create.repository.as_str())?;
+    let branch = create.branch.as_ref().unwrap_or(&found.default_branch);
+    if !found.has_branch(branch.as_str()) {
+        return Err(no_branch(found.repository.as_str(), create.name.as_str()));
+    }
+    let source = ServiceSource::Git {
+        version: 2,
+        repository: found.repository.to_string(),
+        repository_id: found.repository_id.get(),
+        access: found.access.clone(),
+        root_dir: "/".into(),
+        branch: ServiceGitBranch::Connected {
+            name: branch.to_string(),
+        },
+    };
+    crate::service::insert_service(
+        tx,
+        who,
+        &create.id,
+        &create.environment,
+        &create.name,
+        source,
+    )
 }
 
 /// The Settings of a Git-backed Service's source and build.

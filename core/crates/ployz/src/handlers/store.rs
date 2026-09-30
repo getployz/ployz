@@ -73,7 +73,7 @@ impl Backend {
                 let view: View = runtime.block_on(cloud_account::config_store(
                     credential,
                     "read",
-                    &query.clone().query(),
+                    &query.to_query(),
                 ))?;
                 Q::view(view).map_err(StoreCallError::Refused)
             }
@@ -90,7 +90,7 @@ impl Backend {
                 let written: Written = runtime.block_on(cloud_account::config_store(
                     credential,
                     "write",
-                    &command.clone().command(),
+                    &command.to_command(),
                 ))?;
                 C::written(written).map_err(StoreCallError::Refused)
             }

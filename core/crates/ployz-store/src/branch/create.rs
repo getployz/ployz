@@ -7,16 +7,6 @@ pub(crate) fn create_branch(
     who: &Actor,
     create: &CreateBranch,
 ) -> Result<Branched, RpcError> {
-    replayable(tx, who, &Command::CreateBranch(create.clone()), |tx| {
-        insert_branch(tx, who, create)
-    })
-}
-
-pub(super) fn insert_branch(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    create: &CreateBranch,
-) -> Result<Branched, RpcError> {
     let parent = scope::lock(tx, who, &create.from)?;
     if let Some(removal) = crate::teardown::removing(tx, &parent.summary.id)? {
         return Err(crate::teardown::being_removed(&parent, &removal));

@@ -52,7 +52,7 @@ pub fn compare_resource_settings(
                     path.into(),
                     at(baseline, path).clone(),
                     at(&current, path).clone(),
-                    false,
+                    true,
                 ));
             }
         }

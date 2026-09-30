@@ -155,7 +155,6 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             storage: requested_storage(matches),
-            expect: None,
         })?;
     staged(matches, &changed, "Staged Volume storage")
 }

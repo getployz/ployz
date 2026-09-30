@@ -13,7 +13,8 @@ use ployz_store::{
     CreateEnvironment, CreateProject, CreateService, Deploy, DeploymentId, DnsLookup, DomainAction,
     DomainEvidence, DomainQuery, DomainRow, DomainStatus, DomainsQuery, EnvironmentId,
     EnvironmentName, EnvironmentRef, Hostname, OrganizationId, PlanQuery, ProjectId, ProjectName,
-    Query, RemoveDomain, Retry, RunEvidence, RunnerId, ServiceLineageId, Trusted, View, Written,
+    PublishedHostname, Query, RemoveDomain, RenameProject, Retry, RunEvidence, RunnerId,
+    ServiceLineageId, SetGeneratedDomain, Trusted, View, Written,
 };
 use serde_json::{Value, json};
 
@@ -95,6 +96,7 @@ fn cloud(pro: bool) -> Trusted {
             certificates: Some(Vec::new()),
             ingress_addresses: vec!["203.0.113.7".into()],
             lookups: Vec::new(),
+            published: Vec::new(),
         },
         ..Trusted::default()
     }
@@ -412,4 +414,157 @@ fn a_custom_domain_under_the_cluster_domain_is_refused() {
     store
         .write_trusted(&who, &add(Some("notacme.ployz.app"), None), &cloud(true))
         .unwrap();
+}
+
+/// `cloud(false)` with `hostname` published by `service` in Namespace `namespace`.
+fn publishing(hostname: &str, namespace: &str, service: &str) -> Trusted {
+    let mut trusted = cloud(false);
+    trusted.domains.published.push(PublishedHostname {
+        hostname: host(hostname),
+        namespace: ployz_core::Namespace::parse(namespace).unwrap(),
+        service: ServiceName::parse(service).unwrap(),
+    });
+    trusted
+}
+
+fn set_prefix(environment: Option<&str>, prefix: &str) -> SetGeneratedDomain {
+    SetGeneratedDomain {
+        environment: at(environment),
+        service: ServiceName::parse("web").unwrap(),
+        prefix: prefix.into(),
+    }
+}
+
+#[test]
+fn a_generated_prefix_changes_to_a_free_dns_label() {
+    let (store, who) = shop();
+    let trusted = cloud(false);
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    let staging = AddDomain {
+        environment: at(Some("staging")),
+        ..add(None, None)
+    };
+    store.write_trusted(&who, &staging, &trusted).unwrap();
+
+    let set = store
+        .write_trusted(&who, &set_prefix(None, "Shop"), &trusted)
+        .unwrap();
+    assert_eq!(set.domain.shown(), "shop.acme.ployz.app");
+    assert_eq!(set.staged.len(), 1);
+    let refused = |prefix: &str, trusted: &Trusted| {
+        store
+            .write_trusted(&who, &set_prefix(Some("staging"), prefix), trusted)
+            .unwrap_err()
+    };
+    assert_eq!(
+        refused("-shop", &trusted).code,
+        RpcErrorCode::InvalidArgument
+    );
+    // Unique in the Organization, and against what another Namespace publishes.
+    assert_eq!(refused("shop", &trusted).code, RpcErrorCode::Conflict);
+    let orphan = refused(
+        "old",
+        &publishing("old.acme.ployz.app", "gone-production", "web"),
+    );
+    assert_eq!(orphan.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        orphan.details["next"],
+        "ployz server clean --namespace gone-production --confirm gone-production"
+    );
+    assert!(
+        store
+            .write_trusted(&who, &set_prefix(None, "shop"), &trusted)
+            .unwrap()
+            .staged
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_new_generated_prefix_avoids_published_hostnames() {
+    let (store, who) = shop();
+    let added = store
+        .write_trusted(
+            &who,
+            &add(None, None),
+            &publishing("web.acme.ployz.app", "gone-production", "web"),
+        )
+        .unwrap();
+    assert_eq!(added.domain.shown(), "web-2.acme.ployz.app");
+}
+
+#[test]
+fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
+    let (store, who) = shop();
+    let trusted = cloud(false);
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
+    // Staging deployed once, so its Namespace is reserved.
+    let staging = Command::Admit(Admit::Deploy(Deploy {
+        id: deployment(1),
+        environment: at(Some("staging")),
+        services: Vec::new(),
+        version: None,
+        upload: None,
+        accept_volume_loss: Vec::new(),
+        message: None,
+    }));
+    store.write_trusted(&who, &staging, &trusted).unwrap();
+    let refused = admit(
+        &store,
+        &who,
+        2,
+        &publishing("web.acme.ployz.app", "shop-staging", "web"),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::Conflict);
+    assert_eq!(
+        refused.message,
+        "web.acme.ployz.app is already published by web in shop/staging"
+    );
+    // Its own Namespace publishing it is no clash.
+    admit(
+        &store,
+        &who,
+        2,
+        &publishing("web.acme.ployz.app", "shop-production", "web"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_renamed_project_reads_by_its_new_name() {
+    let (store, who) = shop();
+    let renamed = store
+        .write(
+            &who,
+            &RenameProject {
+                project: ProjectName::parse("shop").unwrap(),
+                name: ProjectName::parse("store").unwrap(),
+            },
+        )
+        .unwrap();
+    assert_eq!(renamed.name.as_str(), "store");
+    let namespace = store
+        .read(&who, &ployz_store::NamespaceQuery::default())
+        .unwrap();
+    assert_eq!(namespace.environment.project.as_str(), "store");
+    // Nothing deployed yet: it takes a Namespace by the new name.
+    assert_eq!(namespace.namespace.as_str(), "store-production");
+    let back = RenameProject {
+        project: ProjectName::parse("store").unwrap(),
+        name: ProjectName::parse("store").unwrap(),
+    };
+    assert_eq!(store.write(&who, &back).unwrap().name.as_str(), "store");
+    let missing = RenameProject {
+        project: ProjectName::parse("shop").unwrap(),
+        name: ProjectName::parse("store").unwrap(),
+    };
+    assert_eq!(
+        store.write(&who, &missing).unwrap_err().code,
+        RpcErrorCode::NotFound
+    );
 }

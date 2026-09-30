@@ -3,17 +3,17 @@
 //! an ended Deployment froze. Starting hands a queued one to a runner again, and
 //! cancelling stops one.
 
+use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
 use ployz_core::{RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
-use crate::command::{Command, replayable};
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary, UploadedSource};
 use crate::domain;
 use crate::error;
-use crate::id::{DeploymentId, VolumeName};
+use crate::id::{DeploymentId, Hostname, VolumeName};
 use crate::registry;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
@@ -129,46 +129,50 @@ pub struct Start {
     pub deployment: DeploymentId,
 }
 
-pub(crate) fn start(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    start: &Start,
-) -> Result<DeploymentSummary, RpcError> {
-    deployment::start(tx, who, &start.deployment)
-}
-
-pub(crate) fn cancel(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    cancel: &Cancel,
-) -> Result<DeploymentSummary, RpcError> {
-    deployment::cancel(tx, who, &cancel.deployment)
-}
-
 pub(crate) fn admit(
     tx: &mut dyn Tx,
     who: &Actor,
     admit: &Admit,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
-    let command = Command::Admit(admit.clone());
-    replayable(tx, who, &command, |tx| admitted(tx, who, admit, trusted))
-}
-
-fn admitted(
-    tx: &mut dyn Tx,
-    who: &Actor,
-    admit: &Admit,
-    trusted: &Trusted,
-) -> Result<DeploymentSummary, RpcError> {
-    trusted.runnable()?;
     match admit {
         // The retry deletes exactly the Docker Volumes its source's review accepted,
         // which the copied target nodes carry: nothing new, so no new review.
-        Admit::Retry(retry) => deployment::retry(tx, who, &retry.id, &retry.deployment),
+        Admit::Retry(retry) => {
+            let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
+            if retried.remove && trusted.no_servers() {
+                return deployment::forget(tx, &retried.id);
+            }
+            trusted.runnable()?;
+            Ok(retried)
+        }
         Admit::Remove(removal) => self::removal(tx, who, removal, trusted),
-        Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
+        Admit::Deploy(deploy) => {
+            trusted.runnable()?;
+            self::deploy(tx, who, deploy, trusted)
+        }
     }
+}
+
+/// Refuse to deploy `environment`'s generated domains without the Cluster Domain
+/// they expand under: Cloud reserves it at a Deploy.
+pub(crate) fn needs_cluster_domain(
+    environment: &scope::Environment,
+    intent: &SavedEnvironmentIntent,
+    cluster_domain: Option<&Hostname>,
+) -> Result<(), RpcError> {
+    if cluster_domain.is_some() || !domain::has_generated(intent) {
+        return Ok(());
+    }
+    Err(RpcError {
+        code: RpcErrorCode::Unsupported,
+        message: format!(
+            "{} has generated domains, which need the Cluster Domain Ployz Cloud reserves \
+             at a Deploy: deploy it through Ployz Cloud first",
+            environment.summary.name
+        ),
+        details: json!({}),
+    })
 }
 
 fn deploy(
@@ -184,20 +188,19 @@ fn deploy(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    if cluster_domain.is_none() && domain::has_generated(&environment.working) {
-        return Err(RpcError {
-            code: RpcErrorCode::Unsupported,
-            message: "Generated domains deploy only through Ployz Cloud, which holds the \
-                      Cluster Domain"
-                .into(),
-            details: json!({}),
-        });
-    }
+    needs_cluster_domain(&environment, &environment.working, cluster_domain)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
+    domain::check_published(
+        tx,
+        who,
+        &saved_intent,
+        (cluster_domain, &namespace),
+        trusted,
+    )?;
     // A full Deploy removes what Saved State dropped; publishing puts a removal in
     // Saved State. Either runs the destructive review; only the first deletes.
     let publishes = review
@@ -257,7 +260,8 @@ fn deploy(
 /// Queue the Deployment that removes an Environment from the Servers: the empty
 /// Environment against everything Applied State holds, under the same destructive
 /// review as any Deploy. A running Deployment must end first, so the removal's
-/// targets are everything that ran.
+/// targets are everything that ran. With nothing on a Server, because none is left
+/// or nothing ran, it applies at once: no runner, and no data to lose.
 fn removal(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -281,19 +285,24 @@ fn removal(
             json!({ "deployment": running.id }),
         ));
     }
+    let forget = trusted.no_servers() || crate::teardown::on_servers(tx, id)?.is_none();
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = review::empty(&environment.working.environment_slug);
-    let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
-    let losses = removal::review(
-        who,
-        id,
-        (&review.view.version, admit.version.as_deref()),
-        removed,
-        trusted.volumes.as_ref(),
-        &admit.accept_volume_loss,
-    )?;
+    let losses = if forget {
+        Vec::new()
+    } else {
+        let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
+        removal::review(
+            who,
+            id,
+            (&review.view.version, admit.version.as_deref()),
+            removed,
+            trusted.volumes.as_ref(),
+            &admit.accept_volume_loss,
+        )?
+    };
     let frozen = deployment::freeze(
         id,
         &empty,
@@ -313,6 +322,9 @@ fn removal(
     )?;
     if admit.close {
         crate::pull_request::mark_closing(tx, id)?;
+    }
+    if forget {
+        return deployment::forget(tx, &admitted.id);
     }
     Ok(admitted)
 }

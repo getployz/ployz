@@ -11,10 +11,10 @@ use serde_json::{Map, Value};
 use ts_rs::TS;
 
 use crate::Actor;
-use crate::command::{ServiceSummary, summary};
 use crate::id::ServiceLineageId;
 use crate::review;
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
+use crate::service::{ServiceSummary, summary};
 use crate::storage::Tx;
 
 /// Every Service of an Environment. One Environment's Services are one bounded

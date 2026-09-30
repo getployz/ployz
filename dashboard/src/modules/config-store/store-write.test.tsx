@@ -145,27 +145,6 @@ it("runs a Move after pending edits in every Environment", async () => {
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
 });
 
-it("queues storage edits against their committed revision and waits for them before a Move", async () => {
-  const test = setup(view(2, 1));
-  const first = deferred<StoreResult<ConfigWritten>>();
-  const stored = (revision: number): StoreResult<ConfigWritten> => ({ ok: true, value: {
-    written: "volume", environment: view(revision, 1).environment,
-    volume: { id: "v", name: "data", storage: { kind: "local" } }, staged: ["volumes.data.storage"], immediate: [],
-  } });
-  test.write.mockImplementationOnce(() => first.promise).mockImplementationOnce(async () => stored(4));
-  test.write.mockResolvedValueOnce({ ok: true, value: { written: "moved" } as never });
-  const command = { command: "set_volume_storage" as const, environment: ref, volume: "data", storage: { kind: "local" as const }, expect: null };
-  const one = test.writer.commit(command);
-  await waitFor(() => expect(test.write).toHaveBeenCalledTimes(1));
-  const two = test.writer.commit({ ...command, storage: { kind: "provisioned", maximumBytes: 7_000_000_000 } });
-  const moved = test.writer.commit({ command: "move", move: "save", from: ref, into: { project: "shop", environment: "staging" }, picks: null });
-  expect(test.write.mock.calls[0]?.[0]).toMatchObject({ data: { command: { expect: 2 } } });
-  first.resolve(stored(3));
-  await Promise.all([one.isPersisted.promise, two.isPersisted.promise, moved.isPersisted.promise]);
-  expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "set_volume_storage", expect: 3 } } });
-  expect(test.write.mock.calls[2]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
-});
-
 it("refetches only the views a changed Store table family backs", () => {
   const queryClient = new QueryClient();
   const scope = { queryClient, sessionId: "session", userId: "user" };
