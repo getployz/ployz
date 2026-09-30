@@ -818,6 +818,16 @@ pub(super) fn say_view(view: &DeploymentView) {
     if let Some(upload) = &view.deployment.upload {
         say!("  {}", provenance(upload));
     }
+    if let Some(
+        ployz_store::Outcome::NotExecuted { reason, .. }
+        | ployz_store::Outcome::Executed {
+            reason: Some(reason),
+            ..
+        },
+    ) = &view.outcome
+    {
+        say!("  {reason}");
+    }
     for node in &view.nodes {
         say!(
             "  {}: {}",

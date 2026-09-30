@@ -164,10 +164,9 @@ export function deploymentActions(status: DeploymentStatus) {
   };
 }
 
-/** Why a Deployment didn't run, and the CLI line that gives it an upload it needs. */
-export function notExecuted(outcome: Outcome | null) {
-  if (outcome?.type !== "not_executed") return null;
-  return { reason: outcome.reason, next: outcome.needs_upload.length ? "ployz deploy --upload ." : null };
+/** Why a Deployment failed, as the Store words it for users: nothing ran, or what stopped its execution. */
+export function failureReason(outcome: Outcome | null) {
+  return outcome?.reason ?? null;
 }
 
 /** The part of a recorded Deploy Preview the page shows; the Store keeps the rest. */

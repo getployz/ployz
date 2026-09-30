@@ -250,19 +250,26 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
     let partial = RunEvidence::Executed {
         outcome: Box::new(outcome(json!({
             "type": "failed", "completed": [operation("web")],
-            "failed": {"type": "operation", "operation": operation("api"), "error": {"type": "cancelled"}},
+            "failed": {"type": "operation", "operation": operation("api"), "error": {
+                "type": "machine", "action": "RemoveContainer",
+                "error": {"code": "internal", "message": "the daemon is busy", "details": {}}
+            }},
             "unexecuted": []
         }))),
         removed: Vec::new(),
     };
     store.record(&id(1), &a, partial).unwrap();
+    let view = store
+        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
+        .unwrap();
+    assert_eq!(view.deployment.status, DeploymentStatus::Failed);
+    // The Deployment says why, in words users read.
+    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.outcome else {
+        panic!("an executed outcome");
+    };
     assert_eq!(
-        store
-            .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
-            .unwrap()
-            .deployment
-            .status,
-        DeploymentStatus::Failed
+        reason.as_deref(),
+        Some("remove Container failed: the daemon is busy")
     );
     assert_eq!(
         nodes(&store, &who, 1),
