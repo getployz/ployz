@@ -180,6 +180,10 @@ revocation is confirmed separately; an offline Machine remains unconfirmed.
 Management Capabilities grant shared administrative access: rotation affects every
 old holder, while Cloud logout does not revoke direct capabilities or SSH keys.
 
+Cloud forgets a Cluster it can no longer reach only when a user says its Servers
+were deleted, and only while none of them answers; a failed connection may gate
+that decision, never make it.
+
 **Red flags:** Cloud-held runtime truth, a connection catalog treated as membership,
 absence or transport failure used to reset a founder, Cluster operations whose
 correctness depends on Cloud reachability.

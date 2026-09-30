@@ -8,6 +8,7 @@ import type {
   ConfigCommitted,
   PullRequestRef,
   OrganizationRemoved,
+  AppliedVolume,
   Unclaimed,
   DeploymentSummary,
   GitSource,
@@ -301,6 +302,8 @@ export interface ConfigStore {
   system(organization: string, event: SystemEvent, trusted?: Pick<ConfigTrusted, "servers" | "domains">): Promise<ConfigWritten>;
   /** Cloud's own Organization removal only: forget its configuration once it has no Project; else rejects `conflict`. */
   removeOrganization(organization: string): Promise<OrganizationRemoved>;
+  /** Cloud's Forget Servers only: the Volumes a Deploy put on the Organization's Servers, which `cluster_forgotten` lets go of. */
+  appliedVolumes(organization: string): Promise<AppliedVolume[]>;
   /** Cloud's sweep only: every queued Deployment no runner claimed, admitted before `before` (Unix seconds). */
   unclaimed(before: number): Promise<Unclaimed[]>;
   /** Cloud's GitHub workers only: the branch head the Store last saw, which a new head is compared from. */

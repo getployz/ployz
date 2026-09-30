@@ -407,7 +407,8 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         cloud_enroll::Error::Timeout(_)
         | cloud_enroll::Error::Connect(_)
         | cloud_enroll::Error::Http(_)
-        | cloud_enroll::Error::RetrySameCommand { .. } => RpcErrorCode::Unavailable,
+        | cloud_enroll::Error::RetrySameCommand { .. }
+        | cloud_enroll::Error::FounderWait => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
         cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
     }

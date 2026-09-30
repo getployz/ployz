@@ -37,9 +37,16 @@ import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
-import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
+import {
+  decryptPairingSecret, foundingClaimFresh, loadOrganizationConnections, SERVER_REACH_TIMEOUT_MS,
+} from "#/modules/machines/connections.server";
 
 const TOKEN_PREFIX = "pmet_";
+
+export const CLUSTER_UNREACHABLE = "This Organization's Servers can't be reached. If they were deleted, run `ployz server forget` "
+  + "or use Forget Servers in the dashboard.";
+
+const unreachable = () => new Conflict({ message: CLUSTER_UNREACHABLE, userFacing: true });
 
 export function hashEnrollmentToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
@@ -180,7 +187,7 @@ const verifyEnrollmentToken = Effect.fn("MachineEnrollment.verifyToken")(
 
 type PairingRow = Pick<
   typeof schemaOrganizationPairing.$inferSelect,
-  "encryptedPairingSecret" | "founderPublicKey" | "founderMachineId" | "founderClaimMachineId" | "removalStartedAt"
+  "encryptedPairingSecret" | "founderPublicKey" | "founderMachineId" | "founderClaimMachineId" | "removalStartedAt" | "createdAt"
 >;
 
 const organizationPairingProjection = {
@@ -189,6 +196,7 @@ const organizationPairingProjection = {
   founderClaimMachineId: schemaOrganizationPairing.founderClaimMachineId,
   founderMachineId: schemaOrganizationPairing.founderMachineId,
   removalStartedAt: schemaOrganizationPairing.removalStartedAt,
+  createdAt: schemaOrganizationPairing.createdAt,
 };
 
 const loadPairingRow = Effect.fn("MachineEnrollment.loadPairing")(
@@ -295,7 +303,7 @@ const claimOrLoadEnrollment = Effect.fn("MachineEnrollment.claimOrLoad")(
         if (current.founderMachineId) {
           return { kind: "ready" as const, pairing };
         }
-        return { kind: "pending" as const };
+        return { kind: "pending" as const, fresh: foundingClaimFresh(current) };
       }),
     );
   },
@@ -319,18 +327,32 @@ export const enrollMachine = Effect.fn("MachineEnrollment.enrollMachine")(
         storage: request.storage,
       };
     }
-    if (state.kind === "pending") return waitForFounder();
+    // Another Server is founding: wait while it may still finish; an old claim may be a founder that was deleted.
+    if (state.kind === "pending") return state.fresh ? waitForFounder() : yield* unreachable();
 
     return yield* Effect.scoped(Effect.gen(function* () {
       const access = yield* loadOrganizationConnections(token.organizationId);
-      if (access.kind === "missing" || access.connections.length === 0) return waitForFounder();
+      // A founder whose connection Cloud doesn't hold can't be joined through.
+      if (access.kind === "missing" || access.connections.length === 0) return yield* unreachable();
       if (access.generation !== hashEnrollmentToken(state.pairing.secret)) {
         return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
       }
-      const opened = yield* (yield* OrganizationRuntime).open(token.organizationId);
-      if (opened.status !== "connected") return yield* new PloyzProviderError({ operation: "connect for enrollment", cause: opened });
-      const session = opened.connected;
-      const snapshot = yield* session.observeEnrollment();
+      const runtime = yield* OrganizationRuntime;
+      // Bounded well inside the CLI's request timeout, so a Cluster that never answers is reported, not waited on.
+      // Only a connection that fails or doesn't come in time reads unreachable; anything else fails as itself.
+      const joined = yield* Effect.gen(function* () {
+        const opened = yield* runtime.open(token.organizationId);
+        if (opened.status === "unreachable") return { kind: "unreachable" as const };
+        if (opened.status === "no_connection") return { kind: "no_connection" as const };
+        return { kind: "joined" as const, session: opened.connected, snapshot: yield* opened.connected.observeEnrollment() };
+      }).pipe(Effect.timeoutOrElse({
+        duration: SERVER_REACH_TIMEOUT_MS,
+        orElse: () => Effect.succeed({ kind: "unreachable" as const }),
+      }));
+      // The pairing went while connecting: Cloud access was removed.
+      if (joined.kind === "no_connection") return yield* new Conflict({ message: "The enrollment attempt is no longer current." });
+      if (joined.kind === "unreachable") return yield* unreachable();
+      const { session, snapshot } = joined;
       const database = yield* Database;
       const assignment = yield* database.transaction(Effect.gen(function* () {
         const { drizzle } = yield* Database;

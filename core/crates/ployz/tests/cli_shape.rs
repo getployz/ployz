@@ -89,6 +89,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "server add",
             "server build-cache-clear",
             "server clean",
+            "server forget",
             "server inspect",
             "server logs",
             "server ls",

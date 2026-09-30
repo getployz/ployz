@@ -25,6 +25,20 @@ export const decryptPairingSecret = Effect.fn("MachineConnections.decryptPairing
   },
 );
 
+/** How long Cloud waits for a Server to answer: a join to the Organization's Cluster, or each Server Forget Servers tries. */
+export const SERVER_REACH_TIMEOUT_MS = 10_000;
+
+/**
+ * A founding claim younger than this is a Server still joining: joiners wait for it, and Forget Servers doesn't take its
+ * pairing away. An older one without a founder doesn't expire; it only stops making others wait.
+ */
+const FOUNDING_CLAIM_FRESH_MS = 10 * 60_000;
+
+/** Whether the pairing is a founding claim a Server may still be completing. */
+export function foundingClaimFresh(pairing: { founderMachineId: string | null; createdAt: Date }, now = new Date()) {
+  return pairing.founderMachineId === null && now.getTime() - pairing.createdAt.getTime() < FOUNDING_CLAIM_FRESH_MS;
+}
+
 /** The current pairing's generation, which its Machines carry as their cluster key; none while unpaired or being removed. */
 const currentGeneration = Effect.fn("MachineConnections.generation")(function* (organizationId: string) {
   const { drizzle } = yield* Database;

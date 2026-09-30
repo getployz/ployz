@@ -325,6 +325,7 @@ async function openConfigStore(url, sealingSecret) {
     checks: (environment) => withRpcError(store.checks(environment)),
     system: (organization, event, trusted) => withRpcError(store.system(organization, event, trusted)),
     removeOrganization: (organization) => withRpcError(store.removeOrganization(organization)),
+    appliedVolumes: (organization) => withRpcError(store.appliedVolumes(organization)),
     unclaimed: (before) => withRpcError(store.unclaimed(before)),
     branchHead: (organization, repositoryId, branch) =>
       withRpcError(store.branchHead(organization, repositoryId, branch)),

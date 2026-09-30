@@ -98,6 +98,8 @@ function statusFor(code: string) {
       return 409;
     case "unauthenticated":
       return 401;
+    case "forbidden":
+      return 403;
     case "unsupported":
       return 501;
     case "unavailable":

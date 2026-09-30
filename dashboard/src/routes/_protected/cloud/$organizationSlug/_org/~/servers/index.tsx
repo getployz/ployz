@@ -32,7 +32,7 @@ function RouteComponent() {
       {state === "loading" ? (
         <ServersSkeleton />
       ) : state === "unreachable" ? (
-        <ServersUnreachable />
+        <ServersUnreachable organizationSlug={organizationSlug} />
       ) : servers.length === 0 ? (
         <Empty variant="first-run">
           <EmptyHeader>

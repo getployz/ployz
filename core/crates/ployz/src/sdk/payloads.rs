@@ -128,6 +128,7 @@ pub fn typescript_declarations() -> String {
     declarations.add::<ployz_store::GithubClaims>();
     declarations.add::<ployz_store::Unclaimed>();
     declarations.add::<ployz_store::OrganizationRemoved>();
+    declarations.add::<ployz_store::AppliedVolume>();
 
     let mut out = String::from(HEADER);
     for declaration in declarations.by_name.values() {

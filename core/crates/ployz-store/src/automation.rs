@@ -42,11 +42,13 @@ pub enum SystemEvent {
     PullRequest(crate::PullRequest),
     /// Time passed: close what is due.
     Sweep(crate::Sweep),
-    /// Cloud reset the Organization's last Server itself and forgot its Cluster: nothing
-    /// of any Environment runs anywhere Cloud can reach. Applied State lets go of every
-    /// node, so nothing reads Deployed and the next Deploy runs everything; authored
-    /// configuration and Deployment history stay. A later removal of an Environment
-    /// completes as Forgotten.
+    /// Cloud forgot the Organization's Cluster: it reset the last Server itself, or a
+    /// user said the Servers were deleted and none answered. Nothing of any Environment
+    /// runs anywhere Cloud can reach. Every Deployment that might still run is
+    /// cancelled; Applied State lets go of every node, so nothing reads Deployed and the
+    /// next Deploy runs everything; each Environment's Namespace and fixed Volume
+    /// storage go too. Authored configuration and Deployment history stay. A later
+    /// removal of an Environment completes as Forgotten.
     ClusterForgotten,
 }
 
@@ -143,6 +145,8 @@ pub struct Automated {
     pub removed: Vec<EnvironmentSummary>,
     /// Pull requests whose GitHub check Cloud publishes again.
     pub checks: Vec<crate::PullRequestRef>,
+    /// Deployments cancelled without a runner, oldest first: their Cluster is gone.
+    pub cancelled: Vec<DeploymentId>,
 }
 
 /// One auto-deploy.
@@ -174,13 +178,10 @@ pub(crate) fn system(
             crate::pull_request::pull_request(tx, &who, pull, trusted)
         }
         SystemEvent::Sweep(sweep) => crate::pull_request::sweep(tx, &who, sweep),
-        SystemEvent::ClusterForgotten => {
-            tx.execute(
-                "DELETE FROM config_applied WHERE organization_id = ?1",
-                &[organization.as_str().into()],
-            )?;
-            Ok(Automated::default())
-        }
+        SystemEvent::ClusterForgotten => Ok(Automated {
+            cancelled: crate::teardown::forget_cluster(tx, &who)?,
+            ..Automated::default()
+        }),
     }
 }
 

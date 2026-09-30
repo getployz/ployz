@@ -15,6 +15,8 @@ export type Admit = { "admit": "deploy" } & Deploy | { "admit": "retry" } & Retr
 
 export type AdvertisedEndpoint = string;
 
+export type AppliedVolume = { project: ProjectName, environment: EnvironmentName, volume: VolumeName, };
+
 export type Apply = "staged" | "immediate";
 
 export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
@@ -72,7 +74,11 @@ removed: Array<EnvironmentSummary>,
 /**
  * Pull requests whose GitHub check Cloud publishes again.
  */
-checks: Array<PullRequestRef>, };
+checks: Array<PullRequestRef>,
+/**
+ * Deployments cancelled without a runner, oldest first: their Cluster is gone.
+ */
+cancelled: Array<DeploymentId>, };
 
 export type Batch = {
 /**

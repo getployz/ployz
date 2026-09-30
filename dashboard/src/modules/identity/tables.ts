@@ -31,7 +31,7 @@ export const member = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
-    role: text("role").default("member").notNull().$type<"owner" | "member">(),
+    role: text("role").default("member").notNull().$type<"owner" | "admin" | "member">(),
     createdAt,
   },
   (table) => [unique().on(table.userId, table.organizationId)],
