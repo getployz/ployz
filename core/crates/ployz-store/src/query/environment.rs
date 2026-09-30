@@ -101,9 +101,10 @@ pub(crate) fn environment(
                 continue;
             }
             // Unset, a Private DNS name is the Service's own.
-            let default = match setting {
-                ServiceSetting::PrivateDns => json!(service.slug),
-                _ => setting.default(),
+            let default = if matches!(setting, ServiceSetting::PrivateDns) {
+                json!(service.slug)
+            } else {
+                setting.default()
             };
             row(
                 Target::Setting(setting),
