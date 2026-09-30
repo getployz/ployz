@@ -46,7 +46,7 @@ function IssueList({ data }: { data: StoreCanvasService }) {
   const { issues } = useServiceStatus(data);
   if (issues.length === 0) return null;
   return (
-    <ItemGroup aria-label="Issues" className="mb-3 gap-1">
+    <ItemGroup aria-label="Issues" className="my-3 gap-1">
       {issues.map((issue) => <IssueRow key={issueKey(issue)} issue={issue} serviceId={data.service.id} />)}
     </ItemGroup>
   );
@@ -67,9 +67,11 @@ function IssueRow({ issue, serviceId }: { issue: NodeIssue; serviceId: string })
     case "runtime":
       return (
         <Item variant="outline" size="xs">
-          <ItemContent className="flex-row items-center gap-2">
-            <StatusLine status={issue.line} issues={[]} />
-            {issue.line.code === null ? null : <span className="text-muted-foreground">exit {issue.line.code}</span>}
+          <ItemContent>
+            <div className="flex min-w-0 items-center gap-2">
+              <StatusLine status={issue.line} issues={[]} />
+              {issue.line.code === null ? null : <span className="shrink-0 text-muted-foreground">exit {issue.line.code}</span>}
+            </div>
           </ItemContent>
           <ItemActions>
             <Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={service} search={(prev) => ({ ...prev, tab: "logs" as const })} className={ACTION}>View logs</Link>
