@@ -146,15 +146,6 @@ pub(crate) enum CredentialKind {
     Device,
 }
 
-impl std::fmt::Display for CredentialKind {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::Token => "token",
-            Self::Device => "device",
-        })
-    }
-}
-
 /// The Organization's tokens, the caller's signed-in devices, and revocations still to confirm.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct Credentials {

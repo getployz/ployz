@@ -248,11 +248,16 @@ impl<'m> Store<'m> {
             {
                 let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
                 let mut extra = Vec::new();
-                let accept = error.details["accept"].as_array().into_iter().flatten();
+                let accept = error
+                    .details
+                    .get("accept")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten();
                 for name in accept.filter_map(text) {
                     extra.extend(["--accept-volume-loss".to_owned(), name]);
                 }
-                if let Some(version) = text(&error.details["version"]) {
+                if let Some(version) = error.details.get("version").and_then(text) {
                     extra.extend(["--expect-version".to_owned(), version]);
                 }
                 let retry = self.again(&extra.iter().map(String::as_str).collect::<Vec<_>>());
@@ -262,7 +267,7 @@ impl<'m> Store<'m> {
                 }
                 StoreCallError::Refused(error)
             }
-            error => error,
+            error @ (StoreCallError::Refused(_) | StoreCallError::Cloud(_)) => error,
         };
         self.fail(error)
     }

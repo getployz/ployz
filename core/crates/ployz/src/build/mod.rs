@@ -478,8 +478,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            super::dockerfile_instructions("ARG \\\n API_URL")[0].1,
-            "API_URL"
+            super::dockerfile_instructions("ARG \\\n API_URL"),
+            [("ARG".to_owned(), "API_URL".to_owned())]
         );
     }
 

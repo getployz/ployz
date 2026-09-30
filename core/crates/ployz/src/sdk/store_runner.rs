@@ -238,8 +238,7 @@ impl Run {
             Ok(outcome) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
                     // Deleting is never interrupted: a half-deleted set stays accepted.
-                    self.renewing(remove_volumes(session, deletes), || ())
-                        .await
+                    self.renewing(remove_volumes(session, deletes), || ()).await
                 } else {
                     Vec::new()
                 };
@@ -524,7 +523,6 @@ impl Run {
             .await
             .map(|summary| summary.status)
     }
-
 }
 
 /// What to build on the Servers, and the images GitHub already built, by Service.

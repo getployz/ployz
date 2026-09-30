@@ -123,13 +123,7 @@ where
             .map(|writer| writer.get_ref().try_clone())
             .transpose()?
             .map(std::io::BufWriter::new);
-        let (view, outcome) = take_off(
-            matches,
-            store,
-            &at,
-            (&accept, version.take()),
-            writer,
-        )?;
+        let (view, outcome) = take_off(matches, store, &at, (&accept, version.take()), writer)?;
         if view.deployment.status != DeploymentStatus::Applied {
             unfinished(matches, &view, &ran, outcome, &again)?;
             return Ok(None);

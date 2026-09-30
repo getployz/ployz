@@ -13,12 +13,10 @@ use ployz_core::RpcError;
 use crate::error;
 
 /// Migrations, applied once, in order, each as one batch.
-const MIGRATIONS: &[(&str, &str)] = &[
-    (
-        "0001_config_store",
-        include_str!("migrations/0001_config_store.sql"),
-    ),
-];
+const MIGRATIONS: &[(&str, &str)] = &[(
+    "0001_config_store",
+    include_str!("migrations/0001_config_store.sql"),
+)];
 
 pub(crate) enum Storage {
     Sqlite(sqlite::Sqlite),

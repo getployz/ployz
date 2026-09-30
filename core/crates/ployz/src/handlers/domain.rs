@@ -99,8 +99,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
         service: store::service_name(matches, "service")?,
         prefix: required(matches, "prefix")?,
     };
-    let changed = store::store(root)?
-        .write(&set)?;
+    let changed = store::store(root)?.write(&set)?;
     staged(matches, &changed, "Staged generated domain")
 }
 
@@ -124,8 +123,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         environment: store::environment(matches)?,
         service,
     };
-    let view = store::store(root)?
-        .read(&query)?;
+    let view = store::store(root)?.read(&query)?;
     let next = view
         .domains
         .iter()
