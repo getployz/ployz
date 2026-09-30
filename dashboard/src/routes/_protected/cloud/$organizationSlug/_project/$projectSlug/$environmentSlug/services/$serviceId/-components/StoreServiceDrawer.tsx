@@ -1,5 +1,5 @@
 import { Suspense, useState, type ReactNode } from "react";
-import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
@@ -17,8 +17,9 @@ import { dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
@@ -92,8 +93,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
-  // Removed while open (a staged removal of a new Service, or from the CLI): back to the canvas.
-  if (!service) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
+  // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
+  if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
   const rows = serviceSettingRows(settings, service.name);
   const state: StoreService = {

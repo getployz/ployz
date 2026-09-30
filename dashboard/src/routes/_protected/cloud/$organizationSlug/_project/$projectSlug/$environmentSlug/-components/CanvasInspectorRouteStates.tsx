@@ -1,5 +1,6 @@
 import { RouteErrorAlert } from "#/components/route-error-alert";
 import { Card, CardContent, CardHeader } from "#/components/ui/card";
+import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Skeleton } from "#/components/ui/skeleton";
 import { useParams } from "@tanstack/react-router";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
@@ -41,6 +42,19 @@ export function CanvasInspectorError({ noun }: { noun: string }) {
           description={`The ${noun.toLowerCase()} details are unavailable right now. Try loading them again.`}
         />
       </div>
+    </div>
+  );
+}
+
+/** A node link to nothing here: a mistyped or stale link, or one removed while open. */
+export function CanvasInspectorNotFound({ noun }: { noun: string }) {
+  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  return (
+    <div className="flex h-full flex-col">
+      <CanvasInspectorHeader params={params}>{noun}</CanvasInspectorHeader>
+      <Empty variant="placeholder">
+        <EmptyDescription>This environment has no such {noun.toLowerCase()}. It may have been deleted.</EmptyDescription>
+      </Empty>
     </div>
   );
 }

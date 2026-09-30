@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Schema } from "effect";
-import { redirect, useLoaderData, useNavigate } from "@tanstack/react-router";
+import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import { HardDriveIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import type { DiffView, EnvironmentRef, Mount, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
@@ -15,6 +15,7 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
 import { dnsLabelError, settingText } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
@@ -36,12 +37,12 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   const volumes = requireView(views[0]).volumes;
   const services = requireView(views[1]).services;
   const diff = requireView(views[2]);
+  const writer = useStoreWriter(organizationSlug);
   const volume = volumes.find((candidate) => candidate.id === params.resourceId);
-  // Removed while open (a new Volume's removal, or from the CLI): back to the canvas.
-  if (!volume) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
+  // A stale link, or removed while open (a new Volume's removal, or from the CLI).
+  if (!volume) return <CanvasInspectorNotFound noun="Volume" />;
   const state: StoreVolume = { organizationSlug, environment: store, volume };
   const removing = volume.change === "delete";
-  const writer = useStoreWriter(organizationSlug);
   const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
     ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
   // A DNS label no other Volume here has.
