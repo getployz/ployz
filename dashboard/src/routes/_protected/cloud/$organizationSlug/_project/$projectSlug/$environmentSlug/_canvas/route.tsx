@@ -29,7 +29,8 @@ function CanvasError({ error }: ErrorComponentProps) {
       <RouteErrorAlert
         title="Couldn’t load this environment"
         description={
-          error.message || "The environment data could not be loaded."
+          (error instanceof Error && error.message) ||
+          "The environment data could not be loaded."
         }
       />
     </div>
