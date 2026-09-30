@@ -50,6 +50,20 @@ function dockerVolume(loss) {
 
   const client = await sdk.connect({ connections: connectionsFor(machineId) });
 
+  // Cloud's `--no-reset` path: a refusal comes back as an RpcError, not a TypeError.
+  try {
+    await client.removeMachineMembership("no-such-machine");
+    throw new Error("removing an unknown Machine's membership must fail");
+  } catch (error) {
+    if (error.message === "removing an unknown Machine's membership must fail") {
+      throw error;
+    }
+    const rpc = expectRpcError(sdk, error);
+    if (rpc.code !== "not_found") {
+      throw new Error(`expected not_found, got ${JSON.stringify(rpc)}`);
+    }
+  }
+
   const observed = await client.dataLossIfMachineRemoved(workerMachine);
   if (observed.data_loss.length !== 2) {
     throw new Error(`expected two Data Loss entries, got ${JSON.stringify(observed)}`);
