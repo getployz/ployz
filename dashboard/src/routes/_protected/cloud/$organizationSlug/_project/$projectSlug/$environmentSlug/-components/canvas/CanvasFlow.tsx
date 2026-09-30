@@ -117,7 +117,7 @@ export function CanvasFlow({
             nodeTypes={canvasNodeTypes}
             elementsSelectable={false}
             nodesFocusable={false}
-            fitView={!selectedNodeId}
+            fitView={!selectedNode}
             fitViewOptions={CANVAS_FIT_VIEW}
             proOptions={{ hideAttribution: true }}
             snapToGrid

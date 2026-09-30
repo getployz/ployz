@@ -100,7 +100,8 @@ function CanvasWithData() {
       initialEdges={initialEdges}
       initialWidth={1200}
       initialHeight={800}
-      fitView={!selectedNodeId}
+      // A link to a node that isn't here (stale, deleted) shows the whole canvas, not an unfitted corner.
+      fitView={!initialNodes.some((node) => node.id === selectedNodeId)}
       initialFitViewOptions={CANVAS_FIT_VIEW}
       initialMaxZoom={1.25}
     >
