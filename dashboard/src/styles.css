@@ -5,7 +5,7 @@
 @import "@fontsource-variable/geist-mono";
 @import "../tokens.css";
 
-/* A `.light` subtree (the public lander) stays light when the page is dark, and a `.dark` block inside
+/* A `.light` subtree (the signed-out pages) stays light when the page is dark, and a `.dark` block inside
    it is dark again. The added parts sit in :where(), so `dark:` keeps its old specificity. */
 @custom-variant dark (&:is(:is(.dark *):not(:where(.light *)), :where(.light .dark *)));
 @plugin "./tailwind-typography.js";

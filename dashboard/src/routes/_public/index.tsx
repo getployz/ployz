@@ -1,7 +1,8 @@
 import { getAuthSession } from '#/auth/auth'
-import { Link, createFileRoute, redirect } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 import { buildMarketingMeta } from '#/components/marketing/meta'
+import { LoginDialog } from '#/routes/_public/-components/PublicChrome'
 import { WireDefs } from '#/components/marketing/kit'
 import {
   DeployTicker,
@@ -39,40 +40,32 @@ export const Route = createFileRoute('/_public/')({
 // Written for Carol: a solo developer who already pays a hosted platform and has never had to run a
 // server. It sells the #1225 flow and launches with it; only database moves, snapshots, backups and
 // rollbacks are Soon. Always light, whatever the visitor's theme; colour fields use the brand's paper
-// tokens (tokens.css), and Intent Pink stays on Deploy and staged changes.
+// tokens (tokens.css), and Intent Pink stays on Deploy and staged changes. The header, footer and light
+// scope come from the _public layout.
 function Lander() {
   return (
-    <div className="light min-h-screen bg-background text-foreground">
+    <main>
       <WireDefs />
-      <Header />
-      <main>
-        <Hero />
-        <OneCommand />
-        <AnyStack />
-        <Platform />
-        <Runs />
-        <Pricing />
-        <Founder />
-        <Compare />
-        <Questions />
-        <Closer />
-      </main>
-      <Footer />
-    </div>
+      <Hero />
+      <OneCommand />
+      <AnyStack />
+      <Platform />
+      <Runs />
+      <Pricing />
+      <Founder />
+      <Compare />
+      <Questions />
+      <Closer />
+    </main>
   )
 }
 
-function Wordmark({ className }: { className?: string }) {
-  return <span className={cn('font-bold tracking-[-0.04em]', className)}>ployz</span>
-}
-
-/** Deploy, the page's one action. `intent` is the product's solid pink Deploy, used only in the hero and the closer. */
+/**
+ * Deploy, the page's one action: it opens sign-in over the page. `intent` is the product's solid pink
+ * Deploy, used only in the hero and the closer.
+ */
 function DeployButton({ intent }: { intent?: boolean }) {
-  return (
-    <Link to="/auth" className={buttonVariants({ variant: intent ? 'intent' : 'ink', size: 'lg' })}>
-      Deploy
-    </Link>
-  )
+  return <LoginDialog className={buttonVariants({ variant: intent ? 'intent' : 'ink', size: 'lg' })}>Deploy</LoginDialog>
 }
 
 /** A small mono label, like the tags on a rack unit. */
@@ -87,37 +80,6 @@ function Mark({ children }: { children: ReactNode }) {
 
 function Caption({ children, className }: { children: ReactNode; className?: string }) {
   return <p className={cn('mt-4 max-w-md font-mono text-sm text-muted-foreground', className)}>{children}</p>
-}
-
-function Header() {
-  return (
-    <header className="sticky top-0 z-40 border-b border-border bg-background">
-      <div className="mx-auto flex h-14 max-w-6xl items-center gap-6 px-5">
-        <a href="#top" className="text-xl">
-          <Wordmark />
-        </a>
-        <nav aria-label="Sections" className="hidden items-center gap-5 text-sm text-muted-foreground md:flex">
-          <a href="#start" className="hover:text-foreground">
-            How it works
-          </a>
-          <a href="#pricing" className="hover:text-foreground">
-            Pricing
-          </a>
-          <a href="#questions" className="hover:text-foreground">
-            Questions
-          </a>
-        </nav>
-        <div className="ml-auto flex items-center gap-2">
-          <Link to="/auth" className={buttonVariants({ variant: 'ghost' })}>
-            Sign in
-          </Link>
-          <Link to="/auth" className={buttonVariants({ variant: 'ink' })}>
-            Deploy
-          </Link>
-        </div>
-      </div>
-    </header>
-  )
 }
 
 function Section({ id, className, children }: { id?: string; className?: string; children: ReactNode }) {
@@ -490,21 +452,5 @@ function Closer() {
         <ExitPrompt />
       </div>
     </Section>
-  )
-}
-
-function Footer() {
-  return (
-    <footer className="border-t border-border px-5 pt-12 pb-10">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8">
-        <Wordmark className="text-7xl leading-none md:text-9xl" />
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 font-mono text-xs text-muted-foreground">
-          <span>Keep the platform. Drop the bill.</span>
-          <Link to="/auth" className="hover:text-foreground md:ml-auto">
-            Sign in
-          </Link>
-        </div>
-      </div>
-    </footer>
   )
 }
