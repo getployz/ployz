@@ -387,3 +387,21 @@ fn a_retry_ships_the_cluster_domain_its_source_froze() {
         "{intent}"
     );
 }
+
+#[test]
+fn a_custom_domain_under_the_cluster_domain_is_refused() {
+    let (store, who) = shop();
+    for hostname in [
+        "acme.ployz.app",
+        "web-shop.acme.ployz.app",
+        "a.b.acme.ployz.app",
+    ] {
+        let refused = store
+            .write_trusted(&who, &add(Some(hostname), None), &cloud(true))
+            .unwrap_err();
+        assert_eq!(refused.code, RpcErrorCode::InvalidArgument, "{hostname}");
+    }
+    store
+        .write_trusted(&who, &add(Some("notacme.ployz.app"), None), &cloud(true))
+        .unwrap();
+}

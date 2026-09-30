@@ -48,7 +48,7 @@ Human text goes through `say!`; clippy denies `print_stdout` in the CLI crate.
 
 A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine `not_found` is not a failure. A fan-out answers `not_found` only when every Machine answered; otherwise it prints the partial result (a null value plus `failures`/`omitted`). A printed result that did not fully succeed exits 3. A failure before any result prints `{"error": {code, message, details}}` in the RPC error vocabulary and exits 1, or 2 for a rejected command line. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong. Map CLI-owned error enums to codes with exhaustive matches over their variants, no `_ =>` arm, so a new variant must choose its code.
 
-JSON fields are only added, never renamed or repurposed. A short flag has one meaning across the whole tree.
+JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 
 ## Async
 

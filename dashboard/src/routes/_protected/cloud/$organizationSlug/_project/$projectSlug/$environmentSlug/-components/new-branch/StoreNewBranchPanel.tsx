@@ -106,7 +106,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
         fix,
       }).isPersisted.promise;
       // The writer toasts a refused Deploy; the Branch is made either way.
-      if (deployNow) writer.commit({ command: "admit", id: crypto.randomUUID(), environment: branch, services: [], version: null, remove: false, accept_volume_loss: [] });
+      if (deployNow) writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: branch, services: [], version: null, accept_volume_loss: [] });
       await navigate(getDashboardDestination({
         kind: "environment", organizationSlug: params.organizationSlug, projectSlug: params.projectSlug, environmentSlug: branch.environment,
       }, "architecture"));

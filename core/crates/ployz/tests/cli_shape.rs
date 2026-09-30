@@ -57,6 +57,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "env pr",
             "env rm",
             "env save",
+            "env setup",
             "env shutdown",
             "env update",
             "exec",
@@ -115,6 +116,7 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
             "volume add",
             "volume inspect",
             "volume ls",
+            "volume rename",
             "volume rm",
             "volume set",
         ]

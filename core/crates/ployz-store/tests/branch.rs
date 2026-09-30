@@ -971,3 +971,45 @@ fn a_branch_is_planned_by_name_before_it_is_created() {
         RpcErrorCode::NotFound
     );
 }
+
+#[test]
+fn a_branch_naming_no_setup_runs_its_parents_defaults_for_what_it_copies() {
+    let (store, who) = shop();
+    let setup = |service: &str, command: &str| SetupCommand {
+        service: ServiceName::parse(service).unwrap(),
+        command: command.into(),
+    };
+    let listed = store
+        .write(
+            &who,
+            &ployz_store::SetBranchSetup {
+                environment: at("production"),
+                setup: vec![setup("web", " pnpm db:seed "), setup("gone", "true")],
+            },
+        )
+        .unwrap();
+    let production = listed
+        .environments
+        .iter()
+        .find(|listing| listing.name.as_str() == "production")
+        .unwrap();
+    assert_eq!(production.branch_setup.len(), 2);
+    let refused = store.write(
+        &who,
+        &ployz_store::SetBranchSetup {
+            environment: at("production"),
+            setup: vec![setup("web", "  ")],
+        },
+    );
+    assert_eq!(code(refused), RpcErrorCode::InvalidArgument);
+
+    // Only what the Branch copies runs, and a Branch naming its own replaces them.
+    let made = store
+        .write(&who, &branch("fix-web", "production", &["web"]))
+        .unwrap();
+    assert_eq!(made.branch.setup, [setup("web", "pnpm db:seed")]);
+    let mut own = branch("fix-db", "production", &["db"]);
+    own.setup = vec![setup("db", "seed")];
+    let made = store.write(&who, &own).unwrap();
+    assert_eq!(made.branch.setup, [setup("db", "seed")]);
+}

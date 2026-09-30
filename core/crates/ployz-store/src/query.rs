@@ -1,33 +1,26 @@
-//! `read`'s queries. Each family lives in its own module and adds one [`Query`]
-//! variant, one [`View`] variant, one arm in [`run`], and a typed method on
-//! [`ConfigStore`](crate::ConfigStore) that calls the same function.
-
-pub(crate) mod deployment;
-mod diff;
-mod environment;
-mod service;
-mod volume;
+//! `read`'s queries: each feature module adds one [`Query`] variant, one [`View`]
+//! variant and one arm in [`run`].
 
 use ployz_core::RpcError;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use deployment::{
+pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView, PlanQuery,
     PlanView,
 };
-pub use diff::DiffQuery;
-pub(crate) use diff::diff;
-pub(crate) use environment::environment;
-pub use environment::{EnvironmentQuery, EnvironmentView, SettingRow};
-pub use service::{
+pub use crate::review::diff::DiffQuery;
+pub(crate) use crate::review::diff::diff;
+pub use crate::service::query::{
     ServiceListing, ServiceQuery, ServiceView, ServicesQuery, ServicesView, SourceKind,
 };
-pub(crate) use service::{service, services};
-pub use volume::{
+pub(crate) use crate::service::query::{service, services};
+pub(crate) use crate::settings::query::environment;
+pub use crate::settings::query::{EnvironmentQuery, EnvironmentView, SettingRow};
+pub use crate::volume::query::{
     RemovalsQuery, RemovalsView, VolumeListing, VolumeQuery, VolumeView, VolumesQuery, VolumesView,
 };
-pub(crate) use volume::{removals, volume, volumes};
+pub(crate) use crate::volume::query::{removals, volume, volumes};
 
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
@@ -143,15 +136,19 @@ pub(crate) fn run(
     match query {
         Query::Environment(query) => environment(tx, who, query).map(View::Environment),
         Query::Diff(query) => diff(tx, who, query).map(View::Diff),
-        Query::Plan(query) => deployment::plan(tx, who, query).map(View::Plan),
-        Query::Deployments(query) => deployment::page(tx, who, query).map(View::Deployments),
+        Query::Plan(query) => crate::deployment::query::plan(tx, who, query).map(View::Plan),
+        Query::Deployments(query) => {
+            crate::deployment::query::page(tx, who, query).map(View::Deployments)
+        }
         Query::Deployment(query) => {
             crate::deployment::view(tx, who, &query.id).map(|view| View::Deployment(Box::new(view)))
         }
         Query::BuildLog(query) => crate::deployment::build_log(tx, who, query).map(View::BuildLog),
         Query::Services(query) => services(tx, who, query).map(View::Services),
         Query::Service(query) => service(tx, who, query).map(View::Service),
-        Query::Namespace(query) => deployment::namespace(tx, who, query).map(View::Namespace),
+        Query::Namespace(query) => {
+            crate::deployment::query::namespace(tx, who, query).map(View::Namespace)
+        }
         Query::Domains(query) => crate::domain::domains(tx, who, query, trusted).map(View::Domains),
         Query::Domain(query) => crate::domain::domain(tx, who, query, trusted).map(View::Domain),
         Query::Volumes(query) => volumes(tx, who, query).map(View::Volumes),

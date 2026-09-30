@@ -661,3 +661,25 @@ fn publishing_a_deployed_volumes_removal_needs_evidence_and_acceptance() {
     let published = publish(&["data"], Some(observed(&['a'])), Some(bound)).unwrap();
     assert!(published.created);
 }
+
+#[test]
+fn a_renamed_volume_keeps_its_mounts_and_refuses_a_taken_name() {
+    let (store, who) = shop();
+    let rename = |name: &str| {
+        store.write(
+            &who,
+            &ployz_store::RenameVolume {
+                environment: EnvironmentRef::default(),
+                volume: VolumeName::parse("data").unwrap(),
+                name: VolumeName::parse(name).unwrap(),
+            },
+        )
+    };
+    assert!(rename("data").unwrap().staged.is_empty());
+    let renamed = rename("files").unwrap();
+    assert_eq!(texts(&renamed.staged), ["volumes.files"]);
+    assert_eq!(texts(&[renamed.volume.name]), ["files"]);
+    assert_eq!(listed(&store, &who)[0].mounts[0].path, "/data");
+    let gone = rename("other").unwrap_err();
+    assert_eq!(gone.code, RpcErrorCode::NotFound);
+}
