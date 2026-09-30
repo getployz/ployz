@@ -38,7 +38,7 @@ export function AddServerDialog({
   organizationSlug: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [managedVolumes, setManagedVolumes] = useState(false);
+  const [managedVolumes, setManagedVolumes] = useState(true);
   const mintMutation = useMutation({
     mutationFn: () =>
       mintMachineEnrollmentServerFn({ data: { organizationSlug } }),
@@ -54,7 +54,7 @@ export function AddServerDialog({
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen);
     if (!nextOpen) {
-      setManagedVolumes(false);
+      setManagedVolumes(true);
       mintMutation.reset();
     }
   }
@@ -98,8 +98,8 @@ export function AddServerDialog({
                   Managed volumes
                 </FieldLabel>
                 <FieldDescription>
-                  Unlock zero-downtime server migrations, efficient backups,
-                  and instant rollbacks. You can opt in later.
+                  Sets up ZFS so each Volume gets an enforced size limit.
+                  Required to run managed Volumes on this server.
                 </FieldDescription>
               </FieldContent>
             </Field>
@@ -110,7 +110,7 @@ export function AddServerDialog({
               </div>
             ) : mintMutation.data ? (
               <CopyBlock
-                value={`${mintMutation.data.command}${managedVolumes ? " --storage zfs" : ""}`}
+                value={`${mintMutation.data.command}${managedVolumes ? "" : " --storage none"}`}
               />
             ) : (
               <Alert variant="destructive">
