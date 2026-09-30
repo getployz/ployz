@@ -13,7 +13,7 @@ import {
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { ItemGroup } from "#/components/ui/item";
 import { plural } from "#/lib/plural";
-import { movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
+import { isNodeRow, movePicks, presentMoveRow } from "#/modules/config-store/store-branches";
 import { deploymentStatusLabel } from "#/modules/config-store/store-deployments";
 import {
   branchQuery, environmentsQuery, fetchStoreView, saveQuery, servicesQuery, updateQuery, useStoreViews, volumesQuery,
@@ -213,7 +213,7 @@ function StoreSaveSheet({ store, branch, view, deletable, onSaved, onClose }: {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const writer = useStoreWriter(params.organizationSlug);
   const rows = useRowPicks(view.rows.map((row) => ({
-    row: { key: row.row, node: !row.row.includes("."), conflict: row.conflict, choice: row.choice ?? undefined },
+    row: { key: row.row, node: isNodeRow(row.row), conflict: row.conflict, choice: row.choice ?? undefined },
     presented: presentMoveRow(row),
   })));
   const [deleteAfter, setDeleteAfter] = useState(true);
