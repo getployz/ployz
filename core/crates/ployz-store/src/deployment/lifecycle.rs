@@ -615,6 +615,8 @@ pub(super) enum Evidence<'run> {
 /// it, and is Unchanged when Applied State already holds it as saved. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
+/// A recorded preview stores only its Unchanged nodes; its Pending ones matter only
+/// to the Volumes they mount.
 pub(super) fn node_outcomes(
     nodes: &[TargetNode],
     saved: &SavedEnvironmentIntent,
@@ -626,7 +628,7 @@ pub(super) fn node_outcomes(
             if preview
                 .operations
                 .iter()
-                .any(|row| row.service() == Some(name))
+                .any(|row| row.service_name() == Some(name))
             {
                 NodeStatus::Pending
             } else {

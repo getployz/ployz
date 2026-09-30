@@ -180,18 +180,19 @@ fn remove_web() -> Value {
     json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)})
 }
 
-/// Claim Deployment `n` and record a Deploy Preview that plans `web` if `web`, else nothing.
-fn prepare(store: &ConfigStore, n: u8, web: bool) -> ployz_store::Claimed {
+/// Claim Deployment `n` and record a Deploy Preview that plans `services`.
+fn prepare(store: &ConfigStore, n: u8, services: &[&str]) -> ployz_store::Claimed {
     let runner = RunnerId::parse("runner").unwrap();
     let claimed = store.claim(&id(n), &runner).unwrap();
-    let operations: Vec<Value> = web
-        .then(|| {
+    let operations: Vec<Value> = services
+        .iter()
+        .enumerate()
+        .map(|(index, service)| {
             json!({
-                "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
+                "index": index, "machine_id": "a".repeat(32), "service_name": service,
                 "operation": remove_web(), "status": {"type": "pending"}
             })
         })
-        .into_iter()
         .collect();
     let preview: DeployPreview = serde_json::from_value(json!({
         "namespace": "shop-production", "operations": operations,
@@ -223,7 +224,7 @@ fn execute(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) {
 /// Claim Deployment `n`, record a Deploy Preview of `web`, then a success that
 /// deleted `removed`.
 fn run(store: &ConfigStore, n: u8, removed: Vec<VolumeRemoval>) -> ployz_store::Claimed {
-    let claimed = prepare(store, n, true);
+    let claimed = prepare(store, n, &["web"]);
     execute(store, n, removed);
     claimed
 }
@@ -612,7 +613,10 @@ fn removing_a_deployed_volume_needs_evidence_and_a_typed_acceptance() {
     assert_eq!(data.outcome, NodeStatus::Failed);
 
     admit(&store, &who, 3, &["data"], Some(observed(&['a']))).unwrap();
-    run(&store, 3, vec![removal(VolumeRemovalOutcome::Removed)]);
+    // A Volume being removed waits while it runs.
+    prepare(&store, 3, &["web"]);
+    assert!(outcomes(&store, &who, 3).contains(&("data".to_owned(), NodeStatus::Pending)));
+    execute(&store, 3, vec![removal(VolumeRemovalOutcome::Removed)]);
     assert!(listed(&store, &who).is_empty());
     assert!(diff(&store, &who).changes.is_empty());
     let removed = store
@@ -749,7 +753,7 @@ fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that
     let (store, who) = shop();
     // A new Volume waits with the Service that mounts it.
     admit(&store, &who, 1, &[], None).unwrap();
-    prepare(&store, 1, true);
+    prepare(&store, 1, &["web"]);
     assert_eq!(
         outcomes(&store, &who, 1),
         [
@@ -761,7 +765,7 @@ fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that
 
     // Once deployed, a Deploy whose preview plans nothing for `web` settles both.
     admit(&store, &who, 2, &[], None).unwrap();
-    prepare(&store, 2, false);
+    prepare(&store, 2, &[]);
     assert_eq!(
         outcomes(&store, &who, 2),
         [

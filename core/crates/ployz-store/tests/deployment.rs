@@ -241,6 +241,17 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
             ("api".to_owned(), NodeStatus::Unchanged)
         ]
     );
+    // Ending without executing leaves what the preview settled: nothing ran on api either way.
+    store
+        .record(&id(2), &a, RunEvidence::NotExecuted("stopped".into()))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::NotAttempted),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
 }
 
 #[test]

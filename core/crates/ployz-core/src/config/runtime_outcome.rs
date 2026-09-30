@@ -236,10 +236,7 @@ pub fn project_runtime_outcome(
         {
             return Err(invalid());
         }
-        let service = row
-            .service_name
-            .as_ref()
-            .or_else(|| operation.service_name());
+        let service = row.service_name();
         match service {
             Some(service) => {
                 let entry = services.entry(service.clone()).or_insert((true, false));

@@ -813,7 +813,7 @@ pub enum OperationPhase {
 impl OperationRow {
     /// The Service this operation belongs to: the row's, else its operation's.
     #[must_use]
-    pub fn service(&self) -> Option<&ServiceName> {
+    pub fn service_name(&self) -> Option<&ServiceName> {
         self.service_name
             .as_ref()
             .or_else(|| self.operation.service_name())
