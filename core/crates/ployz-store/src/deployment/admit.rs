@@ -5,7 +5,7 @@
 
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -150,16 +150,28 @@ pub(crate) fn admit(
             Ok(retried)
         }
         Admit::Remove(removal) => self::removal(tx, who, removal, trusted),
-        Admit::Deploy(deploy) => {
-            trusted.runnable()?;
-            self::deploy(tx, who, deploy, trusted)
-        }
+        Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
+}
+
+/// The gate every Deploy passes, the user's or the Store's own: a Server to run
+/// it, the Cluster Domain its generated domains expand under, and no hostname
+/// another Namespace publishes.
+pub(crate) fn gate(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, intent): (&scope::Environment, &SavedEnvironmentIntent),
+    (cluster_domain, namespace): (Option<&Hostname>, &Namespace),
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    trusted.runnable()?;
+    needs_cluster_domain(environment, intent, cluster_domain)?;
+    domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
 /// they expand under: Cloud reserves it at a Deploy.
-pub(crate) fn needs_cluster_domain(
+fn needs_cluster_domain(
     environment: &scope::Environment,
     intent: &SavedEnvironmentIntent,
     cluster_domain: Option<&Hostname>,
@@ -184,6 +196,7 @@ fn deploy(
     admit: &Deploy,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    trusted.runnable()?;
     let environment = scope::lock(tx, who, &admit.environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
     let cluster_domain = trusted
@@ -191,16 +204,15 @@ fn deploy(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    needs_cluster_domain(&environment, &environment.working, cluster_domain)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
-    domain::check_published(
+    gate(
         tx,
         who,
-        &saved_intent,
+        (&environment, &saved_intent),
         (cluster_domain, &namespace),
         trusted,
     )?;
