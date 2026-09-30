@@ -19,7 +19,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
   admission, canFixOnBranch, deploymentActions, deploymentByline, deploymentStatusIcons, deploymentStatusLabel, focusedService, missingDeployLogs,
-  nodeLight, nodeOutcomeLabel, nodeStatusLabels,
+  nodeLight, nodeOutcomeLabel, nodeStatusLabels, type DeploymentAction,
 } from "#/modules/config-store/store-deployments";
 import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -65,6 +65,9 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
     const node = services.find((candidate) => candidate.id === id);
     if (node) pick({ service: node.id });
   };
+  const logs = focused
+    ? <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(stage) => pick({ service: focused.id, logs: stage })} />
+    : null;
   const volumeMarks = volumes.map((node) => (
     <span key={node.id} className="flex shrink-0 items-center gap-1.5 text-muted-foreground [&_svg]:size-4">
       <DatabaseIcon aria-hidden />{node.name}
@@ -133,7 +136,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
               </Select>
               {volumeMarks}
             </NodeRow>
-            <ServiceLogs key={focused.id} deployment={deployment} node={focused} picked={search.logs} onPick={(logs) => pick({ service: focused.id, logs })} />
+            {logs}
           </div>
         ) : (
           <Tabs value={focused.id} onValueChange={pickService} className="min-h-64 flex-1">
@@ -147,11 +150,8 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
               </TabsList>
               {volumeMarks}
             </NodeRow>
-            {services.map((node) => (
-              <TabsContent key={node.id} value={node.id} className="flex min-h-0 flex-col">
-                <ServiceLogs deployment={deployment} node={node} picked={search.logs} onPick={(logs) => pick({ service: node.id, logs })} />
-              </TabsContent>
-            ))}
+            {/* Only the picked Service's panel mounts, so one is all there is to render. */}
+            <TabsContent value={focused.id} className="flex min-h-0 flex-col">{logs}</TabsContent>
           </Tabs>
         )}
       </div>
@@ -263,7 +263,7 @@ function StoreDeploymentActions({ deployment, noServers }: { deployment: Deploym
       }}>Deploy now</Button>
     ),
     cancel: <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button>,
-  };
+  } satisfies Record<DeploymentAction, ReactNode>;
 
   return (
     <>

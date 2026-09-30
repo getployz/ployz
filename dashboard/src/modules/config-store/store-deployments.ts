@@ -110,7 +110,7 @@ export const IN_FLIGHT = ["queued", "running", "cancelling"] as const satisfies 
 export const isInFlight = (status: DeploymentStatus): status is (typeof IN_FLIGHT)[number] =>
   IN_FLIGHT.some((inFlight) => inFlight === status);
 
-export const deploymentStatusLabels = {
+const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
 } satisfies Record<DeploymentStatus, string>;
@@ -123,10 +123,6 @@ export type DeploymentLight = "queued" | "deploying" | "deployed" | "failed" | "
 
 /** One node under an open Deployment Page, as its badge, icon and canvas card show it. */
 export type NodeLight = "queued" | "deploying" | "deployed" | "failed" | "unknown" | "not_applied";
-
-export const nodeLightLabels = {
-  queued: "Queued", deploying: "Deploying", deployed: "Deployed", failed: "Failed", unknown: "Unknown", not_applied: "Not attempted",
-} satisfies Record<NodeLight, string>;
 
 /** Each status in the icons' vocabulary. */
 export const deploymentStatusIcons = {
@@ -152,16 +148,29 @@ export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): No
   return "not_applied";
 }
 
-/** A node's outcome in words: the glossary's Node Outcome once it has one, else how its Deployment reads it (Queued, Deploying). */
-export const nodeOutcomeLabel = (outcome: NodeStatus, deployment: DeploymentStatus) =>
-  outcome === "pending" ? nodeLightLabels[nodeLight(outcome, deployment)] : nodeStatusLabels[outcome];
+/**
+ * A node's outcome in words: the glossary's Node Outcome once it has one; until then Queued or Deploying, as its
+ * Deployment reads, and Not attempted once that ended without it.
+ */
+export function nodeOutcomeLabel(outcome: NodeStatus, deployment: DeploymentStatus) {
+  if (outcome !== "pending") return nodeStatusLabels[outcome];
+  if (deployment === "queued") return "Queued";
+  return isInFlight(deployment) ? "Deploying" : nodeStatusLabels.not_attempted;
+}
 
-/** A Deployment's status in words; one that removes its Environment from the Servers reads Removing, then Removed. */
+/**
+ * A Deployment's status in words. One that takes its Environment off the Servers reads as the Branch panel says it:
+ * Coming off the servers, then Off the servers.
+ */
 export function deploymentStatusLabel({ status, remove }: Pick<DeploymentSummary, "status" | "remove">) {
-  if (remove && status === "running") return "Removing";
-  if (remove && status === "applied") return nodeStatusLabels.removed;
+  if (remove && status === "running") return "Coming off the servers";
+  if (remove && status === "applied") return "Off the servers";
   return deploymentStatusLabels[status];
 }
+
+/** What a Deployment ships, for its row: "Deploys every service"; nothing for one that takes its Environment off the Servers. */
+export const deploysLabel = (deployment: Pick<DeploymentSummary, "services" | "remove">) =>
+  deployment.remove ? null : `Deploys ${targetsLabel(deployment)}`;
 
 /** "every service", or the Services a targeted Deploy named. */
 export const targetsLabel = (deployment: Pick<DeploymentSummary, "services">) =>

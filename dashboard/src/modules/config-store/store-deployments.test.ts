@@ -2,8 +2,8 @@ import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, focusedService, missingDeployLogs, nodeLight,
-  nodeOutcomeLabel, uploadLabel,
+  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs,
+  nodeLight, nodeOutcomeLabel, uploadLabel,
 } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
@@ -110,9 +110,11 @@ it("words a node's outcome as the glossary does once it has one, and a pending o
   expect(nodeOutcomeLabel("not_attempted", "failed")).toBe("Not attempted");
 });
 
-it("says a Deployment that removes its Environment is Removing, then Removed", () => {
-  expect(deploymentStatusLabel({ status: "running", remove: true })).toBe("Removing");
-  expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Removed");
+it("words a Deployment that takes its Environment off the Servers as the Branch panel does, and ships nothing", () => {
+  expect(deploymentStatusLabel({ status: "running", remove: true })).toBe("Coming off the servers");
+  expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Off the servers");
   expect(deploymentStatusLabel({ status: "failed", remove: true })).toBe("Failed");
   expect(deploymentStatusLabel({ status: "applied", remove: false })).toBe("Deployed");
+  expect(deploysLabel({ services: [], remove: true })).toBeNull();
+  expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
 });

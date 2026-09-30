@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
 import type { DeploymentSummary } from "@ployz/sdk";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
-import { deploymentStatusIcons, deploymentStatusLabel, targetsLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
+import { deploymentStatusIcons, deploymentStatusLabel, deploysLabel, uploadLabel, type ChangeGroup } from "#/modules/config-store/store-deployments";
 import { listNames, plural } from "#/lib/plural";
 import { goLiveWhen } from "#/modules/config-store/store-pull-requests";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
@@ -192,10 +192,11 @@ export function BottomBar({
 /** An in-flight Deployment, the CLI's or this dashboard's: its status, what it ships, and Logs to open its page. */
 function AttemptState({ deployment }: { deployment: DeploymentSummary }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const detail = deployment.upload ? `${targetsLabel(deployment)} · ${uploadLabel(deployment.upload)}` : targetsLabel(deployment);
+  const deploys = deploysLabel(deployment);
+  const detail = deploys && deployment.upload ? `${deploys} · ${uploadLabel(deployment.upload)}` : deploys;
   return (
     <Row icon={<DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />}
-      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={`Deploys ${detail}`}>
+      title={`${deploymentStatusLabel(deployment)} · Deployment #${deployment.number}`} detail={detail}>
       <Link to={DEPLOYMENT_PAGE_ROUTE_TO} params={{ ...params, deploymentId: deployment.id }} className={buttonVariants({ variant: "outline" })}>
         Logs
       </Link>

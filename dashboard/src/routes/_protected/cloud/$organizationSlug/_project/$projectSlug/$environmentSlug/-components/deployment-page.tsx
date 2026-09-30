@@ -19,7 +19,7 @@ export const deploymentPageSearchSchema = Schema.Struct({
 });
 
 /** One node an open Deployment Page lights: how its outcome shows, and its words. */
-type Lit = { outcome: NodeLight; label: string };
+export type Lit = { outcome: NodeLight; label: string };
 /** Which canvas nodes an open Deployment Page (`deploymentId`) lights, by Node Outcome; null when no page is open. */
 type Lighting = { deploymentId: string; lit: ReadonlyMap<string, Lit> } | null;
 const LightingContext = createContext<Lighting>(null);
