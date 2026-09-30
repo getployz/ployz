@@ -848,6 +848,53 @@ fn a_new_volume_is_deployed_once_the_service_mounting_it_is_confirmed() {
 }
 
 #[test]
+fn a_shared_volume_lands_with_the_one_confirmed_service_whatever_the_other_does() {
+    let (store, who) = shop();
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse("00000000-0000-4000-8000-000000000004").unwrap(),
+                environment: EnvironmentRef::default(),
+                name: ServiceName::parse("api").unwrap(),
+                image: Some("caddy:2".into()),
+                template: None,
+            },
+        )
+        .unwrap();
+    edit(
+        &store,
+        &who,
+        Change::Set {
+            path: path("api.mounts.data"),
+            value: json!("/srv"),
+        },
+    )
+    .unwrap();
+    admit(&store, &who, 1, &[], None).unwrap();
+    prepare(&store, 1, &["web", "api"]);
+    let runner = RunnerId::parse("runner").unwrap();
+    store
+        .record(
+            &id(1),
+            &runner,
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
+        )
+        .unwrap();
+    // api is still pending, yet the storage web runs on is confirmed.
+    assert!(outcomes(&store, &who, 1).contains(&("data".to_owned(), NodeStatus::Deployed)));
+    store
+        .record(&id(1), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    assert!(
+        !diff(&store, &who)
+            .changes
+            .iter()
+            .any(|change| change.name == "data" || change.name == "web")
+    );
+}
+
+#[test]
 fn a_running_deploy_shows_a_volume_unchanged_once_its_preview_plans_nothing_that_mounts_it() {
     let (store, who) = shop();
     // A new Volume waits with the Service that mounts it.
