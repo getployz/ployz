@@ -70,7 +70,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><HardDriveIcon /></EmptyMedia>
                   <EmptyTitle>Volume staged for deletion</EmptyTitle>
-                  <EmptyDescription>Discard the delete from the staged changes to manage mounts again.</EmptyDescription>
+                  <EmptyDescription>Keep the volume, below, to manage its mounts again.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : <StoreVolumeMounts state={state} services={services} volumes={volumes} diff={diff} />}
@@ -268,12 +268,18 @@ function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; par
               : mounts > 0 ? `Deleted on your next deploy, with its ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Deleted on your next deploy."}
           </p>
         </div>
-        {removing && volume.deployed ? (
-          <Button variant="destructive" className="shrink-0" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
-            <Trash2Icon data-icon="inline-start" />
-            Delete data
-          </Button>
-        ) : removing ? null : (
+        {removing ? (
+          <div className="flex shrink-0 gap-2">
+            {/* The staged removal goes; the Volume stays as deployed. */}
+            <Button variant="outline" onClick={() => actions.discard(`volumes.${volume.name}`)}>Keep volume</Button>
+            {volume.deployed ? (
+              <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
+                <Trash2Icon data-icon="inline-start" />
+                Delete data
+              </Button>
+            ) : null}
+          </div>
+        ) : (
           <Button variant="destructive" className="shrink-0" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />
             Delete volume

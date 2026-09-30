@@ -20,17 +20,16 @@ const diff = asTestDouble<DiffView>()({
 });
 const services = [asTestDouble<ServiceListing>()({ id: "s1", source: "image" })];
 
-it("groups the Store's review by node, labelling rows from the catalog and discarding only Services' changes", () => {
+it("groups the Store's review by node, labelling rows from the catalog; a whole node, a Setting, a variable or a mount discards", () => {
   const [web, volume] = changeGroups(diff, services);
   expect(web).toMatchObject({ nodeType: "service", nodeName: "web", lifecycle: "update", canDiscard: true, serviceSourceType: "image", changeCount: 3 });
   expect(web?.rows.map((row) => [row.path, row.label, row.currentValue, row.newValue, row.canDiscard])).toEqual([
     ["web.replicas", "Replicas", "1", "2", true],
-    // Variables and mounts discard only with their Service.
-    ["web.env.TOKEN", "Environment variable TOKEN", "", "abc", false],
-    ["web.mounts.pg-data", "Volume mount pg-data", "/data", "", false],
+    ["web.env.TOKEN", "Environment variable TOKEN", "", "abc", true],
+    ["web.mounts.pg-data", "Volume mount pg-data", "/data", "", true],
   ]);
-  // The Store can't discard a Volume node.
-  expect(volume).toMatchObject({ nodeType: "volume", lifecycle: "create", canDiscard: false, changeCount: 1, rows: [] });
+  // A Volume discards by `volumes.NAME`.
+  expect(volume).toMatchObject({ nodeType: "volume", lifecycle: "create", canDiscard: true, discardPath: "volumes.pg-data", changeCount: 1, rows: [] });
 });
 
 it("reads a pending node as its Deployment does, and a vanished runner's node as Unknown, never Failed", () => {

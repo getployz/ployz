@@ -7,29 +7,54 @@ import { settingText } from "#/modules/config-store/store-services";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
+import { Schema } from "effect";
 import { domainChanged } from "#/modules/config-store/store-services";
 import { domainsQuery, requireView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
-import { CustomDomainDialog } from "./CustomDomainDialog";
+import { CustomDomainDialog, type CustomDomain } from "./CustomDomainDialog";
 import { DomainRowShell, DomainTitle, PublicDomainRow, storeStatusView } from "./domain-row";
 import { ManagedDomainDialog } from "./ManagedDomain";
 
-type Editor = { kind: "generate" } | { kind: "generated" } | { kind: "add" } | { kind: "custom"; hostname: string } | null;
+type Editor = { kind: "generate" } | { kind: "generated" } | { kind: "add"; draft?: CustomDomain } | { kind: "custom"; hostname: string } | null;
 
 /** How a domain is addressed in commands: its hostname, or a generated one's prefix. */
 const nameOf = (domain: DomainRow) => domain.kind === "custom" ? domain.hostname : domain.prefix;
 
 const portLabel = (port: number | null) => port === null ? "Uses PORT" : `Port ${port}`;
 
+const Route = Schema.Struct({ hostname: Schema.String });
+const Managed = Schema.Array(Schema.Struct({ prefix: Schema.String }));
+
+/**
+ * Domains the next Deploy removes, from the review: a custom one's route row going, or the generated one when its
+ * Service keeps none. They stay listed, struck through, until that Deploy.
+ */
+function removedDomains(changes: Map<string, ServiceSettingChange>, domains: readonly DomainRow[]) {
+  return [...changes.values()].flatMap((change) => {
+    const setting = change.path.slice(change.path.indexOf(".") + 1);
+    if (setting.startsWith("routes.") && change.after === null && Schema.is(Route)(change.before)) {
+      return [{ name: change.before.hostname, path: change.path }];
+    }
+    const kept = Schema.is(Managed)(change.after) ? change.after : [];
+    if (setting === "managedHostnames" && Schema.is(Managed)(change.before) && kept.length === 0
+      && !domains.some((domain) => domain.kind === "generated")) {
+      return change.before.map(({ prefix }) => ({ name: prefix, path: change.path }));
+    }
+    return [];
+  });
+}
+
 /**
  * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
  * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
-export function StoreNetworkingSection({ organizationSlug, environment, service, changes, privateDns, validatePrivateDns }: {
+export function StoreNetworkingSection({ organizationSlug, environment, service, changes, version, privateDns, validatePrivateDns }: {
   organizationSlug: string;
   environment: EnvironmentRef;
   service: ServiceListing;
   changes: Map<string, ServiceSettingChange>;
+  /** The review's version, which undoing a removal discards against. */
+  version: string;
   /** Its Private DNS name, with a pending edit. */
   privateDns: string;
   validatePrivateDns: (raw: string) => string | null;
@@ -54,7 +79,16 @@ export function StoreNetworkingSection({ organizationSlug, environment, service,
         <FieldLabel>Public Networking</FieldLabel>
         <FieldDescription>Access your application over HTTP with the following domains.</FieldDescription>
         <div className="flex flex-col gap-2">
-          {domains.length === 0 ? (
+          {removedDomains(changes, domains).map((removed) => (
+            <DomainRowShell key={`removed:${removed.name}`} icon={<ZapIcon className="opacity-50" />} changed actions={(
+              <Button type="button" variant="ghost" size="sm"
+                onClick={() => writer.commit({ command: "discard", environment, path: removed.path, version })}>Undo</Button>
+            )}>
+              <div className="truncate font-mono text-sm text-muted-foreground line-through">{removed.name}</div>
+              <div className="truncate text-muted-foreground text-sm">Removed on your next deploy</div>
+            </DomainRowShell>
+          ))}
+          {domains.length === 0 && removedDomains(changes, domains).length === 0 ? (
             <Empty>
               <EmptyDescription>No public domains yet.</EmptyDescription>
             </Empty>
@@ -116,7 +150,13 @@ export function StoreNetworkingSection({ organizationSlug, environment, service,
             hostnameFixed
             defaultTargetPort={null}
             onClose={() => setEditor(null)}
-            onSubmit={({ hostname, targetPort }) => add(hostname, targetPort)}
+            initial={editor.kind === "add" ? editor.draft : undefined}
+            onSubmit={({ hostname, targetPort }) => {
+              // Shown at once; a refusal (a hostname the Store won't take) toasts and reopens with what was typed.
+              add(hostname, targetPort).isPersisted.promise.catch(() => {
+                if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
+              });
+            }}
           />
         ) : null}
       </Field>

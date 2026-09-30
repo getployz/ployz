@@ -22,6 +22,8 @@ export type ChangeGroup = {
   nodeType: NodeChange["type"];
   nodeId: string;
   nodeName: string;
+  /** What Discard names to put the whole node back: `SERVICE`, or `volumes.VOLUME`. */
+  discardPath: string;
   lifecycle: NodeChange["lifecycle"];
   rows: ChangeRow[];
   changeCount: number;
@@ -34,7 +36,8 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
   if (nodeType === "volume") return setting === "node" ? "Volume" : setting === "name" ? "Name" : setting;
   if (setting.startsWith("env.")) return `Environment variable ${setting.slice(4)}`;
   if (setting.startsWith("mounts.")) return `Volume mount ${setting.slice(7)}`;
-  if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Public route";
+  if (setting.startsWith("routes.") || setting.startsWith("domains.")) return "Custom domain";
+  if (setting === "managedHostnames") return "Generated domain";
   return setting;
 }
 
@@ -48,9 +51,10 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
     nodeType: node.type,
     nodeId: node.id,
     nodeName: node.name,
+    discardPath: node.type === "volume" ? `volumes.${node.name}` : node.name,
     lifecycle: node.lifecycle,
     changeCount: Math.max(node.settings.length, 1),
-    canDiscard: node.type === "service",
+    canDiscard: true,
     serviceSourceType: services.find((service) => service.id === node.id)?.source,
     rows: node.settings.map((row) => {
       // `SERVICE.SETTING`, or `volumes.VOLUME.SETTING`.
@@ -63,8 +67,8 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
-        // Only a catalog Setting discards alone; a variable, mount, domain or rename goes with its Service.
-        canDiscard: node.type === "service" && row.canRestore && title !== undefined,
+        // A Setting, variable or mount discards alone; a domain or a rename goes with its node.
+        canDiscard: node.type === "service" && (row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting)),
       };
     }),
   }));
@@ -73,14 +77,25 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
 /** The diff values a cell words: text, a sealed value (the Store never sends its plaintext), a route. */
 const decodeShown = Schema.decodeUnknownOption(Schema.Union([
   Schema.String, Schema.Struct({ secret: Schema.Literal(true) }), Schema.Struct({ hostname: Schema.String }),
+  Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number }),
+  Schema.Array(Schema.Struct({ prefix: Schema.String, targetPort: Schema.NullOr(Schema.Number) })),
 ]));
 
-/** A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, else its JSON. */
+/**
+ * A diff value as a cell shows it: text as is, a sealed one as Sealed, a route by its hostname, a healthcheck by its
+ * path and timeout, generated domains by name and port; else its JSON.
+ */
 function shownValue(value: JsonValue): string {
   if (value === null) return "";
   return Option.match(decodeShown(value), {
-    onNone: () => JSON.stringify(value),
-    onSome: (shown) => Schema.is(Schema.String)(shown) ? shown : "secret" in shown ? "Sealed" : shown.hostname,
+    onNone: () => typeof value === "object" ? JSON.stringify(value) : String(value),
+    onSome: (shown) => {
+      if (Schema.is(Schema.String)(shown)) return shown;
+      if ("hostname" in shown) return shown.hostname;
+      if ("secret" in shown) return "Sealed";
+      if ("path" in shown) return `${shown.path} within ${shown.timeoutSeconds}s`;
+      return shown.map(({ prefix, targetPort }) => targetPort === null ? prefix : `${prefix} → port ${targetPort}`).join(", ");
+    },
   });
 }
 

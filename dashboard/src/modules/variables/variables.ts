@@ -6,6 +6,8 @@ export type VariableValue =
 /** One of a Service's variables, as the variables panel shows and edits it. */
 export type VariableRecord = {
   unresolvedReferences?: readonly string[];
+  /** The next Deploy changes it: the pink trail. */
+  changed?: boolean;
   id: string;
   serviceId: string;
   key: string;
