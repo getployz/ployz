@@ -94,8 +94,7 @@ pub(super) fn get(root: &ArgMatches) -> Result<(), Error> {
             .transpose()?,
         all: matches.get_flag("all"),
     };
-    let path = query.path.as_ref().map(ToString::to_string);
-    let view = store(root)?.args(path.as_deref()).read(&query)?;
+    let view = store(root)?.read(&query)?;
     crate::output::finish(&view, || {
         if view.settings.is_empty() {
             say!(
@@ -235,9 +234,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     let secret = if seal_all {
         Vec::new()
     } else {
-        let named = service.to_string();
         let view = store(root)?
-            .args([named.as_str(), "--from-env-file", "FILE"])
             .read(&EnvironmentQuery {
                 environment: environment(matches)?,
                 path: Some(service.clone()),
@@ -270,13 +267,7 @@ fn set_from_env_file(root: &ArgMatches, file: &str) -> Result<(), Error> {
     if changes.is_empty() {
         return Err(Error::usage("The env file sets no variables").with_exit(USAGE_EXIT));
     }
-    let mut words = [&service.to_string(), "--from-env-file", "FILE"]
-        .map(str::to_owned)
-        .to_vec();
-    if seal_all {
-        words.push("--secret".to_owned());
-    }
-    edit_as(root, changes, &words)
+    edit(root, changes)
 }
 
 /// `KEY=VALUE` lines of a .env file: `#` comments and blank lines skipped, an
@@ -338,20 +329,15 @@ pub(super) fn unset(root: &ArgMatches) -> Result<(), Error> {
     edit(root, changes)
 }
 
+/// Apply `changes`.
 fn edit(root: &ArgMatches, changes: Vec<Change>) -> Result<(), Error> {
-    let words = rerun(&changes);
-    edit_as(root, changes, &words)
-}
-
-/// Apply `changes`; `args` rerun it, values left out.
-fn edit_as(root: &ArgMatches, changes: Vec<Change>, args: &[String]) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let edit = Edit {
         environment: environment(matches)?,
         expect: expected(matches)?,
         changes,
     };
-    let store = store(root)?.args(args.iter().map(String::as_str));
+    let store = store(root)?;
     let edited = store
         .try_write(&edit)
         .map_err(|error| store.fail(with_refresh_hint(error, matches, "get")))?;
@@ -370,25 +356,6 @@ fn edit_as(root: &ArgMatches, changes: Vec<Change>, args: &[String]) -> Result<(
         }
     })
 }
-
-/// The `set` or `unset` arguments that make `changes`, every value a placeholder.
-fn rerun(changes: &[Change]) -> Vec<String> {
-    let mut words = Vec::new();
-    for change in changes {
-        match change {
-            Change::Set { path, value } if value.get("secret").is_some_and(Value::is_string) => {
-                words.extend([path.to_string(), "--secret".to_owned()]);
-            }
-            Change::Set { path, .. } => words.push(format!("{path}=VALUE")),
-            Change::Unset { path } => words.push(path.to_string()),
-            Change::Patch { path, .. } => {
-                words.extend([path.to_string(), "--patch".to_owned(), "JSON".to_owned()]);
-            }
-        }
-    }
-    words
-}
-
 
 /// A Setting value as a person reads it: text bare, anything else as JSON.
 fn display_value(value: &Value) -> String {

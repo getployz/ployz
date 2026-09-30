@@ -242,6 +242,20 @@ fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
     Ok(CredentialStore::beside(config).organization()?)
 }
 
+/// [`acting_organization`], asking Cloud for an Organization Token's, so a link
+/// always records the Organization it was made in.
+fn resolved_organization(config: &Path) -> Result<Option<Organization>, Error> {
+    if let Some(acting) = acting_organization(config)? {
+        return Ok(Some(acting));
+    }
+    let credentials = CredentialStore::beside(config);
+    let organization = super::runtime()?.block_on(async {
+        let credential = crate::cloud_account::from_env(&credentials).await?;
+        crate::cloud_account::acting_in(&credential).await
+    })?;
+    Ok(Some(organization))
+}
+
 /// A link made in another Organization never addresses this one's Project of the same name.
 fn check_organization(config: &Path, directory: &str, link: &Link) -> Result<(), Error> {
     let (Some(linked), Some(acting)) = (&link.organization, acting_organization(config)?) else {
@@ -302,7 +316,7 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
 pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<Linked, Error> {
     let linked = Linked {
         directory: here()?,
-        organization: acting_organization(config)?,
+        organization: resolved_organization(config)?,
         project: environment.project,
         environment: environment.name,
     };
@@ -320,21 +334,15 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
 }
 
 /// Point this device's links to Project `old` at `new` after a rename, in the
-/// Organization `store` acts in. A link from another or an unknown Organization
-/// stays. Returns how many moved.
+/// Organization commands act in. A link from another Organization stays.
+/// Returns how many moved.
 pub(super) fn rename_project(
-    store: &super::store::Store<'_>,
     config: &Path,
     old: &ProjectName,
     new: &ProjectName,
 ) -> Result<usize, Error> {
-    let acting = match (acting_organization(config)?, store.backend()) {
-        (Some(acting), _) => acting,
-        // An Organization Token's Organization is only known to Cloud.
-        (None, super::store::Backend::Cloud(runtime, credential)) => {
-            runtime.block_on(crate::cloud_account::acting_in(credential))?
-        }
-        (None, super::store::Backend::Local(..)) => return Ok(0),
+    let Some(acting) = resolved_organization(config)? else {
+        return Ok(0);
     };
     let mut links = load(config)?;
     let mut moved = 0;

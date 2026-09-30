@@ -249,7 +249,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
 fn new(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let name = EnvironmentName::parse(required(matches, "name")?)?;
-    let store = store(root)?.args([name.as_str()]);
+    let store = store(root)?;
     let create = CreateEnvironment {
         id: EnvironmentId::parse(mint())?,
         project: project(matches)?,
@@ -352,22 +352,21 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let typed = format!("{}/{name}", inventory.environment.project);
     // Not removed yet (queued, failed, cancelled, or its outcome unknown): this same
     // command finishes it once the removal applied, or queues it again.
-    let again = ["env", "rm", name.as_str(), "--confirm", typed.as_str()];
+    let store = store.args(["--confirm", typed.as_str()]);
     if !confirmed(matches, &typed, "Environment")? {
-        return Err(unconfirmed(matches, inventory, &again));
+        return Err(unconfirmed(inventory, &store.again(&[])));
     }
     let project = inventory.environment.project.clone();
     let remove = RemoveEnvironment { environment: at };
     let events = deploy::open_events(matches)?;
-    match remove_all(matches, &store, &remove, &project, events, &again)? {
+    match remove_all(matches, &store, &remove, &project, events)? {
         Some((removed, ran)) => finish_removal(&removed, ran.last()),
         None => Ok(()),
     }
 }
 
 /// Refuse an unconfirmed `env rm`, naming what goes and the exact retry.
-fn unconfirmed(matches: &ArgMatches, inventory: Inventory, again: &[&str]) -> Error {
-    let retry = store::next(matches, again);
+fn unconfirmed(inventory: Inventory, retry: &str) -> Error {
     Error::detailed(
         RpcErrorCode::ConfirmationRequired,
         format!(

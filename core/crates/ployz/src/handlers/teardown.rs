@@ -55,35 +55,31 @@ pub(super) fn accepted(matches: &ArgMatches) -> Result<Vec<VolumeName>, Error> {
     store::volume_names(matches, "accept-volume-loss")
 }
 
-/// `again` with every `--accept-volume-loss` in `accept`.
-pub(super) fn with_accepted<'a>(again: &[&'a str], accept: &'a [VolumeName]) -> Vec<&'a str> {
-    let mut again = again.to_vec();
-    again.extend(
-        accept
-            .iter()
-            .flat_map(|name| ["--accept-volume-loss", name.as_str()]),
-    );
-    again
+/// `--accept-volume-loss` for each of `accept`, the words a retry repeats.
+pub(super) fn with_accepted(accept: &[VolumeName]) -> Vec<&str> {
+    accept
+        .iter()
+        .flat_map(|name| ["--accept-volume-loss", name.as_str()])
+        .collect()
 }
 
 /// Run `remove` until the Store deletes what it names: each Environment of `project`
 /// it names as still on the Servers goes off them first through a removal Deployment,
 /// accepting the loss of the `--accept-volume-loss` Volumes it deletes. Returns what
 /// was removed and those Deployments; `None` once a removal that didn't apply was
-/// reported (`again` finishes it).
+/// reported (running the command again finishes it).
 pub(super) fn remove_all<C, T>(
     matches: &ArgMatches,
     store: &Store,
     remove: &C,
     project: &ProjectName,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
-    again: &[&str],
 ) -> Result<Option<(T, Vec<DeploymentSummary>)>, Error>
 where
     C: Tell<Written = Teardown<T>>,
 {
     let accept = accepted(matches)?;
-    let again = with_accepted(again, &accept);
+    let again = store.again(&with_accepted(&accept));
     // The reviewed version binds the first removal, the one whose refusal named it.
     let mut version = matches.get_one::<String>("expect-version").cloned();
     let mut ran = Vec::new();
@@ -133,7 +129,6 @@ where
             &at,
             (&accept, version.take()),
             writer,
-            &again,
         )?;
         if view.deployment.status != DeploymentStatus::Applied {
             unfinished(matches, &view, &ran, outcome, &again)?;
@@ -145,14 +140,13 @@ where
 
 /// Take Environment `at` off the Servers: admit a removal Deployment under the
 /// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
-/// `deploy` does. `again` is the command that retries the whole removal.
+/// `deploy` does. A volume-loss refusal names this command again, accepting.
 pub(super) fn take_off(
     matches: &ArgMatches,
     store: &Store,
     at: &EnvironmentRef,
     (accept, version): (&[VolumeName], Option<String>),
     events: Option<std::io::BufWriter<std::fs::File>>,
-    again: &[&str],
 ) -> Result<(DeploymentView, Result<(), Error>), Error> {
     let admitted = store
         .admit(&Admit::Remove(ployz_store::Removal {
@@ -162,20 +156,21 @@ pub(super) fn take_off(
             accept_volume_loss: accept.to_vec(),
             close: false,
         }))
-        .map_err(|error| store.fail(deploy::accepting(error, matches, again)))?;
+        .map_err(|error| store.accepting(error))?;
     let deploy::Shipped { view, ran, .. } =
         deploy::execute(matches, store, &admitted, None, events)?;
     Ok((view, ran))
 }
 
 /// Report a removal Deployment that didn't apply (yet), after the `applied` ones
-/// before it, naming `again` to finish it: exit 3, or 0 when `--detach` asked not to wait.
+/// before it, naming `again`, the command that finishes it: exit 3, or 0 when
+/// `--detach` asked not to wait.
 pub(super) fn unfinished(
     matches: &ArgMatches,
     view: &DeploymentView,
     applied: &[DeploymentSummary],
     ran: Result<(), Error>,
-    again: &[&str],
+    again: &str,
 ) -> Result<(), Error> {
     #[derive(serde::Serialize)]
     struct Unfinished<'a> {
@@ -184,7 +179,7 @@ pub(super) fn unfinished(
         #[serde(skip_serializing_if = "<[_]>::is_empty")]
         applied: &'a [DeploymentSummary],
     }
-    let hint = Some(store::next(matches, again));
+    let hint = Some(again.to_owned());
     crate::output::finish(
         &store::Next::new(&Unfinished { view, applied }, hint),
         || {
