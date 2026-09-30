@@ -708,24 +708,13 @@ pub(super) fn deployment_id(
         return DeploymentId::parse(given)
             .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
     };
-    // Pages hold Deployments numbered below the cursor, newest first.
-    let page = store
-        .read(&DeploymentsQuery {
+    let found = store
+        .read(&ployz_store::NumberedDeploymentQuery {
             environment: environment(matches)?,
-            limit: Some(1),
-            cursor: number.checked_add(1).map(|cursor| cursor.to_string()),
+            number,
         })
-        .map_err(failed(matches, &["deployment", "ls"]))?;
-    page.deployments
-        .into_iter()
-        .find(|deployment| deployment.number == number)
-        .map(|deployment| deployment.id)
-        .ok_or_else(|| {
-            Error::not_found(format!(
-                "{}/{} has no Deployment #{number}",
-                page.environment.project, page.environment.name
-            ))
-        })
+        .map_err(failed(matches, &["deployment", "show", &given]))?;
+    Ok(found.deployment.id)
 }
 
 /// A refused retry, start or cancel points at the Deployment's current state.
