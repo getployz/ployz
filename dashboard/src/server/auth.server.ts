@@ -1,7 +1,6 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
-import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
 import {
   bearer,
@@ -40,6 +39,7 @@ import {
 } from "#/modules/organization/organization-state.server";
 import { Actor } from "#/modules/identity/actor";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
@@ -135,10 +135,7 @@ function hostedPolarPlugin(
   },
 ) {
   if (config.polar.mode === "self_hosted") return null;
-  const client = new PolarSdk({
-    accessToken: Redacted.value(config.polar.accessToken),
-    server: config.polar.server,
-  });
+  const client = makePolarCore(config.polar);
   // Sign-up never calls Polar; checkout creates the customer.
   return polar({
     client,
