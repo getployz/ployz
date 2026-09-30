@@ -1000,7 +1000,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
     let claimed = store.claim(&id(2), &a).unwrap();
     assert_eq!(
         claimed.receipts.get(&ServiceName::parse("app").unwrap()),
-        Some(&receipt)
+        Some(&vec![receipt.clone()])
     );
     assert_eq!(
         store
@@ -1062,7 +1062,7 @@ fn an_upload_is_recorded_kept_for_later_deployments_and_its_receipts_come_back()
         .unwrap();
     assert_eq!(
         store.claim(&id(5), &a).unwrap().receipts[&ServiceName::parse("app").unwrap()],
-        receipt
+        [receipt]
     );
 }
 

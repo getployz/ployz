@@ -29,7 +29,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
-    let namespace = super::operator::scope(root, &["ps"])?.map(|scoped| scoped.namespace);
+    let namespace = super::operator::scope(root)?.map(|scoped| scoped.namespace);
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -146,21 +146,13 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
 /// again even when stopping one failed, so a failed restart never leaves a Service down.
 /// Both steps wait for their Container Observations, each bounded by the barrier timeout.
 fn restart(root: &ArgMatches) -> Result<(), Error> {
-    lifecycle(
-        root,
-        "restart",
-        &[ContainerAction::Stop, ContainerAction::Start],
-    )
+    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
 }
 
-/// Start or stop the addressed Environment's Services, as `command`.
-fn lifecycle(
-    root: &ArgMatches,
-    command: &str,
-    actions: &'static [ContainerAction],
-) -> Result<(), Error> {
+/// Start or stop the addressed Environment's Services.
+fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let namespace = super::operator::scope(root, &["service", command])?;
+    let namespace = super::operator::scope(root)?;
     let selectors = change_selectors(leaf, namespace.as_ref())?;
     let (signal, timeout) = stop_options(leaf, actions)?;
     let hint = super::store::next(leaf, &["ps"]);
@@ -479,8 +471,8 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "rename" => authored::rename,
         "restart" => restart,
         "rm" => authored::remove,
-        "start" => |root| lifecycle(root, "start", &[ContainerAction::Start]),
-        "stop" => |root| lifecycle(root, "stop", &[ContainerAction::Stop]),
+        "start" => |root| lifecycle(root, &[ContainerAction::Start]),
+        "stop" => |root| lifecycle(root, &[ContainerAction::Stop]),
         _ => return None,
     })
 }

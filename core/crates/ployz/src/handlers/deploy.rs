@@ -13,14 +13,12 @@ use clap::{ArgAction, ArgMatches, Command, ValueHint};
 use ployz_core::{RpcErrorCode, ServiceName};
 use ployz_store::{
     Admit, Cancel, ConfigStore, Deploy, DeploymentId, DeploymentStatus, DeploymentSummary,
-    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RemovalsQuery, RunnerId, Start,
-    UploadBase, UploadedSource, VolumeName, VolumeObservation,
+    DeploymentView, DeploymentsQuery, EnvironmentRef, PlanQuery, RunnerId, Start, UploadBase,
+    UploadedSource, VolumeName,
 };
 
-use super::store::{
-    Next, Store, environment, failed, mint, next, scoped, store, with_refresh_hint,
-};
-use super::{Error, connect_client, leaf_matches, required, runtime};
+use super::store::{Next, Store, environment, mint, next, scoped, store, with_refresh_hint};
+use super::{Error, leaf_matches, required, runtime};
 use crate::cli::{base, positional, switch, value};
 use crate::cloud_account::StoreCallError;
 use crate::failure::USAGE_EXIT;
@@ -41,11 +39,7 @@ pub(crate) fn deploy_command() -> Command {
             switch("plan", None)
                 .help("Show what would deploy, from authored state alone; run nothing"),
         )
-        .arg(
-            value("expect-version", None)
-                .value_name("VERSION")
-                .help("Refuse unless this is still the latest `ployz diff` version"),
-        )
+        .arg(crate::cli::reviewed_version())
         .arg(
             value("message", None)
                 .value_name("TEXT")
@@ -142,18 +136,9 @@ pub(super) fn deployment_handler(path: &str) -> Option<super::Handler> {
 
 pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let services = matches
-        .get_many::<String>("service")
-        .into_iter()
-        .flatten()
-        .map(|name| {
-            ServiceName::parse(name.as_str()).map_err(|_| {
-                Error::usage("Expected Service names: lowercase letters, digits and -")
-                    .with_exit(USAGE_EXIT)
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let store = store(root)?;
+    let services = super::store::service_names(matches, "service")?;
+    let names: Vec<&str> = services.iter().map(ServiceName::as_str).collect();
+    let store = store(root)?.args(names.iter().copied());
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
@@ -162,19 +147,29 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("upload")
         .map(|dir| Path::new(dir).canonicalize())
         .transpose()?;
-    let accept = super::teardown::accepted(matches)?;
+    // A retry uploads again, as the hidden `deploy --upload` does.
+    let mut again: Vec<String> = ["deploy"]
+        .into_iter()
+        .chain(names)
+        .map(str::to_owned)
+        .collect();
+    if let Some(source) = source.as_deref().and_then(Path::to_str) {
+        again.extend(["--upload".to_owned(), source.to_owned()]);
+    }
     let request = Request {
         environment: environment(matches)?,
         services,
         version: matches.get_one::<String>("expect-version").cloned(),
         source,
-        accept,
+        accept: super::teardown::accepted(matches)?,
         message: matches.get_one::<String>("message").cloned(),
+        again,
     };
     upload_and_ship(matches, &store, request, events)?.finish()
 }
 
-/// What a Deploy admits; `source` is the directory it uploads first.
+/// What a Deploy admits; `source` is the directory it uploads first, and `again`
+/// the command that retries it.
 pub(super) struct Request {
     pub(super) environment: EnvironmentRef,
     pub(super) services: Vec<ServiceName>,
@@ -182,6 +177,7 @@ pub(super) struct Request {
     pub(super) source: Option<PathBuf>,
     pub(super) accept: Vec<VolumeName>,
     pub(super) message: Option<String>,
+    pub(super) again: Vec<String>,
 }
 
 /// Upload `request.source`, admit the Deployment, then run or follow it.
@@ -198,51 +194,29 @@ pub(super) fn upload_and_ship(
         source,
         accept,
         message,
+        again,
     } = request;
     let upload = source.as_deref().map(uploaded_source).transpose()?;
-    // The in-process Store trusts this CLI to observe the Servers; Cloud observes
-    // them itself.
-    let volumes = match store.local() {
-        Some(_) if services.is_empty() => observe(matches, store, &environment, false)?,
-        Some(_) | None => None,
-    };
     let id = DeploymentId::parse(mint())?;
-    if let Some(dir) = source.as_deref().filter(|_| store.local().is_none()) {
-        let archive = crate::build::upload_archive(dir).map_err(unreadable(dir))?;
-        store
-            .upload(&id, archive)
-            .map_err(failed(matches, &["deploy"]))?;
+    if let Some(dir) = source.as_deref() {
+        store.upload(&id, dir)?;
     }
     let admitted = store
-        .admit(
-            &Admit::Deploy(Deploy {
-                id,
-                environment,
-                services: services.clone(),
-                version,
-                upload,
-                accept_volume_loss: accept,
-                message,
-            }),
-            volumes,
-        )
+        .admit(&Admit::Deploy(Deploy {
+            id,
+            environment,
+            services,
+            version,
+            upload,
+            accept_volume_loss: accept,
+            message,
+        }))
         .map_err(|error| {
-            let error = with_retry(
-                with_refresh_hint(error, matches, "diff"),
-                matches,
-                &services,
-                source.as_deref(),
-            );
-            failed(matches, &["deploy"])(error)
+            let again: Vec<&str> = again.iter().map(String::as_str).collect();
+            let error = with_refresh_hint(error, matches, "diff");
+            store.fail(accepting(error, matches, &again))
         })?;
-    execute(
-        matches,
-        store,
-        &admitted,
-        source.as_deref(),
-        events,
-        &["deploy"],
-    )
+    execute(matches, store, &admitted, source.as_deref(), events)
 }
 
 /// Open `--events` before queueing anything, so a bad path ships nothing.
@@ -256,17 +230,14 @@ pub(super) fn open_events(
         .map(std::io::BufWriter::new))
 }
 
-/// Run or follow a queued Deployment and report it; `source` is the directory
-/// uploaded for it, and `words` name the command for its failures. Exits 3 unless
-/// it applied.
+/// Run or follow a queued Deployment and report it. Exits 3 unless it applied.
 fn ship(
     matches: &ArgMatches,
     store: &Store,
     admitted: &DeploymentSummary,
     events: Option<std::io::BufWriter<std::fs::File>>,
-    words: &[&str],
 ) -> Result<(), Error> {
-    execute(matches, store, admitted, None, events, words)?.finish()
+    execute(matches, store, admitted, None, events)?.finish()
 }
 
 /// A Deployment that ended, or was left to run: its view, the command to run next,
@@ -290,9 +261,8 @@ pub(super) fn execute(
     admitted: &DeploymentSummary,
     source: Option<&Path>,
     events: Option<std::io::BufWriter<std::fs::File>>,
-    words: &[&str],
 ) -> Result<Shipped, Error> {
-    let hint = shell_words::join(["ployz", "deployment", "show", admitted.id.as_str()]);
+    let hint = show_hint(&admitted.id);
     // Only the hidden in-process Store lets this CLI run the Deployment, as Cloud's
     // runner does; this command follows it either way, unless detached.
     let runner = match store.local() {
@@ -306,13 +276,11 @@ pub(super) fn execute(
         None => None,
     };
     let view = if runner.is_none() && matches.get_flag("detach") {
-        store
-            .read(&ployz_store::DeploymentQuery {
-                id: admitted.id.clone(),
-            })
-            .map_err(failed(matches, words))?
+        store.read(&ployz_store::DeploymentQuery {
+            id: admitted.id.clone(),
+        })?
     } else {
-        follow(matches, store, admitted, events, runner.as_ref(), words)?
+        follow(store, admitted, events, runner.as_ref())?
     };
     if let Some(runner) = runner {
         runner
@@ -345,15 +313,19 @@ fn run_here(
     admitted: &DeploymentSummary,
     source: Option<&Path>,
 ) -> Result<std::thread::JoinHandle<Result<DeploymentSummary, Error>>, Error> {
-    let connections = crate::connect::resolve_connections(
+    let direct = matches.get_one::<String>("connect").map(String::as_str);
+    let context = matches.get_one::<String>("context").map(String::as_str);
+    let connections = match crate::connect::resolve_connections(
         &super::config_path(matches)?,
-        matches.get_one::<String>("connect").map(String::as_str),
-        matches.get_one::<String>("context").map(String::as_str),
+        direct,
+        context,
         Path::new(crate::connect::DEFAULT_LOCAL_SOCKET),
-    )
-    .map(|selected| selected.connections)
-    // No Cluster to reach: the runner records that nothing ran.
-    .unwrap_or_default();
+    ) {
+        Ok(selected) => selected.connections,
+        // Nothing named and no Cluster to reach: the runner records that nothing ran.
+        Err(_) if direct.is_none() && context.is_none() => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
     let runner = RunnerId::parse(format!("cli-{}", mint()))?;
     let sources = crate::sdk::Sources {
         checkouts: BTreeMap::new(),
@@ -389,12 +361,10 @@ fn upload_again(environment: &ployz_store::EnvironmentSummary) -> String {
 /// or Node Outcomes goes to stderr, and to `events` as NDJSON. Stopping this stops
 /// following, never the Deployment.
 fn follow(
-    matches: &ArgMatches,
     store: &Store,
     admitted: &DeploymentSummary,
     mut events: Option<std::io::BufWriter<std::fs::File>>,
     runner: Option<&std::thread::JoinHandle<Result<DeploymentSummary, Error>>>,
-    words: &[&str],
 ) -> Result<DeploymentView, Error> {
     if runner.is_none() {
         say!(
@@ -404,11 +374,9 @@ fn follow(
     }
     let mut last = None;
     loop {
-        let view = store
-            .read(&ployz_store::DeploymentQuery {
-                id: admitted.id.clone(),
-            })
-            .map_err(failed(matches, words))?;
+        let view = store.read(&ployz_store::DeploymentQuery {
+            id: admitted.id.clone(),
+        })?;
         let progress = serde_json::json!({
             "type": "deployment",
             "status": view.deployment.status,
@@ -442,12 +410,10 @@ fn follow(
 }
 
 fn plan(matches: &ArgMatches, store: &Store, services: Vec<ServiceName>) -> Result<(), Error> {
-    let plan = store
-        .read(&PlanQuery {
-            environment: environment(matches)?,
-            services,
-        })
-        .map_err(failed(matches, &["deploy", "--plan"]))?;
+    let plan = store.read(&PlanQuery {
+        environment: environment(matches)?,
+        services,
+    })?;
     let mut words = vec!["deploy"];
     words.extend(
         matches
@@ -500,7 +466,7 @@ fn provenance(upload: &UploadedSource) -> String {
 
 /// Why `dir` couldn't be read: its ignore rules are the user's input; a missing
 /// directory is `not_found`; anything else is the CLI's own failure.
-fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
+pub(super) fn unreadable(dir: &Path) -> impl Fn(crate::build::Error) -> Error + '_ {
     move |error| {
         let message = format!("Could not read {}: {error}", dir.display());
         if matches!(error, crate::build::Error::Invalid(_)) {
@@ -540,70 +506,6 @@ fn uploaded_source(dir: &Path) -> Result<UploadedSource, Error> {
         base,
         uploader: None,
     })
-}
-
-/// When a Deploy removes deployed Volumes, observe which Servers hold their data:
-/// the evidence the in-process Store reviews it against. A Cluster it can't reach
-/// leaves the evidence out, so the Store refuses.
-pub(super) fn observe(
-    matches: &ArgMatches,
-    store: &Store,
-    environment: &ployz_store::EnvironmentRef,
-    remove: bool,
-) -> Result<Option<VolumeObservation>, Error> {
-    let removals = store
-        .read(&RemovalsQuery {
-            environment: environment.clone(),
-            remove,
-        })
-        .map_err(failed(matches, &["deploy"]))?;
-    if removals.volumes.is_empty() {
-        return Ok(None);
-    }
-    let sought = removals
-        .volumes
-        .into_iter()
-        .map(|volume| volume.docker_volume)
-        .collect();
-    let context = matches.get_one::<String>("context").map(String::as_str);
-    runtime()?.block_on(async {
-        let Ok(mut client) = connect_client(matches, context).await else {
-            return Ok(None);
-        };
-        Ok(client.observe_volumes(sought).await.ok())
-    })
-}
-
-/// A refusal to delete Volume data unaccepted names the exact command that accepts
-/// it, bound to the reviewed version so a changed review refuses again.
-fn with_retry(
-    error: StoreCallError,
-    matches: &ArgMatches,
-    services: &[ServiceName],
-    source: Option<&Path>,
-) -> StoreCallError {
-    let version = match &error {
-        StoreCallError::Refused(error) => error
-            .details
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .to_owned(),
-        StoreCallError::Cloud(_) => String::new(),
-    };
-    // A retry uploads again: `up` does, as does the hidden `deploy --upload`.
-    let source = source.and_then(Path::to_str);
-    let up = source.is_some() && matches.try_get_one::<String>("upload").is_err();
-    if up {
-        return accepting(error, matches, &["up"]);
-    }
-    let mut words = vec!["deploy"];
-    words.extend(services.iter().map(ServiceName::as_str));
-    if let Some(source) = source {
-        words.extend(["--upload", source]);
-    }
-    words.extend(["--expect-version", version.as_str()]);
-    accepting(error, matches, &words)
 }
 
 /// A refusal to delete Volume data names `words` again, accepting each Volume the
@@ -659,13 +561,11 @@ pub(super) fn accepting(
 
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let page = store(root)?
-        .read(&DeploymentsQuery {
-            environment: environment(matches)?,
-            limit: matches.get_one::<usize>("limit").copied(),
-            cursor: matches.get_one::<String>("cursor").cloned(),
-        })
-        .map_err(failed(matches, &["deployment", "ls"]))?;
+    let page = store(root)?.read(&DeploymentsQuery {
+        environment: environment(matches)?,
+        limit: matches.get_one::<usize>("limit").copied(),
+        cursor: matches.get_one::<String>("cursor").cloned(),
+    })?;
     let hint = page.next_cursor.as_ref().map(|cursor| {
         let mut words = vec!["deployment", "ls", "--cursor", cursor.as_str()];
         let limit = matches.get_one::<usize>("limit").map(ToString::to_string);
@@ -708,86 +608,81 @@ pub(super) fn deployment_id(
         return DeploymentId::parse(given)
             .map_err(|_| Error::usage("Expected a Deployment ID or number").with_exit(USAGE_EXIT));
     };
-    let found = store
-        .read(&ployz_store::NumberedDeploymentQuery {
-            environment: environment(matches)?,
-            number,
-        })
-        .map_err(failed(matches, &["deployment", "show", &given]))?;
+    let found = store.read(&ployz_store::NumberedDeploymentQuery {
+        environment: environment(matches)?,
+        number,
+    })?;
     Ok(found.deployment.id)
 }
 
 /// A refused retry, start or cancel points at the Deployment's current state.
 fn refused<'a>(
-    matches: &'a ArgMatches,
+    store: &'a Store,
     id: &'a DeploymentId,
-    words: &'a [&'a str],
 ) -> impl FnOnce(StoreCallError) -> Error + 'a {
     move |error| {
-        let error = super::store::with_next(
+        store.fail(super::store::with_next(
             error,
             |refusal| refusal.code == RpcErrorCode::Conflict,
-            || shell_words::join(["ployz", "deployment", "show", id.as_str()]),
-        );
-        failed(matches, words)(error)
+            || show_hint(id),
+        ))
     }
+}
+
+/// `ployz deployment show ID`.
+pub(super) fn show_hint(id: &DeploymentId) -> String {
+    shell_words::join(["ployz", "deployment", "show", id.as_str()])
 }
 
 fn retry(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    let given = required(matches, "id")?;
+    let store = store(root)?.args([given.as_str()]);
     let source = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
-    let words = ["deployment", "retry"];
     let admitted = store
-        .admit(
-            &Admit::Retry(ployz_store::Retry {
-                id: DeploymentId::parse(mint())?,
-                deployment: source.clone(),
-            }),
-            None,
-        )
-        .map_err(refused(matches, &source, &words))?;
-    ship(matches, &store, &admitted, events, &words)
+        .admit(&Admit::Retry(ployz_store::Retry {
+            id: DeploymentId::parse(mint())?,
+            deployment: source.clone(),
+        }))
+        .map_err(refused(&store, &source))?;
+    ship(matches, &store, &admitted, events)
 }
 
 fn start(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    let given = required(matches, "id")?;
+    let store = store(root)?.args([given.as_str()]);
     let id = deployment_id(matches, &store, "id")?;
     let events = open_events(matches)?;
-    let words = ["deployment", "start"];
     let queued = store
-        .write(&Start {
+        .try_write(&Start {
             deployment: id.clone(),
         })
-        .map_err(refused(matches, &id, &words))?;
-    ship(matches, &store, &queued, events, &words)
+        .map_err(refused(&store, &id))?;
+    ship(matches, &store, &queued, events)
 }
 
 fn cancel(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    let given = required(matches, "id")?;
+    let store = store(root)?.args([given.as_str()]);
     let id = deployment_id(matches, &store, "id")?;
     store
-        .write(&Cancel {
+        .try_write(&Cancel {
             deployment: id.clone(),
         })
-        .map_err(refused(matches, &id, &["deployment", "cancel"]))?;
-    let view = store
-        .read(&ployz_store::DeploymentQuery { id: id.clone() })
-        .map_err(failed(matches, &["deployment", "cancel"]))?;
-    let hint = shell_words::join(["ployz", "deployment", "show", id.as_str()]);
-    finish_view(&view, Some(hint))
+        .map_err(refused(&store, &id))?;
+    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
+    finish_view(&view, Some(show_hint(&id)))
 }
 
 fn show(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let store = store(root)?;
+    let given = required(matches, "id")?;
+    let store = store(root)?.args([given.as_str()]);
     let id = deployment_id(matches, &store, "id")?;
-    let view = store
-        .read(&ployz_store::DeploymentQuery { id: id.clone() })
-        .map_err(failed(matches, &["deployment", "show"]))?;
+    let view = store.read(&ployz_store::DeploymentQuery { id: id.clone() })?;
     finish_view(&view, None)
 }
 
@@ -851,34 +746,15 @@ mod tests {
             message: "This Deploy permanently deletes the data of data".into(),
             details: serde_json::json!({ "version": "3:1:0.1", "accept": ["data"] }),
         };
-        let StoreCallError::Refused(error) = with_retry(
+        let StoreCallError::Refused(error) = accepting(
             StoreCallError::Refused(refused.clone()),
             leaf_matches(&root),
-            &[],
-            None,
+            &["deploy"],
         ) else {
             panic!("a refusal stays a refusal");
         };
-        let retry = "ployz deploy --expect-version 3:1:0.1 --accept-volume-loss data --env staging";
+        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
         assert_eq!(error.details.get("next"), Some(&serde_json::json!(retry)));
         assert!(error.message.ends_with(&format!("Retry: {retry}")));
-        // `up` uploads again, accepting the loss.
-        let root = crate::cli::command()
-            .try_get_matches_from(["ployz", "up", "--env", "staging"])
-            .unwrap();
-        let StoreCallError::Refused(error) = with_retry(
-            StoreCallError::Refused(refused),
-            leaf_matches(&root),
-            &[],
-            Some(Path::new("/src/app")),
-        ) else {
-            panic!("a refusal stays a refusal");
-        };
-        assert_eq!(
-            error.details.get("next"),
-            Some(&serde_json::json!(
-                "ployz up --accept-volume-loss data --expect-version 3:1:0.1 --env staging"
-            ))
-        );
     }
 }

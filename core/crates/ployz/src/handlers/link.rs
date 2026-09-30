@@ -20,7 +20,7 @@ use ployz_store::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::store::{LOCAL_ORGANIZATION, Next, Store, failed, next, scoped, store};
+use super::store::{Backend, LOCAL_ORGANIZATION, Next, Store, next, scoped, store};
 use super::{Error, config_path, leaf_matches};
 use crate::cli::env;
 use crate::cloud_account::{self, Credential, StoreCallError};
@@ -228,7 +228,7 @@ fn find(config: &Path) -> Result<Option<(String, Link)>, Error> {
 
 /// The Organization commands act in, as far as this device knows without Cloud.
 fn acting_organization(config: &Path) -> Result<Option<Organization>, Error> {
-    if std::env::var_os(env::STORE).is_some() {
+    if super::store::local_mode() {
         return Ok(Some(Organization {
             id: LOCAL_ORGANIZATION.to_owned(),
             slug: LOCAL_ORGANIZATION.to_owned(),
@@ -285,7 +285,7 @@ pub(super) fn link(root: &ArgMatches) -> Result<(), Error> {
         path: None,
         all: false,
     };
-    let view = store.read(&query).map_err(failed(matches, &["link"]))?;
+    let view = store.read(&query)?;
     let linked = record(&config, view.environment)?;
     let hint = Some("ployz status".to_owned());
     crate::output::finish(&Next::new(&linked, hint), || {
@@ -319,6 +319,33 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
     Ok(linked)
 }
 
+/// Point this device's links to Project `old` at `new` after a rename, in the
+/// Organization commands act in. Returns how many moved.
+pub(super) fn rename_project(
+    config: &Path,
+    old: &ProjectName,
+    new: &ProjectName,
+) -> Result<usize, Error> {
+    let acting = acting_organization(config)?;
+    let mut links = load(config)?;
+    let mut moved = 0;
+    for link in links.values_mut() {
+        // A link or a token without a known Organization can't be told apart: move it.
+        let same = match (&link.organization, &acting) {
+            (Some(linked), Some(acting)) => linked.id == acting.id,
+            _ => true,
+        };
+        if same && &link.project == old {
+            link.project = new.clone();
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        save(config, &links)?;
+    }
+    Ok(moved)
+}
+
 /// Link this directory to `environment` unless it or an ancestor is already linked,
 /// so a one-off `--env` leaves the link alone. Returns the linked directory.
 pub(super) fn record_unless_linked(
@@ -344,8 +371,8 @@ pub(super) struct Identity {
 }
 
 pub(super) fn identity(store: &Store) -> Result<Identity, Error> {
-    Ok(match store {
-        Store::Local(..) => Identity {
+    Ok(match store.backend() {
+        Backend::Local(..) => Identity {
             credential: "local",
             cloud: None,
             account: None,
@@ -354,13 +381,13 @@ pub(super) fn identity(store: &Store) -> Result<Identity, Error> {
                 slug: LOCAL_ORGANIZATION.to_owned(),
             }),
         },
-        Store::Cloud(_, Credential::Device(signed_in)) => Identity {
+        Backend::Cloud(_, Credential::Device(signed_in)) => Identity {
             credential: "device",
             cloud: Some(signed_in.cloud.clone()),
             account: Some(signed_in.account.clone()),
             organization: Some(signed_in.organization.clone()),
         },
-        Store::Cloud(runtime, credential @ Credential::Token { cloud, .. }) => {
+        Backend::Cloud(runtime, credential @ Credential::Token { cloud, .. }) => {
             let organizations = runtime.block_on(cloud_account::organizations(credential))?;
             Identity {
                 credential: "token",
@@ -423,7 +450,7 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
     let identity = identity(&store)?;
     let scope = scope(matches)?;
     let mut attention = Vec::new();
-    let diff = match store.read(&DiffQuery {
+    let diff = match store.try_read(&DiffQuery {
         environment: scope.at(),
     }) {
         Ok(diff) => Some(diff),
@@ -446,17 +473,15 @@ pub(super) fn status(root: &ArgMatches) -> Result<(), Error> {
             });
             None
         }
-        Err(error) => return Err(failed(matches, &["status"])(error)),
+        Err(error) => return Err(store.fail(error)),
     };
     let mut deploying = Vec::new();
     if diff.is_some() {
-        let page = store
-            .read(&DeploymentsQuery {
-                environment: scope.at(),
-                limit: Some(RECENT),
-                cursor: None,
-            })
-            .map_err(failed(matches, &["status"]))?;
+        let page = store.read(&DeploymentsQuery {
+            environment: scope.at(),
+            limit: Some(RECENT),
+            cursor: None,
+        })?;
         let ended = page.deployments.iter().find(|deployment| {
             !deployment.status.in_flight() && deployment.status != DeploymentStatus::Superseded
         });
