@@ -26,6 +26,15 @@ thread_local! {
     static EMITTED: Cell<bool> = const { Cell::new(false) };
     /// Set while a command runs as a step of another: its JSON result lands here.
     static CAPTURED: RefCell<Option<Option<serde_json::Value>>> = const { RefCell::new(None) };
+    /// Warnings said so far; the next JSON result carries them as `warnings`.
+    static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Warn on one stderr line; the command's JSON result lists it under `warnings`.
+pub(crate) fn warn(warning: impl Into<String>) {
+    let warning = warning.into();
+    eprintln!("WARNING: {warning}");
+    WARNINGS.with_borrow_mut(|warnings| warnings.push(warning));
 }
 
 /// Run a command as one step of another: the JSON result it would print is
@@ -117,12 +126,17 @@ pub(crate) fn finish<T: Serialize + ?Sized>(
 ///
 /// Returns a serialization or stdout write error.
 pub(crate) fn show<T: Serialize + ?Sized>(value: &T) -> Result<(), Failure> {
+    let warnings = WARNINGS.take();
+    let mut value = serde_json::to_value(value)?;
+    if let (false, Some(fields)) = (warnings.is_empty(), value.as_object_mut()) {
+        fields.insert("warnings".into(), serde_json::json!(warnings));
+    }
     if CAPTURED.with_borrow(Option::is_some) {
-        CAPTURED.set(Some(Some(serde_json::to_value(value)?)));
+        CAPTURED.set(Some(Some(value)));
         return Ok(());
     }
     let mut stdout = io::stdout().lock();
-    serde_json::to_writer_pretty(&mut stdout, value)?;
+    serde_json::to_writer_pretty(&mut stdout, &value)?;
     writeln!(stdout)?;
     EMITTED.set(true);
     Ok(())
@@ -264,5 +278,22 @@ impl<'a, T> Fanout<'a, T> {
             value: std::collections::BTreeMap::from([(key, value)]),
             gaps,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warnings_land_in_the_next_json_result_once() {
+        warn("Docker volume (not recommended)");
+        let (_, first) = captured(|| show(&serde_json::json!({ "volume": "data" })));
+        let (_, second) = captured(|| show(&serde_json::json!({ "volume": "data" })));
+        assert_eq!(
+            first.unwrap().get("warnings").cloned(),
+            Some(serde_json::json!(["Docker volume (not recommended)"]))
+        );
+        assert!(second.unwrap().get("warnings").is_none());
     }
 }

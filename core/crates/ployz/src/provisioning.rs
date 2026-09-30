@@ -135,7 +135,7 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
         None if matches.get_flag("yes") || !crate::output::interactive() => StorageChoice::None,
         None => {
             crate::output::say_inline!(
-                "Storage preparation [zfs/none] (none keeps this Machine currently stateless): "
+                "Storage preparation [zfs/none] (none is Docker only, not recommended): "
             );
             let mut answer = String::new();
             io::stdin()
@@ -156,11 +156,12 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
     Ok(storage)
 }
 
+/// Why `--storage none` is not recommended; said once when a Server starts without ZFS.
+const DOCKER_ONLY: &str = "Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.";
+
 pub(crate) fn announce_storage(storage: StorageChoice) {
     if storage == StorageChoice::None {
-        crate::output::say!(
-            "Storage: none — this Machine currently supports stateless workloads only."
-        );
+        crate::output::warn(DOCKER_ONLY);
     }
 }
 

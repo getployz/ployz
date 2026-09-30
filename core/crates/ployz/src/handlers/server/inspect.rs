@@ -82,7 +82,7 @@ fn daemon_skew_warning(machines: &[MachineObservation], cli_version: &str) -> Op
 fn format_storage(storage: Option<MachineStorageObservation>) -> String {
     match storage {
         None => "Volume support unknown".into(),
-        Some(MachineStorageObservation::Stateless) => "Docker volumes only".into(),
+        Some(MachineStorageObservation::Stateless) => "Docker only".into(),
         Some(MachineStorageObservation::Ready) => "Managed volumes available".into(),
         Some(MachineStorageObservation::Pool {
             size_bytes,
@@ -162,7 +162,7 @@ mod tests {
         assert_eq!(format_storage(None), "Volume support unknown");
         assert_eq!(
             format_storage(Some(MachineStorageObservation::Stateless)),
-            "Docker volumes only"
+            "Docker only"
         );
         assert_eq!(
             format_storage(Some(MachineStorageObservation::Ready)),
