@@ -509,8 +509,9 @@ fn a_hint_beside_the_destinations_own_edit_is_taken_after_pr_teardown() {
     );
 }
 
-#[test]
-fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
+/// PR #5 saves TOKEN as `choice`; production gains its own TOKEN before the merge,
+/// so TOKEN lands as a hint. Taking every hint and deploying resolves TOKEN to what.
+fn a_secret_hint_taken(choice: PickChoice) -> Value {
     let (store, who) = shop();
     set(
         &store,
@@ -518,8 +519,19 @@ fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
         "pr-5",
         &[("web.env.TOKEN", json!({ "secret": "pr-secret" }))],
     );
-    store.write(&who, &save(&["web.env"], None)).unwrap();
-    // Production gains its own TOKEN before the merge.
+    store
+        .write(
+            &who,
+            &Move::Save(Save {
+                from: at("pr-5"),
+                picks: Some(vec![MovePick {
+                    row: "web.env.TOKEN".into(),
+                    choice: Some(choice),
+                }]),
+                ..Save::default()
+            }),
+        )
+        .unwrap();
     set(
         &store,
         &who,
@@ -560,8 +572,18 @@ fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
         .unwrap();
     publish(&store, &who, "production");
     let pushed = push(&store, &who, 5, &[]);
+    resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN")
+}
+
+#[test]
+fn a_secret_the_destination_gains_after_the_save_lands_as_a_hint() {
+    assert_eq!(a_secret_hint_taken(PickChoice::From), json!("pr-secret"));
+}
+
+#[test]
+fn a_secret_hint_keeps_the_new_value_picked_for_it() {
     assert_eq!(
-        resolved(&store, &pushed.admitted[0].deployment.id, "TOKEN"),
-        json!("pr-secret")
+        a_secret_hint_taken(PickChoice::New("prod".into())),
+        json!("prod")
     );
 }
