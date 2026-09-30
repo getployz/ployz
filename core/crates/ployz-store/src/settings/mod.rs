@@ -633,6 +633,11 @@ impl NodeName {
     pub fn parse(name: &str) -> Result<Self, RpcError> {
         match name.strip_prefix("volumes.") {
             Some(volume) => Ok(Self::Volume(VolumeName::parse(volume)?)),
+            // `volumes` addresses Volumes, never a Service, as in a Setting path.
+            None if name == "volumes" => Err(error::invalid(
+                "Name a Volume: volumes.VOLUME",
+                json!({ "example": "volumes.data" }),
+            )),
             None => ServiceName::parse(name).map(Self::Service).map_err(|_| {
                 error::invalid(
                     "Expected a node name: SERVICE, or volumes.VOLUME for a Volume",

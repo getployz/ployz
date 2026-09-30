@@ -459,6 +459,11 @@ fn a_failed_edit_writes_none_of_its_changes() {
 
 #[test]
 fn wrong_paths_and_values_name_the_fix() {
+    // `volumes` names no Service: only `volumes.VOLUME` a Volume.
+    assert_eq!(
+        ployz_store::NodeName::parse("volumes").unwrap_err().code,
+        RpcErrorCode::InvalidArgument
+    );
     let error = SettingPath::parse("web.replica").unwrap_err();
     assert_eq!(error.code, RpcErrorCode::InvalidArgument);
     assert_eq!(error.details["did_you_mean"], "replicas");
