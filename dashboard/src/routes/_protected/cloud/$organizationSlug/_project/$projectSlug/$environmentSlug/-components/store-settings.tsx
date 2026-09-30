@@ -1,19 +1,18 @@
 import { useState } from "react";
-import { Schema } from "effect";
 import type { SetupCommand } from "@ployz/sdk";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, GitBranchPlusIcon, PlusIcon } from "lucide-react";
 import { BranchIndent } from "#/components/environment-tree";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
-import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldLabel } from "#/components/ui/field";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { environmentsQuery, servicesQuery, useStoreView } from "#/modules/config-store/store-view.queries";
 import { SetupCommandsField, useSavedSetupCommands } from "./new-branch/SetupCommandsField";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { dnsLabelError } from "#/modules/config-store/store-services";
-import { CanvasInspectorNameEditor } from "./CanvasInspectorNameEditor";
+import { Input } from "#/components/ui/input";
 import { storeEnvironmentNotes, storeEnvironmentTree } from "#/modules/config-store/store-workspace";
 import { StoreTeardownSection } from "#/routes/_protected/cloud/$organizationSlug/-components/store-teardown-section";
 import { CreateEnvironmentDialog } from "./create-environment-dialog";
@@ -86,8 +85,24 @@ function StoreBranchSetup({ organizationSlug, projectSlug, environmentSlug, save
 }
 
 /** A Project's settings over the Config Store: its Default Environment, its Environments, and deleting it. */
-/** A Project's name is one DNS label, as the Store checks it. */
-const projectNameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name) ?? undefined));
+/** A Project's name: one DNS label, as the Store checks it; renaming it changes its URLs. */
+function ProjectNameField({ project, onRename }: { project: string; onRename: (name: string) => void }) {
+  const [draft, setDraft] = useState(project);
+  const name = draft.trim();
+  const error = name === project ? null : dnsLabelError(name);
+  const rename = () => { if (name !== project && !error) onRename(name); };
+  return (
+    <Field data-invalid={error ? true : undefined}>
+      <FieldLabel htmlFor="project-name">Name</FieldLabel>
+      <div className="flex w-full gap-2 sm:max-w-sm">
+        <Input id="project-name" value={draft} aria-invalid={error ? true : undefined} onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") rename(); }} />
+        <Button variant="outline" disabled={name === project || error !== null} onClick={rename}>Rename</Button>
+      </div>
+      {error ? <FieldError>{error}</FieldError> : <FieldDescription>Its URLs change with it.</FieldDescription>}
+    </Field>
+  );
+}
 
 export function StoreProjectSettings({ organizationSlug, projectSlug, environmentSlug }: Place) {
   const navigate = useNavigate();
@@ -101,20 +116,12 @@ export function StoreProjectSettings({ organizationSlug, projectSlug, environmen
   return (
     <>
       <section aria-labelledby="project-heading" className="flex flex-col gap-4">
-        <h2 id="project-heading" className="text-lg font-semibold">
-          <CanvasInspectorNameEditor
-            value={projectSlug}
-            schema={projectNameSchema}
-            editTitle="Rename project"
-            editDescription="Its URLs change with it. Servers keep running what's deployed under its old name."
-            placeholder="Project name"
-            onRename={(name) => {
-              // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
-              void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
-                navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
-            }}
-          />
-        </h2>
+        <h2 id="project-heading" className="text-lg font-semibold">{projectSlug}</h2>
+        <ProjectNameField project={projectSlug} onRename={(name) => {
+          // Awaited: the page opens the renamed Project once the Store has it; a refusal toasts and stays here.
+          void writer.commit({ command: "rename_project", project: projectSlug, name }).isPersisted.promise.then(() =>
+            navigate({ to: ".", params: (params) => ({ ...params, projectSlug: name }), search: (prev) => prev }), () => undefined);
+        }} />
         <Field>
           <FieldLabel htmlFor="default-environment">Default environment</FieldLabel>
           <Select value={defaultEnvironment?.name ?? null} onValueChange={(next) => {
