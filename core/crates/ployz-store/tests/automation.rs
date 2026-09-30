@@ -115,7 +115,7 @@ fn suite(id: u64, head: &str, status: &str, conclusion: Option<&str>, minute: u8
         head: backend::sha(head),
         status: status.into(),
         conclusion: conclusion.map(Into::into),
-        updated: format!("2026-09-29T10:{minute:02}:00Z"),
+        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:{minute:02}:00Z")).unwrap(),
     })
 }
 

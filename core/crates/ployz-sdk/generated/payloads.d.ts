@@ -391,10 +391,9 @@ status: string,
  */
 conclusion: string | null,
 /**
- * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: an older result never
- * replaces a newer one.
+ * When GitHub last changed it: an older result never replaces a newer one.
  */
-updated: string, };
+updated: GithubTimestamp, };
 
 export type ClusterDomain = { name: Hostname, status: ClusterDomainStatus, };
 
@@ -1378,6 +1377,8 @@ workflow_ref: string,
  */
 repository: RepositoryName, installation_id: number, };
 
+export type GithubTimestamp = string;
+
 export type HealthFailure = { "type": "cancelled" } | { "type": "timed_out" } | { "type": "runtime", observation: ContainerRuntimeObservation, };
 
 export type HealthObservation = "not_configured" | "starting" | "healthy" | "unhealthy" | string;
@@ -2134,9 +2135,9 @@ merge_commit: CommitSha | null,
  */
 merge_reached: CommitSha | null,
 /**
- * GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
+ * When GitHub last changed it.
  */
-updated: string, };
+updated: GithubTimestamp, };
 
 export type PullRequestHint = {
 /**
