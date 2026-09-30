@@ -131,7 +131,9 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
             {title}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {sentence ?? <>You're <span className="text-destructive">deleting</span> from <span className="text-foreground">{place}</span>:</>}
+            {sentence ?? (check.status === "ready" && items.length === 0
+              ? <><span className="text-foreground">{place}</span> is empty: nothing else goes with it.</>
+              : <>You're <span className="text-destructive">deleting</span> from <span className="text-foreground">{place}</span>:</>)}
           </AlertDialogDescription>
           {check.status === "failed" ? (
             <p className="text-sm text-destructive">
