@@ -3,7 +3,7 @@ import { useLoaderData, useParams } from "@tanstack/react-router";
 import { useInFlightTargets } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
-import { awaitsDeploy, deployChip, nodeIssues, runtimeLine } from "./node-status";
+import { deployTargeting, nodeIssues, runtimeLine } from "./node-status";
 import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { useVolumeFill } from "./use-volume-fill";
 import type { StoreCanvasService } from "./types";
@@ -15,9 +15,8 @@ export function useServiceStatus({ service, domains, changeCount, runtimeIdentit
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const lens = use(RuntimeLensContext);
   const fillOf = useVolumeFill();
-  const inFlight = useInFlightTargets(organizationSlug, store);
-  const chip = deployChip(service, changeCount, inFlight);
-  const status = runtimeLine(service, runtime, { lens, desiredReplicas, chip, awaited: awaitsDeploy(service, inFlight) });
+  const { chip, ...deploy } = deployTargeting(service, changeCount, useInFlightTargets(organizationSlug, store));
+  const status = runtimeLine(service, runtime, { lens, desiredReplicas, ...deploy });
   const issues = nodeIssues(status, domains, trays.map(({ volume }) => ({ volume, fill: fillOf(volume.id) })));
   return { chip, status, issues };
 }

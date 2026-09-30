@@ -1,6 +1,6 @@
 import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
-import type { RuntimeServiceRecord, RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
+import type { ExitedState, RuntimeServiceRecord, RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import type { Lit } from "../deployment-page";
@@ -24,22 +24,24 @@ const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, t
 /** A Volume's status line while nothing here mounts it. */
 export const NOT_MOUNTED = line("Not mounted", "idle");
 
+/** The newer of two stops: RFC 3339 in UTC at one precision compares as text, and a stop without a time is older than any. */
+const newer = (a: ExitedState | null, b: ExitedState) =>
+  a === null || (b.stopped_at !== null && (a.stopped_at === null || b.stopped_at > a.stopped_at)) ? b : a;
+
 /** "Crashed" since the newest stop among its containers, "Out of memory" when that one was OOM-killed. */
 function crashedLine(containers: RuntimeServiceRecord["containers"]): RuntimeLine {
-  // The newest stop: RFC 3339 in UTC at one precision compares as text, and a stop with no time is older than any.
-  const last = containers.reduce<Extract<NonNullable<RuntimeServiceRecord["containers"][number]["runtime"]>, { state: "exited" }> | null>(
-    (newest, { runtime }) => runtime?.state === "exited" && (newest === null
-      || (runtime.stopped_at !== null && (newest.stopped_at === null || runtime.stopped_at > newest.stopped_at))) ? runtime : newest, null);
+  const last = containers.flatMap(({ runtime }) => runtime?.state === "exited" ? [runtime] : []).reduce(newer, null);
   return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null,
     code: last?.code ?? null };
 }
 
 /**
  * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it).
- * `awaited`: a Deploy in flight targets it, so until its first container exists, it's Starting. `chip`: its Deploy chip.
+ * `awaited`: a Deploy in flight targets it, so until its first container exists, it's Starting. `rolling`: a running
+ * Deploy targets it, so fewer replicas serving is no Degraded.
  */
 function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean,
-  { desiredReplicas, chip, awaited }: { desiredReplicas: number | null; chip: DeployChipState | null; awaited: boolean }) {
+  { desiredReplicas, rolling, awaited }: { desiredReplicas: number | null } & Omit<DeployTargeting, "chip">) {
   if (awaited && !runtime?.containers.length) return line("Starting", "quiet");
   if (!runtime) return whole ? line("Not running", "bad", true) : line("Deployed", "quiet");
   if (runtime.containers.length === 0) return line("Not running", "bad", true);
@@ -50,7 +52,7 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
   // None serves yet: Unhealthy once a health check fails, else still Starting.
   if (serving === 0) return runtime.containers.some(({ runtime }) => runtime?.state === "running" && runtime.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");
   // A replica missing from partial evidence may be healthy on the Server that didn't report.
-  if (whole && chip?.kind !== "deploying" && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
+  if (whole && !rolling && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
   return line("Online", "ok");
 }
 
@@ -61,15 +63,15 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
 export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "incomplete" | "observedAt" | "noServers">;
 
 /**
- * A Service's status line: what runs now, from runtime evidence. Staged work and Deploys never replace it, and it never
- * guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
+ * A Service's status line: what runs now, from runtime evidence. Staged work never replaces it; a Deploy in flight only
+ * as Starting. It never guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
- * `chip`: its Deploy chip, which says whether a Deploy is rolling it. `awaited`: a Deploy in flight targets it (`awaitsDeploy`).
+ * `rolling` and `awaited`: as `deployTargeting` says.
  */
 export function runtimeLine(
   service: Pick<ServiceListing, "change" | "source">,
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
-  { lens, ...deploy }: { lens: RuntimeLens; desiredReplicas: number | null; chip: DeployChipState | null; awaited: boolean },
+  { lens, ...deploy }: { lens: RuntimeLens; desiredReplicas: number | null } & Omit<DeployTargeting, "chip">,
 ): RuntimeLine {
   if (service.change === "create") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
@@ -169,29 +171,29 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
 export type InFlightTargets = Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at"> & { nodes: readonly string[] | null };
 
 /**
- * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
- * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one targets nothing until its nodes arrive.
+ * What Deploys mean for a Service. `chip`: anything about Deploys, a Deploy in flight that targets it (running, else
+ * queued), else what the next Deploy does to it. `rolling`: a running one targets it. `awaited`: any one in flight
+ * targets it, so it reads Starting until its first container exists.
  */
-export function deployChip(
-  service: Pick<ServiceListing, "id" | "change">,
+export type DeployTargeting = { chip: DeployChipState | null; rolling: boolean; awaited: boolean };
+
+/** A Service's `DeployTargeting`, from the Environment's Deployments in flight (`inFlight`). */
+export function deployTargeting(
+  service: Pick<ServiceListing, "id" | "name" | "change">,
   changeCount: number,
   inFlight: readonly InFlightTargets[],
-): DeployChipState | null {
+): DeployTargeting {
+  // The chip waits for a Deployment's nodes, so it's never on the wrong Service; Starting doesn't, and takes one naming
+  // no Services or naming this one, so a first Deploy never flashes a red Not running.
   const targeting = inFlight.filter((deployment) => deployment.nodes?.includes(service.id));
-  const running = targeting.find((deployment) => deployment.status !== "queued");
-  if (running) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
-  if (targeting.length > 0) return { kind: "queued" };
-  return service.change === null ? null : stagedChip(service.change, changeCount);
-}
-
-/**
- * Whether a Deploy in flight targets a Service, for its Starting line. Until a Deployment's nodes arrive, one naming no
- * Services, or naming it, does, so a first Deploy never flashes Not running.
- */
-export const awaitsDeploy = (service: Pick<ServiceListing, "id" | "name">, inFlight: readonly InFlightTargets[]) =>
-  inFlight.some((deployment) => deployment.nodes === null
+  const awaited = inFlight.some((deployment) => deployment.nodes === null
     ? deployment.services.length === 0 || deployment.services.includes(service.name)
     : deployment.nodes.includes(service.id));
+  const running = targeting.find((deployment) => deployment.status !== "queued");
+  if (running) return { chip: { kind: "deploying", since: running.started_at ?? running.admitted_at }, rolling: true, awaited };
+  const chip = targeting.length > 0 ? { kind: "queued" } as const : service.change === null ? null : stagedChip(service.change, changeCount);
+  return { chip, rolling: false, awaited };
+}
 
 /**
  * A node's staged surface, in the colour of what the next Deploy does to it. None while a Deployment Page is open

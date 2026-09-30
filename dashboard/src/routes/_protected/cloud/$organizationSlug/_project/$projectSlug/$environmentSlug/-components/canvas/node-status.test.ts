@@ -1,7 +1,7 @@
 import type { DomainRow, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { awaitsDeploy, deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
+import { deployTargeting, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
 const container = (state: "running" | "exited" | "restarting", health = "healthy"): RuntimeContainerRecord =>
@@ -9,7 +9,7 @@ const container = (state: "running" | "exited" | "restarting", health = "healthy
     : state === "exited" ? { state, code: 1, stopped_at: null, oom_killed: false } : { state } });
 const runtime = (...containers: RuntimeContainerRecord[]) => ({ containers });
 const observed: RuntimeLens = { status: "observed", incomplete: false, observedAt: "2026-09-30T10:00:00Z", noServers: false };
-const seen = { lens: observed, desiredReplicas: null, chip: null, awaited: false };
+const seen = { lens: observed, desiredReplicas: null, rolling: false, awaited: false };
 /** The Runtime Watch saying something other than `observed`. */
 const watch = (lens: Partial<RuntimeLens>) => ({ ...seen, lens: { ...observed, ...lens } });
 
@@ -73,7 +73,7 @@ describe("runtimeLine", () => {
   it("says Degraded when fewer replicas serve than it asks for, except while a Deploy rolls them or a Server didn't report", () => {
     const one = runtime(container("running", "healthy"), container("exited"));
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2 }).word).toBe("Degraded");
-    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, chip: { kind: "deploying", since: 1 } }).word).toBe("Online");
+    expect(runtimeLine(service, one, { ...seen, desiredReplicas: 2, rolling: true }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...seen, desiredReplicas: 1 }).word).toBe("Online");
     expect(runtimeLine(service, one, { ...watch({ incomplete: true }), desiredReplicas: 2 }).word).toBe("Online");
   });
@@ -132,35 +132,37 @@ describe("publicDomain", () => {
   });
 });
 
-describe("deployChip", () => {
+describe("deployTargeting", () => {
   const deployment = (status: "queued" | "running", nodes: string[] | null, services: string[] = []) =>
     ({ status, services, nodes, started_at: status === "running" ? 100 : null, admitted_at: 90 });
 
   it("puts a Deploy in flight that targets the Service first: running, else queued", () => {
-    expect(deployChip({ ...service, change: "update" }, 2, [deployment("queued", ["web"]), deployment("running", ["web"])])).toEqual({ kind: "deploying", since: 100 });
-    expect(deployChip(service, 0, [deployment("queued", ["web"])])).toEqual({ kind: "queued" });
-    expect(deployChip(service, 0, [deployment("running", ["api"])])).toBeNull();
+    expect(deployTargeting({ ...service, change: "update" }, 2, [deployment("queued", ["web"]), deployment("running", ["web"])]).chip).toEqual({ kind: "deploying", since: 100 });
+    expect(deployTargeting(service, 0, [deployment("queued", ["web"])]).chip).toEqual({ kind: "queued" });
+    expect(deployTargeting(service, 0, [deployment("running", ["web"])]).rolling).toBe(true);
+    expect(deployTargeting(service, 0, [deployment("queued", ["web"])]).rolling).toBe(false);
+    expect(deployTargeting(service, 0, [deployment("running", ["api"])]).chip).toBeNull();
   });
 
   it("targets nothing while a Deploy's nodes haven't arrived", () => {
-    expect(deployChip(service, 0, [deployment("running", null)])).toBeNull();
-    expect(deployChip({ ...service, change: "update" }, 1, [deployment("queued", null)])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployTargeting(service, 0, [deployment("running", null)]).chip).toBeNull();
+    expect(deployTargeting({ ...service, change: "update" }, 1, [deployment("queued", null)]).chip).toEqual({ kind: "staged", label: "1 change", variant: "info" });
   });
 
   it("awaits a Deploy whose nodes haven't arrived when it names no Services or names this one, so a first Deploy reads Starting", () => {
-    expect(awaitsDeploy(service, [deployment("running", null)])).toBe(true);
-    expect(awaitsDeploy(service, [deployment("queued", null, ["web"])])).toBe(true);
-    expect(awaitsDeploy(service, [deployment("running", null, ["api"])])).toBe(false);
-    expect(awaitsDeploy(service, [deployment("running", ["api"])])).toBe(false);
-    expect(awaitsDeploy(service, [deployment("running", ["web"])])).toBe(true);
+    expect(deployTargeting(service, 0, [deployment("running", null)]).awaited).toBe(true);
+    expect(deployTargeting(service, 0, [deployment("queued", null, ["web"])]).awaited).toBe(true);
+    expect(deployTargeting(service, 0, [deployment("running", null, ["api"])]).awaited).toBe(false);
+    expect(deployTargeting(service, 0, [deployment("running", ["api"])]).awaited).toBe(false);
+    expect(deployTargeting(service, 0, [deployment("running", ["web"])]).awaited).toBe(true);
   });
 
   it("says what the next Deploy does otherwise", () => {
-    expect(deployChip({ ...service, change: "create" }, 0, [])).toEqual({ kind: "staged", label: "New", variant: "success" });
-    expect(deployChip({ ...service, change: "update" }, 1, [])).toEqual({ kind: "staged", label: "1 change", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 3, [])).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
-    expect(deployChip({ ...service, change: "update" }, 0, [])).toEqual({ kind: "staged", label: "Changed", variant: "info" });
-    expect(deployChip({ ...service, change: "delete" }, 0, [])).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
+    expect(deployTargeting({ ...service, change: "create" }, 0, []).chip).toEqual({ kind: "staged", label: "New", variant: "success" });
+    expect(deployTargeting({ ...service, change: "update" }, 1, []).chip).toEqual({ kind: "staged", label: "1 change", variant: "info" });
+    expect(deployTargeting({ ...service, change: "update" }, 3, []).chip).toEqual({ kind: "staged", label: "3 changes", variant: "info" });
+    expect(deployTargeting({ ...service, change: "update" }, 0, []).chip).toEqual({ kind: "staged", label: "Changed", variant: "info" });
+    expect(deployTargeting({ ...service, change: "delete" }, 0, []).chip).toEqual({ kind: "staged", label: "Removing", variant: "destructive" });
   });
 });
 

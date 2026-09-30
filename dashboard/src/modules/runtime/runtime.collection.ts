@@ -18,10 +18,14 @@ export type RuntimeLensStatus = typeof runtimeLensStatusSchema.Type;
 const NonnegativeInt = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /** A container's state as the Engine's `ContainerRuntimeObservation` says it, less an unrecognized state's raw value. */
+const exitedStateSchema = Schema.Struct({ state: Schema.Literal("exited"), code: Schema.Number, stopped_at: Schema.NullOr(Schema.String), oom_killed: Schema.Boolean });
+
+/** An exited container: its exit code, when it stopped (RFC 3339, null when Docker gave no time) and whether it ran out of memory. */
+export type ExitedState = typeof exitedStateSchema.Type;
+
 export const runtimeContainerStateSchema = Schema.Union([
   Schema.Struct({ state: Schema.Literal("running"), health: Schema.String }),
-  /** Its exit code, when it stopped (RFC 3339, null when Docker gave no time) and whether it ran out of memory. */
-  Schema.Struct({ state: Schema.Literal("exited"), code: Schema.Number, stopped_at: Schema.NullOr(Schema.String), oom_killed: Schema.Boolean }),
+  exitedStateSchema,
   Schema.Struct({ state: Schema.Literals(["created", "paused", "restarting", "removing", "dead", "unrecognized"]) }),
 ]);
 
