@@ -60,6 +60,20 @@ pub struct RemoveVolume {
     pub volume: VolumeName,
 }
 
+/// Rename a Volume: a staged change. Its data and mounts stay; only the name
+/// paths use changes.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct RenameVolume {
+    /// The Environment it is in.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
+    /// Its current name.
+    pub volume: VolumeName,
+    /// Its new name, unique among the Environment's Volumes.
+    pub name: VolumeName,
+}
+
 /// Change a draft Volume's storage. Deployment fixes its storage choice and limit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +161,45 @@ pub(crate) fn create_volume(
             staged,
             immediate: Vec::new(),
         })
+    })
+}
+
+pub(crate) fn rename_volume(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    rename: &RenameVolume,
+) -> Result<VolumeStaged, RpcError> {
+    let mut environment = scope::lock(tx, who, &rename.environment)?;
+    let id = environment.volume(&rename.volume)?.resource_id.clone();
+    let changed = rename.name != rename.volume;
+    if changed {
+        if environment.volume(&rename.name).is_ok() {
+            return Err(error::conflict(
+                format!(
+                    "Environment {} already has a Volume named {}",
+                    environment.summary.name, rename.name
+                ),
+                json!({ "volume": rename.name }),
+            ));
+        }
+        environment
+            .working
+            .volumes
+            .iter_mut()
+            .find(|node| node.resource_id == id)
+            .expect("Volume was found")
+            .name = rename.name.to_string();
+        scope::save_working(tx, &mut environment)?;
+    }
+    Ok(VolumeStaged {
+        volume: summary(environment.volume(&rename.name)?)?,
+        environment: environment.summary,
+        staged: if changed {
+            vec![SettingPath::volume(&rename.name)]
+        } else {
+            Vec::new()
+        },
+        immediate: Vec::new(),
     })
 }
 

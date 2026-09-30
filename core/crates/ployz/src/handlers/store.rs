@@ -200,6 +200,14 @@ impl Store {
         self.call("write", &request, |store, who| store.write(who, remove))
     }
 
+    pub(crate) fn rename_volume(
+        &self,
+        rename: &ployz_store::RenameVolume,
+    ) -> Result<VolumeStaged, StoreCallError> {
+        let request = Command::RenameVolume(rename.clone());
+        self.call("write", &request, |store, who| store.write(who, rename))
+    }
+
     pub(crate) fn set_volume_storage(
         &self,
         set: &ployz_store::SetVolumeStorage,

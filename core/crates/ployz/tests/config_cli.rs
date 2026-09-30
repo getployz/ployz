@@ -766,7 +766,12 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
             ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
             json!({"kind":"local"})
         );
-        ok(store, &["volume", "rm", "logs"]);
+        // A rename is staged; a name another Volume has is refused.
+        let taken = error(store, &["volume", "rename", "logs", "data"]);
+        assert_eq!(taken["code"], "conflict", "{taken}");
+        let renamed = ok(store, &["volume", "rename", "logs", "cache"]);
+        assert_eq!(renamed["staged"], json!(["volumes.cache"]));
+        ok(store, &["volume", "rm", "cache"]);
         let inspected = ok(store, &["volume", "inspect", "data"]);
         assert_eq!(inspected["lineage"], inspected["id"]);
 
