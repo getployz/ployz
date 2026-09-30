@@ -502,6 +502,13 @@ pub(crate) fn record(
                 summary: serde_json::to_value(projection.summary).expect("a summary is JSON"),
                 reason,
             };
+            // A replay must say what each node did, not only as many of them.
+            if stored.run.outcome.is_some() && stored.run.nodes != nodes {
+                return Err(error::conflict(
+                    "This Deployment already recorded a different outcome",
+                    json!({ "deployment": id }),
+                ));
+            }
             stored.run.nodes = nodes;
             finish(tx, stored, outcome, status)
         }
