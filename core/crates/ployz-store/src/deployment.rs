@@ -611,7 +611,7 @@ fn lower(
             .iter()
             .map(|volume| LowerDeploymentVolume {
                 volume_resource_id: volume.resource_id.clone(),
-                storage: volume.storage.clone(),
+                storage: volume.storage,
             })
             .collect(),
         lineages: lineages.clone(),
