@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
 import type { ConfigCommand, ConfigQuery, MachineId } from "@ployz/sdk";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -360,14 +361,18 @@ it.live(
         assert.strictEqual(refused.json.error?.code, "conflict");
         assert.strictEqual(refused.json.error?.details?.next, "ployz server add");
 
-        // A replay of that release after a new Cluster was paired forgets nothing of it.
+        // A replay of that release after a new Cluster was paired, even through a Server of the same ID, touches nothing.
         yield* drizzle.insert(organizationPairing).values({
           organizationId, encryptedPairingSecret: encryption.encrypt("ppair_replacement"),
           founderPublicKey: "founder-key", founderClaimMachineId: "1".repeat(32) as MachineId,
         });
+        yield* drizzle.insert(organizationMachine).values({
+          ...enrolled, clusterKey: createHash("sha256").update("ppair_replacement").digest("hex"),
+        });
         const replay = yield* releaseServerActivity({ organizationId, machineId, generation: done.removed.generation, resetWarning: null, noReset: false });
         assert.strictEqual(replay.kind, "kept");
         assert.strictEqual((yield* drizzle.select().from(organizationPairing)).length, 1);
+        assert.strictEqual((yield* drizzle.select().from(organizationMachine)).length, 1);
       }).pipe(Effect.provide(layer));
     }),
   60_000,

@@ -29,7 +29,7 @@ import {
   requestMachineRemoveAttempt,
 } from "#/modules/machines/machine-removal.repository";
 import { NotFound } from "#/server/public-error";
-import { releaseRemovedServer } from "#/modules/machines/pairing-removal.server";
+import { dropRemovedServer, forgetEmptiedPairing } from "#/modules/machines/pairing-removal.server";
 import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { storeSystem } from "#/modules/config-store/config-store.server";
 
@@ -109,9 +109,9 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
 
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
- * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `releaseRemovedServer` drops the Server's row, and
- * forgets the Cluster when a reset took the pairing's last; the Store then lets go of everything that ran. A Server
- * taken out without a reset loses its row but never lets go of the Cluster.
+ * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `dropRemovedServer` drops the Server's row of the
+ * witnessed pairing. When a reset took that pairing's last Server, the Store lets go of everything that ran, and then
+ * Cloud forgets the pairing. A Server taken out without a reset loses its row but never lets go of the Cluster.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
   organizationId: string; machineId: string; generation: string; resetWarning: string | null; noReset: boolean;
@@ -122,9 +122,12 @@ export const releaseServerActivity = Effect.fn("MachineRemoval.release")(functio
       reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
     } satisfies ServerRelease;
   }
-  const release = yield* releaseRemovedServer({ ...input, removal: input.noReset ? "membership" : "reset" });
-  if (release.kind === "released") yield* storeSystem(input.organizationId, { event: "cluster_forgotten" });
-  return release;
+  const dropped = yield* dropRemovedServer({ ...input, removal: input.noReset ? "membership" : "reset" });
+  if (dropped.kind !== "last") return dropped;
+  // The Store lets go first, while the pairing still fences a replacement: if this fails, nothing more is deleted and
+  // the step retries; a replay finding the pairing gone skips it.
+  yield* storeSystem(input.organizationId, { event: "cluster_forgotten" });
+  return yield* forgetEmptiedPairing(input.organizationId, input.generation);
 });
 
 function isTerminalMachineRemove(attempt: MachineRemoveAttemptContext) {
