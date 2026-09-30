@@ -81,9 +81,8 @@ pub struct CheckSuite {
     /// GitHub's conclusion once completed.
     #[serde(default)]
     pub conclusion: Option<String>,
-    /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`: an older result never
-    /// replaces a newer one.
-    pub updated: String,
+    /// When GitHub last changed it: an older result never replaces a newer one.
+    pub updated: crate::GithubTimestamp,
 }
 
 /// What an event made the Store do.
@@ -277,7 +276,6 @@ fn check_suite(
     let repository_id = event.repository_id;
     let suite = i64::try_from(event.suite)
         .map_err(|_| error::invalid("Expected a check suite ID", json!({})))?;
-    timestamp(&event.updated)?;
     let text_ok = |text: &str| text.len() <= 64 && !text.chars().any(char::is_control);
     if !text_ok(&event.status) || !event.conclusion.as_deref().is_none_or(text_ok) {
         return Err(error::invalid(
@@ -600,24 +598,3 @@ fn passed(tx: &mut dyn Tx, who: &Actor, push: &Push<'_>) -> Result<bool, RpcErro
     Ok(passed)
 }
 
-/// GitHub's fixed-width UTC timestamps, which order as text.
-pub(crate) fn timestamp(updated: &str) -> Result<(), RpcError> {
-    let valid = updated.len() == 20
-        && updated
-            .bytes()
-            .enumerate()
-            .all(|(index, byte)| match index {
-                4 | 7 => byte == b'-',
-                10 => byte == b'T',
-                13 | 16 => byte == b':',
-                19 => byte == b'Z',
-                _ => byte.is_ascii_digit(),
-            });
-    if valid {
-        return Ok(());
-    }
-    Err(error::invalid(
-        "Expected GitHub's updated_at, like 2026-09-29T10:00:00Z",
-        json!({}),
-    ))
-}

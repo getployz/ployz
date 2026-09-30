@@ -71,8 +71,8 @@ pub struct PullRequest {
     /// already. Its Conditional Saves then land with what that push deployed.
     #[serde(default)]
     pub merge_reached: Option<CommitSha>,
-    /// GitHub's `updated_at`, like `2026-09-29T10:00:00Z`.
-    pub updated: String,
+    /// When GitHub last changed it.
+    pub updated: crate::GithubTimestamp,
 }
 
 /// Close what is due: Branches idle for a week, and closing Branches whose removal
@@ -845,5 +845,5 @@ fn validate(event: &PullRequest) -> Result<(), RpcError> {
             json!({}),
         ));
     }
-    crate::automation::timestamp(&event.updated)
+    Ok(())
 }
