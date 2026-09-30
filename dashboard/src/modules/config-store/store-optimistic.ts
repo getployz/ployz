@@ -108,9 +108,8 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
         || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
       let reverted: NodeChange["settings"] = [];
       let dropped = new Set<string>();
-      // The discarded rows go. The count drops by them, to none once nothing remains; the Store's answer settles it.
+      // The discarded rows go; with nothing left the review is empty. Any other count comes with the write's answer.
       await views<DiffView>("diff", command.environment, (view) => {
-        let removed = 0;
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) {
             reverted = [...reverted, ...change.settings];
@@ -119,11 +118,10 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           }
           const rows = change.settings.filter((row) => row.path !== path && !row.path.startsWith(`${path}.`));
           reverted = [...reverted, ...change.settings.filter((row) => !rows.includes(row))];
-          removed += change.settings.length - rows.length;
           return rows.length === 0 && change.lifecycle === "update" ? [] : [{ ...change, settings: rows }];
         });
         // Whether what remains is published is the Store's to say.
-        return { ...view, changes, total_count: changes.length === 0 ? 0 : Math.max(0, view.total_count - removed) };
+        return changes.length === 0 ? { ...view, changes, total_count: 0 } : { ...view, changes };
       });
       await views<EnvironmentView>("environment", command.environment, (view) => ({ ...view, settings: view.settings.map((row) => {
         const deployed = reverted.find((change) => change.path === row.path);

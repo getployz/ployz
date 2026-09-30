@@ -1,6 +1,6 @@
 import { setResponseHeader } from "@tanstack/react-start/server";
 import { createServerFn } from "@tanstack/react-start";
-import { callStoreAsMember } from "./config-store.server";
+import { callStoreAsMember, writeStoreAsMember } from "./config-store.server";
 import { storeReadInput, storeWriteInput } from "./store.contract";
 import { actorMiddleware, publicErrorMiddleware, runActor, strictValidator } from "#/server/tanstack";
 
@@ -18,4 +18,4 @@ export const writeStoreServerFn = createServerFn({ method: "POST" })
   .middleware([publicErrorMiddleware, actorMiddleware])
   .validator(strictValidator(storeWriteInput))
   .handler(async ({ context, data }) =>
-    await runActor(context, callStoreAsMember(context.actor, data.organizationSlug, { operation: "write", command: data.command })));
+    await runActor(context, writeStoreAsMember(context.actor, data.organizationSlug, data.command)));

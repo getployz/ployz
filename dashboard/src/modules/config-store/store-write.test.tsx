@@ -8,7 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as scopes from "#/collections/use-collection-scope";
 import * as functions from "./store.functions";
 import type { StoreResult } from "./store.contract";
-import { environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
+import { diffQuery, environmentSettingsQuery, refetchStoreViews, storeViewOptions, useStoreView, withPendingChanges } from "./store-view.queries";
 import { useStoreWriter, type StoreEdit } from "./store-write";
 
 afterEach(() => vi.restoreAllMocks());
@@ -159,6 +159,18 @@ it("runs a copied node after the edits made before it, not the ones queued behin
   expect(test.write.mock.calls.map((call) => call[0]?.data.command)).toMatchObject([
     { command: "edit", expect: 2 }, { command: "copy_node", expect: 3 }, { command: "edit", expect: 4 },
   ]);
+});
+
+it("puts the write's committed review in the cache as it answers, before any refetch", async () => {
+  const test = setup(view(2, 1));
+  const diff = { environment: view(3, 1).environment, version: "3:1:1", saved: 1, published: false, hints: [], total_count: 1, changes: [] };
+  const key = storeViewOptions("acme", test.scope, diffQuery(ref)).queryKey;
+  test.scope.queryClient.setQueryData<unknown>(key, { ok: true, value: { ...diff, total_count: 0 } });
+  test.write.mockResolvedValueOnce({ ok: true, value: { written: "published" } as never, views: { diff } } as never);
+  // No refetch answers: only the write's own answer can bring the count.
+  vi.mocked(functions.readStoreViewServerFn).mockImplementation(() => new Promise(() => {}));
+  test.writer.commit({ command: "publish", environment: ref, version: null, accept_volume_loss: [] });
+  await waitFor(() => expect(test.scope.queryClient.getQueryData<{ value: { total_count: number } }>(key)?.value.total_count).toBe(1));
 });
 
 it("refetches only the views a changed Store table family backs", () => {

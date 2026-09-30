@@ -41,7 +41,8 @@ it("shows a discarded Setting back at its deployed value, gone from the review",
   const { queryClient, read } = cached();
   await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "web.replicas", version: null });
   expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.startCommand"]);
-  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(2);
+  // The count comes with the write's committed review.
+  expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(3);
   expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.settings.map((row) => row.value)).toEqual([1, "serve"]);
 });
 
