@@ -236,8 +236,7 @@ pub fn project_runtime_outcome(
         {
             return Err(invalid());
         }
-        let service = row.service_name();
-        match service {
+        match row.service_name() {
             Some(service) => {
                 let entry = services.entry(service.clone()).or_insert((true, false));
                 entry.0 &= completed;
