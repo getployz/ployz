@@ -1151,7 +1151,7 @@ fn setting_paths_complete_from_the_store_and_the_catalog() {
 }
 
 #[test]
-fn an_ambiguous_project_names_the_rerun() {
+fn an_ambiguous_project_names_the_link_that_settles_it() {
     for store in &targets() {
         ok(store, &["project", "new", "shop"]);
         ok(store, &["project", "new", "blog"]);
@@ -1161,41 +1161,18 @@ fn an_ambiguous_project_names_the_rerun() {
             refused.get("details"),
             Some(&json!({
                 "projects": ["blog", "shop"],
-                "next": "ployz env new staging --project PROJECT",
+                "next": "ployz link --project PROJECT",
             }))
         );
-
-        // The hint is built from accepted words, so rejected values and raw `--` stay out.
+        // Linked, the command runs again as typed: no value is echoed, no flag lost.
         let next = |args: &[&str]| error(store, args)["details"]["next"].clone();
         assert_eq!(
             next(&["set", "--env", "production", "web.replicas=SECRET-CANARY"]),
-            json!("ployz set 'web.replicas=VALUE' --project PROJECT --env production")
+            json!("ployz link --project PROJECT --env production")
         );
         assert_eq!(
-            next(&["get", "--", "web"]),
-            json!("ployz get web --project PROJECT")
-        );
-        // Guard flags survive the rerun, so a guarded write never turns blind.
-        assert_eq!(
-            next(&["set", "web.replicas=2", "--expect", "3"]),
-            json!("ployz set 'web.replicas=VALUE' --expect 3 --project PROJECT")
-        );
-        assert_eq!(
-            next(&["publish", "--version", "4:1:none"]),
-            json!("ployz publish --version 4:1:none --project PROJECT")
-        );
-        assert_eq!(
-            next(&["get", "--all"]),
-            json!("ployz get --all --project PROJECT")
-        );
-        // The rerun is the command that ran, never another one's words.
-        assert_eq!(
-            next(&["deployment", "show", "1"]),
-            json!("ployz deployment show 1 --project PROJECT")
-        );
-        assert_eq!(
-            next(&["env", "rm", "staging", "--confirm", "x/staging"]),
-            json!("ployz env rm staging --project PROJECT")
+            next(&["env", "keep", "--off"]),
+            json!("ployz link --project PROJECT")
         );
     }
 }

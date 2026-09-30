@@ -95,7 +95,6 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,
-            again: vec!["up".to_owned()],
         },
         events,
     )?;

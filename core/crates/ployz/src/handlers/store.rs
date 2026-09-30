@@ -99,16 +99,16 @@ impl Backend {
 }
 
 /// The Config Store as one command sees it: a refusal becomes this command's
-/// failure, and an ambiguous Project names this same command with `--project`.
+/// failure, and an ambiguous Project names `ployz link --project PROJECT`.
 pub(crate) struct Store<'m> {
     backend: Backend,
     matches: &'m ArgMatches,
-    /// The command's words, then its accepted arguments: never raw input.
+    /// The command's words, then the arguments its retry repeats: never raw input.
     words: Vec<String>,
 }
 
 impl<'m> Store<'m> {
-    /// Name the command's accepted arguments, which its rerun repeats.
+    /// Name the arguments this command's retry repeats.
     pub(crate) fn args<'a>(mut self, args: impl IntoIterator<Item = &'a str>) -> Self {
         self.words.extend(args.into_iter().map(str::to_owned));
         self
@@ -218,16 +218,53 @@ impl<'m> Store<'m> {
     }
 
     /// This command's failure for a Store error: an ambiguous Project is fixed by
-    /// rerunning it with `--project`.
+    /// linking this directory to one, after which the same command runs as typed.
     pub(crate) fn fail(&self, error: StoreCallError) -> Error {
         with_next(
             error,
             |refusal| {
                 refusal.code == RpcErrorCode::Ambiguous && refusal.details.get("projects").is_some()
             },
-            || rerun(self.matches, &self.words),
+            || next(self.matches, &["link", "--project", "PROJECT"]),
         )
         .into()
+    }
+
+    /// This command again with its [`Self::args`] and `extra`, in the same Project
+    /// and Environment.
+    pub(crate) fn again(&self, extra: &[&str]) -> String {
+        let mut words: Vec<&str> = self.words.iter().map(String::as_str).collect();
+        words.extend(extra);
+        next(self.matches, &words)
+    }
+
+    /// This command's failure for a Store error; a refusal to delete Volume data
+    /// names this command again accepting each Volume it lists, at the version it
+    /// reviewed.
+    pub(crate) fn accepting(&self, error: StoreCallError) -> Error {
+        let error = match error {
+            StoreCallError::Refused(mut error)
+                if error.code == RpcErrorCode::ConfirmationRequired =>
+            {
+                let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
+                let mut extra = Vec::new();
+                let accept = error.details["accept"].as_array().into_iter().flatten();
+                for name in accept.filter_map(text) {
+                    extra.extend(["--accept-volume-loss".to_owned(), name]);
+                }
+                if let Some(version) = text(&error.details["version"]) {
+                    extra.extend(["--expect-version".to_owned(), version]);
+                }
+                let retry = self.again(&extra.iter().map(String::as_str).collect::<Vec<_>>());
+                error.message = format!("{}.\nRetry: {retry}", error.message);
+                if let Some(details) = error.details.as_object_mut() {
+                    details.insert("next".into(), json!(retry));
+                }
+                StoreCallError::Refused(error)
+            }
+            error => error,
+        };
+        self.fail(error)
     }
 }
 
@@ -328,26 +365,6 @@ pub(crate) fn next(matches: &ArgMatches, words: &[&str]) -> String {
         }
     }
     shell_words::join(next)
-}
-
-/// This same command again with `--project`. It keeps every guard flag it was given
-/// (`--expect`, `--version`, `--all`): dropping one would make a guarded write blind.
-/// Only [`next`]'s scope flags travel to other commands, so this stays separate.
-fn rerun(matches: &ArgMatches, words: &[String]) -> String {
-    let mut rerun = words.to_vec();
-    for flag in ["expect", "version"] {
-        if let Ok(Some(value)) = matches.try_get_one::<String>(flag) {
-            rerun.extend([format!("--{flag}"), value.clone()]);
-        }
-    }
-    if let Ok(Some(true)) = matches.try_get_one::<bool>("all") {
-        rerun.push("--all".to_owned());
-    }
-    rerun.extend(["--project".to_owned(), "PROJECT".to_owned()]);
-    next(
-        matches,
-        &rerun.iter().map(String::as_str).collect::<Vec<_>>(),
-    )
 }
 
 /// A refused stale write names the `read` command that shows the fresh state.
@@ -455,4 +472,36 @@ pub(crate) fn volume_name(
         Error::usage("Expected a Volume name: lowercase letters, digits and -, like data")
             .with_exit(crate::failure::USAGE_EXIT)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refused_volume_loss_names_the_exact_retry() {
+        let root = crate::cli::command()
+            .try_get_matches_from(["ployz", "deploy", "--env", "staging"])
+            .unwrap();
+        let key = SealingKey::new(&[7; 32]).unwrap();
+        let local = ConfigStore::open("sqlite::memory:", key).unwrap();
+        let store = Store {
+            backend: Backend::Local(
+                std::sync::Arc::new(local),
+                Actor::system(OrganizationId::parse(LOCAL_ORGANIZATION).unwrap()),
+            ),
+            matches: leaf_matches(&root),
+            words: vec!["deploy".to_owned()],
+        };
+        let refused = ployz_core::RpcError {
+            code: RpcErrorCode::ConfirmationRequired,
+            message: "This Deploy permanently deletes the data of data".into(),
+            details: json!({ "version": "3:1:0.1", "accept": ["data"] }),
+        };
+        let error = store.accepting(StoreCallError::Refused(refused));
+        let retry = "ployz deploy --accept-volume-loss data --expect-version 3:1:0.1 --env staging";
+        let error = error.report();
+        assert_eq!(error.details.get("next"), Some(&json!(retry)));
+        assert!(error.message.ends_with(&format!("Retry: {retry}")));
+    }
 }

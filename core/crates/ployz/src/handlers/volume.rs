@@ -102,11 +102,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let mut args = vec![name.as_str()];
-    for _ in &mounts {
-        args.extend(["--mount", "SERVICE:/PATH"]);
-    }
-    let created = store::store(root)?.args(args).write(&CreateVolume {
+    let created = store::store(root)?.write(&CreateVolume {
         id: VolumeId::parse(store::mint())?,
         environment: store::environment(matches)?,
         name: name.clone(),
@@ -150,7 +146,6 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let changed = store::store(root)?
-        .args([volume.as_str()])
         .write(&SetVolumeStorage {
             environment: store::environment(matches)?,
             volume: volume.clone(),
@@ -202,7 +197,6 @@ fn inspect(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let view = store::store(root)?
-        .args([volume.as_str()])
         .read(&VolumeQuery {
             environment: store::environment(matches)?,
             volume: volume.clone(),
@@ -234,7 +228,6 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
     let volume = volume_name(matches, "volume")?;
     let name = volume_name(matches, "name")?;
     let renamed = store::store(root)?
-        .args([volume.as_str(), name.as_str()])
         .write(&ployz_store::RenameVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
@@ -247,7 +240,6 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let volume = volume_name(matches, "volume")?;
     let removed = store::store(root)?
-        .args([volume.as_str()])
         .write(&RemoveVolume {
             environment: store::environment(matches)?,
             volume: volume.clone(),
