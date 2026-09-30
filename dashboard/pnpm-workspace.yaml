@@ -1,6 +1,10 @@
 minimumReleaseAge: 2880
 minimumReleaseAgeExclude:
   - "@tanstack/*"
+  # Polar API 2026-10 clients, requested before they aged in; drop once past 2026-10-02.
+  - "@polar-sh/sdk@1.0.0"
+  - "@polar-sh/better-auth@2.0.0"
+  - "@polar-sh/adapter-utils@1.0.0"
 blockExoticSubdeps: false
 
 allowBuilds:

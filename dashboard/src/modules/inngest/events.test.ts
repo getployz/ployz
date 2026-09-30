@@ -139,7 +139,7 @@ describe("Inngest events", () => {
       createOrganizationBillingSyncEventsFromSubscriptionPayload(
       {
         type: "subscription.updated",
-        timestamp: new Date("2026-03-27T00:00:00.000Z"),
+        timestamp: "2026-03-27T00:00:00Z",
         data: {
           metadata: {
             referenceId: "org-1",
@@ -152,9 +152,9 @@ describe("Inngest events", () => {
       createOrganizationBillingSyncEventsFromCustomerStatePayload(
       {
         type: "customer.state_changed",
-        timestamp: new Date("2026-03-27T01:00:00.000Z"),
+        timestamp: "2026-03-27T01:00:00Z",
         data: {
-          activeSubscriptions: [
+          active_subscriptions: [
             {
               metadata: {
                 referenceId: "org-1",
