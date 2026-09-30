@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Schema } from "effect";
-import { prefetchStoreViews } from "#/collections/route-data";
+import { prefetchRemoteWithStoreViews } from "#/collections/route-data";
+import { customDomainCapabilityQueryOptions } from "#/modules/billing/billing.queries";
 import {
   CanvasInspectorError,
   CanvasInspectorPending,
@@ -14,7 +15,9 @@ export const Route = createFileRoute(
 )({
   validateSearch: Schema.toStandardSchemaV1(serviceSearchSchema),
   loader: ({ params, context }) =>
-    prefetchStoreViews(context, params.organizationSlug, domainsQuery({ project: params.projectSlug, environment: params.environmentSlug })),
+    prefetchRemoteWithStoreViews(context, params.organizationSlug,
+      [domainsQuery({ project: params.projectSlug, environment: params.environmentSlug })],
+      customDomainCapabilityQueryOptions(params.organizationSlug)),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Service" />,
   component: RouteComponent,
