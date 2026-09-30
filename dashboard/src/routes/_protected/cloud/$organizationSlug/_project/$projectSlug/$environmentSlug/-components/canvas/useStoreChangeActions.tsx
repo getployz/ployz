@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
 import { useStoreWriter, StoreRefused } from "#/modules/config-store/store-write";
@@ -7,6 +7,8 @@ import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 
 type Acceptance = Pick<VolumeLoss, "accept" | "version">;
 type Action = "deploy" | "publish";
+/** A Deploy's own words: what it ships (optional; the Store trims it). */
+type Message = string | null;
 
 /**
  * The bottom bar's actions over the Config Store: Deploy, Save without deploying (publish) and Discard, each in the
@@ -23,7 +25,10 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   const { machines } = useRuntimeLens(organizationSlug);
   // What the user types to confirm: where the data goes from.
   const place = `${environment.project ?? ""}/${environment.environment ?? ""}`;
-  const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance> } | null>(null);
+  const [loss, setLoss] = useState<{ action: Action; check: DeletionCheck<Acceptance>; message: Message } | null>(null);
+  // One admission at a time: a double click must not admit two Deployments.
+  const [admitting, setAdmitting] = useState(false);
+  const inFlight = useRef(false);
 
   function check(refused: VolumeLoss): DeletionCheck<Acceptance> {
     const items = refused.volumes.map((volume): DeletionItem => ({
@@ -36,20 +41,31 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   /** Deploys or publishes; resolves with what it would delete when the Store asks first, else null. */
-  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }) {
+  async function run(action: Action, { accept, version }: { accept: readonly string[]; version: string }, message: Message = null) {
     const id = crypto.randomUUID();
+    const words = message?.trim() || null;
     try {
       await writer.commit(action === "deploy"
-        ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept] }
+        ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept], message: words }
         : { command: "publish", environment, version, accept_volume_loss: [...accept] }).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return null;
     } catch (error) {
       const refused = error instanceof StoreRefused ? volumeLoss(error) : null;
-      if (refused) return { action, check: check(refused) };
+      if (refused) return { action, check: check(refused), message };
       // The writer toasted it.
       return null;
     }
+  }
+
+  function deploy(message: Message) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setAdmitting(true);
+    void run("deploy", { accept: [], version }, message).then(setLoss).finally(() => {
+      inFlight.current = false;
+      setAdmitting(false);
+    });
   }
 
   /** Discards `path` (`SERVICE` or `SERVICE.SETTING`; null for everything): gone at once, a refusal brings it back. */
@@ -58,7 +74,8 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
   }
 
   return {
-    deploy: () => void run("deploy", { accept: [], version }).then(setLoss),
+    deploy,
+    admitting,
     publish: () => void run("publish", { accept: [], version }).then(setLoss),
     discard,
     dialog: (
@@ -72,7 +89,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
         callbacks={{
           load: () => Promise.resolve(loss?.check ?? { items: [], evidence: { accept: [], version: "" } }),
           // Servers holding more by now: the Store asks again, and so does the dialog.
-          confirm: async (evidence) => loss ? (await run(loss.action, evidence))?.check : undefined,
+          confirm: async (evidence) => loss ? (await run(loss.action, evidence, loss.message))?.check : undefined,
         }}
       />
     ),

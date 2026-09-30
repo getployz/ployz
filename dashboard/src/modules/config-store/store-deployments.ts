@@ -164,10 +164,34 @@ export function deploymentActions(status: DeploymentStatus) {
   };
 }
 
-/** Why a Deployment didn't run, and the CLI line that gives it an upload it needs. */
+/** Why a Deployment didn't run, and the Services that had nothing to run (each needs an image or a repository). */
 export function notExecuted(outcome: Outcome | null) {
   if (outcome?.type !== "not_executed") return null;
-  return { reason: outcome.reason, next: outcome.needs_upload.length ? "ployz deploy --upload ." : null };
+  return { reason: outcome.reason, needsSource: outcome.needs_upload };
+}
+
+/** What a failed step's kind means, in plain words, when the runner gave no message of its own. */
+const FAILURE_WORDS = {
+  machine: "A Server couldn't carry out a step.",
+  health: "A new container failed its health check.",
+  dependency_health: "A Service it depends on isn't healthy.",
+  hook: "The pre-deploy command failed.",
+  cancelled: "It was cancelled.",
+} as const;
+const FailedSummary = Schema.Struct({
+  type: Schema.Literal("failed"),
+  reason: Schema.Literals(["machine", "health", "dependency_health", "hook", "cancelled"]),
+  message: Schema.optional(Schema.NullOr(Schema.String)),
+});
+const decodeFailed = Schema.decodeUnknownOption(FailedSummary);
+
+/** Why an executed Deployment failed, from its recorded outcome: the runner's message, else its step's kind. */
+export function failureReason(outcome: Outcome | null) {
+  if (outcome?.type !== "executed") return null;
+  return Option.match(decodeFailed(outcome.summary), {
+    onNone: () => null,
+    onSome: (failed) => failed.message || FAILURE_WORDS[failed.reason],
+  });
 }
 
 /** The part of a recorded Deploy Preview the page shows; the Store keeps the rest. */

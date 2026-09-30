@@ -13,11 +13,14 @@ import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
  */
 // ponytail: Discard shows the deployed values (`before`), which is what it restores unless changes were published first.
 export function applyOptimistic(queryClient: QueryClient, organizationSlug: string, command: ConfigCommand) {
-  const views = <V,>(kind: ConfigQuery["query"], environment: EnvironmentRef | null, update: (view: V) => V) => {
-    for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
+  const cached = (kind: ConfigQuery["query"], environment: EnvironmentRef | null) =>
+    queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) }).filter((query) => {
       const config = queryOf(query);
-      if (config?.query !== kind) continue;
-      if (environment && !("environment" in config && environmentKey(config.environment) === environmentKey(environment))) continue;
+      return config?.query === kind
+        && (!environment || ("environment" in config && environmentKey(config.environment) === environmentKey(environment)));
+    });
+  const views = <V,>(kind: ConfigQuery["query"], environment: EnvironmentRef | null, update: (view: V) => V) => {
+    for (const query of cached(kind, environment)) {
       queryClient.setQueryData<StoreResult<V>>(query.queryKey, (old) => old?.ok ? { ok: true, value: update(old.value) } : old);
     }
   };
@@ -110,10 +113,32 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
     case "add_domain": {
       // A custom domain names its host; a generated one is the Service's Private DNS under the Cluster Domain.
       const service = command.service;
+      // Staged, as the Store words it: live after the next Deploy.
+      const staged = { status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" }, service, port: command.port } as const;
       const domain: DomainsView["domains"][number] = command.hostname === null
-        ? { kind: "generated", prefix: service, hostname: null, status: "setting_up", reason: null, action: null, service, port: command.port }
-        : { kind: "custom", hostname: command.hostname, status: "setting_up", reason: null, action: null, service, port: command.port };
-      views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [...view.domains, domain] }));
+        ? { kind: "generated", prefix: service, hostname: null, ...staged }
+        : { kind: "custom", hostname: command.hostname, ...staged };
+      views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [
+        ...view.domains.filter((other) => other.service !== service || other.kind !== domain.kind
+          || (other.kind === "custom" ? other.hostname !== command.hostname : false)),
+        domain,
+      ] }));
+      // Its pink: the Setting row the Store will list for it (`domainChanged` reads these paths).
+      const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
+      const row = { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false } as const;
+      views<DiffView>("diff", command.environment, (view) => {
+        const node = view.changes.find((change) => change.type === "service" && change.name === service);
+        const id = node?.id ?? cached("services", command.environment).flatMap((query) => {
+          // SAFETY: `cached` found only services views.
+          const data = query.state.data as StoreResult<ServicesView> | undefined;
+          return data?.ok ? data.value.services.filter((listed) => listed.name === service).map((listed) => listed.id) : [];
+        })[0];
+        if (id === undefined) return view;
+        const changes: NodeChange[] = node
+          ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== path), row] } : change)
+          : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+        return { ...view, changes, total_count: view.total_count + 1, published: false };
+      });
       return;
     }
     case "remove_domain":

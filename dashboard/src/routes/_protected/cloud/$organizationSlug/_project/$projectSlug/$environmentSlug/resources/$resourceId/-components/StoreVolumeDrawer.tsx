@@ -255,7 +255,7 @@ function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; par
           </p>
         </div>
         {removing && volume.deployed ? (
-          <Button variant="destructive" className="shrink-0" onClick={actions.deploy}>
+          <Button variant="destructive" className="shrink-0" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
             <Trash2Icon data-icon="inline-start" />
             Delete data
           </Button>

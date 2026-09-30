@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { NetworkIcon, PlusIcon, ZapIcon } from "lucide-react";
+import { NetworkIcon, PencilIcon, PlusIcon, ZapIcon } from "lucide-react";
 import type { DomainRow, EnvironmentRef, ServiceListing, ServiceSettingChange } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "#/components/ui/dialog";
+import { settingText } from "#/modules/config-store/store-services";
+import { ServiceSettingInput } from "./ServiceSettingInput";
 import { Empty, EmptyDescription } from "#/components/ui/empty";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { domainChanged } from "#/modules/config-store/store-services";
@@ -22,16 +25,21 @@ const portLabel = (port: number | null) => port === null ? "Uses PORT" : `Port $
  * A Service's domains over the Config Store: at most one generated domain under the Cluster Domain and any custom
  * ones, each with the status the Store gives it. Adding, retargeting and removing one are staged for the next Deploy.
  */
-export function StoreNetworkingSection({ organizationSlug, environment, service, changes }: {
+export function StoreNetworkingSection({ organizationSlug, environment, service, changes, privateDns, validatePrivateDns }: {
   organizationSlug: string;
   environment: EnvironmentRef;
   service: ServiceListing;
   changes: Map<string, ServiceSettingChange>;
+  /** Its Private DNS name, with a pending edit. */
+  privateDns: string;
+  validatePrivateDns: (raw: string) => string | null;
 }) {
   const all = requireView(useStoreView(organizationSlug, domainsQuery(environment))).domains;
   const domains = all.filter((domain) => domain.service === service.name);
   const writer = useStoreWriter(organizationSlug);
   const [editor, setEditor] = useState<Editor>(null);
+  const [editingPrivateDns, setEditingPrivateDns] = useState(false);
+  const privateDnsChange = changes.get("privateDns");
   const generated = domains.find((domain) => domain.kind === "generated");
   const edited = editor?.kind === "custom"
     ? domains.find((domain) => domain.kind === "custom" && domain.hostname === editor.hostname)
@@ -112,15 +120,37 @@ export function StoreNetworkingSection({ organizationSlug, environment, service,
           />
         ) : null}
       </Field>
-      <Field>
+      <Field data-changed={privateDnsChange ? true : undefined}>
         <FieldLabel>Private Networking</FieldLabel>
         <FieldDescription>Communicate with this service from within the environment.</FieldDescription>
-        <DomainRowShell icon={<NetworkIcon />} actions={null}>
-          <DomainTitle hostname={`${service.private_dns}.internal`} copyLabel="Copy private hostname" />
+        <DomainRowShell icon={<NetworkIcon />} changed={privateDnsChange !== undefined} actions={(
+          <Button type="button" variant="ghost" size="icon-sm" aria-label="Edit private endpoint" onClick={() => setEditingPrivateDns(true)}>
+            <PencilIcon />
+          </Button>
+        )}>
+          <DomainTitle hostname={`${privateDns}.internal`} copyLabel="Copy private hostname" />
           <div className="truncate text-muted-foreground text-sm">
-            → or just <span className="font-mono">{service.private_dns}</span>
+            → or just <span className="font-mono">{privateDns}</span>
           </div>
         </DomainRowShell>
+        {editingPrivateDns ? (
+          <Dialog open onOpenChange={(open) => { if (!open) setEditingPrivateDns(false); }}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Edit private endpoint</DialogTitle>
+                <DialogDescription>The name other services in this environment use to reach it. Blank returns it to the service's name.</DialogDescription>
+              </DialogHeader>
+              <ServiceSettingInput ariaLabel="Private endpoint name" placeholder={service.name} value={privateDns}
+                isChanged={privateDnsChange !== undefined} baselineValue={privateDnsChange ? settingText(privateDnsChange.before) : undefined}
+                validate={validatePrivateDns}
+                onCommit={(raw) => {
+                  const path = `${service.name}.privateDns`;
+                  setEditingPrivateDns(false);
+                  return writer.edit({ environment, changes: [raw === "" ? { op: "unset", path } : { op: "set", path, value: raw }] });
+                }} />
+            </DialogContent>
+          </Dialog>
+        ) : null}
       </Field>
     </FieldGroup>
   );
