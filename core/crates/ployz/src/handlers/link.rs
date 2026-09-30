@@ -319,6 +319,33 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
     Ok(linked)
 }
 
+/// Point this device's links to Project `old` at `new` after a rename, in the
+/// Organization commands act in. Returns how many moved.
+pub(super) fn rename_project(
+    config: &Path,
+    old: &ProjectName,
+    new: &ProjectName,
+) -> Result<usize, Error> {
+    let acting = acting_organization(config)?;
+    let mut links = load(config)?;
+    let mut moved = 0;
+    for link in links.values_mut() {
+        // A link or a token without a known Organization can't be told apart: move it.
+        let same = match (&link.organization, &acting) {
+            (Some(linked), Some(acting)) => linked.id == acting.id,
+            _ => true,
+        };
+        if same && &link.project == old {
+            link.project = new.clone();
+            moved += 1;
+        }
+    }
+    if moved > 0 {
+        save(config, &links)?;
+    }
+    Ok(moved)
+}
+
 /// Link this directory to `environment` unless it or an ancestor is already linked,
 /// so a one-off `--env` leaves the link alone. Returns the linked directory.
 pub(super) fn record_unless_linked(

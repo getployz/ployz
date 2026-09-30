@@ -5,7 +5,7 @@ use clap::{ArgMatches, Command};
 use ployz_core::RpcErrorCode;
 use ployz_store::{
     CreateProject, DeploymentSummary, EnvironmentId, EnvironmentRef, ProjectId, ProjectName,
-    ProjectRemoved, RemoveProject,
+    ProjectRemoved, RemoveProject, RenameProject,
 };
 use serde_json::json;
 
@@ -25,6 +25,12 @@ pub(crate) fn command() -> Command {
                 .arg(positional("name", true)),
         )
         .subcommand(Command::new("ls").about("List the Organization's Projects"))
+        .subcommand(
+            Command::new("rename")
+                .about("Rename a Project; its running Environments keep their Namespaces")
+                .arg(positional("project", true))
+                .arg(positional("name", true).help("Its new name, unique in the Organization")),
+        )
         .subcommand(deploy::following(
             base(
                 "rm",
@@ -54,6 +60,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "new" => new,
         "ls" => ls,
+        "rename" => rename,
         "rm" => rm,
         _ => return None,
     })
@@ -94,6 +101,28 @@ fn ls(root: &ArgMatches) -> Result<(), Error> {
                 })
                 .collect();
             say!("{}\t{}", project.name, environments.join(", "));
+        }
+    })
+}
+
+fn rename(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let rename = RenameProject {
+        project: ProjectName::parse(required(matches, "project")?)?,
+        name: ProjectName::parse(required(matches, "name")?)?,
+    };
+    let renamed = store(root)?
+        .args([rename.project.as_str(), rename.name.as_str()])
+        .write(&rename)?;
+    let links = super::link::rename_project(
+        &super::config_path(matches)?,
+        &rename.project,
+        &renamed.name,
+    )?;
+    crate::output::finish(&json!({ "project": renamed, "links": links }), || {
+        say!("Renamed Project {} to {}.", rename.project, renamed.name);
+        if links > 0 {
+            say!("Moved {links} linked director(ies) on this device to it.");
         }
     })
 }

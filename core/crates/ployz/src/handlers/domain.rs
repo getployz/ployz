@@ -6,7 +6,7 @@
 use clap::{ArgMatches, Command};
 use ployz_store::{
     AddDomain, DomainAction, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainsQuery,
-    Hostname, RemoveDomain,
+    Hostname, RemoveDomain, SetGeneratedDomain,
 };
 
 use super::store::{self, Next};
@@ -32,6 +32,16 @@ pub(crate) fn command() -> Command {
             ),
         )
         .subcommand(
+            store::scoped(Command::new("set").about(
+                "Change a Service's generated domain to PREFIX.CLUSTER-DOMAIN; staged until you deploy",
+            ))
+            .arg(positional("service", true))
+            .arg(
+                positional("prefix", true)
+                    .help("One DNS label, unique among the Organization's generated domains"),
+            ),
+        )
+        .subcommand(
             store::scoped(
                 Command::new("ls")
                     .about("List domains: Ready, Setting up or Needs attention, and what to do"),
@@ -53,6 +63,7 @@ pub(crate) fn command() -> Command {
 pub(super) fn handler(path: &str) -> Option<super::Handler> {
     Some(match path {
         "add" => add,
+        "set" => set,
         "ls" => list,
         "rm" => remove,
         "check" => check,
@@ -81,6 +92,19 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
     args.extend(add.hostname.as_ref().map(Hostname::as_str));
     let added = store::store(root)?.args(args).write(&add)?;
     staged(matches, &added, "Staged domain")
+}
+
+fn set(root: &ArgMatches) -> Result<(), Error> {
+    let matches = leaf_matches(root);
+    let set = SetGeneratedDomain {
+        environment: store::environment(matches)?,
+        service: store::service_name(matches, "service")?,
+        prefix: required(matches, "prefix")?,
+    };
+    let changed = store::store(root)?
+        .args([set.service.as_str(), "PREFIX"])
+        .write(&set)?;
+    staged(matches, &changed, "Staged generated domain")
 }
 
 fn remove(root: &ArgMatches) -> Result<(), Error> {
