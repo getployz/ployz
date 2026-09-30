@@ -23,8 +23,8 @@ use ployz_core::config::{
     parse_runtime_preview, project_runtime_outcome,
 };
 use ployz_core::{
-    DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, Namespace,
-    RpcError, ServiceAttempt, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
+    DeployIntent, DeployOutcome, DeployPreview, DockerVolumeId, ExecutionError, FailedOperation,
+    Namespace, RpcError, ServiceAttempt, ServiceName, VolumeRemoval, VolumeRemovalOutcome,
 };
 
 use serde::{Deserialize, Serialize};
@@ -228,8 +228,13 @@ impl NodeStatus {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Outcome {
     /// Execution ran. `summary` counts operations, without inputs or provider
-    /// messages; each node's Node Outcome is on the Deployment's nodes.
-    Executed { summary: Value },
+    /// messages; each node's Node Outcome is on the Deployment's nodes. `reason`
+    /// says why it failed, naming the Service by its current name; users read it.
+    Executed {
+        summary: Value,
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// Nothing executed: preparation failed first. `needs_upload` names the Services
     /// that can build only from a new upload.
     NotExecuted {

@@ -22,7 +22,7 @@ import { runInngestEffect } from "#/server/run.server";
  * Each its own step after the Store's, so a failed one retries alone: the observation is already applied. Runs to
  * dispatch go to the worker; Branches the Store is closing come off the Servers.
  */
-async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
+export async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
   if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(createConfigDeploymentAdmittedEvent));
   const removals = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : [];
   if (removals.length > 0) await step.sendEvent("dispatch-removals", removals.map(createConfigDeploymentAdmittedEvent));
@@ -95,10 +95,7 @@ export const createStorePrCheck = (inngest: PloyzInngest, runEffect: StoreEffect
     }),
   );
 
-/**
- * Hourly: lost hand-offs go to the worker again, and every Store closes idle Branches and deletes closing ones that
- * left the Servers.
- */
+/** Hourly: every Store closes idle Branches and deletes closing ones that left the Servers. */
 export const createStoreSweep = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
   inngest.createFunction(
     { id: "store-sweep", retries: 3, triggers: [{ cron: "30 * * * *" }], concurrency: [{ limit: 1 }] },

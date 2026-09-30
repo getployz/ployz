@@ -16,7 +16,9 @@ import {
 } from "#/modules/cluster-domain/sync.inngest";
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
-import { createCancelStoreDeployment, createRunStoreDeployment } from "#/modules/config-store/store-deployment.inngest";
+import {
+  createCancelStoreDeployment, createRedispatchStoreDeployments, createRunStoreDeployment,
+} from "#/modules/config-store/store-deployment.inngest";
 import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
 } from "#/modules/config-store/store-github.inngest";
@@ -36,6 +38,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createScheduleClusterDomainSync(inngest),
     createRunStoreDeployment(inngest),
     createCancelStoreDeployment(inngest),
+    createRedispatchStoreDeployments(inngest),
     createStoreGithubPush(inngest),
     createStoreGithubCheckSuite(inngest),
     createStorePullRequest(inngest),

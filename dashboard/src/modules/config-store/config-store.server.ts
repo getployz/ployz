@@ -45,7 +45,7 @@ export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds
 /**
  * Hand an admitted or started Deployment to Cloud's worker. A replayed admission sends the same event, which Inngest
  * drops, so a retried request starts one run; a start always sends. A failed send is logged: the admission stands,
- * and the hourly sweep hands over every queued Deployment no runner claimed.
+ * and a minute later Cloud hands it over again (`createRedispatchStoreDeployments`).
  */
 const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   organizationId: string,
@@ -59,7 +59,7 @@ const dispatchAdmitted = Effect.fn("ConfigStore.dispatchAdmitted")(function* (
   const event = started ? createConfigDeploymentStartedEvent(data) : createConfigDeploymentAdmittedEvent(data);
   yield* sendInngestEvent(event).pipe(
     Effect.catchTag("InngestEventSendError", (error) =>
-      Effect.logWarning("An admitted Deployment waits for the sweep: Cloud couldn't hand it to its worker.", { data, error })),
+      Effect.logWarning("An admitted Deployment waits to be handed over again: Cloud couldn't hand it to its worker.", { data, error })),
   );
 });
 

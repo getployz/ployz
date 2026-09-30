@@ -753,10 +753,7 @@ fn close(
     automated: &mut Automated,
 ) -> Result<(), RpcError> {
     scope::lock_id(tx, who, id)?;
-    tx.execute(
-        "UPDATE config_environment_branch SET closing = 1 WHERE environment_id = ?1",
-        &[id.as_str().into()],
-    )?;
+    mark_closing(tx, id)?;
     // At most one Deployment of an Environment is in flight: a new one supersedes a queued one.
     if let Some(running) = deployment::in_flight(tx, id)?
         && matches!(
@@ -767,6 +764,16 @@ fn close(
         deployment::cancel(tx, who, &running.id)?;
     }
     settle(tx, who, id, automated)
+}
+
+/// Mark Branch `id` closing: nothing deploys it on push, and the sweep deletes it
+/// once nothing of it can run on the Servers. No-op for an Environment that isn't a Branch.
+pub(crate) fn mark_closing(tx: &mut dyn Tx, id: &EnvironmentId) -> Result<(), RpcError> {
+    tx.execute(
+        "UPDATE config_environment_branch SET closing = 1 WHERE environment_id = ?1",
+        &[id.as_str().into()],
+    )?;
+    Ok(())
 }
 
 /// Move a closing Branch on: delete it once nothing of it can run on the Servers,

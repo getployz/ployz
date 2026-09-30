@@ -96,12 +96,16 @@ it.live(
       // Recorded runs are forgotten once stopped, and other functions' runs were never recorded.
       expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
 
-      // An admission whose hand-off was lost is handed over again by the sweep, once it has waited.
+      // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run
+      // holds its Environment's queue.
       yield* write({ command: "admit", admit: "deploy", id: QUEUED, environment: here, services: [], version: null, accept_volume_loss: [] });
-      const later = new Date(Date.now() + 11 * 60_000);
-      const unclaimed = yield* unclaimedStoreDeployments(later).pipe(Effect.provide(services));
-      expect(unclaimed.map((deployment) => deployment.deploymentId)).toContain(QUEUED);
-      expect(yield* unclaimedStoreDeployments(new Date()).pipe(Effect.provide(services))).toEqual([]);
+      const unclaimed = (at: Date) => unclaimedStoreDeployments(at).pipe(
+        Effect.provide(services), Effect.map((found) => found.map((deployment) => deployment.deploymentId)));
+      const later = new Date(Date.now() + 2 * 60_000);
+      expect(yield* unclaimed(later)).toContain(QUEUED);
+      expect(yield* unclaimed(new Date())).toEqual([]);
+      yield* recordStoreDeploymentRun("waiting-run", admitted(QUEUED).data).pipe(Effect.provide(services));
+      expect(yield* unclaimed(later)).toEqual([]);
 
       // Every serialized step and result holds only summaries: never a secret or a Deploy Intent.
       const steps = yield* Effect.promise(() =>

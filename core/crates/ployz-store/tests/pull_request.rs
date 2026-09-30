@@ -219,6 +219,7 @@ fn remove(store: &ConfigStore, who: &Actor, environment: &str) -> DeploymentId {
                 environment: at(environment),
                 version: None,
                 accept_volume_loss: Vec::new(),
+                close: false,
             }),
             &Trusted::default(),
         )

@@ -56,7 +56,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   // A build still going or failed is where to look; else how it deployed.
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
   const skipped = notExecuted(deployment.outcome);
-  const failed = failureReason(deployment.outcome);
+  const failure = skipped ? null : failureReason(deployment.outcome);
   const preview = previewLines(deployment.preview);
   const admitted = admission(deployment);
   const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
@@ -97,7 +97,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
               ))}
             </div>
           ) : null}
-          {failed ? <p className="break-words text-destructive">{failed}</p> : null}
+          {failure ? <p className="break-words text-destructive">{failure}</p> : null}
         </header>
 
         {preview ? (

@@ -1,17 +1,19 @@
 import {
   cancelStoreDeploymentRun, forgetStoreDeploymentRun, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
-  stopStoreDeploymentRun, storeDeploymentRunner,
+  stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType,
 } from "#/modules/inngest/events";
 import {
   checkStoreGithubBuild, GITHUB_CHECK_INTERVAL, planStoreGithubBuilds, START_WITHIN_MINUTES,
   startStoreGithubBuild, storeGithubBuildOpen, type StoreGithubTarget,
 } from "#/modules/config-store/store-github-builds.server";
+import { followUp } from "#/modules/config-store/store-github.inngest";
+import { sweepStore } from "#/modules/config-store/store-pull-request.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export const RUN_STORE_DEPLOYMENT_FUNCTION_ID = "run-store-deployment";
@@ -42,7 +44,25 @@ export const createRunStoreDeployment = (inngest: PloyzInngest, runEffect: Store
       await Promise.all(github.map((target) => walkGithub(event.data.organizationId, target, step, runEffect)));
       const ran = await step.run("run-deployment", () => runEffect(runStoreDeployment(event.data, storeDeploymentRunner(runId))));
       await step.run("forget-run", () => runEffect(forgetStoreDeploymentRun(runId)));
+      // A closed Branch whose removal applied goes now, without its closer coming back for it.
+      if ("ran" in ran && ran.ran.remove && ran.ran.status === "applied") {
+        await followUp(step, await step.run("sweep", () => runEffect(sweepStore(event.data.organizationId, new Date()))), runEffect);
+      }
       return ran;
+    },
+  );
+
+/**
+ * Every minute: a queued Deployment whose hand-off to the worker was lost goes to it again, unkeyed like "Deploy now",
+ * since its admission's own event is deduplicated. A duplicate run finds it claimed and runs nothing.
+ */
+export const createRedispatchStoreDeployments = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+  inngest.createFunction(
+    { id: "redispatch-store-deployments", retries: 1, triggers: [{ cron: "* * * * *" }], concurrency: [{ limit: 1 }] },
+    async ({ step }) => {
+      const unclaimed = await step.run("unclaimed", () => runEffect(unclaimedStoreDeployments(new Date())));
+      if (unclaimed.length > 0) await step.sendEvent("dispatch", unclaimed.map(createConfigDeploymentStartedEvent));
+      return { redispatched: unclaimed.map((deployment) => deployment.deploymentId) };
     },
   );
 
