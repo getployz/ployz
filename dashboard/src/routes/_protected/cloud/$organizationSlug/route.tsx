@@ -9,8 +9,9 @@ import { RuntimeProvider } from "#/providers/runtime-provider";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug")({
   loader: async ({ params, context }) => {
-    await requireOrganization(context, params.organizationSlug);
+    const organization = await requireOrganization(context, params.organizationSlug);
     await prefetchOrgStore(context, params.organizationSlug);
+    return { organizationId: organization.id };
   },
   component: RouteComponent,
 });
