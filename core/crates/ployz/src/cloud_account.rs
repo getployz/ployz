@@ -496,6 +496,30 @@ pub(crate) async fn remove_organization(
     .await
 }
 
+/// Have Cloud remove Server `machine` of the credential's Organization under its own
+/// connection, accepting exactly `confirmation`. Cloud witnesses the reset, so when it
+/// was the last Server Cloud lets go of it: the pairing goes, and the next Server founds
+/// a new Cluster.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`not_found` for a Server it doesn't reach, `invalid_argument`
+/// when the confirmation misses fresh Data Loss), or a Cloud failure.
+pub(crate) async fn remove_server(
+    credential: &Credential,
+    machine: &MachineId,
+    confirmation: &ployz_core::DataLossConfirmation,
+) -> Result<(), StoreCallError> {
+    let url = format!("{}/api/cli/servers/{machine}", credential.cloud());
+    let body = serde_json::json!({ "confirm_data_loss": confirmation });
+    store_answer::<serde_json::Value>(
+        credential,
+        send(credential, Method::DELETE, &url, Some(&body)).await?,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Keep `archive`, a gzipped tar of a source directory, in Cloud as the upload of
 /// Deployment `deployment`, which the CLI admits next.
 ///
