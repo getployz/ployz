@@ -117,7 +117,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // The removal is committed: print it before local cleanup can fail.
         output::emit(&json!({
-            "server": selected,
+            "server": super::server_json(&selected),
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
