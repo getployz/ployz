@@ -164,13 +164,13 @@ fn parse_size(value: &str) -> Result<ProvisionedVolumeMaximumBytes, String> {
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
     if matches.get_flag("docker") {
-        VolumeKind::Local {}
+        VolumeKind::Docker {}
     } else if let Some(maximum_bytes) = matches.get_one::<ProvisionedVolumeMaximumBytes>("size") {
         VolumeKind::Provisioned {
             maximum_bytes: *maximum_bytes,
         }
     } else {
-        VolumeKind::managed_default()
+        VolumeKind::provisioned_default()
     }
 }
 
@@ -189,7 +189,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
 
 fn storage_word(storage: VolumeKind) -> String {
     match storage {
-        VolumeKind::Local {} => "Docker (no enforced storage limit)".into(),
+        VolumeKind::Docker {} => "Docker (no enforced storage limit)".into(),
         VolumeKind::Provisioned { maximum_bytes } => format!(
             "Managed ({} GB limit)",
             maximum_bytes.get() as f64 / 1_000_000_000.0

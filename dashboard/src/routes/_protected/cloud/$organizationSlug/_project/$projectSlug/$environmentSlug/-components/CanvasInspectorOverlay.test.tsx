@@ -19,7 +19,7 @@ import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
-const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [{ service: "api", path: "/data" }], deployed: false, storage: { kind: "local" }, storage_locked: false, change: "update" });
+const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [{ service: "api", path: "/data" }], deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "update" });
 
 function InspectorEditor() {
   const routeParams = useParams({ strict: false });

@@ -94,7 +94,7 @@ fn lowering_retains_commands_limits_restart_and_network_ownership() {
     let lower = |config: Value| {
         lowered(json!({
             "namespace":"production","snapshots":[{"config":config,"resolvedEnv":{"TOKEN":"authorized-secret","PORT":"8080"}}],
-            "volumes":[{"volumeResourceId":"00000000-0000-4000-8000-000000000002","storage":{"kind":"local"}}]
+            "volumes":[{"volumeResourceId":"00000000-0000-4000-8000-000000000002","storage":{"kind":"docker"}}]
         }))
     };
     let intent = lower(config.clone()).unwrap();

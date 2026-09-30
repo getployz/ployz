@@ -2994,7 +2994,7 @@ export type VolumeDriver = { name: string, options: { [key in string]: string },
 
 export type VolumeId = string;
 
-export type VolumeKind = { "kind": "local", } | { "kind": "provisioned", maximumBytes: ProvisionedVolumeMaximumBytes, };
+export type VolumeKind = { "kind": "docker", } | { "kind": "provisioned", maximumBytes: ProvisionedVolumeMaximumBytes, };
 
 export type VolumeListing = {
 /**
