@@ -589,13 +589,13 @@ impl Client {
     /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
     /// Refused before reset or membership mutation when this is the last Machine
-    /// and a Management Client holds a key.
+    /// and a Management Client other than Cloud holds a key.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
     /// the current entry while another Machine is visible, when the Machine
-    /// is the last Machine and a Management Client holds a key, when the Machine
+    /// is the last Machine and a Management Client other than Cloud holds a key, when the Machine
     /// did not respond so Data Loss cannot be listed, when the confirmation does not cover the
     /// fresh Data Loss, or when reset or shared-row removal fails.
     pub async fn remove_machine(
@@ -627,12 +627,12 @@ impl Client {
     /// Remove Cluster membership for `machine` without resetting it.
     ///
     /// Refused before membership mutation when this is the last Machine and a
-    /// Management Client holds a key.
+    /// Management Client other than Cloud holds a key.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
-    /// it is the last Machine and a Management Client holds a key, or when
+    /// it is the last Machine and a Management Client other than Cloud holds a key, or when
     /// shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
@@ -975,19 +975,28 @@ async fn remove_volumes_on(
     .await
 }
 
-/// Refuse removing the last Machine while a Management Client still holds a key:
-/// the holder would be left managing a Cluster that no longer exists. Cloud lets go
-/// of its Servers only when its Organization is deleted (`ployz org rm`).
+/// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:
+/// the reset takes its keys, and Cloud forgets the pairing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CloudHold {
+    None,
+    Last,
+}
+
+/// Refuse removing the last Machine while a Management Client other than Cloud still
+/// holds a key: that holder would be left managing a Cluster that no longer exists.
+/// Cloud's own hold (`cloud` and the `cli-*` device keys it provisions) goes with the
+/// Machine when Cloud removes it, so it only shows in the returned [`CloudHold`].
 ///
 /// # Errors
-/// Returns `conflict` naming the holders and what releases them.
+/// Returns `conflict` naming the other holders.
 pub(crate) async fn refuse_last_managed(
     client: &Client,
     machines: &[MachineObservation],
     selected: MachineId,
-) -> Result<(), RpcError> {
+) -> Result<CloudHold, RpcError> {
     if machines.len() != 1 {
-        return Ok(());
+        return Ok(CloudHold::None);
     }
     // Inspect errors must not block unmanaged last-Machine removal.
     let holders = client
@@ -999,44 +1008,28 @@ pub(crate) async fn refuse_last_managed(
         .await
         .map(|details| details.management_clients)
         .unwrap_or_default();
-    if holders.is_empty() {
-        return Ok(());
-    }
     let cloud = holders.iter().any(|label| label.as_str() == "cloud");
-    let mut names: Vec<String> = holders
+    let names: Vec<String> = holders
         .iter()
-        .filter(|label| label.as_str() != "cloud")
+        .filter(|label| {
+            !cloud || (label.as_str() != "cloud" && !label.as_str().starts_with("cli-"))
+        })
         .map(|label| format!("`{label}`"))
         .collect();
-    if cloud {
-        names.insert(0, "Cloud".into());
-    }
     let who = match names.split_last() {
+        None if cloud => return Ok(CloudHold::Last),
+        None => return Ok(CloudHold::None),
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => unreachable!("holders is not empty"),
-    };
-    let (next, details) = if cloud {
-        (
-            "Delete its Organization (ployz org rm ORGANIZATION, once its Projects are \
-             removed), which unpairs this Server, then remove it."
-                .to_owned(),
-            serde_json::json!({ "next": "ployz org rm ORGANIZATION" }),
-        )
-    } else {
-        (
-            format!("Disconnect {who} from this Machine first."),
-            Value::Null,
-        )
     };
     Err(RpcError {
         code: RpcErrorCode::Conflict,
         message: format!(
             "this is the last Machine in the Cluster and it is still managed by {who}; \
              removing it would leave {who} managing a Cluster that no longer exists. \
-             No changes made. {next}"
+             No changes made. Disconnect {who} from this Machine first."
         ),
-        details,
+        details: Value::Null,
     })
 }
 

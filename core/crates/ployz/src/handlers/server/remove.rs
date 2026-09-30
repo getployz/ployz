@@ -6,7 +6,9 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, target};
-use crate::cluster::refuse_last_managed;
+use crate::cloud_account::{self, Credential};
+use crate::cloud_login::{CredentialStore, LoginError};
+use crate::cluster::{CloudHold, refuse_last_managed};
 use crate::handlers::{
     Error,
     data_loss::{VolumeEffect, VolumeLabels, volume_label},
@@ -24,7 +26,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
-    let (mut client, selected, observed, services, replicated_services) = runtime.block_on(async {
+    let (mut client, selected, cloud, observed, services, replicated_services) = runtime.block_on(async {
         let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
@@ -39,7 +41,10 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-        refuse_last_managed(&client, &machines, selected.id).await?;
+        let cloud = match refuse_last_managed(&client, &machines, selected.id).await? {
+            CloudHold::None => None,
+            CloudHold::Last => Some(cloud_removal(matches, &selected, no_reset).await?),
+        };
         let observed = if no_reset {
             ployz_core::ObservedDataLoss { data_loss: Vec::new() }
         } else {
@@ -57,10 +62,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        Ok::<_, Error>((client, selected, observed, services, replicated_services))
+        Ok::<_, Error>((client, selected, cloud, observed, services, replicated_services))
     })?;
     for line in service_warnings(&selected.name, &services) {
         eprintln!("{line}");
+    }
+    if cloud.is_some() {
+        eprintln!(
+            "WARNING: Server {} is the last Server: whatever runs on it stops, and nothing runs until you add a Server.",
+            selected.name
+        );
     }
     // The Store reads block on their own runtime, so they run between the two.
     let labels = volume_labels(root, &observed);
@@ -87,7 +98,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
 
         // TODO: do not reroute away from the current entry before removal.
         // TODO: there is no drain or unschedulable phase before cleanup.
-        if no_reset {
+        if let Some(credential) = &cloud {
+            cloud_account::remove_server(credential, &selected.id, &confirmation).await?;
+        } else if no_reset {
             client.remove_machine_membership(&selected_target).await?;
         } else {
             let removed = client
@@ -97,6 +110,9 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             reset_failure = removed.reset_warning;
         }
         say!("Removed Server {} ({}) membership", selected.name, selected.id);
+        if cloud.is_some() {
+            say!("Cloud let go of it: this Organization has no Server now. Its Environments keep their config; nothing runs until you add a Server.\nnext: ployz server add");
+        }
         if let Some(reason) = &reset_failure {
             eprintln!("Server {} cleanup/reset incomplete: {reason}. Reset does not erase volume data.", selected.id);
         } else {
@@ -121,6 +137,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             "reset_warning": reset_failure,
             "data_loss": observed.data_loss,
             "under_replicated": replicated_services,
+            "next": cloud.is_some().then_some("ployz server add"),
         }))?;
         // Cleanup failure must not leave the removed Machine named in the
         // context (#249); after the printed result it is partial, not a failed removal (#449).
@@ -136,6 +153,35 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         Ok::<_, Error>(())
     })
+}
+
+/// Cloud holds this last Server, so Cloud removes it, witnessing the reset, and lets go
+/// of it. That needs the reset and a Cloud credential; without either nothing happens.
+async fn cloud_removal(
+    matches: &ArgMatches,
+    selected: &Machine,
+    no_reset: bool,
+) -> Result<Credential, Error> {
+    if no_reset {
+        return Err(Error::conflict(format!(
+            "Server {} is the last Server and Cloud manages it; Cloud lets go of it only by resetting it. Drop --no-reset. No changes made.",
+            selected.name
+        )));
+    }
+    let store = CredentialStore::beside(&crate::handlers::config_path(matches)?);
+    match cloud_account::from_env(&store).await {
+        Ok(credential) => Ok(credential),
+        Err(LoginError::SignedOut) => Err(Error::detailed(
+            RpcErrorCode::Conflict,
+            format!(
+                "Server {} is the last Server and Cloud manages it, so Cloud removes it and lets go of it. \
+                 Sign in to Cloud first, or remove it from the dashboard. No changes made.",
+                selected.name
+            ),
+            json!({ "next": "ployz login" }),
+        )),
+        Err(error) => Err(error.into()),
+    }
 }
 
 /// Each observed Docker Volume that keeps a Volume's data, by that Volume's name, so

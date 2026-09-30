@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { expect, vi } from "vitest";
-import type { ConfigCommand, ConfigQuery } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, RuntimeWatchView } from "@ployz/sdk";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +23,11 @@ import { Auth, AuthLive } from "#/server/auth.server";
 import { githubInstallation, githubRepositoryCache } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
 import { organizationMachine } from "#/modules/machines/tables";
+import { removeServerForCli } from "#/modules/machines/machine-removal.server";
+import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
+import type { PloyzSession } from "#/modules/runtime/ployz.server";
+import { organizationPairing } from "#/modules/runtime/tables";
+import { asTestDouble } from "#/lib/test-double";
 import { Database } from "#/server/database.server";
 import { fakeGithubApi } from "#/test/fake-github";
 import { encodePublicError, NotFound, statusForPublicError } from "#/server/public-error";
@@ -285,6 +290,48 @@ it.live(
         const superseded = yield* request("write", alice, { ...start, deployment: admit.id });
         assert.strictEqual(superseded.status, 409);
         assert.strictEqual(sent.length, 3);
+      }).pipe(Effect.provide(layer));
+    }),
+  60_000,
+);
+
+it.live(
+  "removing the last Server lets Cloud go of its Cluster, and a Deploy after it asks for a Server",
+  () =>
+    Effect.gen(function* () {
+      const layer = yield* cloudLayer();
+      yield* Effect.gen(function* () {
+        const alice = yield* signUp("alice");
+        const organizationId = (yield* resolveCaller(new Headers({ cookie: alice }))).organization.id;
+        yield* enrollStoreServer(organizationId);
+        yield* request("write", alice, shop);
+        yield* request("write", alice, web);
+        // The Cluster Cloud reaches has just this Server, and resets it when asked.
+        const machineId = "0".repeat(32);
+        const reset: string[] = [];
+        const connected = asTestDouble<PloyzSession>()({
+          watchFirstFrame: () => Effect.succeed(asTestDouble<RuntimeWatchView>()({ machines: [{ machine: { id: machineId } }] })),
+          removeMachine: (machine: string) => Effect.sync(() => { reset.push(machine); }),
+        });
+        const removed = yield* removeServerForCli(organizationId, machineId, []).pipe(
+          Effect.provideService(OrganizationRuntime, {
+            cancel: () => Effect.void,
+            open: () => Effect.succeed({ status: "connected" as const, connected }),
+          }),
+        );
+        assert.deepStrictEqual(removed, { kind: "removed", lastServer: true });
+        assert.deepStrictEqual(reset, [machineId]);
+        // Cloud holds nothing of it any more: no pairing, no Server, no device key.
+        const { drizzle } = yield* Database;
+        assert.deepStrictEqual(yield* drizzle.select().from(organizationMachine), []);
+        assert.deepStrictEqual(yield* drizzle.select().from(organizationPairing), []);
+
+        const refused = yield* request("write", alice, {
+          command: "admit", admit: "deploy", id: "00000000-0000-4000-8000-000000000101", environment: here, services: [], version: null, accept_volume_loss: [],
+        });
+        assert.strictEqual(refused.status, 409);
+        assert.strictEqual(refused.json.error?.code, "conflict");
+        assert.strictEqual(refused.json.error?.details?.next, "ployz server add");
       }).pipe(Effect.provide(layer));
     }),
   60_000,

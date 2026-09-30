@@ -20,6 +20,7 @@ import {
   prepareMachineRemoveAttemptActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
+import { forgetEmptiedCluster } from "#/modules/machines/pairing-removal.server";
 import { runInngestEffect } from "#/server/run.server";
 
 export { PROCESS_MACHINE_REMOVE_FUNCTION_ID };
@@ -104,6 +105,12 @@ export async function executeProcessMachineRemove({
       ),
     );
     return { attemptId, status: "missing_identities" as const };
+  }
+  // Its own step: a retry after the reset forgets again, never resets a Server that's gone.
+  if (removed.lastServer) {
+    await step.run("forget-emptied-cluster", () =>
+      runInngestEffect(forgetEmptiedCluster(attempt.organizationId)),
+    );
   }
 
   await step.run("complete-succeeded", () =>
