@@ -226,6 +226,21 @@ fn a_deploy_publishes_then_its_runner_records_it_into_applied_state() {
     // Applied State is the new Head: a later edit shows against it.
     set_replicas(&store, &who, "web", 3);
     assert_eq!(changed(&store, &who), ["web"]);
+
+    // A Deploy of every Service settles the ones its preview plans nothing for
+    // as soon as it records that preview, not once it ends.
+    admit(&store, &who, 2, &[], None).unwrap();
+    store.claim(&id(2), &a).unwrap();
+    store
+        .record(&id(2), &a, RunEvidence::Prepared(preview(&["web"])))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 2),
+        [
+            ("web".to_owned(), NodeStatus::Pending),
+            ("api".to_owned(), NodeStatus::Unchanged)
+        ]
+    );
 }
 
 #[test]
