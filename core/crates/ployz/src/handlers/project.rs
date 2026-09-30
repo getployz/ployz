@@ -69,9 +69,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         default_environment: EnvironmentId::parse(mint())?,
     };
     let words = ["project", "new", create.name.as_str()];
-    let created = store
-        .create_project(&create)
-        .map_err(failed(matches, &words))?;
+    let created = store.write(&create).map_err(failed(matches, &words))?;
     crate::output::finish(&created, || {
         say!(
             "Created Project {} with Environment {}.",
@@ -84,7 +82,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let listed = store(root)?
-        .projects()
+        .read(&ployz_store::ProjectsQuery {})
         .map_err(failed(matches, &["project", "ls"]))?;
     crate::output::finish(&listed, || {
         if listed.projects.is_empty() {
@@ -135,7 +133,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let mut events = deploy::open_events(matches)?;
     let mut ran: Vec<DeploymentSummary> = Vec::new();
     loop {
-        let environment = match store.remove_project(&remove) {
+        let environment = match store.write(&remove) {
             Ok(removed) => return finish(&removed, &ran),
             Err(StoreCallError::Refused(error))
                 if error.details.get("deployed") == Some(&json!(true)) =>
@@ -156,7 +154,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
         };
         // Each removal accepts only the Volumes it deletes; a name may recur across Environments.
         let deletes = store
-            .removals(&RemovalsQuery {
+            .read(&RemovalsQuery {
                 environment: at.clone(),
                 remove: true,
             })
@@ -188,7 +186,9 @@ fn unconfirmed(
     again: &[&str],
 ) -> Result<Error, Error> {
     let words = ["project", "rm"];
-    let listed = store.projects().map_err(failed(matches, &words))?;
+    let listed = store
+        .read(&ployz_store::ProjectsQuery {})
+        .map_err(failed(matches, &words))?;
     let Some(listing) = listed
         .projects
         .iter()

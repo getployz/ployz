@@ -97,7 +97,7 @@ pub(super) fn scope(root: &ArgMatches, words: &[&str]) -> Result<Option<Scoped>,
             Ok(None)
         };
     };
-    match store.namespace(&NamespaceQuery { environment }) {
+    match store.read(&NamespaceQuery { environment }) {
         Ok(view) => Ok(Some(Scoped {
             namespace: view.namespace,
             services: view.services,
@@ -221,7 +221,7 @@ pub fn logs(root: &ArgMatches) -> Result<(), Error> {
     let namespace = match (&deployment, &store) {
         (Some(id), Some(store)) => Some(Scoped {
             namespace: store
-                .deployment(id)
+                .read(&ployz_store::DeploymentQuery { id: id.clone() })
                 .map_err(super::store::failed(leaf, &["logs"]))?
                 .namespace,
             services: std::collections::BTreeMap::new(),
@@ -264,7 +264,7 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
     let store = super::store::store(root)?;
     let names: Vec<String> = if named.is_empty() {
         store
-            .deployment(id)
+            .read(&ployz_store::DeploymentQuery { id: id.clone() })
             .map_err(super::store::failed(leaf, &["logs"]))?
             .builds
             .into_iter()
@@ -283,7 +283,7 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
                 service,
             };
             store
-                .build_log(&query)
+                .read(&query)
                 .map_err(super::store::failed(leaf, &["logs"]))
         })
         .collect::<Result<Vec<_>, Error>>()?;

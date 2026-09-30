@@ -257,13 +257,13 @@ fn org_build_order(root: &ArgMatches) -> Result<(), Error> {
     let store = super::store::store(root)?;
     let order = leaf_matches(root).get_one::<String>("order");
     let view = match order {
-        None => store.build_order()?,
+        None => store.read(&ployz_store::BuildOrderQuery {})?,
         Some(order) => {
             let build_order = (order != "auto")
                 .then(|| serde_json::from_value(serde_json::json!(order)))
                 .transpose()
                 .expect("clap accepts only Build Orders");
-            store.set_build_order(&ployz_store::SetBuildOrder { build_order })?
+            store.write(&ployz_store::SetBuildOrder { build_order })?
         }
     };
     let builders = view

@@ -82,7 +82,7 @@ fn add(root: &ArgMatches) -> Result<(), Error> {
         words.push(hostname.as_str());
     }
     let added = store::store(root)?
-        .add_domain(&add)
+        .write(&add)
         .map_err(store::failed(matches, &words))?;
     staged(matches, &added, "Staged domain")
 }
@@ -94,7 +94,7 @@ fn remove(root: &ArgMatches) -> Result<(), Error> {
         domain: required(matches, "domain")?,
     };
     let removed = store::store(root)?
-        .remove_domain(&remove)
+        .write(&remove)
         .map_err(store::failed(matches, &["domain", "rm", "DOMAIN"]))?;
     staged(matches, &removed, "Staged removal of domain")
 }
@@ -110,7 +110,7 @@ fn list(root: &ArgMatches) -> Result<(), Error> {
         service,
     };
     let view = store::store(root)?
-        .domains(&query)
+        .read(&query)
         .map_err(store::failed(matches, &["domain", "ls"]))?;
     let next = view
         .domains
@@ -137,7 +137,7 @@ fn check(root: &ArgMatches) -> Result<(), Error> {
         domain: required(matches, "domain")?,
     };
     let view = store::store(root)?
-        .domain(&query)
+        .read(&query)
         .map_err(store::failed(matches, &["domain", "check", "DOMAIN"]))?;
     let next = next(matches, view.domain.action.as_ref());
     output::finish(&Next::new(&view, next), || show(&view.domain))

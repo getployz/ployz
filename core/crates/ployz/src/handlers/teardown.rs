@@ -34,12 +34,12 @@ pub(super) fn inventory(
 ) -> Result<Inventory, Error> {
     let words = ["env", "rm"];
     let services = store
-        .services(&ServicesQuery {
+        .read(&ServicesQuery {
             environment: at.clone(),
         })
         .map_err(failed(matches, &words))?;
     let volumes = store
-        .volumes(&VolumesQuery {
+        .read(&VolumesQuery {
             environment: at.clone(),
         })
         .map_err(failed(matches, &words))?;

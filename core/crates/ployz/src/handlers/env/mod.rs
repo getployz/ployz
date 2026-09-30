@@ -238,9 +238,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
         name,
     };
     let words = ["env", "new", create.name.as_str()];
-    let created = store
-        .create_environment(&create)
-        .map_err(failed(matches, &words))?;
+    let created = store.write(&create).map_err(failed(matches, &words))?;
     crate::output::finish(&created, || {
         say!(
             "Created Environment {} in Project {}.",
@@ -253,7 +251,7 @@ fn new(root: &ArgMatches) -> Result<(), Error> {
 fn ls(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let listed = store(root)?
-        .environments(&EnvironmentsQuery {
+        .read(&EnvironmentsQuery {
             project: project(matches)?,
         })
         .map_err(failed(matches, &["env", "ls"]))?;
@@ -270,7 +268,7 @@ fn default(root: &ArgMatches) -> Result<(), Error> {
         },
     };
     let listed = store(root)?
-        .set_default_environment(&set)
+        .write(&set)
         .map_err(failed(matches, &["env", "default"]))?;
     crate::output::finish(&listed, || print_environments(&listed))
 }
@@ -331,7 +329,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
     let remove = RemoveEnvironment {
         environment: at.clone(),
     };
-    match store.remove_environment(&remove) {
+    match store.write(&remove) {
         Ok(removed) => return finish_removal(&removed, None),
         Err(StoreCallError::Refused(error))
             if error.details.get("deployed") == Some(&serde_json::Value::Bool(true)) => {}
@@ -349,9 +347,7 @@ fn rm(root: &ArgMatches) -> Result<(), Error> {
         );
         return unfinished(matches, &view, ran, &again);
     }
-    let removed = store
-        .remove_environment(&remove)
-        .map_err(failed(matches, &words))?;
+    let removed = store.write(&remove).map_err(failed(matches, &words))?;
     finish_removal(&removed, Some(&view.deployment))
 }
 
