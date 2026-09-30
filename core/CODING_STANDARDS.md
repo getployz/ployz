@@ -50,6 +50,10 @@ A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine
 
 JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 
+## Migrations
+
+Migrations are append-only: never edit or delete a file in `ployz-store/src/storage/migrations/`; change the schema with a new migration.
+
 ## Async
 
 Async is for I/O. CPU-bound work stays sync.

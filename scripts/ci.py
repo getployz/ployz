@@ -15,7 +15,7 @@ CONTRACT_SCRIPTS = {
     "run-layer3-tests.sh", "test-cli-installer.sh", "test-daemon-lifecycle.sh",
     "uninstall.sh", "stage-ployz-sh-site.sh",
     "check-release-tag.sh", "release-tag.sh", "promote-release.sh",
-    "publish-github-release.sh",
+    "publish-github-release.sh", "check-append-only-migrations.sh",
 }
 
 

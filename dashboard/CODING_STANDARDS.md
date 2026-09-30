@@ -40,6 +40,7 @@ File names say where a source lives, not its kind: a Query file that projects or
 
 ### Keep
 
+- Migrations are append-only: never edit or delete a file under `drizzle/`; change the schema with a new migration.
 - Read a prefetched Remote Read with `useSuspenseQuery` (the route's `pendingComponent` or a local `Suspense` covers only that page) or `useQuery` for reads that poll or only matter after a user action.
 - Keep confirm dialogs for irreversible actions (seal, delete), but close them as soon as the user confirms; the optimistic write does the rest.
 - Warm reads the user is about to need on intent (menu open, hover, focus), and start independent reads together (`useSuspenseQueries`, not sequential `useSuspenseQuery` calls). Links need nothing extra: the router preloads every visible link's loader (`defaultPreload: "viewport"`).
