@@ -86,6 +86,10 @@ _Avoid_: Service Name as identity
 One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. There is no independent prune flag.
 _Avoid_: selected-service list as a prune flag
 
+**Service Template**:
+The preset, by ID and version, an authored Service was created from, such as PostgreSQL version 1. It is authoring metadata: it changes nothing that runs, and the Service's own Settings stay authoritative. A template's Volume is found through the Service's mounts.
+_Avoid_: preset as a stored entity, template group
+
 **Service Container**:
 A managed Docker container carrying the Resolved Service Spec from its creation and the Namespace that owns it. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record

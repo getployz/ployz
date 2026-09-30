@@ -5,7 +5,7 @@
     reason = "Test JSON fixtures assert public response fields."
 )]
 
-use ployz_core::config::project_runtime_outcome;
+use ployz_core::config::{parse_runtime_preview, project_runtime_outcome};
 use serde_json::{Value, json};
 
 fn operation(id: &str) -> Value {
@@ -25,8 +25,11 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
         })
     };
     let project = |preview: Value, outcome: Value| {
-        project_runtime_outcome(preview, json!({"version":1,"outcome":outcome}))
-            .map(|projection| serde_json::to_value(projection).unwrap())
+        project_runtime_outcome(
+            &parse_runtime_preview(preview).unwrap(),
+            json!({"version":1,"outcome":outcome}),
+        )
+        .map(|projection| serde_json::to_value(projection).unwrap())
     };
     let partial = json!({"type":"failed","completed":[api.clone()],
         "failed":{"type":"operation","operation":worker.clone(),"error":{"type":"cancelled"}},"unexecuted":[]});
@@ -79,7 +82,7 @@ fn current_outcome_confirms_only_services_with_all_operations_completed() {
     assert_eq!(stopped["failedServices"], json!(["worker"]));
     assert_eq!(stopped["unattemptedServices"], json!(["api"]));
     let invalid = project_runtime_outcome(
-        preview(vec![]),
+        &parse_runtime_preview(preview(vec![])).unwrap(),
         json!({"version":2,"outcome":{"type":"success","completed":[]}}),
     );
     assert!(invalid.is_err());

@@ -40,6 +40,7 @@ fn shop() -> (ConfigStore, Actor) {
                     environment: EnvironmentRef::default(),
                     name: ServiceName::parse(name).unwrap(),
                     image: Some(image.into()),
+                    template: None,
                 },
             )
             .unwrap();
@@ -322,6 +323,7 @@ fn simultaneous_publishers_save_one_revision() {
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("web").unwrap(),
                 image: Some("nginx:1".into()),
+                template: None,
             },
         )
         .unwrap();

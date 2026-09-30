@@ -48,6 +48,7 @@ fn shop() -> (ConfigStore, Actor) {
                     environment: EnvironmentRef::default(),
                     name: name(service),
                     image: image.map(Into::into),
+                    template: None,
                 },
             )
             .unwrap();
@@ -175,6 +176,7 @@ fn a_rename_keeps_the_private_dns_name() {
         environment: EnvironmentRef::default(),
         name: name("web"),
         image: None,
+        template: None,
     };
     assert_eq!(
         store.write(&who, &web).unwrap_err().code,
@@ -231,6 +233,7 @@ fn removing_a_new_service_drops_it_from_working_state() {
                 environment: EnvironmentRef::default(),
                 name: name("worker"),
                 image: None,
+                template: None,
             },
         )
         .unwrap();
@@ -245,4 +248,92 @@ fn removing_a_new_service_drops_it_from_working_state() {
         .unwrap_err();
     assert_eq!(missing.code, RpcErrorCode::NotFound);
     assert_eq!(missing.details["did_you_mean"], json!("web"));
+}
+
+#[test]
+fn a_service_keeps_the_template_it_was_created_from_until_unset() {
+    let (store, who) = shop();
+    let postgres = json!({ "id": "postgres", "version": 1 });
+    store
+        .write(
+            &who,
+            &CreateService {
+                id: ServiceLineageId::parse(uuid(5)).unwrap(),
+                environment: EnvironmentRef::default(),
+                name: name("db"),
+                image: Some("postgres:18".into()),
+                template: serde_json::from_value(postgres.clone()).unwrap(),
+            },
+        )
+        .unwrap();
+    let edit = |change: Change| {
+        store.write(
+            &who,
+            &Command::Edit(Edit {
+                environment: EnvironmentRef::default(),
+                expect: None,
+                changes: vec![change],
+            }),
+        )
+    };
+    let template = || {
+        let listed = store.read(&who, &ServicesQuery::default()).unwrap();
+        let db = listed
+            .services
+            .into_iter()
+            .find(|listing| listing.service.name.as_str() == "db")
+            .unwrap();
+        serde_json::to_value(db.template).unwrap()
+    };
+    assert_eq!(template(), postgres);
+    // Other edits leave it be.
+    edit(Change::Set {
+        path: SettingPath::parse("db.replicas").unwrap(),
+        value: json!(2),
+    })
+    .unwrap();
+    assert_eq!(template(), postgres);
+    store
+        .write(
+            &who,
+            &Command::Publish(ployz_store::Publish {
+                environment: EnvironmentRef::default(),
+                version: None,
+                accept_volume_loss: Vec::new(),
+            }),
+        )
+        .unwrap();
+    // A changed template is a diff row like any Setting.
+    edit(Change::Set {
+        path: SettingPath::parse("db.template").unwrap(),
+        value: json!({ "id": "postgres", "version": 2 }),
+    })
+    .unwrap();
+    edit(Change::Set {
+        path: SettingPath::parse("db.env.MODE").unwrap(),
+        value: json!("fast"),
+    })
+    .unwrap();
+    // Every row says whether `discard` takes its path.
+    let diff = store.read(&who, &DiffQuery::default()).unwrap();
+    let rows: Vec<(&str, bool)> = diff
+        .changes
+        .iter()
+        .flat_map(|change| &change.settings)
+        .map(|row| (row.path.as_str(), row.can_restore))
+        .collect();
+    for row in [("db.template", true), ("db.env.MODE", true)] {
+        assert!(rows.contains(&row), "{rows:?}");
+    }
+    let refused = edit(Change::Set {
+        path: SettingPath::parse("db.template").unwrap(),
+        value: json!({ "id": "Not A Label", "version": 1 }),
+    })
+    .unwrap_err();
+    assert_eq!(refused.code, RpcErrorCode::InvalidArgument);
+    edit(Change::Unset {
+        path: SettingPath::parse("db.template").unwrap(),
+    })
+    .unwrap();
+    assert_eq!(template(), json!(null));
 }

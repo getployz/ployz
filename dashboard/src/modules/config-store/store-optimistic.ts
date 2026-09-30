@@ -53,6 +53,7 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       const service: ServiceListing = {
         id: command.id, name: command.name, private_dns: command.name, change: "create",
         source: command.command === "create_git_service" ? "git" : command.image === null ? "empty" : "image",
+        template: command.command === "create_service" ? command.template ?? null : null,
       };
       await views<ServicesView>("services", command.environment, (view) => ({ ...view, services: [...view.services, service] }));
       return;

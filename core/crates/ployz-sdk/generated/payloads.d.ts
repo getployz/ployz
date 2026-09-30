@@ -17,7 +17,11 @@ export type AdvertisedEndpoint = string;
 
 export type Apply = "staged" | "immediate";
 
-export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
+export type AuthoredServiceConfig = { version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
+/**
+ * The Service Template it was created from; authoring metadata only.
+ */
+template?: ServiceTemplate, };
 
 export type AuthorizedRepository = {
 /**
@@ -72,7 +76,7 @@ checks: Array<PullRequestRef>, };
 
 export type Batch = {
 /**
- * The Environment every command writes. A command naming one is refused.
+ * The Environment every command writes. A command naming another is refused.
  */
 environment: EnvironmentRef,
 /**
@@ -667,7 +671,11 @@ name: ServiceName,
 /**
  * The container image it runs; none creates an empty Service.
  */
-image?: string | null, };
+image?: string | null,
+/**
+ * The Service Template it is created from, if any.
+ */
+template?: ServiceTemplate, };
 
 export type CreateVolume = {
 /**
@@ -887,7 +895,7 @@ nodes: Array<NodeOutcome>,
 /**
  * The Deploy Preview its runner prepared, with environment values removed.
  */
-preview: JsonValue | null, outcome: Outcome | null,
+preview: DeployPreview | null, outcome: Outcome | null,
 /**
  * Its Git Services' builds, once their commits are pinned.
  */
@@ -2538,7 +2546,11 @@ export type ServiceBuildConfig = { buildMethod: BuildMethod, dockerfilePath: str
  */
 command: string | null, };
 
-export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig, };
+export type ServiceConfig = { env: { [key in string]: ServiceEnvValue }, mounts: Array<ServiceDeployMount>, version: 2, source: ServiceSource, preDeployCommand: string | null, startCommand: string | null, healthcheck: ServiceHealthcheck, restartPolicy: ServiceRestartPolicy, maxRetries: number, replicas: number, cpuLimit: number | null, memLimit: number | null, privateDns: ServiceName, routes: Array<ServiceRoute>, managedHostnames: Array<ServiceManagedHostname>, build: ServiceBuildConfig,
+/**
+ * The Service Template it was created from; authoring metadata only.
+ */
+template?: ServiceTemplate, };
 
 export type ServiceContainer = ContainerObservation;
 
@@ -2591,6 +2603,10 @@ source: SourceKind,
  * What the next Deploy does to it; none when it is deployed as it is.
  */
 change: ReviewLifecycleKind | null,
+/**
+ * The Service Template it was created from, if any.
+ */
+template: ServiceTemplate | null,
 /**
  * Its durable identity.
  */
@@ -2650,7 +2666,7 @@ export type ServiceRoute = { id: string, hostname: string, targetPort: number | 
 
 export type ServiceSettingChange = { path: string, kind: ChangeKind, before: JsonValue, after: JsonValue, canRestore: boolean, };
 
-export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig };
+export type ServiceSettingInput = { "field": "name", "value": string } | { "field": "source", "value": ServiceSource } | { "field": "rootDir", "value": string } | { "field": "command", "value": string } | { "field": "preDeployCommand", "value": string | null } | { "field": "startCommand", "value": string | null } | { "field": "healthcheck", "value": ServiceHealthcheck } | { "field": "healthcheckPath", "value": string } | { "field": "healthcheckTimeoutSeconds", "value": number } | { "field": "restartPolicy", "value": ServiceRestartPolicy } | { "field": "maxRetries", "value": number } | { "field": "replicas", "value": number } | { "field": "cpuLimit", "value": number | null } | { "field": "memLimit", "value": number | null } | { "field": "privateDns", "value": ServiceName } | { "field": "routes", "value": Array<ServiceRoute> } | { "field": "managedHostnames", "value": Array<ServiceManagedHostname> } | { "field": "managedHostnameValue", "value": ServiceManagedHostname } | { "field": "managedHostnamePrefix", "value": string } | { "field": "build", "value": ServiceBuildConfig } | { "field": "template", "value": ServiceTemplate | null };
 
 export type ServiceSource = { "type": "empty", version: 1, rootDir: string, } | { "type": "git", version: 2, repository: string, repositoryId: number, access: ServiceGitAccess, rootDir: string, branch: ServiceGitBranch, } | { "type": "image", version: 1, image: string, credentials: ServiceImageCredentials, };
 
@@ -2685,6 +2701,16 @@ name: ServiceName,
  */
 private_dns: ServiceName, };
 
+export type ServiceTemplate = {
+/**
+ * The template, as a DNS label such as `postgres`.
+ */
+id: string,
+/**
+ * Its version, from 1.
+ */
+version: number, };
+
 export type ServiceView = {
 /**
  * The Environment, at the revision read.
@@ -2711,6 +2737,10 @@ source: SourceKind,
  * What the next Deploy does to it; none when it is deployed as it is.
  */
 change: ReviewLifecycleKind | null,
+/**
+ * The Service Template it was created from, if any.
+ */
+template: ServiceTemplate | null,
 /**
  * Its durable identity.
  */

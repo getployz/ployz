@@ -218,6 +218,7 @@ fn add_service(
         environment: environment.clone(),
         name: name.clone(),
         image: None,
+        template: None,
     })?;
     say!("Added Service {name}.");
     let dockerfile = std::fs::read_to_string(directory.join("Dockerfile")).ok();

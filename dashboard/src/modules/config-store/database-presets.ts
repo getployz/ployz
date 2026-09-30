@@ -82,7 +82,7 @@ export function databaseCommand(preset: DatabasePreset, target: {
     environment,
     commands: [
       // The Store checks the ids are UUIDs.
-      { command: "create_service", id: service, environment, name, image: preset.image },
+      { command: "create_service", id: service, environment, name, image: preset.image, template: { id: preset.id, version: 1 } },
       { command: "create_volume", id: volume, environment, name: volumeName,
         storage: { kind: "provisioned", maximumBytes: Number(DEFAULT_VOLUME_GB) * 1_000_000_000 }, mounts: [{ service: name, path: preset.dataPath }] },
       { command: "edit", environment, expect: null, changes: [{ op: "patch", path: name,

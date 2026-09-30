@@ -3,7 +3,7 @@
 //! next Deploy does to it.
 
 use ployz_core::config::{
-    ReviewLifecycleKind, SavedServiceIntent, ServiceSettingChange, ServiceSource,
+    ReviewLifecycleKind, SavedServiceIntent, ServiceSettingChange, ServiceSource, ServiceTemplate,
 };
 use ployz_core::{RpcError, ServiceName};
 use serde::{Deserialize, Serialize};
@@ -46,6 +46,8 @@ pub struct ServiceListing {
     pub source: SourceKind,
     /// What the next Deploy does to it; none when it is deployed as it is.
     pub change: Option<ReviewLifecycleKind>,
+    /// The Service Template it was created from, if any.
+    pub template: Option<ServiceTemplate>,
 }
 
 /// Where a Service's image comes from.
@@ -176,6 +178,7 @@ fn listed(tx: &mut dyn Tx, environment: &scope::Environment) -> Result<Vec<Liste
                         ServiceSource::Image { .. } => SourceKind::Image,
                     },
                     change: change.map(|change| change.lifecycle),
+                    template: node.config.template.clone(),
                 },
                 changes: change
                     .map(|change| change.settings.clone())

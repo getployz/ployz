@@ -599,6 +599,7 @@ async fn cloud_s_runner_builds_an_upload_then_reuses_it_or_asks_for_a_new_one() 
                 environment: EnvironmentRef::default(),
                 name: ServiceName::parse("app").unwrap(),
                 image: None,
+                template: None,
             },
         )
         .unwrap();

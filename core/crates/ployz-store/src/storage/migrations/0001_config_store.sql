@@ -74,7 +74,7 @@ CREATE TABLE config_deployment (
     namespace TEXT NOT NULL,
     run TEXT NOT NULL,
     credentials TEXT NOT NULL,
-    upload TEXT NOT NULL,
+    upload TEXT,
     cluster_domain TEXT,
     admitted BIGINT NOT NULL,
     admitted_by TEXT,

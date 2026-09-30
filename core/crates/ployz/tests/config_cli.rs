@@ -290,7 +290,8 @@ fn an_agent_creates_and_edits_an_image_service() {
                 "web.privateDns",
                 "web.replicas",
                 "web.restartPolicy",
-                "web.startCommand"
+                "web.startCommand",
+                "web.template"
             ]))
         );
         assert!(added.get("immediate").is_none());
@@ -312,7 +313,7 @@ fn an_agent_creates_and_edits_an_image_service() {
         let got = ok(store, &["get", "web"]);
         assert_eq!(
             got.pointer("/settings").unwrap().as_array().unwrap().len(),
-            11
+            12
         );
         assert_eq!(
             got.pointer("/settings/8"),
@@ -1041,7 +1042,7 @@ fn get_patch_get_round_trips_and_the_environment_shows_only_what_is_set() {
                 .as_array()
                 .unwrap()
                 .len(),
-            11
+            12
         );
 
         for patch in [r#"{"memLimit": null}"#, "not json"] {
