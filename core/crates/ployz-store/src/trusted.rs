@@ -32,10 +32,11 @@ pub struct Trusted {
 }
 
 impl Trusted {
-    /// Refuse to admit a Deployment no Server could run.
+    /// Refuse to admit a Deployment no Server could run: `conflict`, as the
+    /// Organization's state refuses it, naming `ployz server add`.
     pub(crate) fn runnable(&self) -> Result<(), RpcError> {
         if self.no_servers() {
-            return Err(crate::error::unobserved(
+            return Err(crate::error::conflict(
                 NO_SERVERS,
                 serde_json::json!({ "next": "ployz server add" }),
             ));
