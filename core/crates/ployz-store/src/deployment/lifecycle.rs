@@ -838,7 +838,7 @@ pub(super) fn node_outcomes(
 
 pub(super) fn finish(
     tx: &mut dyn Tx,
-    mut stored: Stored,
+    stored: Stored,
     outcome: Outcome,
     status: DeploymentStatus,
 ) -> Result<DeploymentSummary, RpcError> {

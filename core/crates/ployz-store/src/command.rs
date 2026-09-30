@@ -23,6 +23,7 @@ pub use crate::volume::{
 };
 
 use crate::error;
+use crate::scope::EnvironmentRef;
 use crate::storage::Tx;
 use crate::{Actor, SealingKey, Trusted};
 
@@ -251,26 +252,22 @@ commands! {
         let mut at = Call { tx, who, sealing, trusted };
         c.commands
             .iter()
-            .map(|command| match command {
-                BatchCommand::CreateService(create) => {
-                    create.apply(&mut at).map(Written::Service)
-                }
-                BatchCommand::CreateVolume(create) => create.apply(&mut at).map(Written::Volume),
-                BatchCommand::Edit(edit) => edit.apply(&mut at).map(Written::Edited),
-            })
+            .map(|command| command.apply(&c.environment, &mut at))
             .collect::<Result<_, _>>()
             .map(|results| Batched { results })
     };
 }
 
-/// Creates and edits in one transaction, in order: all apply or none do. Each create
-/// keeps its own caller-minted ID, so a retry replays it; an edit applies again. Cloud
-/// gathers no trusted evidence inside a Batch, so an edit that needs some (a repository
-/// or branch) is refused. Callers name one Environment in all its commands: the Store
-/// does not check, and the dashboard queues a Batch by its first command's Environment.
+/// Creates and edits of one Environment in one transaction, in order: all apply or
+/// none do. Each create keeps its own caller-minted ID, so a retry replays it; an
+/// edit applies again. Cloud gathers no trusted evidence inside a Batch, so an edit
+/// that needs some (a repository or branch) is refused.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
+    /// The Environment every command writes. A command naming another is refused.
+    #[serde(default)]
+    pub environment: EnvironmentRef,
     /// The commands, applied in order.
     pub commands: Vec<BatchCommand>,
 }
@@ -285,6 +282,43 @@ pub enum BatchCommand {
     CreateVolume(CreateVolume),
     /// See [`Command::Edit`].
     Edit(Edit),
+}
+
+impl BatchCommand {
+    /// Apply this command to the Batch's `environment`.
+    fn apply(&self, environment: &EnvironmentRef, at: &mut Call<'_>) -> Result<Written, RpcError> {
+        let named = match self {
+            Self::CreateService(create) => &create.environment,
+            Self::CreateVolume(create) => &create.environment,
+            Self::Edit(edit) => &edit.environment,
+        };
+        if named != environment && *named != EnvironmentRef::default() {
+            return Err(error::invalid(
+                "Every command in a Batch writes the Batch's Environment",
+                json!({ "environment": named }),
+            ));
+        }
+        match self {
+            Self::CreateService(create) => CreateService {
+                environment: environment.clone(),
+                ..create.clone()
+            }
+            .apply(at)
+            .map(Written::Service),
+            Self::CreateVolume(create) => CreateVolume {
+                environment: environment.clone(),
+                ..create.clone()
+            }
+            .apply(at)
+            .map(Written::Volume),
+            Self::Edit(edit) => Edit {
+                environment: environment.clone(),
+                ..edit.clone()
+            }
+            .apply(at)
+            .map(Written::Edited),
+        }
+    }
 }
 
 /// What each command of a [`Batch`] did, in order.

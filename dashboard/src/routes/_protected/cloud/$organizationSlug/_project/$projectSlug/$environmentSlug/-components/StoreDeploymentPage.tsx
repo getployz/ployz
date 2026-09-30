@@ -54,7 +54,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   const services = deployment.nodes.filter((node) => node.type === "service");
   const volumes = deployment.nodes.filter((node) => node.type === "volume");
   const focused = focusedService(deployment, search.service);
-  const reason = deployment.outcome?.reason;
+  const reason = deployment.outcome && "reason" in deployment.outcome ? deployment.outcome.reason : undefined;
   const needsSource = deployment.outcome?.type === "not_executed" ? deployment.outcome.needs_upload : [];
   const fixing = focused && canFixOnBranch(deployment, focused, noServers) ? focused.name : null;
   const { at, started, ended } = admission(deployment);
