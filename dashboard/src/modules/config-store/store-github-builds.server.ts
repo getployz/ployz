@@ -181,7 +181,7 @@ export const checkStoreGithubBuild = Effect.fn("StoreGithub.check")(function* (
     if (found === "done") yield* cancelGithubRun(githubRun(build)).pipe(Effect.ignore);
     return found;
   }
-  if (seen.ended || build.platforms !== null || (yield* runEnded(build))) return yield* finish(false);
+  if (seen.ended || build.ended !== null || (yield* runEnded(build))) return yield* finish(false);
   return "waiting" as const;
 });
 

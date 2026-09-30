@@ -193,9 +193,7 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
     setRetrying(true);
     try {
       await writer.commit({
-        command: "admit", id, environment: { project: null, environment: null }, services: [], version: null, remove: false, retry: deployment.id,
-        accept_volume_loss: [],
-      }).isPersisted.promise;
+        command: "admit", admit: "retry", id, deployment: deployment.id }).isPersisted.promise;
       void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId: id } });
     } catch {
       // The writer toasted the Store's reason.

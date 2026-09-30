@@ -518,7 +518,7 @@ const deployPublished = Effect.fn("MachineEnrollment.deployPublished")(function*
     if (diff.saved === null) return;
     // No member admits it, and nothing uploads.
     const result = yield* callStore(organizationId, null, { operation: "write", command: {
-      command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: false, accept_volume_loss: [],
+      command: "admit", admit: "deploy", id: crypto.randomUUID(), environment, services: [], version: null, accept_volume_loss: [],
     } });
     if (!result.ok) yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
   }), { discard: true });

@@ -58,7 +58,7 @@ describe("PublicDomainRow", () => {
 
 describe("storeStatusView", () => {
   it("shows the Store's reason and offers its DNS records, but no action to wait for a deploy", () => {
-    const records = [{ type: "CNAME", name: "www", value: "acme.ployz.app" }];
+    const records = [{ type: "CNAME" as const, name: "www", value: "acme.ployz.app" }];
     expect(storeStatusView({ status: "needs_attention", reason: "Waiting for DNS", action: { type: "dns", records } }))
       .toMatchObject({ phrase: "Waiting for DNS", action: "dns" });
     expect(storeStatusView({ status: "needs_attention", reason: "No Server receives traffic", action: { type: "add_server" } }).action)

@@ -40,7 +40,7 @@ export function useStoreChangeActions(organizationSlug: string, environment: Env
     const id = crypto.randomUUID();
     try {
       await writer.commit(action === "deploy"
-        ? { command: "admit", id, environment, services: [], version, remove: false, accept_volume_loss: [...accept] }
+        ? { command: "admit", admit: "deploy", id, environment, services: [], version, accept_volume_loss: [...accept] }
         : { command: "publish", environment, version, accept_volume_loss: [...accept] }).isPersisted.promise;
       if (action === "deploy") onAdmitted(id);
       return null;

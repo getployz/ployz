@@ -61,8 +61,8 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
     if (!on.deployed) return { done: false, environment: on.environment, deployment: on.deployment };
     const id = crypto.randomUUID();
     await commit({
-      command: "admit", id, environment: { project: target.project, environment: on.environment },
-      services: [], version: null, remove: true, accept_volume_loss: [...accepted[on.environment] ?? []],
+      command: "admit", admit: "remove", id, environment: { project: target.project, environment: on.environment },
+      version: null, accept_volume_loss: [...accepted[on.environment] ?? []],
     }, ["confirmation_required", "invalid_argument"]);
     return { done: false, environment: on.environment, deployment: id };
   }
