@@ -1,4 +1,5 @@
 import { useReducer, useRef } from "react";
+import type { Persistable } from "#/collections/query-collection";
 import { Result } from "effect";
 import {
   Dialog,
@@ -38,6 +39,8 @@ type RawEditorState = {
   jsonText: string;
   parseError: string | null;
   submitError: string | null;
+  /** Saving: the dialog stays open until the Store takes it or says why not. */
+  saving: boolean;
 };
 
 type RawEditorAction =
@@ -50,6 +53,7 @@ const initialRawEditorState: RawEditorState = {
   jsonText: "",
   parseError: null,
   submitError: null,
+  saving: false,
 };
 
 function rawEditorReducer(
@@ -85,7 +89,7 @@ export function ServiceVariablesRawEditor({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Saves the editor's creates, updates and deletes: optimistic, rolled back and toasted on failure. */
-  onApply: (diff: RawEditorDiff) => void;
+  onApply: (diff: RawEditorDiff) => Persistable;
   variables: VariableRecord[];
   valueTargets?: ReferenceTarget[];
 }) {
@@ -167,7 +171,8 @@ export function ServiceVariablesRawEditor({
     }
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
+    if (editor.saving) return;
     dispatchEditor({
       type: "patch",
       patch: { parseError: null, submitError: null },
@@ -209,8 +214,16 @@ export function ServiceVariablesRawEditor({
       return;
     }
 
-    onApply(diff);
-    onOpenChange(false);
+    // A refusal keeps the text, with the Store's reason over it.
+    dispatchEditor({ type: "patch", patch: { saving: true } });
+    try {
+      await onApply(diff).isPersisted.promise;
+      onOpenChange(false);
+    } catch (error) {
+      dispatchEditor({ type: "patch", patch: { submitError: error instanceof Error ? error.message : "The variables couldn’t be saved." } });
+    } finally {
+      dispatchEditor({ type: "patch", patch: { saving: false } });
+    }
   }
 
   function handleOpenChange(nextOpen: boolean) {
@@ -276,7 +289,8 @@ export function ServiceVariablesRawEditor({
         <ServiceVariablesRawEditorFooter
           envText={editor.envText}
           onCancel={() => handleOpenChange(false)}
-          onSubmit={handleSubmit}
+          onSubmit={() => void handleSubmit()}
+          saving={editor.saving}
         />
       </DialogContent>
     </Dialog>
