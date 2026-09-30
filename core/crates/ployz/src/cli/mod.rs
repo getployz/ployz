@@ -157,6 +157,13 @@ pub(crate) fn machine_policy_flags(command: Command) -> Command {
         )
 }
 
+/// `--expect-version`: a data-loss refusal's version, which its `--accept-volume-loss` binds to.
+pub(crate) fn reviewed_version() -> Arg {
+    value("expect-version", None)
+        .value_name("VERSION")
+        .help("Refuse unless this is still the reviewed version; a data-loss refusal names it")
+}
+
 pub(crate) fn volume_acceptance() -> Arg {
     repeated("accept-volume-loss")
         .num_args(1)

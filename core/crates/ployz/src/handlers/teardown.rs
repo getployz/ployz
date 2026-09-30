@@ -92,6 +92,8 @@ where
     C: Tell<Written = Teardown<T>>,
 {
     let accept = accepted(matches)?;
+    // The reviewed version binds the first removal, the one whose refusal named it.
+    let mut version = matches.get_one::<String>("expect-version").cloned();
     let mut ran = Vec::new();
     loop {
         let environment = match store.write(remove).map_err(failed(matches, words))? {
@@ -135,7 +137,15 @@ where
             .map(|writer| writer.get_ref().try_clone())
             .transpose()?
             .map(std::io::BufWriter::new);
-        let (view, outcome) = take_off(matches, store, &at, &accept, writer, words, again)?;
+        let (view, outcome) = take_off(
+            matches,
+            store,
+            &at,
+            (&accept, version.take()),
+            writer,
+            words,
+            again,
+        )?;
         if view.deployment.status != DeploymentStatus::Applied {
             unfinished(matches, &view, outcome, again)?;
             return Ok(None);
@@ -145,13 +155,13 @@ where
 }
 
 /// Take Environment `at` off the Servers: admit a removal Deployment under the
-/// destructive review, accepting the loss of `accept`, then run or follow it as
+/// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
 /// `deploy` does. `again` is the command that retries the whole removal.
 pub(super) fn take_off(
     matches: &ArgMatches,
     store: &Store,
     at: &EnvironmentRef,
-    accept: &[VolumeName],
+    (accept, version): (&[VolumeName], Option<String>),
     events: Option<std::io::BufWriter<std::fs::File>>,
     words: &[&str],
     again: &[&str],
@@ -166,7 +176,7 @@ pub(super) fn take_off(
             &Admit::Remove(ployz_store::Removal {
                 id: DeploymentId::parse(mint())?,
                 environment: at.clone(),
-                version: None,
+                version,
                 accept_volume_loss: accept.to_vec(),
             }),
             volumes,

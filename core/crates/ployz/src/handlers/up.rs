@@ -40,6 +40,7 @@ pub(crate) fn command() -> Command {
             .help("Reset the --server if it already runs Ployz, before adding it"),
     )
     .arg(crate::cli::volume_acceptance())
+    .arg(crate::cli::reviewed_version())
 }
 
 #[derive(Serialize)]
@@ -92,7 +93,7 @@ pub(super) fn up(root: &ArgMatches) -> Result<(), Error> {
         Request {
             environment: environment.clone(),
             services: Vec::new(),
-            version: None,
+            version: matches.get_one::<String>("expect-version").cloned(),
             source: Some(directory),
             accept: super::teardown::accepted(matches)?,
             message: None,

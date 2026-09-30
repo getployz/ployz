@@ -628,8 +628,26 @@ pub(super) fn accepting(
         .filter_map(|name| name.as_str().map(str::to_owned))
         .collect();
     let mut words = words.to_vec();
+    let accepted = |words: &[&str], name: &str| {
+        words
+            .windows(2)
+            .any(|pair| pair == ["--accept-volume-loss", name])
+    };
     for name in &accept {
-        words.extend(["--accept-volume-loss", name.as_str()]);
+        if !accepted(&words, name) {
+            words.extend(["--accept-volume-loss", name.as_str()]);
+        }
+    }
+    // The acceptance binds to the reviewed version.
+    let version = error
+        .details
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    if let Some(version) = &version
+        && !words.contains(&"--expect-version")
+    {
+        words.extend(["--expect-version", version.as_str()]);
     }
     let retry = next(matches, &words);
     error.message = format!("{}.\nRetry: {retry}", error.message);
@@ -860,7 +878,7 @@ mod tests {
         assert_eq!(
             error.details.get("next"),
             Some(&serde_json::json!(
-                "ployz up --accept-volume-loss data --env staging"
+                "ployz up --accept-volume-loss data --expect-version 3:1:0.1 --env staging"
             ))
         );
     }

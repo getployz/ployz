@@ -24,7 +24,16 @@ pub(super) fn shutdown(root: &ArgMatches) -> Result<(), Error> {
     let words = ["env", "shutdown", name.as_str()];
     let accept = accepted(matches)?;
     let events = deploy::open_events(matches)?;
-    let (view, ran) = take_off(matches, &store, &at, &accept, events, &words, &words)?;
+    let version = matches.get_one::<String>("expect-version").cloned();
+    let (view, ran) = take_off(
+        matches,
+        &store,
+        &at,
+        (&accept, version),
+        events,
+        &words,
+        &words,
+    )?;
     if view.deployment.status != DeploymentStatus::Applied {
         let mut again: Vec<&str> = words.to_vec();
         again.extend(
