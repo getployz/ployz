@@ -140,7 +140,8 @@ export function ApplyChangeGroupCard({
               <Separator />
               <CardContent>
                 <Table>
-                  <TableHeader>
+                  {/* On phones each row stacks its own values: no columns to head. */}
+                  <TableHeader className="max-wf-nav:hidden">
                     <TableRow>
                       <TableHead>
                         Change
