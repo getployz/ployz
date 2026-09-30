@@ -1,6 +1,5 @@
-import type { ComponentType, SVGProps } from "react";
 import type { ConfigCommand, EnvironmentRef } from "@ployz/sdk";
-import { MongoIcon, MysqlIcon, PostgresIcon, RedisIcon } from "#/components/icons/database-logos";
+import { randomText } from "./store-services";
 
 /**
  * A Database Preset: a common database set up as Railway sets it up (image, data path, start command, variables),
@@ -12,7 +11,6 @@ import { MongoIcon, MysqlIcon, PostgresIcon, RedisIcon } from "#/components/icon
 export type DatabasePreset = {
   id: "postgres" | "redis" | "mongodb" | "mysql";
   label: string;
-  icon: ComponentType<SVGProps<SVGSVGElement>>;
   image: string;
   dataPath: string;
   startCommand?: string;
@@ -23,7 +21,7 @@ const HOST = "${{ PLOYZ_PRIVATE_DOMAIN }}";
 
 export const DATABASE_PRESETS: readonly DatabasePreset[] = [
   {
-    id: "postgres", label: "PostgreSQL", icon: PostgresIcon,
+    id: "postgres", label: "PostgreSQL",
     image: "ghcr.io/railwayapp-templates/postgres-ssl:18", dataPath: "/var/lib/postgresql/data",
     env: (password) => ({
       POSTGRES_USER: "postgres", POSTGRES_PASSWORD: password, POSTGRES_DB: "ployz",
@@ -34,7 +32,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
     }),
   },
   {
-    id: "redis", label: "Redis", icon: RedisIcon, image: "redis:8.2", dataPath: "/data",
+    id: "redis", label: "Redis", image: "redis:8.2", dataPath: "/data",
     startCommand: "docker-entrypoint.sh redis-server --requirepass \"$REDIS_PASSWORD\" --save 60 1 --dir /data",
     env: (password) => ({
       REDIS_PASSWORD: password, REDISUSER: "default", REDISPASSWORD: "${{ REDIS_PASSWORD }}", REDISHOST: HOST,
@@ -42,7 +40,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
     }),
   },
   {
-    id: "mongodb", label: "MongoDB", icon: MongoIcon, image: "mongo:8.0", dataPath: "/data/db",
+    id: "mongodb", label: "MongoDB", image: "mongo:8.0", dataPath: "/data/db",
     startCommand: "docker-entrypoint.sh mongod --ipv6 --bind_ip ::,0.0.0.0 --setParameter diagnosticDataCollectionEnabled=false",
     env: (password) => ({
       MONGO_INITDB_ROOT_USERNAME: "mongo", MONGO_INITDB_ROOT_PASSWORD: password,
@@ -52,7 +50,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
     }),
   },
   {
-    id: "mysql", label: "MySQL", icon: MysqlIcon, image: "mysql:9.4", dataPath: "/var/lib/mysql",
+    id: "mysql", label: "MySQL", image: "mysql:9.4", dataPath: "/var/lib/mysql",
     startCommand: "docker-entrypoint.sh mysqld --innodb-use-native-aio=0 --disable-log-bin --performance_schema=0",
     env: (password) => ({
       MYSQL_ROOT_PASSWORD: password, MYSQL_DATABASE: "ployz",
@@ -66,16 +64,7 @@ export const DATABASE_PRESETS: readonly DatabasePreset[] = [
 const LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
 /** 32 random letters, as Railway's `secret(32, a-zA-Z)`. */
-export function randomPassword() {
-  let password = "";
-  while (password.length < 32) {
-    for (const byte of crypto.getRandomValues(new Uint8Array(32))) {
-      // 208 is the largest multiple of 52 below 256: rejecting the rest keeps every letter equally likely.
-      if (byte < 208 && password.length < 32) password += LETTERS[byte % 52];
-    }
-  }
-  return password;
-}
+export const randomPassword = () => randomText(LETTERS, 32);
 
 /**
  * One Batch that creates the preset's Service and its Volume (managed, 5 GB, like any new Volume) mounted at its data

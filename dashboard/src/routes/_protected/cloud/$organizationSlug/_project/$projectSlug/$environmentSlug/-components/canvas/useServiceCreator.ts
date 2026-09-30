@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { createServiceCommand, newServiceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
+import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
 import { databaseCommand, randomPassword, type DatabasePreset } from "#/modules/config-store/database-presets";
 import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -63,7 +63,7 @@ export function useCreateStoreDatabase(organizationSlug: string) {
     const { x, y } = target.position;
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: service, x, y });
     place({ environmentId: target.environmentId, resourceType: "volume", resourceId: volume, x, y: y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2 });
-    const name = uniqueName(preset.id, services(target.store).flatMap((listed) => [listed.name, listed.private_dns]));
+    const name = serviceName(preset.id, services(target.store));
     const command = databaseCommand(preset, { service, volume, environment: target.store, name,
       volumeName: uniqueName(`${name}-data`, volumeNames(target.store)), password: randomPassword() });
     const { isPersisted } = writer.commit(command);

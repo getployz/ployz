@@ -32,7 +32,18 @@ export const randomName = () => uniqueNamesGenerator({ dictionaries: [adjectives
  * name or Private DNS. The Store refuses a name taken meanwhile.
  */
 export function newServiceName(source: NewServiceSource, services: readonly ServiceListing[]) {
-  return uniqueName(sourceName(source) || "service", services.flatMap((service) => [service.name, service.private_dns]));
+  return serviceName(sourceName(source), services);
+}
+
+/** `wanted` as a new Service's name: a random suffix when a Service here has it as a name or Private DNS. */
+export function serviceName(wanted: string, services: readonly ServiceListing[]) {
+  return uniqueName(wanted, services.flatMap((service) => [service.name, service.private_dns]));
+}
+
+// ponytail: `byte % alphabet.length` slightly favours the first letters; fine for names and a 32-letter password.
+/** `length` random characters of `alphabet`. */
+export function randomText(alphabet: string, length: number) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(length)), (byte) => alphabet[byte % alphabet.length]).join("");
 }
 
 const SUFFIX = "abcdefghijklmnopqrstuvwxyz0123456789";
@@ -44,8 +55,7 @@ export function uniqueName(wanted: string, taken: Iterable<string>) {
   const stem = base.slice(0, MAX_NAME - 5).replace(/-+$/u, "");
   let name = base;
   while (used.has(name)) {
-    const suffix = Array.from(crypto.getRandomValues(new Uint8Array(4)), (byte) => SUFFIX[byte % SUFFIX.length]).join("");
-    name = `${stem}-${suffix}`;
+    name = `${stem}-${randomText(SUFFIX, 4)}`;
   }
   return name;
 }

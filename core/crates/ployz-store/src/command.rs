@@ -102,7 +102,8 @@ pub enum Command {
 /// Creates and edits in one transaction, in order: all apply or none do. Each create
 /// keeps its own caller-minted ID, so a retry replays it; an edit applies again. Cloud
 /// gathers no trusted evidence inside a Batch, so an edit that needs some (a repository
-/// or branch) is refused.
+/// or branch) is refused. Callers name one Environment in all its commands: the Store
+/// does not check, and the dashboard queues a Batch by its first command's Environment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct Batch {
@@ -120,16 +121,6 @@ pub enum BatchCommand {
     CreateVolume(CreateVolume),
     /// See [`Command::Edit`].
     Edit(Edit),
-}
-
-impl From<BatchCommand> for Command {
-    fn from(command: BatchCommand) -> Self {
-        match command {
-            BatchCommand::CreateService(create) => Self::CreateService(create),
-            BatchCommand::CreateVolume(create) => Self::CreateVolume(create),
-            BatchCommand::Edit(edit) => Self::Edit(edit),
-        }
-    }
 }
 
 /// What each command of a [`Batch`] did, in order.
@@ -298,7 +289,17 @@ pub(crate) fn run(
         Command::Batch(batch) => batch
             .commands
             .iter()
-            .map(|command| run(tx, who, sealing, &command.clone().into(), trusted))
+            .map(|command| match command {
+                BatchCommand::CreateService(create) => {
+                    create_service(tx, who, create).map(Written::Service)
+                }
+                BatchCommand::CreateVolume(create) => {
+                    create_volume(tx, who, create).map(Written::Volume)
+                }
+                BatchCommand::Edit(edit) => {
+                    self::edit(tx, who, sealing, edit, trusted).map(Written::Edited)
+                }
+            })
             .collect::<Result<_, _>>()
             .map(|results| Written::Batch(Batched { results })),
     }
