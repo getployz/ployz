@@ -7,7 +7,6 @@ const row = createSelectSchema(environmentCanvasNodePosition);
 /** A node's place on its Environment's canvas, as the Org Store syncs it. */
 export const canvasPositionSchema = Schema.Struct({
   id: row.fields.id,
-  organizationId: row.fields.organizationId,
   environmentId: row.fields.environmentId,
   resourceType: row.fields.resourceType,
   resourceId: row.fields.resourceId,
