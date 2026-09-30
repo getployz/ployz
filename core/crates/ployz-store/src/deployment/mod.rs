@@ -257,6 +257,10 @@ pub enum Outcome {
 pub enum RunEvidence {
     /// The Deploy Preview preparation produced, recorded before it is confirmed.
     Prepared(DeployPreview),
+    /// These runtime Services completed every planned operation while execution
+    /// still runs: each reads Deployed (or Removed) and enters Applied State now,
+    /// whatever happens to the runner later.
+    Confirmed(Vec<ServiceName>),
     /// What executing that preview did, and what deleting the Docker Volumes of the
     /// Volumes it removes did: the runner deletes them only after a successful Deploy.
     Executed {

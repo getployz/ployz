@@ -515,6 +515,36 @@ pub(crate) fn record(
             stored.run.nodes = nodes;
             finish(tx, stored, outcome, status)
         }
+        RunEvidence::Confirmed(services) => {
+            running(&stored)?;
+            if stored.run.preview.is_none() || stored.run.outcome.is_some() {
+                return Err(error::conflict(
+                    "Confirm Services between the Deploy Preview and the outcome",
+                    json!({ "deployment": id }),
+                ));
+            }
+            let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
+            for node in &stored.nodes {
+                let TargetNode::Service { id, runtime, .. } = node else {
+                    continue;
+                };
+                if !services.contains(runtime) {
+                    continue;
+                }
+                let kept = saved
+                    .services
+                    .iter()
+                    .any(|service| service.id == id.as_str());
+                let status = match kept {
+                    true => NodeStatus::Deployed,
+                    false => NodeStatus::Removed,
+                };
+                stored.run.nodes.insert(node.id().to_owned(), status);
+            }
+            advance(tx, &stored)?;
+            save(tx, &mut stored)?;
+            Ok(stored.summary)
+        }
         RunEvidence::Built(receipts) => {
             running(&stored)?;
             for (service, receipt) in &receipts {
@@ -773,6 +803,21 @@ pub(super) fn finish(
         }
         None => running(&stored)?,
     }
+    advance(tx, &stored)?;
+    // A cancelled Deployment that stopped short reads cancelled, not failed.
+    stored.summary.status = match (stored.summary.status, status) {
+        (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
+        _ => status,
+    };
+    stored.summary.ended_at = Some(now());
+    stored.run.outcome = Some(outcome);
+    save(tx, &mut stored)?;
+    Ok(stored.summary)
+}
+
+/// Put each node `stored` confirmed (Deployed or Removed) into Applied State as
+/// its Saved revision has it. Applying one again changes nothing.
+fn advance(tx: &mut dyn Tx, stored: &Stored) -> Result<(), RpcError> {
     let advanced: Vec<&TargetNode> = stored
         .nodes
         .iter()
@@ -824,13 +869,5 @@ pub(super) fn finish(
             };
         }
     }
-    // A cancelled Deployment that stopped short reads cancelled, not failed.
-    stored.summary.status = match (stored.summary.status, status) {
-        (DeploymentStatus::Cancelling, DeploymentStatus::Failed) => DeploymentStatus::Cancelled,
-        _ => status,
-    };
-    stored.summary.ended_at = Some(now());
-    stored.run.outcome = Some(outcome);
-    save(tx, &mut stored)?;
-    Ok(stored.summary)
+    Ok(())
 }

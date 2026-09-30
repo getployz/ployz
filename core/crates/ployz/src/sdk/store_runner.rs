@@ -243,7 +243,9 @@ impl Run {
             Ok(running) => running,
             Err(error) => return self.not_executed(error.message).await,
         };
-        let outcome = self.renewing(running.finished(), || running.abort()).await;
+        let outcome = self
+            .renewing(self.executing(&running), || running.abort())
+            .await;
         match outcome {
             Ok(outcome) => {
                 let removed = if matches!(outcome, DeployOutcome::Success { .. }) {
@@ -445,6 +447,45 @@ impl Run {
 
     /// Await `work` while renewing this runner's lease on the Deployment; a cancel
     /// calls `abort`.
+    /// Wait for `running`'s outcome, recording each Service once every one of its
+    /// planned operations completed: a replaced Service reads Deployed at once, and
+    /// stays so if this runner is lost before the outcome.
+    async fn executing(
+        &self,
+        running: &super::RunningDeploy,
+    ) -> Result<DeployOutcome<ployz_core::ExecutionError>, RpcError> {
+        let mut confirmed = std::collections::BTreeSet::new();
+        while let Some(event) = running.next().await {
+            let ployz_core::DeployEvent::Progress { rows, .. } = event else {
+                continue;
+            };
+            let mut done: BTreeMap<&ServiceName, bool> = BTreeMap::new();
+            for row in &rows {
+                if let Some(service) = &row.service_name {
+                    *done.entry(service).or_insert(true) &=
+                        matches!(row.status, ployz_core::OperationStatus::Completed);
+                }
+            }
+            let new: Vec<ServiceName> = done
+                .into_iter()
+                .filter(|(service, done)| *done && !confirmed.contains(*service))
+                .map(|(service, _)| service.clone())
+                .collect();
+            if new.is_empty() {
+                continue;
+            }
+            // ponytail: a refused record leaves these to the outcome, which confirms them too.
+            if self
+                .record(RunEvidence::Confirmed(new.clone()))
+                .await
+                .is_ok()
+            {
+                confirmed.extend(new);
+            }
+        }
+        running.finished().await
+    }
+
     async fn renewing<T>(&self, work: impl std::future::Future<Output = T>, abort: impl Fn()) -> T {
         tokio::pin!(work);
         let mut poll = tokio::time::interval(CANCEL_POLL);
