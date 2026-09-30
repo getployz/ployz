@@ -42,8 +42,7 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
   const view = requireView(useStoreView(organizationSlug, BUILD_ORDER_QUERY));
   const writer = useStoreWriter(organizationSlug);
   // Shown at once; the refetch after the write confirms it, and a refusal (toasted) puts the saved one back.
-  const [picked, setPicked] = useState<BuildOrder | null>(null);
-  const buildOrder = picked ?? view.build_order ?? "github-then-servers";
+  const buildOrder = view.build_order ?? "github-then-servers";
   return (
     <section aria-labelledby="build-order-heading">
       <ItemGroup>
@@ -57,8 +56,8 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
         <Select value={buildOrder} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
           if (!order) return;
-          setPicked(order);
-          void writer.commit({ command: "set_build_order", build_order: order }).isPersisted.promise.catch(() => setPicked(null));
+          // Shown at once; a refusal toasts and the saved order shows again.
+          writer.commit({ command: "set_build_order", build_order: order });
         }}>
           <SelectTrigger aria-label="Where builds run" className="w-full sm:w-72">
             <SelectValue>{BUILD_ORDER_LABELS[buildOrder]}</SelectValue>

@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
-import type { DiffView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
+import type { DeploymentView, DiffView, DomainsView, EnvironmentView, ServiceId, ServicesView } from "@ployz/sdk";
+import { asTestDouble } from "#/lib/test-double";
 import { expect, it } from "vitest";
 import { applyOptimistic } from "./store-optimistic";
 import { diffQuery, environmentSettingsQuery, servicesQuery, storeViewOptions } from "./store-view.queries";
@@ -36,26 +37,51 @@ function cached() {
   return { queryClient, read };
 }
 
-it("shows a discarded Setting back at its deployed value, gone from the review", () => {
+it("shows a discarded Setting back at its deployed value, gone from the review", async () => {
   const { queryClient, read } = cached();
-  applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "web.replicas", version: null });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: "web.replicas", version: null });
   expect(read<DiffView>(diffQuery(ref))?.changes[0]?.settings.map((row) => row.path)).toEqual(["web.startCommand"]);
   expect(read<DiffView>(diffQuery(ref))?.total_count).toBe(2);
   expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.settings.map((row) => row.value)).toEqual([1, "serve"]);
 });
 
-it("drops a discarded new Service, and a whole discard empties the review", () => {
+it("drops a discarded new Service, and a whole discard empties the review", async () => {
   const { queryClient, read } = cached();
-  applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: null, version: null });
+  await applyOptimistic(queryClient, "acme", { command: "discard", environment: ref, path: null, version: null });
   expect(read<DiffView>(diffQuery(ref))).toMatchObject({ changes: [], total_count: 0 });
   expect(read<ServicesView>(servicesQuery(ref))?.services).toEqual([{ id: "w", name: "web", private_dns: "web", source: "image", change: null }]);
 });
 
-it("renames a Service everywhere its name keys a view, and marks a removed one", () => {
+it("renames a Service everywhere its name keys a view, and marks a removed one", async () => {
   const { queryClient, read } = cached();
-  applyOptimistic(queryClient, "acme", { command: "rename_service", environment: ref, service: "web", name: "site" });
+  await applyOptimistic(queryClient, "acme", { command: "rename_service", environment: ref, service: "web", name: "site" });
   expect(read<EnvironmentView>(environmentSettingsQuery(ref))?.settings.map((row) => row.path)).toEqual(["site.replicas", "site.startCommand"]);
-  applyOptimistic(queryClient, "acme", { command: "remove_service", environment: ref, service: "site" });
-  applyOptimistic(queryClient, "acme", { command: "remove_service", environment: ref, service: "cache" });
+  await applyOptimistic(queryClient, "acme", { command: "remove_service", environment: ref, service: "site" });
+  await applyOptimistic(queryClient, "acme", { command: "remove_service", environment: ref, service: "cache" });
   expect(read<ServicesView>(servicesQuery(ref))?.services).toMatchObject([{ name: "site", change: "delete" }]);
+});
+
+it("guesses a generated domain from the Service's Private DNS, which a rename keeps", async () => {
+  const { queryClient, read } = cached();
+  const domains = { query: "domains", environment: ref, service: null } as const;
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, domains).queryKey, { ok: true, value: { environment, domains: [] } });
+  await applyOptimistic(queryClient, "acme", { command: "rename_service", environment: ref, service: "web", name: "site" });
+  await applyOptimistic(queryClient, "acme", { command: "add_domain", environment: ref, service: "site", hostname: null, port: null });
+  expect(read<DomainsView>(domains)?.domains).toMatchObject([{ kind: "generated", prefix: "web", service: "site" }]);
+});
+
+it("cancels a queued Deployment at once, and shows a running one cancelling", async () => {
+  const queryClient = new QueryClient();
+  const scope = { queryClient, sessionId: "s", userId: "u" };
+  const view = (id: string, status: DeploymentView["status"]) => {
+    const query = { query: "deployment", id } as const;
+    queryClient.setQueryData<unknown>(storeViewOptions("acme", scope, query).queryKey, { ok: true, value: asTestDouble<DeploymentView>()({ id, status }) });
+    return () => queryClient.getQueryData<{ value: DeploymentView }>(storeViewOptions("acme", scope, query).queryKey)?.value.status;
+  };
+  const queued = view("q", "queued");
+  const running = view("r", "running");
+  await applyOptimistic(queryClient, "acme", { command: "cancel", deployment: "q" });
+  await applyOptimistic(queryClient, "acme", { command: "cancel", deployment: "r" });
+  expect([queued(), running()]).toEqual(["cancelled", "cancelling"]);
 });

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link, useLoaderData, useNavigate, useParams } from "@tanstack/react-router";
 import type { PrPlan } from "@ployz/sdk";
 import { ChevronRightIcon, GitPullRequestIcon, TriangleAlertIcon } from "lucide-react";
@@ -44,27 +44,16 @@ export function StorePrPlanPanel({ repositoryId }: { repositoryId: number }) {
   return <Plan params={params} saved={saved} prEnvironments={prEnvironments} />;
 }
 
-/** The plan with this tab's unsaved changes over it; a refused change drops out, which is the rollback. */
+/** The plan, and its writer: a change shows in the cached plan at once; a refusal refetches it, which is the rollback. */
 function usePlanWrite(organizationSlug: string, project: string, saved: PrPlan) {
   const writer = useStoreWriter(organizationSlug);
-  const [pending, setPending] = useState<PlanChange>({});
-  const plan: PrPlan = { ...saved, ...pending };
   function set(change: PlanChange) {
-    setPending((current) => ({ ...current, ...change }));
-    const written = writer.commit({
+    return writer.commit({
       command: "set_pr_plan", project, repository: saved.repository, enabled: null, start_from: null, copy: null, setup: null,
       remove_on_close: null, include_bots: null, ...change,
     }).isPersisted.promise;
-    // Once the Store answered (and its views refetched), the saved plan shows, unless a newer change is pending.
-    void written.catch(() => undefined).finally(() => setPending((current) => {
-      const next = { ...current };
-      // SAFETY: `change` is a PlanChange, so its own keys are PlanChange's.
-      for (const key of Object.keys(change) as Array<keyof PlanChange>) if (next[key] === change[key]) delete next[key];
-      return next;
-    }));
-    return written;
   }
-  return { plan, set };
+  return { plan: saved, set };
 }
 
 function Plan({ params, saved, prEnvironments }: { params: Params; saved: PrPlan; prEnvironments: ReadonlySet<string> }) {
@@ -189,13 +178,12 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
   const plans = useCachedStoreView(params.organizationSlug, prPlan ? prPlansQuery(params.projectSlug) : null);
   const settings = useCachedStoreView(params.organizationSlug, prPlan ? environmentSettingsQuery(store) : null);
   const saved = plans?.ok ? plans.value.plans.find((row) => row.repository_id === prPlan?.repositoryId) : undefined;
-  const [copy, setCopy] = useState<string[] | null>(null);
   const active = saved?.enabled && saved.start_from === params.environmentSlug ? saved : null;
   const focus = active && settings?.ok ? settings.value.settings.flatMap((row) => {
     const [service, setting] = row.path.split(".");
     return setting === "repository" && row.value === active.repository && service ? [service] : [];
   }) : [];
-  const picks = copy ?? active?.copy ?? [];
+  const picks = active?.copy ?? [];
   const result = useBranchPlan(params.organizationSlug, active ? branchPlanQuery(store, focus, { copy: [...focus, ...picks] }) : null);
   const view = result?.ok ? result.value : null;
   if (!active || !view) return null;
@@ -211,12 +199,11 @@ function useStorePrPicking(prPlan: { repositoryId: number } | null): PickingView
     setPreset: () => undefined,
     toggle: (name) => {
       const next = own.includes(name) ? own.filter((other) => other !== name) : [...own, name];
-      setCopy(next);
-      // Saved at once; a refusal toasts and the saved copies show again.
-      void writer.commit({
+      // Shown at once; a refusal toasts and the saved copies show again.
+      writer.commit({
         command: "set_pr_plan", project: params.projectSlug, repository: active.repository, enabled: null, start_from: null,
         copy: next, setup: null, remove_on_close: null, include_bots: null,
-      }).isPersisted.promise.catch(() => undefined).finally(() => setCopy((current) => current === next ? null : current));
+      });
     },
   };
 }
