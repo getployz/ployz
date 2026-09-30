@@ -1367,6 +1367,7 @@ async fn cloud_runner_builds_nothing_on_servers_the_build_order_leaves_out() {
     let Some(Outcome::NotExecuted { reason, .. }) = store
         .read(&who, &ployz_store::DeploymentQuery { id: id.clone() })
         .unwrap()
+        .deployment
         .outcome
     else {
         panic!("nothing ran")

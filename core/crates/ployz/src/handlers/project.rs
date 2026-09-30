@@ -202,10 +202,17 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
     };
     crate::output::finish(&removal, || {
         for deployment in ran {
-            say!(
-                "Took an Environment off the Servers (Deployment #{}).",
-                deployment.number
-            );
+            if super::teardown::left_on_old_servers(deployment) {
+                say!(
+                    "Left an Environment on old servers: no Server was left to take it off (Deployment #{}).",
+                    deployment.number
+                );
+            } else {
+                say!(
+                    "Took an Environment off the Servers (Deployment #{}).",
+                    deployment.number
+                );
+            }
         }
         say!(
             "Removed Project {} and its Environments ({}).",

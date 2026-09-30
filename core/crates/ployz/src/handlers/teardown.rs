@@ -132,6 +132,12 @@ where
     }
 }
 
+/// Whether removal Deployment `deployment` found no Server left to take it off, so
+/// whatever ran is still on the Servers that ran it: "Left on old servers".
+pub(super) fn left_on_old_servers(deployment: &DeploymentSummary) -> bool {
+    matches!(deployment.outcome, Some(ployz_store::Outcome::Forgotten))
+}
+
 /// Take Environment `at` off the Servers: admit a removal Deployment under the
 /// destructive review, accepting the loss of `accept` as reviewed at `version`, then run or follow it as
 /// `deploy` does. A volume-loss refusal names this command again, accepting.
