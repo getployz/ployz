@@ -6,8 +6,14 @@ use ployz_core::{
 
 use super::super::runtime;
 use super::{ConnectionOptions, target};
-use crate::handlers::{Error, data_loss::VolumeEffect, leaf_matches};
-use ployz_core::EnvironmentValues;
+use crate::cluster::refuse_last_managed;
+use crate::handlers::{
+    Error,
+    data_loss::{VolumeEffect, VolumeLabels, volume_label},
+    leaf_matches, store,
+};
+use ployz_core::{EnvironmentValues, ObservedDataLoss};
+use ployz_store::{EnvironmentRef, NamespacesQuery, VolumesQuery, docker_volume};
 use serde_json::json;
 
 use crate::output::{self, say};
@@ -17,7 +23,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
-    runtime()?.block_on(async {
+    let runtime = runtime()?;
+    let (mut client, selected, observed, services, replicated_services) = runtime.block_on(async {
         let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
@@ -31,6 +38,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
                 "the current entry Server cannot be removed while another Server is visible",
             ));
         }
+        // Before anything is listed or confirmed: a removal that can't happen asks nothing.
+        refuse_last_managed(&client, &machines, selected.id).await?;
         let observed = if no_reset {
             ployz_core::ObservedDataLoss { data_loss: Vec::new() }
         } else {
@@ -48,14 +57,32 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        for line in service_warnings(&selected.name, &services) {
-            eprintln!("{line}");
-        }
-        typed_confirmation(root, &client, &selected, &observed, &services)?;
-        let Some(confirmation) = super::super::data_loss::confirm_removal(
-            root, &client, &observed, &format!("Remove Server ({})", selected.id),
-            &[selected.name.to_string()], if no_reset { VolumeEffect::Preserve } else { VolumeEffect::LoseAccess },
-        )? else { return Ok(()); };
+        Ok::<_, Error>((client, selected, observed, services, replicated_services))
+    })?;
+    for line in service_warnings(&selected.name, &services) {
+        eprintln!("{line}");
+    }
+    // The Store reads block on their own runtime, so they run between the two.
+    let labels = volume_labels(root, &observed);
+    typed_confirmation(root, &client, &selected, &observed, &services, &labels)?;
+    let Some(confirmation) = super::super::data_loss::confirm_removal(
+        root,
+        &client,
+        &observed,
+        &format!("Remove Server ({})", selected.id),
+        &[selected.name.to_string()],
+        if no_reset {
+            VolumeEffect::Preserve
+        } else {
+            VolumeEffect::LoseAccess
+        },
+        &labels,
+    )?
+    else {
+        return Ok(());
+    };
+    let selected_target = MachineTarget::from(&selected.id);
+    runtime.block_on(async {
         let mut reset_failure = None;
 
         // TODO: do not reroute away from the current entry before removal.
@@ -111,14 +138,54 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
+/// Each observed Docker Volume that keeps a Volume's data, by that Volume's name, so
+/// the list and `--accept-volume-loss` speak Volume names. Best effort: without a
+/// reachable Store, or for a Docker Volume no Environment owns, the Docker name stays.
+fn volume_labels(root: &ArgMatches, observed: &ObservedDataLoss) -> VolumeLabels {
+    let mut labels = VolumeLabels::new();
+    if observed.data_loss.is_empty() {
+        return labels;
+    }
+    let Ok(Some(store)) = store::reachable(root) else {
+        return labels;
+    };
+    let Ok(owned) = store.try_read(&NamespacesQuery {}) else {
+        return labels;
+    };
+    for owned in owned.namespaces {
+        let prefix = format!("{}_", owned.namespace);
+        if !observed
+            .data_loss
+            .iter()
+            .any(|loss| loss.name().starts_with(&prefix))
+        {
+            continue;
+        }
+        let environment = EnvironmentRef {
+            project: Some(owned.project),
+            environment: Some(owned.environment),
+        };
+        let Ok(view) = store.try_read(&VolumesQuery { environment }) else {
+            continue;
+        };
+        for listing in view.volumes {
+            if let Ok(docker) = docker_volume(&owned.namespace, listing.volume.id.as_str()) {
+                labels.insert(docker.to_string(), listing.volume.name.to_string());
+            }
+        }
+    }
+    labels
+}
+
 /// `--confirm` must name the Server exactly. Without it, fail with `confirmation_required`,
 /// naming what goes and the one command that removes it.
 fn typed_confirmation(
     root: &ArgMatches,
     client: &crate::connect::Client,
     selected: &Machine,
-    observed: &ployz_core::ObservedDataLoss,
+    observed: &ObservedDataLoss,
     services: &[QualifiedService],
+    labels: &VolumeLabels,
 ) -> Result<(), Error> {
     match leaf_matches(root).get_one::<String>("confirm") {
         Some(typed) if typed == selected.name.as_str() => Ok(()),
@@ -130,7 +197,10 @@ fn typed_confirmation(
         None => {
             let mut retry = super::super::data_loss::retry_args(root, client.connection_source());
             retry.extend(["--confirm".into(), selected.name.to_string()]);
-            let volumes = observed.data_loss.iter().map(|loss| loss.name());
+            let volumes = observed
+                .data_loss
+                .iter()
+                .map(|loss| volume_label(labels, loss));
             for name in volumes.collect::<std::collections::BTreeSet<_>>() {
                 retry.extend(["--accept-volume-loss".into(), name.to_owned()]);
             }

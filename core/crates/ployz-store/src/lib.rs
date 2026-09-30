@@ -67,7 +67,7 @@ pub use pull_request::{
     PrPlansView, PullRequest, PullRequestQuery, PullRequestRef, PullRequestView, SetPrPlan, Sweep,
 };
 pub use query::*;
-pub use removal::{RemovedVolume, VolumeLoss};
+pub use removal::{RemovedVolume, VolumeLoss, docker_volume};
 pub use review::{DataEffect, DiffView, NodeChange};
 pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
