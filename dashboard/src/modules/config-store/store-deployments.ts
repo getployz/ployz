@@ -44,8 +44,7 @@ function untitledLabel(nodeType: NodeChange["type"], setting: string) {
 
 /**
  * The Store's review as the bottom bar's Details groups it: one group per changed node, one row per changed Setting.
- * Rows discard by their Store path (`web.replicas`), a Service by its name. The Store can't discard a Volume node,
- * so only Services' changes offer Discard.
+ * Rows discard by their Store path (`web.replicas`), a Service by its name, a Volume by `volumes.VOLUME`.
  */
 export function changeGroups(diff: DiffView, services: readonly ServiceListing[]): ChangeGroup[] {
   return diff.changes.map((node) => ({
@@ -68,7 +67,7 @@ export function changeGroups(diff: DiffView, services: readonly ServiceListing[]
         label: setting === "name" ? "Name" : title ?? untitledLabel(node.type, setting),
         currentValue: shownValue(row.before),
         newValue: shownValue(row.after),
-        // A Setting, variable or mount discards alone; a domain or a rename goes with its node.
+        // A Setting, variable or mount discards alone; a domain, a rename or a Volume's own row goes with its node.
         canDiscard: node.type === "service" && (row.canRestore && title !== undefined || /^(env|mounts)\./u.test(setting)),
       };
     }),
