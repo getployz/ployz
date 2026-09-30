@@ -2171,7 +2171,13 @@ version?: string | null,
 /**
  * As [`Deploy::accept_volume_loss`].
  */
-accept_volume_loss?: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>,
+/**
+ * Close a Branch: once this removal applied, the Store's sweep deletes it
+ * without its admitter coming back. Ignored for an Environment that isn't a
+ * Branch; a client that deletes it itself leaves it unset.
+ */
+close?: boolean, };
 
 export type RemovalsQuery = {
 /**

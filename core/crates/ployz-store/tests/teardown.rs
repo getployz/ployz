@@ -16,8 +16,8 @@ use ployz_store::{
     CreateService, CreateVolume, Deploy, DeploymentId, DeploymentStatus, EnvironmentId,
     EnvironmentName, EnvironmentRef, EnvironmentRemoved, EnvironmentsQuery, Mount, OrganizationId,
     ProjectId, ProjectName, Removal, RemovalsQuery, RemoveEnvironment, RemoveProject, Retry,
-    RunEvidence, RunnerId, ServiceLineageId, SetDefaultEnvironment, Teardown, Trusted, VolumeId,
-    VolumeName, VolumeObservation,
+    RunEvidence, RunnerId, ServiceLineageId, SetDefaultEnvironment, Sweep, SystemEvent, Teardown,
+    Trusted, VolumeId, VolumeName, VolumeObservation,
 };
 use serde_json::json;
 
@@ -119,6 +119,7 @@ fn admit(
             environment: at(environment),
             version,
             accept_volume_loss: accept_volume_loss.clone(),
+            close: false,
         }),
         false => Admit::Deploy(Deploy {
             id: id(n),
@@ -696,4 +697,58 @@ fn an_undeployed_project_goes_at_once_and_a_default_branch_comes_off_before_its_
         removed(remove_shop(&store, &who)),
         ["staging", "next", "production"]
     );
+}
+
+#[test]
+fn a_closed_branch_goes_on_its_own_once_its_removal_applied() {
+    let (store, who) = shop();
+    deploy(&store, &who, "production", 1, &["web", "db"]);
+    store
+        .write(
+            &who,
+            &CreateBranch {
+                id: EnvironmentId::parse(uuid(7)).unwrap(),
+                from: at("production"),
+                name: EnvironmentName::parse("fix").unwrap(),
+                copy: vec![node("web")],
+                live: Vec::new(),
+                setup: Vec::new(),
+                keep: false,
+                fix: None,
+            },
+        )
+        .unwrap();
+    deploy(&store, &who, "fix", 2, &["web"]);
+    store
+        .write(
+            &who,
+            &Admit::Remove(Removal {
+                id: id(3),
+                environment: at("fix"),
+                version: None,
+                accept_volume_loss: Vec::new(),
+                close: true,
+            }),
+        )
+        .unwrap();
+    let sweep = || {
+        store
+            .system(
+                &who.organization,
+                &SystemEvent::Sweep(Sweep { now: 0 }),
+                &Trusted::default(),
+            )
+            .unwrap();
+    };
+    // Not while its removal may still run.
+    sweep();
+    assert_eq!(
+        listed(&store, &who),
+        ["fix<production", "production*", "staging"]
+    );
+    prepare(&store, 3, &["web"]);
+    succeed(&store, 3, &["web"], Vec::new());
+    // Nobody comes back to delete it: the sweep does.
+    sweep();
+    assert_eq!(listed(&store, &who), ["production*", "staging"]);
 }

@@ -42,6 +42,14 @@ it("waits on a Deployment that hasn't ended rather than admitting another", asyn
   expect(sent).toHaveLength(1);
 });
 
+it("closes one Environment it takes off the Servers, and a Branch the Store already deleted is done", async () => {
+  const { sent, commit } = store({ ...onServers("needs_removal"), written: "environment_removed" } as ConfigWritten, admitted, refused("not_found", null));
+  const target = { project: "shop", environment: "staging" };
+  await teardownStep(commit, target, {});
+  expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", close: true });
+  expect(await teardownStep(commit, target, {})).toEqual({ done: true });
+});
+
 it("passes any refusal on", async () => {
   const { commit } = store(refused("conflict", { next: "ployz env default staging" }));
   await expect(teardownStep(commit, { project: "shop", environment: "production" }, {})).rejects.toThrow("conflict");

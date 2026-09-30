@@ -65,7 +65,9 @@ export function StoreTeardownSection({ organizationSlug, target, environments, n
 
   // The removal this tab waits on applied: carry on with what its user confirmed.
   const awaited = run ? environments.find((row) => row.name === run.waiting.environment)?.removal : undefined;
-  const applied = run !== null && awaited?.id === run.waiting.deployment && awaited.status === "applied";
+  // A closed Branch leaves the list on its own once its removal applied.
+  const gone = run !== null && !environments.some((row) => row.name === run.waiting.environment);
+  const applied = run !== null && (gone || (awaited?.id === run.waiting.deployment && awaited.status === "applied"));
   useEffect(() => {
     if (!applied || !run) return;
     advance(run.accepted).catch((error: Error) => {
