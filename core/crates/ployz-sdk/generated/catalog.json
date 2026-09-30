@@ -448,7 +448,7 @@
           ],
           "title": "Template",
           "type": "object",
-          "x-ployz-apply": "staged",
+          "x-ployz-apply": "immediate",
           "x-ployz-data-loss": false,
           "x-ployz-secret": false
         },

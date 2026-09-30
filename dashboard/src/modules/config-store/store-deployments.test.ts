@@ -125,12 +125,12 @@ it("words a node's outcome as the glossary does once it has one, and a pending o
 });
 
 it("words a Deployment that takes its Environment off the Servers as the Branch panel does, and ships nothing", () => {
-  expect(deploymentStatusLabel({ status: "running", remove: true })).toBe("Coming off the servers");
-  expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Off the servers");
-  expect(deploymentStatusLabel({ status: "failed", remove: true })).toBe("Failed");
-  expect(deploymentStatusLabel({ status: "applied", remove: false })).toBe("Deployed");
+  expect(deploymentStatusLabel({ status: "running", remove: true, outcome: null })).toBe("Coming off the servers");
+  expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: null })).toBe("Off the servers");
+  expect(deploymentStatusLabel({ status: "failed", remove: true, outcome: null })).toBe("Failed");
+  expect(deploymentStatusLabel({ status: "applied", remove: false, outcome: null })).toBe("Deployed");
   // No Server was left to take it off: it says so, and why.
-  expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Removed from Ployz");
+  expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Left on old servers");
   expect(outcomeReason({ type: "forgotten" })).toContain("still there");
   expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
   expect(deploysLabel({ services: [], remove: true })).toBeNull();
