@@ -255,6 +255,17 @@ impl ConfigStore {
         self.run(move |store| store.remove_organization(&who)).await
     }
 
+    /// The Volumes a Deploy put on the Organization's Servers (`AppliedVolume[]`):
+    /// what Forget Servers lists before the user confirms.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    #[napi]
+    pub async fn applied_volumes(&self, organization: String) -> Result<serde_json::Value> {
+        let who = actor(organization, None)?;
+        self.run(move |store| store.applied_volumes(&who)).await
+    }
+
     /// Every queued Deployment no runner claimed, admitted before `before` (Unix
     /// seconds), across Organizations (`Unclaimed[]`): what Cloud's sweep dispatches
     /// again.

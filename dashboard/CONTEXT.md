@@ -64,6 +64,10 @@ _Avoid_: Machine ID, WireGuard key, online Server
 An operator-confirmed abandonment of a pending Founding Claim after endpoint access has been revoked. An absent Connection Candidate, failed connection, or timeout is not evidence permitting reset.
 _Avoid_: Automatic reclaim, founder failover, token reset
 
+**Forget Servers**:
+An owner's or admin's explicit statement, in the dashboard or with `ployz server forget`, that the Organization's Servers were deleted, after which Cloud forgets its Cluster: the Config Store first cancels what might still run and lets go of Applied State, Namespaces and fixed Volume storage, then Cloud drops the Cloud Pairing (a stuck removal too), Connection Candidates, allocations, enrollment tokens and Server removals. Authored configuration, Deployment history and the Cluster Domain stay; the next Server founds a new Cluster. The user's statement is the authority: Cloud tries every Server first and refuses while any answers or a fresh Founding Claim may still complete, so a failed connection only permits it, never triggers it, and Cloud never forgets on its own.
+_Avoid_: Cluster reset, automatic cleanup, removing a dead Server
+
 **Waiting Cloud Bootstrap Redemption**:
 A Cloud Bootstrap Redemption approved while an Organization Cluster has an active Founding Claim but no Cloud Connection. It has its own post-approval expiry separate from Cloud Bootstrap Session expiry, waits for the founder to establish a Cloud Connection, be abandoned, or for the waiting redemption to expire, and does not preissue runtime join authority, perform local machine mutation, or become founder automatically. Once expired, it is terminal and cannot later receive join material.
 _Avoid_: Founder candidate, standby founder, pending machine join

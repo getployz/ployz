@@ -3,8 +3,11 @@ import { createHash } from "node:crypto";
 import type { MachineId } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
+import { storeSystem } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import { enrollmentAllocation, machineEnrollmentToken, organizationMachine, serverAccess } from "#/modules/machines/tables";
+import {
+  enrollmentAllocation, machineEnrollmentToken, machineRemoveAttempt, organizationMachine, serverAccess,
+} from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
@@ -162,6 +165,59 @@ export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
     }));
   },
 );
+
+/** What Forget Servers saw when it tried the Servers: the pairing's generation (none unpaired) and its Servers' rows. */
+type ClusterSeen = { readonly generation: string | null; readonly servers: readonly string[] };
+
+/** The Organization's pairing and what Forget Servers compares of it: its generation (none unpaired) and sorted Server rows. */
+const cluster = Effect.fn("PairingRemoval.cluster")(function* (organizationId: string, pairing: Pairing | undefined) {
+  const { drizzle } = yield* Database;
+  const rows = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
+    .where(eq(organizationMachine.organizationId, organizationId));
+  const generation = pairing ? createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex") : null;
+  return { pairing, seen: { generation, servers: rows.map((row) => row.machineId).sort() } satisfies ClusterSeen };
+});
+
+/** The Organization's Cluster as Forget Servers sees it before trying the Servers. */
+export const seeCluster = Effect.fn("PairingRemoval.seeCluster")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select().from(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+  return yield* cluster(organizationId, pairing);
+});
+
+/** As `seeCluster`, holding the pairing row's lock for the caller's transaction. */
+const lockCluster = Effect.fn("PairingRemoval.lockCluster")(function* (organizationId: string) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select().from(organizationPairing)
+    .where(eq(organizationPairing.organizationId, organizationId)).for("update");
+  return yield* cluster(organizationId, pairing);
+});
+
+/**
+ * Forget Servers: a user said the Organization's Servers were deleted and Cloud reached none of those it saw (`seen`), so
+ * every key Cloud held there went with them and there is nothing to Clear. Under the pairing's lock, a pairing or Server
+ * that changed since refuses; otherwise the Store lets go of what ran (`cluster_forgotten`) first, so no new Cluster is
+ * founded before it has; then every row of Cloud's hold on the Cluster goes: the pairing (a stuck removal too), its Servers
+ * (device keys cascade), allocations, enrollment tokens and the Server removals it was attempting. The Store commits `cluster_forgotten` on its own and it is idempotent, so if the Cloud-row
+ * transaction then fails, running Forget Servers again finishes it.
+ */
+export const forgetCluster = Effect.fn("PairingRemoval.forgetCluster")(function* (organizationId: string, seen: ClusterSeen) {
+  const database = yield* Database;
+  return yield* database.transaction(Effect.gen(function* () {
+    const now = yield* lockCluster(organizationId);
+    if (now.seen.generation !== seen.generation || now.seen.servers.join() !== seen.servers.join()) {
+      return { kind: "changed" as const };
+    }
+    const written = yield* storeSystem(organizationId, { event: "cluster_forgotten" });
+    const { drizzle } = yield* Database;
+    yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+    yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+    yield* drizzle.delete(enrollmentAllocation).where(eq(enrollmentAllocation.organizationId, organizationId));
+    yield* drizzle.delete(machineRemoveAttempt).where(eq(machineRemoveAttempt.organizationId, organizationId));
+    yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+    return { kind: "forgotten" as const, cancelled: written.written === "automated" ? written.cancelled : [] };
+  }));
+});
 
 const loadCurrentAttempt = Effect.fn("PairingRemoval.loadCurrent")(
   function* (attempt: RemovalAttempt) {

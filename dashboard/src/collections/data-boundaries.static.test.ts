@@ -54,6 +54,7 @@ const COMMAND_READ_FILES = {
   "components/service-source-selector.tsx": "resolve a pasted public repository before connecting it",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "gather data-loss evidence, then wait for the confirmed removal",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/stray-namespaces.tsx": "gather a Namespace's data-loss evidence before the user confirms its removal",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "try every Server and list what goes before the user confirms forgetting them",
 };
 
 const NETWORK = /\bfetch\(|new EventSource\(/;
@@ -86,6 +87,7 @@ const COMMAND_FILES = {
   "modules/billing/use-embedded-checkout.ts": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/CustomDomainUpsellSheet.tsx": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
+  "routes/_protected/cloud/$organizationSlug/_org/-components/forget-servers-dialog.tsx": "forgetting the Servers is destructive: it tries every Server again and forgets only when none answers",
   "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/store-settings.tsx": "renaming a Project changes its URLs: the page opens the new one once the Store has it",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
