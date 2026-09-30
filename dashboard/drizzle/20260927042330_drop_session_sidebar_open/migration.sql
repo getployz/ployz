@@ -1,1 +1,0 @@
-ALTER TABLE "session" DROP COLUMN "sidebar_open";
