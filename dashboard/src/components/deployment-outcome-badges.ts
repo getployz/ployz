@@ -1,9 +1,14 @@
-import type { NodeLight } from "#/modules/config-store/store-deployments";
+import type { DeploymentLight, NodeLight } from "#/modules/config-store/store-deployments";
 
 /** The Badge variant per outcome. Cards take the colour only for failed and in-flight nodes; a deployed node stays quiet. */
 export const outcomeBadges = {
   deployed: "success", failed: "destructive", unknown: "warning", not_applied: "secondary", queued: "secondary", deploying: "info",
 } as const satisfies Record<NodeLight, "success" | "secondary" | "destructive" | "warning" | "info">;
+
+/** The Badge variant per Deployment status, as its icon reads it. */
+export const deploymentBadges = {
+  deployed: "success", failed: "destructive", unknown: "warning", cancelled: "secondary", queued: "secondary", deploying: "info",
+} as const satisfies Record<DeploymentLight, (typeof outcomeBadges)[NodeLight]>;
 
 /** A card's state for its outcome: only failed, unknown and in-flight nodes take a colour. */
 export const outcomeCardState = (outcome: NodeLight) => {

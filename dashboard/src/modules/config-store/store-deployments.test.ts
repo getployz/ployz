@@ -1,7 +1,7 @@
 import type { DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import { changeGroups, deploymentActions, nodeLight, previewLines, uploadLabel } from "./store-deployments";
+import { changeGroups, deploymentActions, formatDuration, nodeLight, uploadLabel } from "./store-deployments";
 
 // The grouping reads only the changes and each Service's id and source.
 const diff = asTestDouble<DiffView>()({
@@ -56,15 +56,6 @@ it("names an upload's provenance", () => {
   expect(uploadLabel({ digest: "d", base: null })).toBe("Uploaded");
 });
 
-it("summarizes a recorded Deploy Preview, and nothing before one", () => {
-  expect(previewLines(null)).toBeNull();
-  expect(previewLines({
-    namespace: "shop-production", storage: [], preserved_volumes: [], prune_refusal: null,
-    operations: [{ index: 0, service_name: "web", status: { type: "pending" } }, { index: 1, service_name: "web", status: { type: "pending" } },
-      { index: 2, service_name: null, status: { type: "pending" } }],
-    volumes_to_create: [{}], would_remove: [{}],
-    warnings: [{ type: "ingress_hostname", message: "shop.example.com points elsewhere" }, { type: "unbudgeted_disk_usage" }],
-  })).toEqual([
-    "web: 2 operations · Environment: 1 operation", "Creates 1 volume", "Removes 1 service", "shop.example.com points elsewhere", "unbudgeted disk usage",
-  ]);
+it("words a duration in whole seconds, minutes past a minute, hours past an hour", () => {
+  expect([0, 45.9, 72, 3599, 7500].map(formatDuration)).toEqual(["0s", "45s", "1m 12s", "59m 59s", "2h 5m"]);
 });
