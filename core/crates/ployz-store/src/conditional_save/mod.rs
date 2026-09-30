@@ -425,7 +425,10 @@ fn wait_with(
             repository,
             branch,
             head,
-            serde_json::to_string(&saves).expect("Conditional Save IDs are JSON").as_str().into(),
+            serde_json::to_string(&saves)
+                .expect("Conditional Save IDs are JSON")
+                .as_str()
+                .into(),
         ],
     )?;
     Ok(true)

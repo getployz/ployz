@@ -6,14 +6,14 @@
 //! (`plan_branch`, `branch_changes`, `live_values`); this module stores and lands them.
 
 mod create;
-mod setup;
 mod live;
 mod moving;
+mod setup;
 pub(crate) use create::*;
-pub use setup::SetBranchSetup;
-pub(crate) use setup::{branch_setup, set_branch_setup};
 pub(crate) use live::*;
 pub(crate) use moving::*;
+pub use setup::SetBranchSetup;
+pub(crate) use setup::{branch_setup, set_branch_setup};
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,13 +31,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use ts_rs::TS;
 
-use crate::project::insert_environment;
 use crate::deployment::{self, DeploymentStatus};
 use crate::error;
 use crate::id::{
     ConditionalSaveId, DeploymentId, EnvironmentId, EnvironmentName, Revision, VolumeName,
 };
 use crate::policy::{self, Policy};
+use crate::project::insert_environment;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::sealing::SealingKey;
 use crate::settings::{NodeName, SettingPath, shown};

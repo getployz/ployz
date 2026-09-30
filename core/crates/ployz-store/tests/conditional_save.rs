@@ -158,7 +158,8 @@ fn facts(
         open,
         merge_commit: merge.map(backend::sha),
         merge_reached: reached,
-        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:00:{second:02}Z")).unwrap(),
+        updated: ployz_store::GithubTimestamp::parse(format!("2026-09-29T10:00:{second:02}Z"))
+            .unwrap(),
     }
 }
 

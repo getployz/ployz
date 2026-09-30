@@ -2,7 +2,6 @@
 
 use super::*;
 
-
 pub(crate) fn create_branch(
     tx: &mut dyn Tx,
     who: &Actor,

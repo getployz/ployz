@@ -301,7 +301,6 @@ pub enum Written {
     PrPlans(crate::PrPlansView),
 }
 
-
 /// Run `create` once for the caller-minted `ids`. Replaying the identical command
 /// returns what the first run wrote; any of its IDs reused with another body, or
 /// from another Organization, is `conflict`.

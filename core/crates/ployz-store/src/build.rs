@@ -317,8 +317,12 @@ pub(crate) fn sources_of(tx: &mut dyn Tx, stored: &Stored) -> Result<Vec<GitSour
         let Some(mut source) = source_of(service, row) else {
             continue;
         };
-        (source.builders, source.preferred_machine) =
-            builders::walk(tx, organization.as_str(), &stored.summary.environment_id, &service.id)?;
+        (source.builders, source.preferred_machine) = builders::walk(
+            tx,
+            organization.as_str(),
+            &stored.summary.environment_id,
+            &service.id,
+        )?;
         sources.push(source);
     }
     Ok(sources)

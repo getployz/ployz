@@ -439,7 +439,9 @@ fn set_prefix(environment: Option<&str>, prefix: &str) -> SetGeneratedDomain {
 fn a_generated_prefix_changes_to_a_free_dns_label() {
     let (store, who) = shop();
     let trusted = cloud(false);
-    store.write_trusted(&who, &add(None, None), &trusted).unwrap();
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
     let staging = AddDomain {
         environment: at(Some("staging")),
         ..add(None, None)
@@ -456,7 +458,10 @@ fn a_generated_prefix_changes_to_a_free_dns_label() {
             .write_trusted(&who, &set_prefix(Some("staging"), prefix), trusted)
             .unwrap_err()
     };
-    assert_eq!(refused("-shop", &trusted).code, RpcErrorCode::InvalidArgument);
+    assert_eq!(
+        refused("-shop", &trusted).code,
+        RpcErrorCode::InvalidArgument
+    );
     // Unique in the Organization, and against what another Namespace publishes.
     assert_eq!(refused("shop", &trusted).code, RpcErrorCode::Conflict);
     let orphan = refused(
@@ -494,7 +499,9 @@ fn a_new_generated_prefix_avoids_published_hostnames() {
 fn a_deploy_refuses_a_hostname_another_namespace_publishes_naming_its_owner() {
     let (store, who) = shop();
     let trusted = cloud(false);
-    store.write_trusted(&who, &add(None, None), &trusted).unwrap();
+    store
+        .write_trusted(&who, &add(None, None), &trusted)
+        .unwrap();
     // Staging deployed once, so its Namespace is reserved.
     let staging = Command::Admit(Admit::Deploy(Deploy {
         id: deployment(1),
