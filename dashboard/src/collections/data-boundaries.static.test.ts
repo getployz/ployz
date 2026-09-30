@@ -81,6 +81,7 @@ const COMMAND_FILES = {
   "components/service-source-selector.tsx": "resolving a public repository and syncing GitHub are external",
   "routes/_protected/cloud/$organizationSlug/_org/~/billing.tsx": "checkout involves money",
   "routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger.tsx": "deleting an organization is destructive and waits on its Servers letting go",
+  "routes/_protected/cloud/index.tsx": "the server creates the new organization and its slug, which the page then opens",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/create-environment-dialog.tsx": "over the Store the dialog stays open until the name is accepted, then opens the new environment",
   "routes/_protected/cloud/$organizationSlug/_org/~/servers/-components/remove-server-section.tsx": "removing a server is destructive and waits on the runtime",
   "routes/_protected/cloud/$organizationSlug/-components/store-teardown-section.tsx": "deleting an Environment or Project is destructive: it reads what goes before the user confirms, then waits on each removal Deployment",

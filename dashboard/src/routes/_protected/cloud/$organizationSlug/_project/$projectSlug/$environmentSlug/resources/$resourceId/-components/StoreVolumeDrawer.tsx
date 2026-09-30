@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Schema } from "effect";
 import { redirect, useLoaderData, useNavigate } from "@tanstack/react-router";
 import { HardDriveIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import type { DiffView, EnvironmentRef, Mount, ServiceListing, VolumeListing } from "@ployz/sdk";
@@ -14,6 +15,8 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
+import { DNS_LABEL_RULE, isDnsLabel, settingText } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -38,11 +41,22 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   if (!volume) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
   const state: StoreVolume = { organizationSlug, environment: store, volume };
   const removing = volume.change === "delete";
+  const writer = useStoreWriter(organizationSlug);
+  const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
+    ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
+  // A DNS label no other Volume here has.
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => !isDnsLabel(name) ? DNS_LABEL_RULE
+    : volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
-        <p className="truncate font-semibold">{volume.name}</p>
+        {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
+          <CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
+            editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
+            isChanged={renamed !== undefined} baselineValue={renamed ? settingText(renamed.before) : undefined}
+            onRename={(name) => writer.commit({ command: "rename_volume", environment: store, volume: volume.name, name })} />
+        )}
         <p className="truncate text-sm text-muted-foreground">Volume</p>
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">

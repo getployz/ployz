@@ -83,6 +83,9 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
         changes={saveView.rows.map((row) => (
           <ChangeRowItem key={row.row} row={presentMoveRow(row)} conflict={row.conflict ? branch.parent : undefined} />
         ))} />
+    ) : !save.ok ? (
+      // What it would save couldn't be read: say why, never "Up to date".
+      <NewsRow key="save" lead={!removal} icon={<ArrowUpIcon />} title={`Save to ${branch.parent}`} detail={save.refusal.message} />
     ) : null,
     branch.update.length ? (
       <NewsRow key="update" lead={!removal && !saveView?.rows.length} icon={<ArrowDownIcon />}

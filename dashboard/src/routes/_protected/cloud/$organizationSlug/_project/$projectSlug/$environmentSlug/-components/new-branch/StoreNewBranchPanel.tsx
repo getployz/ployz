@@ -78,11 +78,13 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const taken = new Set(listing.ok ? listing.value.environments.map((environment) => environment.name) : []);
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
-  // Until edited, the setup the Project's PR plans run in Branches of this Environment: they seed the same data.
+  // Until edited, this Environment's Branch setup, else what the Project's PR plans run in its Branches: they seed the
+  // same data.
   const [edited, setSetupCommands] = useState<SetupCommand[] | null>(null);
   const plans = useCachedStoreView(params.organizationSlug, prPlansQuery(params.projectSlug));
-  const setupCommands = edited ?? (plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug
-    ? plan.setup.map((setup) => ({ lineageId: setup.service, command: setup.command })) : []) : []);
+  const saved = listing.ok ? listing.value.environments.find((environment) => environment.name === params.environmentSlug)?.branch_setup ?? [] : [];
+  const defaults = saved.length ? saved : plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug ? plan.setup : []) : [];
+  const setupCommands = edited ?? defaults.map((setup) => ({ lineageId: setup.service, command: setup.command }));
   const [pending, setPending] = useState<"deploy" | "create" | null>(null);
   if (!picking) return null;
 

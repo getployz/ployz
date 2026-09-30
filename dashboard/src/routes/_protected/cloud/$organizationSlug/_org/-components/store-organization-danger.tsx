@@ -33,7 +33,8 @@ export function StoreOrganizationDanger({ organizationSlug }: { organizationSlug
     const result = await remove({ data: { organizationSlug } });
     if (!result.ok) throw new Error(result.refusal.message);
     if (result.value.removed) {
-      void navigate({ to: "/cloud", replace: true });
+      // A fresh session: it acts in no Organization now.
+      void navigate({ to: "/cloud", replace: true, reloadDocument: true });
       return;
     }
     setUnconfirmed(result.value.servers.unconfirmed);
