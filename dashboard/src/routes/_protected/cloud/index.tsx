@@ -1,5 +1,9 @@
-import { createFileRoute, notFound, redirect } from "@tanstack/react-router";
+import { useState } from "react";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { Effect, Option, Schema } from "effect";
+import { Button } from "#/components/ui/button";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
+import { openOrCreateOrganizationServerFn } from "#/modules/organization/organization-state.functions";
 
 export const Route = createFileRoute("/_protected/cloud/")({
   validateSearch: Schema.toStandardSchemaV1(Schema.Struct({
@@ -12,9 +16,8 @@ export const Route = createFileRoute("/_protected/cloud/")({
 
     const slug = context.session.session.activeOrganizationSlug;
 
-    if (!slug) {
-      throw notFound();
-    }
+    // Acting in no Organization (its own was deleted): the page offers one.
+    if (!slug) return;
 
     throw redirect({
       to: search.welcome ? "/cloud/$organizationSlug/new" : "/cloud/$organizationSlug/~",
@@ -23,4 +26,33 @@ export const Route = createFileRoute("/_protected/cloud/")({
       params: { organizationSlug: slug },
     });
   },
+  component: NoOrganization,
 });
+
+/** A signed-in user with no Organization: open their next one, or create one. */
+function NoOrganization() {
+  const navigate = useNavigate();
+  const [pending, setPending] = useState(false);
+  async function open() {
+    setPending(true);
+    try {
+      const slug = await openOrCreateOrganizationServerFn();
+      await navigate({ to: "/cloud/$organizationSlug/~", params: { organizationSlug: slug }, replace: true, reloadDocument: true });
+    } finally {
+      setPending(false);
+    }
+  }
+  return (
+    <div className="flex min-h-dvh items-center justify-center p-6">
+      <Empty>
+        <EmptyHeader>
+          <EmptyTitle>You're not in an organization</EmptyTitle>
+          <EmptyDescription>Projects, servers and billing live in an organization.</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button disabled={pending} onClick={() => void open()}>Create an organization</Button>
+        </EmptyContent>
+      </Empty>
+    </div>
+  );
+}

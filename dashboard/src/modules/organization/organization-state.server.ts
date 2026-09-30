@@ -2,7 +2,7 @@ import "@tanstack/react-start/server-only";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
-import { member, session } from "#/modules/identity/tables";
+import { member, session, user } from "#/modules/identity/tables";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound } from "#/server/public-error";
@@ -252,4 +252,20 @@ function* (
   }
   if (!organizationId) return;
   yield* setActiveOrganizationForSession(sessionRecord, organizationId, ctx);
+});
+
+/**
+ * For an actor whose session acts in no Organization (theirs was deleted): their first Organization, else a new
+ * personal one; their sessions then act in it. Returns its slug.
+ */
+export const openOrCreateOrganization = Effect.fn("Organization.openOrCreate")(function* (actor: Actor) {
+  const database = yield* Database;
+  const [row] = yield* database.drizzle.select({ id: user.id, name: user.name, email: user.email }).from(user)
+    .where(eq(user.id, actor.userId)).limit(1);
+  if (!row) return yield* new NotFound({ message: "User not found." });
+  const organizationId = yield* ensurePersonalOrganizationForUser(row);
+  const slug = yield* getOrganizationSlugById(organizationId);
+  if (!slug) return yield* new NotFound({ message: "Organization not found." });
+  yield* updateActorSessionsOrganization(actor, organizationId, slug);
+  return slug;
 });

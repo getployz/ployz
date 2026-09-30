@@ -67,6 +67,15 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         domain.service === command.service ? { ...domain, service: command.name } : domain) }));
       return;
     }
+    case "rename_volume": {
+      // Its mounts are keyed by its name: `SERVICE.mounts.NAME`.
+      const mount = `.mounts.${command.volume}`;
+      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.map((volume) =>
+        volume.name === command.volume ? { ...volume, name: command.name } : volume) }));
+      views<EnvironmentView>("environment", command.environment, (view) => ({ ...view, settings: view.settings.map((row) =>
+        row.path.endsWith(mount) ? { ...row, path: `${row.path.slice(0, -mount.length)}.mounts.${command.name}` } : row) }));
+      return;
+    }
     case "publish":
       views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true }));
       return;
@@ -104,6 +113,12 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
     }
     case "keep_branch":
       views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept }));
+      return;
+    case "set_branch_setup":
+      views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.environment.project ? view : {
+        ...view, environments: view.environments.map((environment) => environment.name === command.environment.environment
+          ? { ...environment, branch_setup: command.setup } : environment),
+      });
       return;
     case "set_default_environment":
       views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.environment.project ? view : {
