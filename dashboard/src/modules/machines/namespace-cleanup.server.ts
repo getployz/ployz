@@ -1,5 +1,5 @@
 import "@tanstack/react-start/server-only";
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import type { Actor } from "#/modules/identity/actor";
 import { readStore } from "#/modules/config-store/config-store.server";
 import { requireInfrastructureOrganization } from "#/modules/runtime/organization-access.server";
@@ -8,14 +8,9 @@ import type { DataLossIdentity } from "#/modules/runtime/data-loss-identity";
 import { Conflict } from "#/server/public-error";
 import { SYSTEM_NAMESPACE } from "./server-services";
 
-/** The Namespaces the Organization's Environments own, as the Store names them; one never deployed may have none. */
-const ownedNamespaces = Effect.fn("NamespaceCleanup.owned")(function* (organizationId: string) {
-  const { projects } = yield* readStore(organizationId, { query: "projects" });
-  const environments = projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment })));
-  const found = yield* Effect.forEach(environments, (environment) =>
-    readStore(organizationId, { query: "namespace", environment }).pipe(Effect.option), { concurrency: 8 });
-  return found.flatMap((view) => Option.isSome(view) ? [view.value.namespace] : []);
-});
+/** The Namespaces the Organization's Environments own, as the Store names them. A failed read fails: nothing reads as unowned. */
+const ownedNamespaces = (organizationId: string) =>
+  readStore(organizationId, { query: "namespaces" }).pipe(Effect.map(({ namespaces }) => namespaces.map(({ namespace }) => namespace)));
 
 /** Which of `namespaces`, seen on the Organization's Servers, no Environment owns: the Servers page offers to remove them. */
 export const listStrayNamespaces = Effect.fn("NamespaceCleanup.strays")(function* (
