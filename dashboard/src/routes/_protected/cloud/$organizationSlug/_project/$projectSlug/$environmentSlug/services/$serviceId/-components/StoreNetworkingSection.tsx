@@ -167,8 +167,9 @@ export function StoreNetworkingSection({ state, version, validatePrivateDns }: {
               // Shown at once; a refusal toasts, then offers Pro if that was the reason, else reopens with what was typed.
               add(hostname, targetPort).isPersisted.promise.catch(async () => {
                 const allowed = await queryClient.fetchQuery({ ...capabilityQuery, staleTime: 0 }).catch(() => true);
-                if (!allowed) setEditor({ kind: "upsell", then: edited ? { kind: "custom", hostname } : { kind: "add", draft: { hostname, targetPort } } });
-                else if (!edited) setEditor({ kind: "add", draft: { hostname, targetPort } });
+                const draft = { kind: "add", draft: { hostname, targetPort } } as const;
+                if (!allowed) setEditor({ kind: "upsell", then: edited ? { kind: "custom", hostname } : draft });
+                else if (!edited) setEditor(draft);
               });
             }}
           />

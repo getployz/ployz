@@ -8,8 +8,9 @@ import { openCheckoutWhileHere } from "#/modules/billing/checkout";
 import { toErrorMessage } from "#/lib/error-message";
 
 /**
- * Polar's embedded checkout for an Organization, over the current page. With `onSuccess` the buyer stays where they
- * are instead of following Polar's redirect to the success URL. Leaving the Organization closes it.
+ * Polar's embedded checkout for an Organization, over the current page. `openCheckout()` follows Polar's redirect to
+ * the success URL; `openCheckout({ onSuccess })` keeps the buyer where they are and calls it instead. Leaving the
+ * Organization closes it.
  */
 export function useEmbeddedCheckout(organizationSlug: string) {
   const [pending, setPending] = useState(false);
