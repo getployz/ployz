@@ -47,13 +47,16 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
     if ((element.current?.scrollTop ?? 0) + delta < 160 && !historyError) void stream.loadOlder();
   }
   const { element, virtual } = useLogScroll({
-    paddingStart: 40, count: rows.length, getItemKey: index => rows[index]?.id ?? index,
+    count: rows.length, getItemKey: index => rows[index]?.id ?? index,
     onChange: (instance, sync) => {
       if (dragging.current && sync && instance.scrollDirection === "backward" && (instance.scrollOffset ?? 0) < 160 && !historyError) void stream.loadOlder();
     },
   });
   const machines = new Map(loaded.map(row => [row.machineId, row.machineName]));
   const services = [...new Set(loaded.map(row => row.serviceName))];
+  // A line names its service and server only where they vary; a filter shows only with something to pick.
+  const byService = !selection.serviceId && services.length > 1;
+  const byMachine = machines.size > 1;
   const offlineLink = <Link to="/cloud/$organizationSlug/~/servers" params={{ organizationSlug: selection.organizationSlug }} className="underline underline-offset-4">Check your servers</Link>;
   const empty = rows.length ? null
     : offline ? <LogEmpty title="Your servers are offline">Logs stream again once a server reconnects. {offlineLink}</LogEmpty>
@@ -64,14 +67,16 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
   return <div className="flex min-h-0 grow flex-col gap-3">
     <div className="flex flex-wrap items-center gap-2">
       <Input aria-label="Search loaded logs" placeholder="Search loaded logs" value={search} onChange={event => setSearch(event.target.value)} className="min-w-40 flex-1" />
-      {selection.serviceId ? null : <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} />}
-      <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} />
+      {byService ? <LogFilter label="All services" value={service} onChange={setService} options={services.map(name => [name, name])} /> : null}
+      {byMachine ? <LogFilter label="All servers" value={machine} onChange={setMachine} options={[...machines]} /> : null}
     </div>
     {offline && rows.length ? <p className="text-muted-foreground">Your servers are offline, so these are the latest logs they sent. {offlineLink}</p> : null}
     {refused && rows.length ? <p role="alert" className="text-muted-foreground">Couldn’t reach the log stream, so new lines are paused. Trying again…</p> : null}
     {Object.entries(errors).map(([source, message]) => <p role="alert" key={source}>{source}: {message}</p>)}
     <div className="flex min-h-0 flex-1 flex-col">
       <LogHeader time={LOG_TIME_COLUMN.container}>Message</LogHeader>
+      {historyPending ? <LogSkeleton rows={1} label="Loading older logs" time={LOG_TIME_COLUMN.container} /> : null}
+      {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={element} role="region" tabIndex={0} aria-label="Container logs" className="flex min-h-0 flex-1 flex-col overflow-auto font-mono text-xs"
           onPointerDown={() => { dragging.current = true; }}
@@ -86,17 +91,13 @@ function LogViewer({ selection, lifecycle }: { selection: ContainerLogSelection;
             touchY.current = next;
           }}>
           {empty ?? <div className="relative w-full shrink-0" style={{ height: virtual.getTotalSize() }}>
-            <div className="absolute inset-x-0 top-0">
-              {historyPending ? <LogSkeleton rows={1} label="Loading older logs" time={LOG_TIME_COLUMN.container} /> : null}
-              {historyError ? <div role="alert" className="flex items-center gap-2"><span>Couldn’t load older logs.</span> <Button variant="ghost" size="sm" onClick={() => void stream.loadOlder()}>Retry</Button></div> : null}
-            </div>
             {virtual.getVirtualItems().map(item => {
               const row = rows[item.index];
               if (!row) return null;
               return <div key={item.key} ref={virtual.measureElement} data-index={item.index} className="absolute left-0 top-0 flex w-full gap-3 px-1 leading-6" style={{ transform: `translateY(${item.start}px)` }}>
                 <time className={cn("shrink-0 text-muted-foreground", LOG_TIME_COLUMN.container)}>{timestamp(new Date(Number(BigInt(row.timestamp) / 1_000_000n)))}</time>
                 <span className={cn("min-w-0 flex-1 whitespace-pre-wrap break-words", looksLikeError(row) && "text-destructive")}>
-                  <span className="mr-3 text-muted-foreground">{row.serviceName} · {row.machineName}</span>{row.message}
+                  {byService || byMachine ? <span className="mr-3 text-muted-foreground">{[byService && row.serviceName, byMachine && row.machineName].filter(Boolean).join(" · ")}</span> : null}{row.message}
                 </span>
               </div>;
             })}
