@@ -164,8 +164,8 @@ const UNCLAIMED_AFTER_SECONDS = 60;
 
 /**
  * Queued Deployments whose hand-off to the worker looks lost, in every Organization: admitted over a minute ago, and
- * no worker run is recorded for their Environment (a run records itself first, so one waiting its turn or walking its
- * GitHub builds holds its Environment's queue). A lost send or a run dropped across a Cloud redeploy stalls there.
+ * no worker run is recorded for a Deployment of their Environment still in flight (a run records itself first, so one
+ * waiting its turn or walking its GitHub builds holds its Environment's queue; a stale record of an ended one doesn't). A lost send or a run dropped across a Cloud redeploy stalls there.
  * ponytail: reads the Store's table directly until the Store answers this itself.
  */
 export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(function* (now: Date) {
@@ -175,7 +175,7 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
     select d.id, d.organization_id, d.environment_id from config_deployment d
     where d.status = 'queued' and d.admitted < ${before} and not exists (
       select 1 from deployment_run r join config_deployment o on o.id = r.deployment_id
-      where o.environment_id = d.environment_id)`, "objects");
+      where o.environment_id = d.environment_id and o.status in ('queued', 'running', 'cancelling'))`, "objects");
   return rows.map((row): ConfigDeploymentAdmittedEventData => ({
     organizationId: row.organization_id, environmentId: row.environment_id, deploymentId: row.id,
   }));
