@@ -77,7 +77,7 @@ describe("DeletionDialog", () => {
 
     const button = screen.getByRole("button", { name: "Delete" });
     expect(button.hasAttribute("disabled")).toBe(true);
-    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
     fireEvent.click(button);
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
@@ -110,7 +110,7 @@ describe("DeletionDialog", () => {
     renderDialog({ load, confirm: vi.fn() });
 
     await screen.findByText(/Can't reach your servers/);
-    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
     expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(true);
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
@@ -123,7 +123,7 @@ describe("DeletionDialog", () => {
     const confirm = vi.fn().mockResolvedValueOnce(check([service("web"), appeared])).mockResolvedValue(undefined);
     const onOpenChange = renderDialog({ load: vi.fn().mockResolvedValue(check([service("web")])), confirm });
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toBeTruthy());
-    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(false));
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -132,7 +132,7 @@ describe("DeletionDialog", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Delete" }).hasAttribute("disabled")).toBe(true);
 
-    fireEvent.change(screen.getByLabelText(/to confirm/), { target: { value: "shop/staging" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /to confirm/ }), { target: { value: "shop/staging" } });
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(confirm).toHaveBeenLastCalledWith("evidence:2");

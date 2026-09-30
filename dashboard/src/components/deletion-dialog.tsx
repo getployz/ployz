@@ -150,12 +150,12 @@ function OpenDeletionDialog<Evidence>({ onOpenChange, title, place, confirmLabel
         </AlertDialogHeader>
         {items.length > 0 ? <DeletionList items={items} fresh={fresh} /> : null}
         <Field>
-          <div className="flex items-center gap-1">
-            <FieldLabel htmlFor={inputId} className="font-normal">
-              Type <strong className="font-mono font-medium">{place}</strong> to confirm
-            </FieldLabel>
+          <FieldLabel htmlFor={inputId} className="font-normal">
+            Type <strong className="font-mono font-medium">{place}</strong>
+            {/* A button inside the label copies without focusing the input. */}
             <CopyButton value={place} label={`Copy ${place}`} />
-          </div>
+            to confirm
+          </FieldLabel>
           <Input id={inputId} autoFocus autoComplete="off" spellCheck={false} placeholder={place} value={typed}
             onChange={(event) => setTyped(event.target.value)} />
         </Field>
