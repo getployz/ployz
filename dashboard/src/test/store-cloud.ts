@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import type { MachineId } from "@ployz/sdk";
+import type { ConfigTrusted, MachineId } from "@ployz/sdk";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { Polar, type PolarService } from "#/modules/billing/polar-provider.server";
-import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { GithubApi, type GithubApiService } from "#/modules/github/github-observation.api";
 import { githubInstallation } from "#/modules/github/tables";
 import { member, user } from "#/modules/identity/tables";
@@ -72,4 +72,29 @@ export const enrollStoreServer = Effect.fn(function* (id: string) {
     organizationId: id, machineId, clusterKey: createHash("sha256").update(secret).digest("hex"),
     encryptedCapability: encryption.encrypt(`ployz1:cloud:${machineId}`), isDialEntry: true,
   });
+});
+
+/** What Cloud observes of `acme/web` (42): readable through installation 7, or public. */
+export const acmeWeb = (access: "installation" | "public" = "installation"): ConfigTrusted => ({
+  repositories: [{
+    repository: "acme/web", repository_id: 42, default_branch: "main", branches: [],
+    access: access === "public" ? { type: "public" } : { type: "github-installation", installationId: 7 },
+  }],
+  domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
+});
+
+/**
+ * In Organization `organization`: Project `shop` (default Environment `ids.environment`) with Git Service `web` on
+ * `acme/web`. Resolves to the Store.
+ */
+export const seedStoreGitService = Effect.fn(function* (
+  organization: string, ids: { project: string; environment: string; service: string }, access: "installation" | "public" = "installation",
+) {
+  const store = yield* cloudStore;
+  const here = { project: null, environment: null };
+  yield* Effect.promise(() => store.write(organization, { command: "create_project", id: ids.project, name: "shop", default_environment: ids.environment }));
+  yield* Effect.promise(() => store.write(organization, {
+    command: "create_git_service", id: ids.service, environment: here, name: "web", repository: "acme/web", branch: null,
+  }, acmeWeb(access)));
+  return store;
 });

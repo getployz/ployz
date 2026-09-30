@@ -9,7 +9,7 @@ import { createStoreGithubPush } from "#/modules/config-store/store-github.innge
 import { githubPushReceivedEvent } from "#/modules/inngest/events";
 import { makeInngestEffectRunner } from "#/server/run.server";
 import { fakeGithubApiBy } from "#/test/fake-github";
-import { enrollStoreServer, seedStoreOrganization, storeTestCloud } from "#/test/store-cloud";
+import { enrollStoreServer, seedStoreOrganization, seedStoreGitService, storeTestCloud } from "#/test/store-cloud";
 
 const ORGANIZATION = "00000000-0000-4000-8000-00000000d001";
 const PROJECT = "00000000-0000-4000-8000-00000000d002";
@@ -42,14 +42,7 @@ it.live(
       const store = yield* cloudStore.pipe(Effect.provide(services));
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
-      yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
-      yield* write({ command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null }, {
-        repositories: [{
-          repository: "acme/web", repository_id: 42, access: { type: "github-installation", installationId: 7 },
-          default_branch: "main", branches: [],
-        }],
-        domains: { custom_domains: false, cluster_domain: null, certificates: null, ingress_addresses: [], lookups: [] },
-      });
+      yield* seedStoreGitService(ORGANIZATION, { project: PROJECT, environment: ENVIRONMENT, service: SERVICE }).pipe(Effect.provide(services));
       yield* write({ command: "publish", environment: here, version: null, accept_volume_loss: [] });
       yield* write({
         command: "set_pr_plan", project: null, repository: "acme/web", enabled: true, start_from: "production",
