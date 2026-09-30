@@ -214,7 +214,9 @@ fn remove(
 fn removed<T: std::fmt::Debug>(result: Result<Teardown<T>, RpcError>) -> T {
     match result.unwrap() {
         Teardown::Removed(removed) => removed,
-        other => panic!("not removed: {other:?}"),
+        other @ (Teardown::Waiting { .. } | Teardown::NeedsRemoval { .. }) => {
+            panic!("not removed: {other:?}")
+        }
     }
 }
 
