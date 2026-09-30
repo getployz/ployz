@@ -349,3 +349,47 @@ fn wait_for_ci_holds_a_deploy_until_every_suite_passes() {
     let automated = system(&store, &push(Some(H1), Some(H2), None));
     assert_eq!(automated.admitted.len(), 1, "{automated:?}");
 }
+
+#[test]
+fn a_push_deploy_refuses_a_hostname_another_namespace_publishes() {
+    let (store, who) = shop();
+    let pro = Trusted {
+        domains: ployz_store::DomainEvidence {
+            custom_domains: true,
+            ..ployz_store::DomainEvidence::default()
+        },
+        ..Trusted::default()
+    };
+    let hostname = ployz_store::Hostname::parse("shop.example.com").unwrap();
+    store
+        .write_trusted(
+            &who,
+            &ployz_store::AddDomain {
+                environment: EnvironmentRef::default(),
+                service: ServiceName::parse("web").unwrap(),
+                hostname: Some(hostname.clone()),
+                port: None,
+            },
+            &pro,
+        )
+        .unwrap();
+    publish(&store, &who);
+    let mut published = Trusted::default();
+    published
+        .domains
+        .published
+        .push(ployz_store::PublishedHostname {
+            hostname,
+            namespace: ployz_core::Namespace::parse("gone-production").unwrap(),
+            service: ServiceName::parse("web").unwrap(),
+        });
+    let Written::Automated(automated) = store
+        .system(&org(), &push(None, Some(H1), None), &published)
+        .unwrap()
+    else {
+        panic!("a system event writes Automated")
+    };
+    assert!(automated.admitted.is_empty());
+    assert_eq!(automated.skipped.len(), 1, "{automated:?}");
+    assert!(automated.skipped[0].reason.contains("shop.example.com"));
+}
