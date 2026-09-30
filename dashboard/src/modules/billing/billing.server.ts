@@ -194,9 +194,11 @@ export const createCustomerPortal = Effect.fn("Billing.createPortal")(
   function* (actor: Actor, input: { readonly organizationSlug: string }) {
     const polar = yield* requireHostedPolar();
     yield* getAuthorizedBillingScope(actor, input.organizationSlug);
+    const profile = yield* getBillingUser(actor.userId);
     const config = yield* AppConfig;
     return yield* polar.createCustomerPortal({
-      externalCustomerId: actor.userId,
+      externalCustomerId: profile.id,
+      customerEmail: profile.email,
       returnUrl: billingPage(config.app.url, input.organizationSlug),
     });
   },

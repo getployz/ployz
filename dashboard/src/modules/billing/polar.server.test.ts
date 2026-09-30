@@ -113,4 +113,35 @@ describe("Polar provider boundary", () => {
     expect(failure.message).toBe("Polar list active subscriptions failed.");
     expect(failure.message).not.toContain("sub-invalid");
   });
+
+  it("opens the portal of the customer holding the email when a re-signed-up user's external id has none", async () => {
+    const create = vi.fn(async (body: { external_customer_id?: string; customer_id?: string }) => {
+      if (body.external_customer_id !== undefined) throw Object.assign(new Error("Customer does not exist."), { status: 422 });
+      return { customer_portal_url: `https://polar.test/portal/${body.customer_id}` };
+    });
+    const list = vi.fn(async () => ({ items: [{ id: "customer-old", external_id: "deleted-user" }] }));
+    const provider = makePolarService(hosted, asTestDouble<PolarSdk>()({
+      customerSessions: { create },
+      customers: { list },
+    }));
+    if (provider.mode !== "hosted") throw new Error("Expected hosted Polar");
+
+    await expect(Effect.runPromise(provider.createCustomerPortal({
+      externalCustomerId: "new-user", customerEmail: "ada@example.test", returnUrl: "https://app.test/billing",
+    }))).resolves.toEqual({ customerPortalUrl: "https://polar.test/portal/customer-old" });
+    expect(list).toHaveBeenCalledWith({ email: "ada@example.test", limit: 1 });
+    expect(create).toHaveBeenLastCalledWith({ customer_id: "customer-old", return_url: "https://app.test/billing" });
+  });
+
+  it("keeps the portal failure when no customer holds the email either", async () => {
+    const provider = makePolarService(hosted, asTestDouble<PolarSdk>()({
+      customerSessions: { create: vi.fn(async () => { throw Object.assign(new Error("Customer does not exist."), { status: 422 }); }) },
+      customers: { list: vi.fn(async () => ({ items: [] })) },
+    }));
+    if (provider.mode !== "hosted") throw new Error("Expected hosted Polar");
+
+    await expect(Effect.runPromise(Effect.flip(provider.createCustomerPortal({
+      externalCustomerId: "new-user", customerEmail: "ada@example.test", returnUrl: "https://app.test/billing",
+    })))).resolves.toMatchObject({ _tag: "PolarFailure", code: "request_failed", retriable: false });
+  });
 });
