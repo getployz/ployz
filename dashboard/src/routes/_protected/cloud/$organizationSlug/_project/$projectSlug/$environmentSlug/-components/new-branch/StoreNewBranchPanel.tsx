@@ -32,7 +32,7 @@ type PickState = { session: string | null; focus: string[]; picks: Picks };
  * A New branch's picks over the Config Store, shared with the canvas under the panel. Each pick reads the Store's plan
  * (nodes by name); `focus` is the Service the panel opened on.
  */
-function useStorePicking(newBranch: { focus: string | null } | null): { picking: PickingView | null; refusal: string | null } {
+function useStorePicking(newBranch: { focus: string | null } | null) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const initialFocus = newBranch?.focus ?? null;
@@ -61,7 +61,7 @@ function useStorePicking(newBranch: { focus: string | null } | null): { picking:
         focus: on ? [...current.focus, name] : current.focus.filter((candidate) => candidate !== name),
       }));
     },
-  } };
+  } satisfies PickingView };
 }
 
 /** Why the Store refused the open panel's Branch plan, or null. */
