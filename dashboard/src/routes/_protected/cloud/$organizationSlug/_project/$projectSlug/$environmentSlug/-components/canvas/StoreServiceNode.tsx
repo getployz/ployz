@@ -46,7 +46,7 @@ export function StoreServiceCard({ service, subtitle, changeCount, runtimeIdenti
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
-  const remove = useRemoveStoreService(store, service.name);
+  const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const { lensStatus, incompleteIds } = useRuntimeStatus();
   const observed = lensStatus === "no_connection" || (lensStatus === "observed" && !isIncompleteObservation(incompleteIds));
