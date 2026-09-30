@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
-import { PlusIcon } from "lucide-react";
+import { ChevronRightIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import type { ButtonVariants } from "#/components/ui/button-variants";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Alert, AlertDescription } from "#/components/ui/alert";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -43,7 +44,7 @@ export function AddServerDialog({
   variant?: ButtonVariants["variant"];
 }) {
   const [open, setOpen] = useState(false);
-  const [managedVolumes, setManagedVolumes] = useState(true);
+  const [withoutZfs, setWithoutZfs] = useState(false);
   const mintMutation = useMutation({
     mutationFn: () =>
       mintMachineEnrollmentServerFn({ data: { organizationSlug } }),
@@ -59,7 +60,7 @@ export function AddServerDialog({
   function handleOpenChange(nextOpen: boolean) {
     setOpen(nextOpen);
     if (!nextOpen) {
-      setManagedVolumes(true);
+      setWithoutZfs(false);
       mintMutation.reset();
     }
   }
@@ -92,22 +93,10 @@ export function AddServerDialog({
                 .
               </DialogDescription>
             </DialogHeader>
-            <Field orientation="horizontal">
-              <Checkbox
-                id="managed-volumes"
-                checked={managedVolumes}
-                onCheckedChange={setManagedVolumes}
-              />
-              <FieldContent>
-                <FieldLabel htmlFor="managed-volumes">
-                  Managed volumes
-                </FieldLabel>
-                <FieldDescription>
-                  Sets up ZFS so each Volume gets an enforced size limit.
-                  Required to run managed Volumes on this server.
-                </FieldDescription>
-              </FieldContent>
-            </Field>
+            <p className="text-sm text-muted-foreground">
+              Managed volumes on. Enforced size limits today. Backups, Server
+              moves and zero-downtime migrations build on this as they ship.
+            </p>
             {mintMutation.isPending ? (
               <div className="flex items-center gap-2 text-muted-foreground">
                 <Spinner />
@@ -115,7 +104,7 @@ export function AddServerDialog({
               </div>
             ) : mintMutation.data ? (
               <CopyBlock
-                value={`${mintMutation.data.command}${managedVolumes ? "" : " --storage none"}`}
+                value={`${mintMutation.data.command}${withoutZfs ? " --storage none" : ""}`}
               />
             ) : (
               <Alert variant="destructive">
@@ -124,6 +113,43 @@ export function AddServerDialog({
                 </AlertDescription>
               </Alert>
             )}
+            <Collapsible className="flex flex-col gap-3">
+              <CollapsibleTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="group self-start"
+                  />
+                }
+              >
+                Advanced
+                <ChevronRightIcon
+                  data-icon="inline-end"
+                  className="transition-transform group-data-[panel-open]:rotate-90"
+                />
+              </CollapsibleTrigger>
+              <CollapsibleContent render={<Field orientation="horizontal" />}>
+                <Checkbox
+                  id="without-zfs"
+                  checked={withoutZfs}
+                  onCheckedChange={setWithoutZfs}
+                />
+                <FieldContent>
+                  <FieldLabel htmlFor="without-zfs">
+                    Start without ZFS (not recommended)
+                  </FieldLabel>
+                  {withoutZfs ? (
+                    <FieldDescription>
+                      Volumes on this Server get no size limits, and it won’t
+                      get backups, Server moves or zero-downtime migrations as
+                      they arrive. Only for hosts that can’t run ZFS.
+                    </FieldDescription>
+                  ) : null}
+                </FieldContent>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         </DialogContent>
       </Dialog>

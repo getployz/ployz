@@ -1,11 +1,12 @@
 import { useId } from "react";
+import { ChevronRightIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { Checkbox } from "#/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "#/components/ui/collapsible";
 import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLabel } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
 
-/** The normal limit, with Docker storage behind an explicit Advanced opt-out. */
+/** A Managed volume's limit, with a plain Docker volume behind an explicit Advanced opt-out. */
 export function VolumeStorageFields({ managed, sizeGB, onManagedChange, onSizeChange, error }: {
   managed: boolean;
   sizeGB: string;
@@ -24,13 +25,15 @@ export function VolumeStorageFields({ managed, sizeGB, onManagedChange, onSizeCh
         {error ? <FieldError>{error}</FieldError> : null}
       </Field> : null}
       <Collapsible defaultOpen={!managed} className="flex flex-col gap-4">
-        <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="self-start" />}>Advanced</CollapsibleTrigger>
+        <CollapsibleTrigger render={<Button type="button" variant="ghost" size="sm" className="group self-start" />}>
+          Advanced
+          <ChevronRightIcon data-icon="inline-end" className="transition-transform group-data-[panel-open]:rotate-90" />
+        </CollapsibleTrigger>
         <CollapsibleContent render={<Field orientation="horizontal" />}>
-          <Checkbox id={`${id}-managed`} checked={managed} onCheckedChange={onManagedChange} />
+          <Checkbox id={`${id}-docker`} checked={!managed} onCheckedChange={(docker) => onManagedChange(!docker)} />
           <FieldContent>
-            <FieldLabel htmlFor={`${id}-managed`}>Manage storage with Ployz</FieldLabel>
-            <FieldDescription>{managed ? "Ployz prepares storage and enforces this volume’s limit."
-              : "Uses a Docker volume on the server, without an enforced storage limit."}</FieldDescription>
+            <FieldLabel htmlFor={`${id}-docker`}>Use a plain Docker volume (not recommended)</FieldLabel>
+            {managed ? null : <FieldDescription>No size limit, and it stays out of backups and Server moves as they arrive.</FieldDescription>}
           </FieldContent>
         </CollapsibleContent>
       </Collapsible>
