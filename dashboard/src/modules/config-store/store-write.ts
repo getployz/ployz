@@ -114,12 +114,18 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
      * a destructive confirmation, an external service) is a listed command in the boundary test.
      */
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
-      const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
+      // A Batch runs in the queue of the Environment its commands name.
+      const named = command.command === "batch" ? command.commands[0] : command;
+      const key = named && "environment" in named && named.environment ? environmentKey(named.environment) : "";
       applyOptimistic(queryClient, organizationSlug, command);
       const expects = command.command === "set_volume_storage";
       const save = async () => {
         const written = await send(command.command === "set_volume_storage" ? { ...command, expect: expected(key) } : command);
         if (written.written === "volume") committed.set(key, written.environment.revision);
+        const last = written.written === "batch" ? written.results.at(-1) : undefined;
+        if (last?.written === "service" || last?.written === "volume" || last?.written === "edited") {
+          committed.set(key, last.environment.revision);
+        }
         return written;
       };
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.

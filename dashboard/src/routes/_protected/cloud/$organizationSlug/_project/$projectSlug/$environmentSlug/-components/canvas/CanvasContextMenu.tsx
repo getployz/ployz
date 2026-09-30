@@ -23,6 +23,9 @@ function getActionForItem(
   if (itemId === "container-image") {
     return () => actions.onCreateFromPanel("image");
   }
+  if (itemId === "database") {
+    return () => actions.onCreateFromPanel("database");
+  }
   if (itemId === "empty-service") {
     return actions.onCreateBlank;
   }

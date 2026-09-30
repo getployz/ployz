@@ -59,4 +59,4 @@ export type CanvasResourceNode =
   | CanvasStoreLiveNode;
 
 export type FlowPosition = { x: number; y: number };
-export type CreatorPanel = "root" | "git" | "image";
+export type CreatorPanel = "root" | "git" | "image" | "database";
