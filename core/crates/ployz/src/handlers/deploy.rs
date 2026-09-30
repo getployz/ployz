@@ -73,6 +73,18 @@ pub(super) fn following(command: Command) -> Command {
         )
 }
 
+/// The [`following`] flags as typed, so a rerun follows (or detaches) the same way.
+pub(super) fn following_args(matches: &ArgMatches) -> Vec<&str> {
+    let mut args = Vec::new();
+    if let Some(events) = matches.get_one::<String>("events") {
+        args.extend(["--events", events.as_str()]);
+    }
+    if matches.get_flag("detach") {
+        args.push("--detach");
+    }
+    args
+}
+
 /// How often `deploy` reads a Deployment Cloud runs while following it.
 const FOLLOW_POLL: Duration = Duration::from_secs(1);
 
@@ -144,9 +156,16 @@ pub(super) fn deploy(root: &ArgMatches) -> Result<(), Error> {
         .transpose()?;
     // A retry uploads again, as the hidden `deploy --upload` does.
     let upload = source.as_deref().and_then(Path::to_str);
+    let message = matches.get_one::<String>("message").map(String::as_str);
     let store = store(root)?
         .args(names.iter().copied())
-        .args(upload.into_iter().flat_map(|source| ["--upload", source]));
+        .args(upload.into_iter().flat_map(|source| ["--upload", source]))
+        .args(
+            message
+                .into_iter()
+                .flat_map(|message| ["--message", message]),
+        )
+        .args(following_args(matches));
     if matches.get_flag("plan") {
         return plan(matches, &store, services);
     }
