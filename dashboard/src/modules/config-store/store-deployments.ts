@@ -229,7 +229,7 @@ export function previewLines(preview: JsonValue | null): string[] | null {
   const counts = new Map<string, number>();
   for (const { service_name } of operations) counts.set(service_name ?? "Environment", (counts.get(service_name ?? "Environment") ?? 0) + 1);
   return [
-    operations.length === 0 ? "Nothing to change" : `${plural(operations.length, "operation")}: ${[...counts].map(([name, n]) => `${name} ${n}`).join(", ")}`,
+    operations.length === 0 ? "Nothing to change" : [...counts].map(([name, n]) => `${name}: ${plural(n, "operation")}`).join(" · "),
     ...(volumes_to_create.length ? [`Creates ${plural(volumes_to_create.length, "volume")}`] : []),
     ...(would_remove.length ? [`Removes ${plural(would_remove.length, "service")}`] : []),
     ...warnings.map((warning) => warning.message ?? warning.type.replaceAll("_", " ")),

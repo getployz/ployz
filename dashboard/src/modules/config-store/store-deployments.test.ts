@@ -65,6 +65,6 @@ it("summarizes a recorded Deploy Preview, and nothing before one", () => {
     volumes_to_create: [{}], would_remove: [{}],
     warnings: [{ type: "ingress_hostname", message: "shop.example.com points elsewhere" }, { type: "unbudgeted_disk_usage" }],
   })).toEqual([
-    "3 operations: web 2, Environment 1", "Creates 1 volume", "Removes 1 service", "shop.example.com points elsewhere", "unbudgeted disk usage",
+    "web: 2 operations · Environment: 1 operation", "Creates 1 volume", "Removes 1 service", "shop.example.com points elsewhere", "unbudgeted disk usage",
   ]);
 });
