@@ -23,10 +23,9 @@ export type StoreResult<T> = { ok: true; value: T } | { ok: false; refusal: Stor
 /** The views a dashboard write answers with, as committed: the named Environment's review and Services. */
 export type CommittedViews = { diff?: DiffView; services?: ServicesView };
 
-/** The Environment a command names, the one its committed views and write queue are of; a Batch's is its first command's. */
+/** The Environment a command names, the one its committed views and write queue are of; a Batch names one for all. */
 export function commandEnvironment(command: ConfigCommand): StoreEnvironmentRef | null {
-  const named = command.command === "batch" ? command.commands[0] : command;
-  return named && "environment" in named && named.environment ? named.environment : null;
+  return "environment" in command && command.environment ? command.environment : null;
 }
 
 /** A dashboard write's answer: what it wrote and, once committed, the views it moved. */

@@ -519,7 +519,7 @@ fn open(
             });
             continue;
         }
-        match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, event)) {
+        match crate::storage::attempt(tx, |tx| create(tx, who, &start, &plan, (event, trusted))) {
             Ok(Some(deployed)) => automated.admitted.push(deployed),
             Ok(None) => {}
             Err(error) if crate::automation::skippable(&error) => {
@@ -542,7 +542,7 @@ fn create(
     who: &Actor,
     start: &Environment,
     plan: &Stored,
-    event: &PullRequest,
+    (event, trusted): (&PullRequest, &Trusted),
 ) -> Result<Option<AutoDeployed>, RpcError> {
     let working = &start.working;
     let ours = |source: &ServiceSource| matches!(source, ServiceSource::Git { repository_id, .. } if *repository_id == event.repository_id.get());
@@ -579,10 +579,8 @@ fn create(
         })
         .collect::<Result<Vec<_>, RpcError>>()?;
     // Generated domains expand under the Cluster Domain of the start-from's last
-    // Deploy. Refused before anything is written: a PR Environment that can't deploy
-    // isn't made.
+    // Deploy. A PR Environment its Deploy refuses isn't made: the caller rolls it back.
     let cluster_domain = deployment::cluster_domain(tx, &start.summary.id)?;
-    crate::deployment::admit::needs_cluster_domain(start, working, cluster_domain.as_ref())?;
     let name = free_name(tx, start, event.number)?;
     let id = EnvironmentId::parse(uuid::Uuid::new_v4().to_string())?;
     let from = EnvironmentRef {
@@ -648,6 +646,7 @@ fn create(
         (&environment, &saved),
         &[],
         (cluster_domain.as_ref(), &pins),
+        trusted,
     )?;
     Ok(Some(AutoDeployed {
         environment: id,

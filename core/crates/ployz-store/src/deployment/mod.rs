@@ -215,7 +215,8 @@ pub enum NodeStatus {
     Removed,
     /// Work on it started and didn't finish, so Applied State kept the old one.
     Failed,
-    /// An earlier failure, or cancellation, stopped the Deployment before it.
+    /// An earlier failure, or cancellation, stopped the Deployment before it; or
+    /// nothing it ran does its work (a new Volume no Service mounts).
     NotAttempted,
     /// It needed no operation.
     Unchanged,
@@ -249,6 +250,13 @@ pub enum Outcome {
         #[serde(default)]
         needs_upload: Vec<ServiceName>,
     },
+    /// A removal that needed no runner: nothing of its Environment ever ran on a
+    /// Server.
+    NeverRan,
+    /// A removal that completed only in configuration: Cloud counted no Server left,
+    /// so whatever the Servers that ran it still run was left there. Its nodes read
+    /// Unknown.
+    Forgotten,
 }
 
 /// Evidence a runner records about the Deployment it claimed.
@@ -431,6 +439,9 @@ impl Frozen {
 struct Run {
     preview: Option<Value>,
     outcome: Option<Outcome>,
+    /// A digest of the Executed evidence recorded: a replay must match it.
+    #[serde(default)]
+    executed: Option<String>,
     /// Each target node's Node Outcome, by node ID, once execution ran.
     #[serde(default)]
     nodes: BTreeMap<String, NodeStatus>,

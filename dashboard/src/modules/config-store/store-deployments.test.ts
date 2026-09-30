@@ -2,7 +2,7 @@ import type { DeploymentView, DiffView, ServiceListing } from "@ployz/sdk";
 import { expect, it } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
 import {
-  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs,
+  canFixOnBranch, changeGroups, deploymentActions, deploymentByline, deploymentStatusLabel, deploysLabel, focusedService, missingDeployLogs, outcomeReason,
   nodeLight, nodeOutcomeLabel, shownValue, uploadLabel,
 } from "./store-deployments";
 
@@ -112,6 +112,7 @@ it("says why a Service has no deploy logs: the Deployment never ran, or its turn
   expect(missingDeployLogs(deployment({}), node("api", "not_attempted"))).toBe("Not attempted");
   expect(missingDeployLogs(deployment({}), node("cron", "removed"))).toBe("Removed");
   expect(missingDeployLogs(deployment({}), node("web", "failed"))).toBeNull();
+  expect(missingDeployLogs(deployment({ started_at: null, outcome: { type: "forgotten" } }), node("web", "unknown"))).toBe("Nothing ran on a server");
 });
 
 
@@ -128,6 +129,10 @@ it("words a Deployment that takes its Environment off the Servers as the Branch 
   expect(deploymentStatusLabel({ status: "applied", remove: true })).toBe("Off the servers");
   expect(deploymentStatusLabel({ status: "failed", remove: true })).toBe("Failed");
   expect(deploymentStatusLabel({ status: "applied", remove: false })).toBe("Deployed");
+  // No Server was left to take it off: it says so, and why.
+  expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "forgotten" } })).toBe("Removed from Ployz");
+  expect(outcomeReason({ type: "forgotten" })).toContain("still there");
+  expect(deploymentStatusLabel({ status: "applied", remove: true, outcome: { type: "never_ran" } })).toBe("Off the servers");
   expect(deploysLabel({ services: [], remove: true })).toBeNull();
   expect(deploysLabel({ services: ["web", "api"], remove: false })).toBe("Deploys web, api");
 });

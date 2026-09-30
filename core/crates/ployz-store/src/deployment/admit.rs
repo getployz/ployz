@@ -5,7 +5,7 @@
 
 use ployz_core::config::SavedEnvironmentIntent;
 use ployz_core::config::canonicalize_environment_intent;
-use ployz_core::{RpcError, RpcErrorCode, ServiceName};
+use ployz_core::{Namespace, RpcError, RpcErrorCode, ServiceName};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
@@ -140,23 +140,38 @@ pub(crate) fn admit(
         // which the copied target nodes carry: nothing new, so no new review.
         Admit::Retry(retry) => {
             let retried = deployment::retry(tx, who, &retry.id, &retry.deployment)?;
-            if retried.remove && trusted.no_servers() {
-                return deployment::forget(tx, &retried.id);
+            if retried.remove
+                && let Some(outcome) =
+                    deployment::forgettable(tx, &retried.environment_id, trusted)?
+            {
+                return deployment::forget(tx, &retried.id, outcome);
             }
             trusted.runnable()?;
             Ok(retried)
         }
         Admit::Remove(removal) => self::removal(tx, who, removal, trusted),
-        Admit::Deploy(deploy) => {
-            trusted.runnable()?;
-            self::deploy(tx, who, deploy, trusted)
-        }
+        Admit::Deploy(deploy) => self::deploy(tx, who, deploy, trusted),
     }
+}
+
+/// The gate every Deploy passes, the user's or the Store's own: a Server to run
+/// it, the Cluster Domain its generated domains expand under, and no hostname
+/// another Namespace publishes.
+pub(crate) fn gate(
+    tx: &mut dyn Tx,
+    who: &Actor,
+    (environment, intent): (&scope::Environment, &SavedEnvironmentIntent),
+    (cluster_domain, namespace): (Option<&Hostname>, &Namespace),
+    trusted: &Trusted,
+) -> Result<(), RpcError> {
+    trusted.runnable()?;
+    needs_cluster_domain(environment, intent, cluster_domain)?;
+    domain::check_published(tx, who, intent, (cluster_domain, namespace), trusted)
 }
 
 /// Refuse to deploy `environment`'s generated domains without the Cluster Domain
 /// they expand under: Cloud reserves it at a Deploy.
-pub(crate) fn needs_cluster_domain(
+fn needs_cluster_domain(
     environment: &scope::Environment,
     intent: &SavedEnvironmentIntent,
     cluster_domain: Option<&Hostname>,
@@ -181,6 +196,7 @@ fn deploy(
     admit: &Deploy,
     trusted: &Trusted,
 ) -> Result<DeploymentSummary, RpcError> {
+    trusted.runnable()?;
     let environment = scope::lock(tx, who, &admit.environment)?;
     // Cloud reserves the Cluster Domain before admitting a generated domain.
     let cluster_domain = trusted
@@ -188,16 +204,15 @@ fn deploy(
         .cluster_domain
         .as_ref()
         .map(|cluster| &cluster.name);
-    needs_cluster_domain(&environment, &environment.working, cluster_domain)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let id = &environment.summary.id;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let saved_intent = canonicalize_environment_intent(environment.working.clone());
-    domain::check_published(
+    gate(
         tx,
         who,
-        &saved_intent,
+        (&environment, &saved_intent),
         (cluster_domain, &namespace),
         trusted,
     )?;
@@ -247,8 +262,8 @@ fn deploy(
 /// Queue the Deployment that removes an Environment from the Servers: the empty
 /// Environment against everything Applied State holds, under the same destructive
 /// review as any Deploy. A running Deployment must end first, so the removal's
-/// targets are everything that ran. With nothing on a Server, because none is left
-/// or nothing ran, it applies at once: no runner, and no data to lose.
+/// targets are everything that ran. When nothing of it ever ran, or no Server is
+/// left, it applies at once ([`deployment::forgettable`]): no runner, no review.
 fn removal(
     tx: &mut dyn Tx,
     who: &Actor,
@@ -272,12 +287,12 @@ fn removal(
             json!({ "deployment": running.id }),
         ));
     }
-    let forget = trusted.no_servers() || crate::teardown::on_servers(tx, id)?.is_none();
+    let forget = deployment::forgettable(tx, id, trusted)?;
     let review = review::review(tx, &environment)?;
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = crate::scope::empty(&environment.working.environment_slug);
-    let losses = if forget {
+    let losses = if forget.is_some() {
         Vec::new()
     } else {
         let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
@@ -310,8 +325,8 @@ fn removal(
     if admit.close {
         crate::pull_request::mark_closing(tx, id)?;
     }
-    if forget {
-        return deployment::forget(tx, &admitted.id);
+    if let Some(outcome) = forget {
+        return deployment::forget(tx, &admitted.id, outcome);
     }
     Ok(admitted)
 }
