@@ -17,7 +17,7 @@ import {
 import { createRetireServerAccess } from "#/modules/machines/server-access.inngest";
 import { createPruneOrganizationChangeLog } from "#/modules/organization/change-log.inngest";
 import {
-  createCancelStoreDeployment, createRedispatchStoreDeployments, createRunStoreDeployment,
+  createCancelStoreDeployment, createDeployToFirstServer, createRedispatchStoreDeployments, createRunStoreDeployment,
 } from "#/modules/config-store/store-deployment.inngest";
 import {
   createStoreGithubCheckSuite, createStoreGithubPush, createStorePrCheck, createStorePullRequest, createStoreSweep,
@@ -39,6 +39,7 @@ export function createInngestFunctions(inngest: PloyzInngest) {
     createRunStoreDeployment(inngest),
     createCancelStoreDeployment(inngest),
     createRedispatchStoreDeployments(inngest),
+    createDeployToFirstServer(inngest),
     createStoreGithubPush(inngest),
     createStoreGithubCheckSuite(inngest),
     createStorePullRequest(inngest),

@@ -32,13 +32,12 @@ import {
 } from "#/modules/machines/enrollment";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
-import { createClusterDomainSyncRequestedEvent } from "#/modules/inngest/events";
+import { createClusterDomainSyncRequestedEvent, createConfigFirstServerJoinedEvent } from "#/modules/inngest/events";
 import { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import { Conflict, NotFound, Unauthorized, Validation } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { decryptPairingSecret, loadOrganizationConnections } from "#/modules/machines/connections.server";
-import { callStore, readStore } from "#/modules/config-store/config-store.server";
 
 const TOKEN_PREFIX = "pmet_";
 
@@ -489,40 +488,21 @@ export const completeMachineEnrollment = Effect.fn(
       yield* recordJoined(input.token, machineId);
       return { machineId };
     }
-    const founded = yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
+    // Past this, `machineId` is the founder: false only when a retried completion founded it already.
+    yield* database.transaction(commitFounder(token.organizationId, machineId, row.encryptedPairingSecret));
     // A Cluster Domain that survived teardown points at the founder once the sync reads the runtime frame;
     // completion never sees the founder's IP, and the hourly sync covers a lost event.
     yield* sendInngestEvent(createClusterDomainSyncRequestedEvent({ organizationId: token.organizationId })).pipe(
       Effect.catch((error) => Effect.logWarning("Cluster Domain sync request failed; enrollment continues.", error)),
     );
     yield* recordJoined(input.token, machineId);
-    // ponytail: best effort and once; a completion retried after this commit, or a crash here, deploys nothing (Deploy does).
-    if (founded) {
-      yield* deployPublished(token.organizationId).pipe(
-        Effect.catch((error) => Effect.logWarning("Deploying published Environments to the first Server failed; enrollment continues.", error)),
-      );
-    }
+    // Its published Environments deploy to it, durably: a retried completion sends this again, and Inngest runs it once.
+    yield* sendInngestEvent(createConfigFirstServerJoinedEvent({ organizationId: token.organizationId })).pipe(
+      Effect.catch((error) => Effect.logWarning("Deploying to the first Server was not requested; its Deploy button does it.", error)),
+    );
     return { machineId };
   },
 );
-
-/**
- * The Organization's first Server joined: deploy every Environment with published (Saved) state to it, as its Deploy
- * button would. A refusal (a Deploy that would delete data asks first) leaves that Environment for the user.
- */
-const deployPublished = Effect.fn("MachineEnrollment.deployPublished")(function* (organizationId: string) {
-  const { projects } = yield* readStore(organizationId, { query: "projects" });
-  const environments = projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment })));
-  yield* Effect.forEach(environments, (environment) => Effect.gen(function* () {
-    const diff = yield* readStore(organizationId, { query: "diff", environment });
-    if (diff.saved === null) return;
-    // No member admits it, and nothing uploads.
-    const result = yield* callStore(organizationId, null, { operation: "write", command: {
-      command: "admit", admit: "deploy", id: crypto.randomUUID(), environment, services: [], version: null, accept_volume_loss: [],
-    } });
-    if (!result.ok) yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
-  }), { discard: true });
-});
 
 /**
  * Makes `machineId` the Organization's founder, once, while the founding attempt it confirms is still current; true

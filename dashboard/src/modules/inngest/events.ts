@@ -68,6 +68,7 @@ export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
 export const configDeploymentAdmittedEvent = "config/deployment.admitted";
 export const configPrCheckRequestedEvent = "config/pr-check.requested";
 export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
+export const configFirstServerJoinedEvent = "config/first-server.joined";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -98,6 +99,11 @@ export type MachineRemoveRequestedEventData = {
 };
 
 export type ClusterDomainSyncRequestedEventData = {
+  organizationId: string;
+};
+
+/** The Organization's first Server joined: its published Environments deploy to it. */
+export type ConfigFirstServerJoinedEventData = {
   organizationId: string;
 };
 
@@ -184,6 +190,10 @@ export const serverPolicyChangeRequestedEventType = eventType(
   serverPolicyChangeRequestedEvent,
   { schema: staticSchema<ServerPolicyChangeRequestedEventData>() },
 );
+export const configFirstServerJoinedEventType = eventType(
+  configFirstServerJoinedEvent,
+  { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
+);
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
@@ -251,6 +261,11 @@ export function createServerPolicyChangeRequestedEvent(
   data: ServerPolicyChangeRequestedEventData,
 ) {
   return { name: serverPolicyChangeRequestedEvent, data } as const;
+}
+
+/** Keyed by Organization: a retried completion sends it again, and Inngest runs it once. */
+export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoinedEventData) {
+  return { id: `config-first-server-joined-${data.organizationId}`, name: configFirstServerJoinedEvent, data } as const;
 }
 
 export function createClusterDomainSyncRequestedEvent(
@@ -409,6 +424,7 @@ export type InngestSendableEvent =
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
+  | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
   | ReturnType<typeof createConfigDeploymentAdmittedEvent>
   | ReturnType<typeof createServerAccessRetireRequestedEvent>

@@ -5,7 +5,7 @@ import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { cancelStoreGithubBuilds, connectionsOf, requestChecks } from "#/modules/config-store/config-store.server";
+import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
@@ -193,4 +193,28 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
     organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,
   }));
+});
+
+/** The Organization's Environments with published (Saved) state: what a first Server runs as soon as it joins. */
+export const publishedEnvironments = Effect.fn("StoreDeployment.published")(function* (organizationId: string) {
+  const { projects } = yield* readStore(organizationId, { query: "projects" });
+  const environments = projects.flatMap((project) => project.environments.map((environment) => ({ project: project.name, environment })));
+  const saved = yield* Effect.forEach(environments, (environment) =>
+    readStore(organizationId, { query: "diff", environment }).pipe(Effect.map((diff) => diff.saved === null ? [] : [environment])));
+  return saved.flat();
+});
+
+/**
+ * Deploy `environment` to the Organization's first Server, as its Deploy button would; no member admits it and nothing
+ * uploads. A refusal (a Deploy that would delete data asks first) leaves it for the user.
+ */
+export const deployToFirstServer = Effect.fn("StoreDeployment.deployToFirstServer")(function* (
+  organizationId: string, environment: { project: string; environment: string },
+) {
+  const result = yield* callStore(organizationId, null, { operation: "write", command: {
+    command: "admit", admit: "deploy", id: crypto.randomUUID(), environment, services: [], version: null, accept_volume_loss: [],
+  } });
+  if (result.ok) return { admitted: true };
+  yield* Effect.logInfo(`Not deploying ${environment.project}/${environment.environment} to the first Server: ${result.refusal.message}`);
+  return { refused: result.refusal.code };
 });

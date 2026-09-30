@@ -1,11 +1,11 @@
 import {
-  cancelStoreDeploymentRun, forgetStoreDeploymentRun, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
+  cancelStoreDeploymentRun, deployToFirstServer, forgetStoreDeploymentRun, publishedEnvironments, recordStoreDeploymentRun, runStoreDeployment, type StoreEffectRunner,
   stopStoreDeploymentRun, storeDeploymentRunner, unclaimedStoreDeployments,
 } from "#/modules/config-store/store-deployment.server";
 import type { PloyzInngest } from "#/modules/inngest/client";
 import { decodeInngestEnvelope } from "#/modules/inngest/envelope";
 import {
-  configDeploymentAdmittedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
+  configDeploymentAdmittedEventType, configFirstServerJoinedEventType, createConfigDeploymentStartedEvent, githubBuildRunCompletedEvent, inngestFunctionCancelledEnvelopeSchema,
   inngestFunctionCancelledEventType,
 } from "#/modules/inngest/events";
 import {
@@ -106,3 +106,22 @@ async function walkGithub(organizationId: string, target: StoreGithubTarget, ste
     if (found === "done") return;
   }
 }
+
+/**
+ * The Organization's first Server joined: each Environment with published state deploys to it, each its own step so a
+ * retry never admits one twice.
+ */
+export const createDeployToFirstServer = (inngest: PloyzInngest, runEffect: StoreEffectRunner = runInngestEffect) =>
+  inngest.createFunction(
+    { id: "deploy-to-first-server", retries: 3, triggers: [{ event: configFirstServerJoinedEventType }] },
+    async ({ event, step }) => {
+      const { organizationId } = event.data;
+      const environments = await step.run("published", () => runEffect(publishedEnvironments(organizationId)));
+      const deployed = [];
+      for (const environment of environments) {
+        const name = `${environment.project}/${environment.environment}`;
+        deployed.push({ environment: name, ...await step.run(`deploy-${name}`, () => runEffect(deployToFirstServer(organizationId, environment))) });
+      }
+      return deployed;
+    },
+  );

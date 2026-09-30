@@ -136,7 +136,7 @@ function enrollmentTestClient(
     Layer.succeed(Database, database),
     Layer.succeed(InngestClient, inngest),
     Layer.succeed(SecretEncryption, enrollmentSettings.encryption),
-    // The founder's join deploys published Environments through the Store; these tests publish none.
+    // The founder's join asks for its published Environments to deploy (an Inngest event); these tests publish none.
     Layer.succeed(GithubApi, fakeGithubApi().service),
     Layer.succeed(Polar, { mode: "self_hosted" }),
   );
