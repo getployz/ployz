@@ -1,4 +1,4 @@
-//! Uncloud-shaped stdout for a Deploy Preview and its progress events.
+//! Tree-shaped stdout for a Deploy Preview and its progress events.
 //!
 //! No planner lives here. The CLI passes a preview and a recorded event stream.
 

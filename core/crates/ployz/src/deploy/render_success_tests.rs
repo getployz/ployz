@@ -10,7 +10,7 @@ fn success_with_ingress_deduplicates_endpoints() {
         "container": { "image": "excalidraw/excalidraw:latest", "pull_policy": "missing" },
         "ports": [{
             "mode": "ingress",
-            "hostname": "excalidraw.example.uncld.dev",
+            "hostname": "excalidraw.acme.ployz.app",
             "load_balancer_port": 443,
             "container_port": 80,
             "http_protocol": "https"
@@ -36,11 +36,11 @@ fn success_with_ingress_deduplicates_endpoints() {
     };
     let text = outcome_text(&outcome);
     assert_eq!(
-        text.matches("https://excalidraw.example.uncld.dev").count(),
+        text.matches("https://excalidraw.acme.ployz.app").count(),
         1,
         "{text}"
     );
-    assert!(text.contains("excalidraw → :80\n  https://excalidraw.example.uncld.dev"));
+    assert!(text.contains("excalidraw → :80\n  https://excalidraw.acme.ployz.app"));
 }
 
 #[test]
