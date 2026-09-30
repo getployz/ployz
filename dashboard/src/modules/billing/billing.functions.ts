@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { Schema } from "effect";
 import {
+  createCustomerPortal,
   createEmbeddedCheckout,
   getBillingState,
 } from "#/modules/billing/billing.server";
@@ -29,4 +30,11 @@ export const createEmbeddedCheckoutServerFn = createServerFn({ method: "POST" })
   .validator(strictValidator(BillingStateRequest))
   .handler(({ context, data }) =>
     runActor(context, createEmbeddedCheckout(context.actor, data)),
+  );
+
+export const createCustomerPortalServerFn = createServerFn({ method: "POST" })
+  .middleware(middleware)
+  .validator(strictValidator(BillingStateRequest))
+  .handler(({ context, data }) =>
+    runActor(context, createCustomerPortal(context.actor, data)),
   );

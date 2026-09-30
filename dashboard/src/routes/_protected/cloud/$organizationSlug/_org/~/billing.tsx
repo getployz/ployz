@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, useHydrated } from "@tanstack/react-router";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { createFileRoute, useHydrated, useNavigate } from "@tanstack/react-router";
+import { Schema } from "effect";
 import { useServerFn } from "@tanstack/react-start";
 import { CheckIcon, HeartIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -11,16 +12,17 @@ import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import { authClient } from "#/auth/auth-client";
 import { cn } from "#/lib/utils";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
-import { createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
+import { createCustomerPortalServerFn, createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
 import { openCheckoutWhileHere } from "#/modules/billing/checkout";
 import { prefetchRemote, requireBilling } from "#/collections/route-data";
 
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/billing"
 )({
+  // Polar's checkout comes back here with the checkout it completed.
+  validateSearch: Schema.toStandardSchemaV1(Schema.Struct({ checkout_id: Schema.optional(Schema.String) })),
   loader: async ({ params, context }) => {
     await requireBilling(context, params.organizationSlug);
     await prefetchRemote(context, billingStateQueryOptions(params.organizationSlug));
@@ -60,7 +62,18 @@ function BillingError() {
 
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
+  const { checkout_id: checkoutId } = Route.useSearch();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const queryClient = useQueryClient();
   const isHydrated = useHydrated();
+  const createCustomerPortal = useServerFn(createCustomerPortalServerFn);
+
+  useEffect(() => {
+    if (checkoutId === undefined) return;
+    toast.success("You're on Pro. Thanks for supporting Ployz!");
+    void queryClient.invalidateQueries(billingStateQueryOptions(organizationSlug));
+    void navigate({ search: {}, replace: true });
+  }, [checkoutId]);
   const { data: billingState } = useSuspenseQuery(
     billingStateQueryOptions(organizationSlug)
   );
@@ -88,14 +101,8 @@ function RouteComponent() {
   async function openBillingPortal() {
     try {
       setPending(true);
-      const response = await authClient.customer.portal();
-      const portalUrl = response.data?.url;
-
-      if (!portalUrl) {
-        throw new Error("Missing portal URL");
-      }
-
-      window.location.href = portalUrl;
+      const { customerPortalUrl } = await createCustomerPortal({ data: { organizationSlug } });
+      window.location.href = customerPortalUrl;
     } catch {
       toast.error("Unable to open billing portal.");
     } finally {
