@@ -1,18 +1,17 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigStore, GitSource } from "@ployz/sdk";
-import { Data, Effect } from "effect";
+import type { ConfigStore, DeploymentStatus, GitSource } from "@ployz/sdk";
+import { Data, Effect, Option } from "effect";
 import type { InngestClient } from "#/modules/inngest/client";
 import type { Polar } from "#/modules/billing/polar-provider.server";
 import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { cancelStoreGithubBuilds, requestChecks } from "#/modules/config-store/config-store.server";
+import { cancelStoreGithubBuilds, connectionsOf, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
 import { GithubSourceError, materializeGithubSource, resolveGithubSourceSha } from "#/modules/github/github-source.server";
 import type { ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { AppConfig } from "#/server/config.server";
 import { Database } from "#/server/database.server";
 import type { SecretEncryption } from "#/utils/encrypted-secret.server";
@@ -81,8 +80,7 @@ export const runStoreDeployment = Effect.fn("StoreDeployment.run")(function* (
   runner: string,
 ) {
   const store = yield* cloudStore;
-  const loaded = yield* loadOrganizationConnections(data.organizationId);
-  const connections = loaded.kind === "ready" ? loaded.connections : [];
+  const connections = yield* connectionsOf(data.organizationId);
   return yield* Effect.gen(function* () {
     const sources = yield* Effect.all({
       checkouts: checkoutSources(store, data.organizationId, data.deploymentId),
@@ -107,16 +105,18 @@ const released = (store: ConfigStore, organizationId: string, deploymentId: stri
     Effect.catchCause((cause) => Effect.logWarning("Keeping an upload Cloud couldn't release.", cause)),
   );
 
-/** Every attempt of `runner` failed: the Store records that it stopped, so the Deployment never reads running. */
-export const abandonStoreDeployment = Effect.fn("StoreDeployment.abandon")(function* (
-  organizationId: string, deploymentId: string, runner: string,
+/**
+ * A run that never claimed its Deployment stopped: nothing else will run it now, so it ends cancelled rather than wait
+ * queued to be handed over again. One another runner claimed, or that already ended, is left as it is.
+ * ponytail: read-then-cancel; a duplicate run claiming it in between is cancelled with it.
+ */
+const cancelUnclaimed = Effect.fn("StoreDeployment.cancelUnclaimed")(function* (
+  store: ConfigStore, organizationId: string, deploymentId: string, why: string,
 ) {
-  const store = yield* cloudStore;
-  return yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, runner) })).pipe(
-    // It never claimed it, or another runner owns it now.
-    Effect.catchIf(refusedWith("conflict"), (refused) => Effect.succeed({ nothingToRun: refused.message })),
-    Effect.ensuring(released(store, organizationId, deploymentId)),
-  );
+  const view = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId }));
+  if (view.status !== "queued" || view.runner !== null) return { nothingToRun: why };
+  yield* storeTry(() => store.write(organizationId, { command: "cancel", deployment: deploymentId }));
+  return { cancelled: deploymentId };
 });
 
 /** A run is one durable runner: its retried steps claim as the same runner, and a duplicate delivery is another. */
@@ -138,17 +138,23 @@ export const forgetStoreDeploymentRun = Effect.fn("StoreDeployment.forgetRun")(f
 });
 
 /**
- * Run `runId` stopped without finishing: its Deployment's GitHub builds stop and the Store records that it stopped,
- * each whether or not the other could, so the Deployment never reads running. Fails, to be retried, if either failed.
+ * Run `runId` stopped without finishing: its Deployment's GitHub builds stop and the Store records that it stopped (or,
+ * never claimed, that it was cancelled), each whether or not the other could, so the Deployment never reads running or
+ * waits queued for nobody. Fails, to be retried, if either failed.
  */
 export const stopStoreDeploymentRun = Effect.fn("StoreDeployment.stopRun")(function* (
   organizationId: string, deploymentId: string, runId: string,
 ) {
+  const store = yield* cloudStore;
   const cancelled = yield* Effect.exit(cancelStoreGithubBuilds(organizationId, deploymentId));
-  const abandoned = yield* abandonStoreDeployment(organizationId, deploymentId, storeDeploymentRunner(runId));
+  const stopped = yield* storeTry(async () => ({ abandoned: await store.abandonDeployment(deploymentId, storeDeploymentRunner(runId)) })).pipe(
+    // It never claimed it, or another runner owns it now.
+    Effect.catchIf(refusedWith("conflict"), (refused) => cancelUnclaimed(store, organizationId, deploymentId, refused.message)),
+    Effect.ensuring(released(store, organizationId, deploymentId)),
+  );
   yield* cancelled;
   yield* forgetStoreDeploymentRun(runId);
-  return abandoned;
+  return stopped;
 });
 
 /** Inngest cancelled run `runId`: stop what it ran, if it is a run of the worker. */
@@ -162,21 +168,29 @@ export const cancelStoreDeploymentRun = Effect.fn("StoreDeployment.cancelRun")(f
 /** How long an admission has to reach its worker before Cloud hands it over again. */
 const UNCLAIMED_AFTER_SECONDS = 60;
 
+/** Statuses of a Deployment still in flight. */
+const IN_FLIGHT: ReadonlySet<DeploymentStatus> = new Set(["queued", "running", "cancelling"]);
+
 /**
- * Queued Deployments whose hand-off to the worker looks lost, in every Organization: admitted over a minute ago, and
- * no worker run is recorded for a Deployment of their Environment still in flight (a run records itself first, so one
- * waiting its turn or walking its GitHub builds holds its Environment's queue; a stale record of an ended one doesn't). A lost send or a run dropped across a Cloud redeploy stalls there.
- * ponytail: reads the Store's table directly until the Store answers this itself.
+ * Queued Deployments whose hand-off to the worker looks lost, in every Organization: the Store's unclaimed ones admitted
+ * over a minute ago, less those in an Environment where a recorded worker run holds a Deployment still in flight (a run
+ * records itself first, so one waiting its turn or walking its GitHub builds holds its Environment's queue; a stale
+ * record of an ended one doesn't). A lost send or a run dropped across a Cloud redeploy stalls there.
+ * ponytail: reads each recorded run's Deployment; runs are few (one per Deployment in flight).
  */
 export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(function* (now: Date) {
-  const { drizzle } = yield* Database;
+  const store = yield* cloudStore;
   const before = Math.floor(now.getTime() / 1000) - UNCLAIMED_AFTER_SECONDS;
-  const rows = yield* drizzle.execute<{ id: string; organization_id: string; environment_id: string }>(sql`
-    select d.id, d.organization_id, d.environment_id from config_deployment d
-    where d.status = 'queued' and d.admitted < ${before} and not exists (
-      select 1 from deployment_run r join config_deployment o on o.id = r.deployment_id
-      where o.environment_id = d.environment_id and o.status in ('queued', 'running', 'cancelling'))`, "objects");
-  return rows.map((row): ConfigDeploymentAdmittedEventData => ({
-    organizationId: row.organization_id, environmentId: row.environment_id, deploymentId: row.id,
+  const unclaimed = yield* storeTry(() => store.unclaimed(before));
+  if (unclaimed.length === 0) return [];
+  const { drizzle } = yield* Database;
+  const runs = yield* drizzle.select().from(deploymentRun);
+  const held = new Set<string>();
+  for (const run of runs) {
+    const view = yield* storeTry(() => store.read(run.organizationId, { query: "deployment", id: run.deploymentId })).pipe(Effect.option);
+    if (Option.isSome(view) && IN_FLIGHT.has(view.value.status)) held.add(view.value.environment.id);
+  }
+  return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
+    organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,
   }));
 });

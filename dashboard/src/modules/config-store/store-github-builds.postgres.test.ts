@@ -129,7 +129,10 @@ it.live(
         .toMatchObject([{ build: `${serversFirst}.web`, hasNext: false }]);
 
       // An admission carries how many Servers could run it: none here.
-      const admission = { operation: "write", command: { command: "start", deployment: serversFirst } } as const;
+      const admission = { operation: "write", command: {
+        command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: { project: null, environment: null },
+        services: [], version: null, accept_volume_loss: [],
+      } } as const;
       const trusted = yield* provided(gatherTrusted(ORGANIZATION, admission, (query) => store.read(ORGANIZATION, query)));
       expect(trusted.servers).toBe(0);
     }),

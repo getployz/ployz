@@ -1,14 +1,13 @@
 import "@tanstack/react-start/server-only";
 import type { GithubBuild, GithubClaims } from "@ployz/sdk";
 import { Effect } from "effect";
-import { cancelStoreGithubBuilds } from "#/modules/config-store/config-store.server";
+import { cancelStoreGithubBuilds, connectionsOf } from "#/modules/config-store/config-store.server";
 import { cloudStore, refusedWith, type StoreRefused, storeTry } from "#/modules/config-store/store-sdk.server";
 import { pinStoreSources } from "#/modules/config-store/store-deployment.server";
 import { cancelGithubRun, checkGithubBuildWorkflow, dispatchGithubBuildWorkflow, githubRunCompleted } from "#/modules/github/github-build.server";
 import { verifyGithubOidcToken } from "#/modules/github/github-oidc.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import { createGithubBuildRunCompletedEvent, type ConfigDeploymentAdmittedEventData } from "#/modules/inngest/events";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
 import { OrganizationRuntime, RUNTIME_FRAME_TIMEOUT_MS } from "#/modules/runtime/organization-runtime.server";
 import { AppConfig } from "#/server/config.server";
 import { BuildGrantUnavailable, Conflict, Forbidden, NotFound, Unauthorized, Validation } from "#/server/public-error";
@@ -41,11 +40,6 @@ export type StoreGithubTarget = {
   /** Another Builder follows in its walk, so GitHub gets START_WITHIN_MINUTES to start it. */
   hasNext: boolean;
 };
-
-const connectionsOf = Effect.fn("StoreGithub.connections")(function* (organizationId: string) {
-  const loaded = yield* loadOrganizationConnections(organizationId);
-  return loaded.kind === "ready" ? loaded.connections : [];
-});
 
 /**
  * Whether any Server takes builds now, as the Cluster reports it. No answer reads as yes: the runner then says why the
