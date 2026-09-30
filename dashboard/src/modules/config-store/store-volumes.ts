@@ -29,7 +29,7 @@ export function createVolumeCommand(id: string, environment: EnvironmentRef, nam
 
 /** Invalid managed limits never become an implicit Docker opt-out. */
 export function volumeStorage(managed: boolean, sizeGB: string): VolumeKind | null {
-  if (!managed) return { kind: "local" };
+  if (!managed) return { kind: "docker" };
   const maximumBytes = Number(sizeGB) * 1_000_000_000;
   return Number.isSafeInteger(maximumBytes) && maximumBytes >= 1_000_000
     ? { kind: "provisioned", maximumBytes } : null;

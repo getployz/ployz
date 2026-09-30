@@ -760,7 +760,7 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
         );
         assert_eq!(
             ok(store, &["volume", "set", "data", "--docker"])["volume"]["storage"],
-            json!({"kind":"local"})
+            json!({"kind":"docker"})
         );
         assert_eq!(
             ok(store, &["volume", "set", "data", "--size", "7GB"])["volume"]["storage"],
@@ -774,7 +774,7 @@ fn an_agent_adds_mounts_detaches_and_removes_volumes() {
         );
         assert_eq!(
             ok(store, &["volume", "add", "logs", "--docker"])["volume"]["storage"],
-            json!({"kind":"local"})
+            json!({"kind":"docker"})
         );
         // A rename is staged; a name another Volume has is refused.
         let taken = error(store, &["volume", "rename", "logs", "data"]);
