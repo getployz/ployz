@@ -201,6 +201,11 @@ pub(crate) fn edit(
             list.push(path);
         }
     }
+    for path in &staged {
+        if let Some(Target::Variable(key)) = path.target() {
+            variables::check_references(&environment, path.settings_of()?, key)?;
+        }
+    }
     crate::git::check_sources(&before, &environment.working, trusted)?;
     if environment.working != before {
         scope::save_working(tx, &mut environment)?;

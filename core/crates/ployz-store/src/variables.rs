@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ployz_core::config::{
-    CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult, ResolverValue,
+    BUILT_IN_VARIABLES, CompiledEnvironmentIntent, ResolveVariablesInput, ResolveVariablesResult, ResolverValue,
     SavedServiceIntent, SavedVariableIntent, SavedVariableValue, ServiceEnvValue, ValuePart,
     ValuePartOwner, VariableProducer, parse_variable_template, render_variable_parts,
     resolve_variables,
@@ -228,6 +228,12 @@ pub(crate) fn text_value(
             .find(|(_, slug)| slug.as_str() == name)
             .map(|(lineage, _)| lineage.clone())
     });
+    if template.unterminated {
+        return Err(invalid(
+            key,
+            "a `${{` has no closing `}}`: finish the reference, or write `$${{` for a literal `${{`",
+        ));
+    }
     if let Some(name) = template.unresolved.first() {
         let names = names.values().map(String::as_str);
         return Err(error::invalid(
@@ -248,6 +254,69 @@ pub(crate) fn text_value(
         },
     };
     Ok((value, fingerprint))
+}
+
+/// Refuse variable `key` of `service` if it references a variable its Service
+/// doesn't have. Checked once an edit is whole, so a batch may set both in any
+/// order. A node the Environment uses live isn't checked: its owner provides them.
+pub(crate) fn check_references(
+    environment: &Environment,
+    service: &ServiceName,
+    key: &VariableKey,
+) -> Result<(), RpcError> {
+    let Some(SavedVariableValue::Template { parts }) = environment
+        .service(service)?
+        .variables
+        .iter()
+        .find(|variable| variable.key == key.as_str())
+        .map(|variable| &variable.value)
+    else {
+        return Ok(());
+    };
+    for part in parts {
+        let ValuePart::Ref {
+            owner: ValuePartOwner::Service { lineage_id },
+            key: wanted,
+        } = part
+        else {
+            continue;
+        };
+        let Some(service) = environment
+            .working
+            .services
+            .iter()
+            .find(|service| service.lineage_id == *lineage_id)
+        else {
+            continue;
+        };
+        let has = |name: &str| service.variables.iter().any(|v| v.key == name);
+        if has(wanted) || BUILT_IN_VARIABLES.contains(&wanted.as_str()) {
+            continue;
+        }
+        let keys: Vec<&str> = sorted(service)
+            .into_iter()
+            .map(|variable| variable.key.as_str())
+            .collect();
+        return Err(error::invalid(
+            format!(
+                "{key}: {} has no variable {wanted}; it has {}, and the built-ins {}",
+                service.slug,
+                if keys.is_empty() {
+                    "none of its own".to_owned()
+                } else {
+                    keys.join(", ")
+                },
+                BUILT_IN_VARIABLES.join(", "),
+            ),
+            json!({
+                "variable": key.as_str(),
+                "service": service.slug,
+                "keys": keys,
+                "built_ins": BUILT_IN_VARIABLES,
+            }),
+        ));
+    }
+    Ok(())
 }
 
 fn secret(variable: &SavedVariableIntent) -> bool {
