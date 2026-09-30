@@ -861,7 +861,12 @@ preview: JsonValue | null, outcome: Outcome | null,
 /**
  * Its Git Services' builds, once their commits are pinned.
  */
-builds: Array<BuildView>, id: DeploymentId,
+builds: Array<BuildView>,
+/**
+ * Each Service's runtime name (its Private DNS name) by its name when admitted,
+ * for finding its containers.
+ */
+runtime_names: { [key in ServiceName]: ServiceName }, id: DeploymentId,
 /**
  * Counts from 1 within its Environment.
  */
@@ -1760,8 +1765,9 @@ export type NamespaceQuery = { environment: EnvironmentRef, };
 
 export type NamespaceView = { environment: EnvironmentSummary, namespace: Namespace,
 /**
- * Each Service's runtime name (its Private DNS name), by the name it has now:
- * a renamed Service's containers keep the name it was created with.
+ * Each deployed Service's runtime name (its Private DNS name, as Applied State
+ * has it), by the name it has now: a renamed Service's containers keep the name
+ * it was created with, and a staged Private DNS change isn't live yet.
  */
 services: { [key in ServiceName]: ServiceName }, };
 
@@ -2593,11 +2599,7 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: every Setting of a new Service, or the Service itself
  * for a rename or removal. Empty when nothing changed.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type ServiceStorageSpec = { placement: Placement, volumes: Array<ResolvedServiceVolume>, mounts: Array<ServiceMount>, };
 
@@ -2728,11 +2730,7 @@ volume: VolumeName,
 /**
  * Its explicit storage choice and bound.
  */
-storage: VolumeKind,
-/**
- * Refuse edits against a different Working revision.
- */
-expect: Revision | null, };
+storage: VolumeKind, };
 
 export type SettingPath = string;
 
@@ -3035,11 +3033,7 @@ environment: EnvironmentSummary,
  * What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
  * gained or lost as `SERVICE.mounts.NAME`.
  */
-staged: Array<SettingPath>,
-/**
- * What took effect at once: never anything here.
- */
-immediate: Array<SettingPath>, };
+staged: Array<SettingPath>, };
 
 export type VolumeSummary = {
 /**

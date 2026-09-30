@@ -1237,5 +1237,5 @@ fn live_commands_find_containers_by_the_runtime_name_that_deployed() {
     let deployment = store
         .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
         .unwrap();
-    assert_eq!(deployment.services.get(&web), Some(&web));
+    assert_eq!(deployment.runtime_names.get(&web), Some(&web));
 }

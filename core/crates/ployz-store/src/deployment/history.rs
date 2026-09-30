@@ -189,7 +189,7 @@ pub(crate) fn view(
             },
         })
         .collect();
-    let services = stored
+    let runtime_names = stored
         .nodes
         .iter()
         .filter_map(|node| match node {
@@ -200,7 +200,7 @@ pub(crate) fn view(
     let builds = build::views(tx, &stored)?;
     Ok(DeploymentView {
         builds,
-        services,
+        runtime_names,
         deployment: stored.summary,
         environment: environment.summary,
         namespace: stored.namespace,

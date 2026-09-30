@@ -16,7 +16,7 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::command::{Command, replayable};
 use crate::error;
-use crate::id::{EnvironmentId, Revision, VolumeId, VolumeName};
+use crate::id::{EnvironmentId, VolumeId, VolumeName};
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{SettingPath, Target};
 use crate::storage::Tx;
@@ -87,9 +87,6 @@ pub struct SetVolumeStorage {
     pub volume: VolumeName,
     /// Its explicit storage choice and bound.
     pub storage: VolumeKind,
-    #[serde(default)]
-    /// Refuse edits against a different Working revision.
-    pub expect: Option<Revision>,
 }
 
 /// A Volume created or removed in Working State, staged until a Deploy.
@@ -102,8 +99,6 @@ pub struct VolumeStaged {
     /// What waits for a Deploy: the Volume as `volumes.NAME`, and each mount it
     /// gained or lost as `SERVICE.mounts.NAME`.
     pub staged: Vec<SettingPath>,
-    /// What took effect at once: never anything here.
-    pub immediate: Vec<SettingPath>,
 }
 
 /// A Volume as results name it.
@@ -125,15 +120,7 @@ pub(crate) fn create_volume(
     let command = Command::CreateVolume(create.clone());
     replayable(tx, who, &command, |tx| {
         let mut environment = scope::lock(tx, who, &create.environment)?;
-        if environment.volume(&create.name).is_ok() {
-            return Err(error::conflict(
-                format!(
-                    "Environment {} already has a Volume named {}",
-                    environment.summary.name, create.name
-                ),
-                json!({ "volume": create.name }),
-            ));
-        }
+        taken(&environment, &create.name)?;
         let node = SavedVolumeIntent {
             resource_id: create.id.to_string(),
             // A new Volume starts its own lineage; Branch copies keep it.
@@ -161,7 +148,6 @@ pub(crate) fn create_volume(
             },
             environment: environment.summary,
             staged,
-            immediate: Vec::new(),
         })
     })
 }
@@ -172,37 +158,13 @@ pub(crate) fn rename_volume(
     rename: &RenameVolume,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &rename.environment)?;
-    let id = environment.volume(&rename.volume)?.resource_id.clone();
     let changed = rename.name != rename.volume;
     if changed {
-        if environment.volume(&rename.name).is_ok() {
-            return Err(error::conflict(
-                format!(
-                    "Environment {} already has a Volume named {}",
-                    environment.summary.name, rename.name
-                ),
-                json!({ "volume": rename.name }),
-            ));
-        }
-        environment
-            .working
-            .volumes
-            .iter_mut()
-            .find(|node| node.resource_id == id)
-            .expect("Volume was found")
-            .name = rename.name.to_string();
+        taken(&environment, &rename.name)?;
+        environment.volume_mut(&rename.volume)?.name = rename.name.to_string();
         scope::save_working(tx, &mut environment)?;
     }
-    Ok(VolumeStaged {
-        volume: summary(environment.volume(&rename.name)?)?,
-        environment: environment.summary,
-        staged: if changed {
-            vec![SettingPath::volume(&rename.name)]
-        } else {
-            Vec::new()
-        },
-        immediate: Vec::new(),
-    })
+    staged(environment, &rename.name, changed)
 }
 
 pub(crate) fn set_storage(
@@ -211,58 +173,88 @@ pub(crate) fn set_storage(
     set: &SetVolumeStorage,
 ) -> Result<VolumeStaged, RpcError> {
     let mut environment = scope::lock(tx, who, &set.environment)?;
-    environment.expect(set.expect)?;
-    let node = environment.volume(&set.volume)?;
-    let changed = node.storage != set.storage;
-    let id = node.resource_id.clone();
+    let volume = environment.volume_mut(&set.volume)?;
+    let changed = volume.storage != set.storage;
     if changed {
-        environment
-            .working
-            .volumes
-            .iter_mut()
-            .find(|node| node.resource_id == id)
-            .expect("Volume was found")
-            .storage = set.storage;
+        volume.storage = set.storage;
+        check_storage(tx, &environment.summary.id, &environment.working)?;
         scope::save_working(tx, &mut environment)?;
     }
+    staged(environment, &set.volume, changed)
+}
+
+/// Refuse a second Volume named `name`.
+fn taken(environment: &Environment, name: &VolumeName) -> Result<(), RpcError> {
+    if environment.volume(name).is_err() {
+        return Ok(());
+    }
+    Err(error::conflict(
+        format!(
+            "Environment {} already has a Volume named {name}",
+            environment.summary.name
+        ),
+        json!({ "volume": name }),
+    ))
+}
+
+/// What changing Volume `name` staged: the Volume, when anything changed.
+fn staged(
+    environment: Environment,
+    name: &VolumeName,
+    changed: bool,
+) -> Result<VolumeStaged, RpcError> {
     Ok(VolumeStaged {
-        volume: summary(environment.volume(&set.volume)?)?,
+        volume: summary(environment.volume(name)?)?,
         environment: environment.summary,
-        staged: if changed {
-            vec![SettingPath::volume(&set.volume)]
-        } else {
-            Vec::new()
+        staged: match changed {
+            true => vec![SettingPath::volume(name)],
+            false => Vec::new(),
         },
-        immediate: Vec::new(),
     })
 }
 
-/// An admitted Deployment can prepare storage even when it never applies a node.
-/// Keep its storage choice fixed, including failed and cancelled attempts and retries.
+/// Fix the storage of each Volume of `intent` that `targets` names, the first time
+/// a Deployment targets it: an attempt may prepare storage even when it never
+/// applies, failed, cancelled and retried ones included. Refuse any other storage.
+pub(crate) fn fix_storage(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    intent: &SavedEnvironmentIntent,
+    targets: &[crate::deployment::TargetNode],
+) -> Result<(), RpcError> {
+    for volume in &intent.volumes {
+        if !targets.iter().any(|node| node.id() == volume.resource_id) {
+            continue;
+        }
+        let storage = serde_json::to_string(&volume.storage).expect("storage is JSON");
+        tx.execute(
+            "INSERT INTO config_volume_storage (environment_id, volume_id, storage) \
+             VALUES (?1, ?2, ?3) ON CONFLICT (environment_id, volume_id) DO NOTHING",
+            &[
+                environment.as_str().into(),
+                volume.resource_id.as_str().into(),
+                storage.as_str().into(),
+            ],
+        )?;
+    }
+    check_storage(tx, environment, intent)
+}
+
+/// Each Volume's fixed storage, by Volume ID.
 pub(crate) fn locked_storage(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<BTreeMap<String, VolumeKind>, RpcError> {
-    // ponytail: scan this Environment's attempt history; materialize first storage choices if history makes this costly.
-    let rows = tx.query(
-        "SELECT s.intent, d.nodes FROM config_deployment d JOIN config_saved s \
-         ON s.environment_id = d.environment_id AND s.revision = d.saved_revision \
-         WHERE d.environment_id = ?1 ORDER BY d.number",
+    tx.query(
+        "SELECT volume_id, storage FROM config_volume_storage WHERE environment_id = ?1",
         &[environment.as_str().into()],
-    )?;
-    let mut locked = BTreeMap::new();
-    for row in rows {
-        let saved = row.intent(0, "Saved Volume storage")?;
-        let nodes: Vec<crate::deployment::TargetNode> = row.json(1, "Deployment nodes")?;
-        for volume in saved.volumes {
-            if nodes.iter().any(|node| node.id() == volume.resource_id) {
-                locked.entry(volume.resource_id).or_insert(volume.storage);
-            }
-        }
-    }
-    Ok(locked)
+    )?
+    .iter()
+    .map(|row| Ok((row.text(0)?.to_owned(), row.json(1, "Volume storage")?)))
+    .collect()
 }
 
+/// Refuse `intent` when it gives a Volume storage other than its fixed one.
 pub(crate) fn check_storage(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
@@ -317,7 +309,6 @@ pub(crate) fn remove_volume(
         volume,
         environment: environment.summary,
         staged,
-        immediate: Vec::new(),
     })
 }
 

@@ -182,7 +182,6 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
             environment: store::environment(matches)?,
             volume: volume.clone(),
             storage: requested_storage(matches),
-            expect: None,
         })
         .map_err(store::failed(matches, &["volume", "set", volume.as_str()]))?;
     staged(matches, &changed, "Staged Volume storage")

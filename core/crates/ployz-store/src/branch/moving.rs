@@ -571,6 +571,7 @@ pub(crate) fn land(
     picks: &[BranchPick],
 ) -> Result<Vec<NodeName>, RpcError> {
     let before = std::mem::replace(&mut branch.working, next);
+    crate::volume::check_storage(tx, &branch.summary.id, &branch.working)?;
     scope::save_working(tx, branch)?;
     let id = branch.summary.id.clone();
     let source_of = |lineage: &str| {
