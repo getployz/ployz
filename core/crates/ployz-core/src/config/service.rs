@@ -44,10 +44,9 @@ pub struct AuthoredServiceConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceTemplate {
-    /// The template, as a DNS label such as `postgres`.
-    pub id: String,
-    /// Its version, from 1.
-    pub version: u32,
+    pub id: crate::ServiceTemplateId,
+    #[ts(type = "number")]
+    pub version: std::num::NonZeroU32,
 }
 
 /// Service settings with environment and attachments derived by compilation.

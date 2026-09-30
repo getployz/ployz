@@ -296,7 +296,7 @@ fn a_partial_outcome_applies_only_confirmed_nodes() {
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     // The Deployment says why, in words users read.
-    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.outcome else {
+    let Some(ployz_store::Outcome::Executed { reason, .. }) = view.deployment.outcome else {
         panic!("an executed outcome");
     };
     assert_eq!(
@@ -524,7 +524,7 @@ fn a_runner_that_stops_before_preparing_executed_nothing() {
         .unwrap();
     assert_eq!(view.deployment.status, DeploymentStatus::Failed);
     assert!(matches!(
-        view.outcome,
+        view.deployment.outcome,
         Some(ployz_store::Outcome::NotExecuted { .. })
     ));
 
@@ -1157,7 +1157,7 @@ fn cloud_names_the_uploader_and_uploaded_builds_report_like_git_ones() {
     assert_eq!(view.builds.len(), 1);
     assert_eq!(view.builds[0].commit, None);
     assert_eq!(view.builds[0].status, ployz_store::BuildStatus::Failed);
-    let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = view.outcome else {
+    let Some(ployz_store::Outcome::NotExecuted { needs_upload, .. }) = view.deployment.outcome else {
         panic!("nothing executed");
     };
     assert_eq!(needs_upload, vec![app]);

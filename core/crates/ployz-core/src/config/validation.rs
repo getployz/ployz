@@ -185,15 +185,7 @@ impl ServiceSettingInput {
             }
             Self::ManagedHostnameValue(value) => managed_hostname(value),
             Self::ManagedHostnamePrefix(value) => hostname_prefix(value),
-            Self::Template(None) => Ok(()),
-            Self::Template(Some(ServiceTemplate { id, version })) => {
-                range(is_dns_label(id), "template.id", "Expected a DNS label")?;
-                range(
-                    *version >= 1,
-                    "template.version",
-                    "Expected a version from 1",
-                )
-            }
+            Self::Template(_) => Ok(()),
             Self::Build(value) => {
                 optional_trimmed(&mut value.command, "build.command", COMMAND_MAX)?;
                 optional_trimmed(

@@ -228,6 +228,12 @@ validated_string_newtype!(
 );
 
 validated_string_newtype!(
+    /// A Service Template's ID: one DNS label, such as `postgres`.
+    ServiceTemplateId, "Service Template ID", "one DNS label: lowercase letters, digits and '-'",
+    |value| is_dns_label(value)
+);
+
+validated_string_newtype!(
     /// A manifest digest as the Machine stored it: `sha256:` and 64 lowercase hex.
     ImageDigest, "image digest", "`sha256:` followed by 64 lowercase hexadecimal characters",
     |value| value.strip_prefix("sha256:").is_some_and(|hex| is_lower_hex(hex, 64))
