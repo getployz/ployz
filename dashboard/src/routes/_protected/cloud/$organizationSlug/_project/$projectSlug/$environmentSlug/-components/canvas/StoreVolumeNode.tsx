@@ -53,7 +53,7 @@ export function StoreVolumeCard({ volume, selected, className }: { volume: Volum
               {fillText(fill)}
             </div>
           )}
-          <StatusLine status={NOT_MOUNTED} issues={nodeIssues(NOT_MOUNTED, [], [fill])} />
+          <StatusLine status={NOT_MOUNTED} issues={nodeIssues(NOT_MOUNTED, [], [{ volume, fill }])} />
         </CardContent>
       </Card>
     </Link>

@@ -38,6 +38,7 @@ import { Skeleton } from "#/components/ui/skeleton";
 import { ItemGroup } from "#/components/ui/item";
 import { StoreDeploymentRows } from "../../../-components/DeploymentsList";
 import { SERVICE_PAGES, servicePageSchema } from "./service-pages";
+import { ServiceIssues } from "../../../-components/canvas/ServiceIssues";
 
 /** One Service in the Config Store, as the drawer shows and edits it. */
 export type StoreService = {
@@ -168,6 +169,8 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
         />
       </CanvasInspectorHeader>
       <div className="flex min-h-0 flex-1 flex-col px-4 pb-4">
+        {/* Domain statuses need a look at the Cluster, so the tabs don't wait for them. */}
+        <Suspense fallback={null}><ServiceIssues serviceId={service.id} /></Suspense>
         <Tabs value={Schema.is(servicePageSchema)(tab) ? tab : "settings"}
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });

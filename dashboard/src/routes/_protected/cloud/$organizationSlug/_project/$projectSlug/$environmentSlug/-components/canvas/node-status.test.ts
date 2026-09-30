@@ -1,7 +1,7 @@
 import type { DomainRow, ServiceListing } from "@ployz/sdk";
 import { describe, expect, it } from "vitest";
 import type { RuntimeContainerRecord } from "#/modules/runtime/runtime.collection";
-import { deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { deployChip, fillText, fillTone, nodeIssues, volumeFill, publicDomain, runtimeLine, stagedSurface, type NodeIssue, type RuntimeLens } from "./node-status";
 
 const service: ServiceListing = { source: "image", change: null, template: null, id: "web", name: "web", private_dns: "web" };
 const container = (state: string, health?: string): RuntimeContainerRecord =>
@@ -24,7 +24,7 @@ describe("runtimeLine", () => {
     const stopped = (stopped_at: string | null, oom_killed: boolean): RuntimeContainerRecord =>
       ({ ...container("exited"), runtime: { state: "exited", code: 137, stopped_at, oom_killed } });
     expect(runtimeLine(service, runtime(stopped("2026-09-30T09:58:00.000Z", false), stopped("2026-09-30T09:50:00.000Z", true)), seen))
-      .toEqual({ word: "Crashed", tone: "crashed", down: true, since: new Date("2026-09-30T09:58:00.000Z") });
+      .toEqual({ word: "Crashed", tone: "crashed", down: true, since: new Date("2026-09-30T09:58:00.000Z"), code: 137 });
     expect(runtimeLine(service, runtime(stopped("2026-09-30T09:50:00.000Z", false), stopped("2026-09-30T09:58:00.000Z", true)), seen))
       .toMatchObject({ word: "Out of memory", since: new Date("2026-09-30T09:58:00.000Z") });
     expect(runtimeLine(service, runtime(stopped(null, false)), seen)).toMatchObject({ word: "Crashed", since: null });
@@ -42,7 +42,7 @@ describe("runtimeLine", () => {
   it("claims no crash from partial evidence: a replica may run on the Server that didn't report", () => {
     const partial = watch({ incomplete: true });
     expect(runtimeLine(service, runtime(container("exited")), partial)).toMatchObject({ word: "Not seen running", tone: "quiet", down: false });
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), partial), [], [])).toBeNull();
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), partial), [], [])).toEqual([]);
   });
 
   it("says Starting, not Not running, while a Deploy in flight targets it and none of its containers exist yet", () => {
@@ -57,8 +57,8 @@ describe("runtimeLine", () => {
   it("never guesses without current evidence: it waits, greys the last word with its age, or says why", () => {
     const since = new Date("2026-09-30T10:00:00Z");
     expect(runtimeLine(service, null, watch({ status: "connecting", observedAt: null })).tone).toBe("pending");
-    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since });
-    expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since });
+    expect(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" }))).toEqual({ word: "Crashed", tone: "quiet", down: false, since, code: null });
+    expect(runtimeLine(service, null, watch({ status: "unavailable" }))).toEqual({ word: "Not running", tone: "quiet", down: false, since, code: null });
     expect(runtimeLine(service, null, watch({ status: "unavailable", observedAt: null })).tone).toBe("pending");
     expect(runtimeLine(service, null, watch({ status: "unreachable" }))).toMatchObject({ word: "Can't reach servers", tone: "unreachable" });
     expect(runtimeLine(service, null, watch({ status: "no_connection", noServers: true }))).toMatchObject({ word: "Needs a server", down: false });
@@ -80,20 +80,24 @@ describe("runtimeLine", () => {
 });
 
 describe("nodeIssues", () => {
-  const domain = (status: DomainRow["status"]) => ({ status });
+  const domain = (status: DomainRow["status"]): DomainRow =>
+    ({ kind: "custom", hostname: `${status}.com`, service: "web", port: null, status, reason: null, action: null });
+  const kinds = (issues: NodeIssue[]) => issues.map((issue) => issue.kind);
 
-  it("counts what the user can fix, red when a Service is down", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), seen), [domain("needs_attention")], [])).toEqual({ count: 2, tone: "bad" });
-    expect(nodeIssues(runtimeLine(service, runtime(), seen), [], [])).toEqual({ count: 1, tone: "bad" });
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")], []))
-      .toEqual({ count: 1, tone: "warn" });
+  it("lists what the user can fix: a Service down or struggling, then domains that need them", () => {
+    const crashed = runtimeLine(service, runtime(container("exited")), seen);
+    expect(nodeIssues(crashed, [domain("needs_attention")], [])).toEqual([{ kind: "runtime", line: crashed }, { kind: "domain", domain: domain("needs_attention") }]);
+    expect(kinds(nodeIssues(runtimeLine(service, runtime(), seen), [], []))).toEqual(["runtime"]);
+    expect(kinds(nodeIssues(runtimeLine(service, runtime(container("running", "unhealthy")), seen), [], []))).toEqual(["runtime"]);
+    expect(kinds(nodeIssues(runtimeLine(service, runtime(container("running", "healthy")), seen), [domain("needs_attention"), domain("setting_up")], [])))
+      .toEqual(["domain"]);
   });
 
-  it("counts nothing for a healthy, starting, new or empty Service, nor a grey word", () => {
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")], [])).toBeNull();
-    expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [], [])).toBeNull();
-    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [], [])).toBeNull();
-    expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [], [])).toBeNull();
+  it("lists nothing for a healthy, starting, new or empty Service, nor a grey word", () => {
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "not_configured")), seen), [domain("ready")], [])).toEqual([]);
+    expect(nodeIssues(runtimeLine(service, runtime(container("running", "starting")), seen), [], [])).toEqual([]);
+    expect(nodeIssues(runtimeLine(service, runtime(container("exited")), watch({ status: "unavailable" })), [], [])).toEqual([]);
+    expect(nodeIssues(runtimeLine({ ...service, change: "create" }, null, seen), [], [])).toEqual([]);
   });
 });
 
@@ -110,7 +114,9 @@ describe("volume fill", () => {
     expect([0.79, 0.8, 0.94, 0.95, null].map(fillTone)).toEqual([null, "warn", "warn", "bad", null]);
     expect(fillText(0.926)).toBe("92% full");
     const online = runtimeLine(service, runtime(container("running", "healthy")), seen);
-    expect(nodeIssues(online, [], [0.5, 0.85, 0.97, null])).toEqual({ count: 2, tone: "warn" });
+    const volume = (name: string) => ({ id: name, name, storage_locked: true });
+    expect(nodeIssues(online, [], [0.5, 0.85, 0.97, null].map((fill, i) => ({ volume: volume(`v${i}`), fill }))))
+      .toEqual([{ kind: "volume", volume: volume("v1"), fill: 0.85 }, { kind: "volume", volume: volume("v2"), fill: 0.97 }]);
   });
 });
 

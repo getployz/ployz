@@ -6,7 +6,7 @@ import { plural } from "#/lib/plural";
 import { cn } from "#/lib/utils";
 import { NodeOutcomeBadge } from "./NodeOutcomeBadge";
 import type { Lit } from "../deployment-page";
-import type { DeployChipState, NodeIssues, RuntimeLine, StagedColour, Tone } from "./node-status";
+import type { DeployChipState, NodeIssue, RuntimeLine, StagedColour, Tone } from "./node-status";
 
 /**
  * How a node shows what the next Deploy does to it, beyond a card's own state: a tray's green, blue or red surface, and
@@ -57,9 +57,9 @@ function StatusMark({ tone }: { tone: Tone }) {
   return <span className={cn("size-2 shrink-0 rounded-full", DOTS[tone])} />;
 }
 
-/** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠ N. */
+/** What runs now, in one word (grey with its age when it isn't current), ending in the node's ⚠ N, red when it's down. */
 export function StatusLine({ status, issues, className }:
-  { status: Pick<RuntimeLine, "word" | "tone" | "since">; issues: NodeIssues | null; className?: string }) {
+  { status: Pick<RuntimeLine, "word" | "tone" | "since">; issues: readonly NodeIssue[]; className?: string }) {
   return (
     <div className={cn("flex min-w-0 items-center gap-2", className)}>
       <StatusMark tone={status.tone} />
@@ -68,9 +68,10 @@ export function StatusLine({ status, issues, className }:
         : <span className={cn("min-w-0 truncate", WORDS[status.tone])}>
             {status.word}{status.since ? <> <RelativeTime date={status.since} /></> : null}
           </span>}
-      {issues ? (
-        <Badge variant={issues.tone === "bad" ? "destructive" : "warning"} className="ml-auto" aria-label={plural(issues.count, "issue")}>
-          <TriangleAlertIcon data-icon="inline-start" />{issues.count}
+      {issues.length > 0 ? (
+        <Badge variant={issues.some((issue) => issue.kind === "runtime" && issue.line.down) ? "destructive" : "warning"} className="ml-auto"
+          aria-label={plural(issues.length, "issue")}>
+          <TriangleAlertIcon data-icon="inline-start" />{issues.length}
         </Badge>
       ) : null}
     </div>

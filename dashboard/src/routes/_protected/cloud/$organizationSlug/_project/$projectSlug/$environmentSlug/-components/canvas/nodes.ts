@@ -1,6 +1,7 @@
 import { Position, type Edge } from "@xyflow/react";
-import type { DiffView, ServiceListing, VolumeListing } from "@ployz/sdk";
-import { serviceChanges } from "#/modules/config-store/store-services";
+import { Schema } from "effect";
+import type { DiffView, DomainRow, EnvironmentView, ServiceListing, VolumeListing } from "@ployz/sdk";
+import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { canvasPositionKey, type CanvasPosition } from "#/modules/canvas/canvas-positions";
 import { SERVICE_NODE_WIDTH, SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, VOLUME_TRAY_HEIGHT } from "./constants";
 import { findPlacement } from "../../-utils/node-placement";
@@ -56,6 +57,38 @@ export function volumeTrays(services: readonly Pick<ServiceListing, "id" | "name
         ? [{ volume, sharedWith: by.filter((name) => name !== service.name), mountChanged: changes.has(`mounts.${volume.name}`) }] : [])];
     })),
     unmounted: mounted.flatMap(({ volume, by }) => by.length === 0 ? [volume] : []),
+  };
+}
+
+/** A `replicas` Setting that says how many. */
+const isReplicaCount = Schema.is(Schema.Int);
+
+/**
+ * Each Service with what its card shows, and the Volumes no Service here mounts. `namespace`: the Environment's, null
+ * when it has none, so no runtime evidence names its Services.
+ */
+export function storeCanvasServices({ services, settings, diff, volumes, domains, namespace }: {
+  services: readonly ServiceListing[]; settings: EnvironmentView; diff: DiffView; volumes: readonly VolumeListing[];
+  domains: readonly DomainRow[]; namespace: string | null;
+}) {
+  const { trays, unmounted } = volumeTrays(services, volumes, diff);
+  return {
+    services: services.map((service) => {
+      const changes = serviceChanges(diff, service.id);
+      // What runs asks for the deployed count, not one the next Deploy would set.
+      const replicas = changes.get("replicas")?.before ?? serviceSettingRows(settings, service.name).get("replicas")?.value;
+      // Its containers are named by the deployed private DNS until the Deploy that changes it lands.
+      const privateDns = settingText(changes.get("privateDns")?.before) || service.private_dns;
+      return {
+        service,
+        domains: domains.filter((domain) => domain.service === service.name),
+        changeCount: changes.size,
+        runtimeIdentity: namespace === null ? null : `${namespace}/${privateDns}`,
+        desiredReplicas: isReplicaCount(replicas) ? replicas : null,
+        trays: trays.get(service.id) ?? [],
+      };
+    }),
+    unmounted,
   };
 }
 

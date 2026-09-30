@@ -18,6 +18,7 @@ export function ServiceSettingsSection({
 
   return (
     <section
+      id={id}
       data-sec={id}
       className={cn(
         "overflow-hidden rounded-xl border bg-card",

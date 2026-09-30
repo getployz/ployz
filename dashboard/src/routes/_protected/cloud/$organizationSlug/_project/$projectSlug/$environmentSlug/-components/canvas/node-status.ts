@@ -1,4 +1,4 @@
-import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
+import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
 import type { RuntimeServiceRecord, RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
@@ -14,11 +14,12 @@ export type Tone = "ok" | "warn" | "bad" | "crashed" | "quiet" | "idle" | "pendi
 
 /**
  * What runs now, in one word. `down`: it should serve and doesn't, which turns the card's border red.
- * `since`: when the evidence behind a grey word was current ("Online 2 minutes ago").
+ * `since`: when the evidence behind a grey word was current ("Online 2 minutes ago"), or when it crashed.
+ * `code`: a crash's exit code, which only its panel shows.
  */
-export type RuntimeLine = { word: string; tone: Tone; down: boolean; since: Date | null };
+export type RuntimeLine = { word: string; tone: Tone; down: boolean; since: Date | null; code: number | null };
 
-const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, tone, down, since: null });
+const line = (word: string, tone: Tone, down = false): RuntimeLine => ({ word, tone, down, since: null, code: null });
 
 /** A Volume's status line while nothing here mounts it. */
 export const NOT_MOUNTED = line("Not mounted", "idle");
@@ -28,7 +29,8 @@ function crashedLine(containers: RuntimeServiceRecord["containers"]): RuntimeLin
   // RFC 3339 in UTC at one precision sorts as text.
   const last = containers.flatMap(({ runtime }) => (runtime?.stopped_at ? [runtime] : []))
     .sort((a, b) => (b.stopped_at ?? "").localeCompare(a.stopped_at ?? ""))[0];
-  return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null };
+  return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null,
+    code: last?.code ?? null };
 }
 
 /**
@@ -87,17 +89,26 @@ export function runtimeLine(
   }
 }
 
-/** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
-export type NodeIssues = { count: number; tone: "bad" | "warn" };
+/** One thing on a node the user can fix: its Service down or struggling, a domain that needs them, a Volume filling up. */
+export type NodeIssue =
+  | { kind: "runtime"; line: RuntimeLine }
+  | { kind: "domain"; domain: DomainRow }
+  | { kind: "volume"; volume: Pick<VolumeListing, "id" | "name" | "storage_locked">; fill: number };
 
 /**
- * What on a node the user can fix: a Service that's down or struggling, domains that need them, and Volumes filling up
- * (`fills`, each Volume's `volumeFill`).
+ * What on a node the user can fix, one per line of its panel's list; its ⚠ N counts them. `volumes`: each Volume with its
+ * `volumeFill`.
  */
-export function nodeIssues(status: Pick<RuntimeLine, "down" | "tone">, domains: readonly Pick<DomainRow, "status">[], fills: readonly (number | null)[]): NodeIssues | null {
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length
-    + fills.filter((fill) => fillTone(fill) !== null).length;
-  return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
+export function nodeIssues(
+  status: RuntimeLine,
+  domains: readonly DomainRow[],
+  volumes: readonly { volume: Pick<VolumeListing, "id" | "name" | "storage_locked">; fill: number | null }[],
+): NodeIssue[] {
+  return [
+    ...(status.down || status.tone === "warn" ? [{ kind: "runtime", line: status } as const] : []),
+    ...domains.flatMap((domain) => domain.status === "needs_attention" ? [{ kind: "domain", domain } as const] : []),
+    ...volumes.flatMap(({ volume, fill }) => fill !== null && fillTone(fill) !== null ? [{ kind: "volume", volume, fill } as const] : []),
+  ];
 }
 
 /** The Docker Volume holding a Volume's data on each Server: lowering names it `vol-{id}`, scoped to the Namespace. */
