@@ -215,7 +215,8 @@ pub enum NodeStatus {
     Removed,
     /// Work on it started and didn't finish, so Applied State kept the old one.
     Failed,
-    /// An earlier failure, or cancellation, stopped the Deployment before it.
+    /// An earlier failure, or cancellation, stopped the Deployment before it; or
+    /// nothing it ran does its work (a new Volume no Service mounts).
     NotAttempted,
     /// It needed no operation.
     Unchanged,
