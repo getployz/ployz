@@ -52,9 +52,11 @@ export function CanvasInspectorNotFound({ noun }: { noun: string }) {
   return (
     <div className="flex h-full flex-col">
       <CanvasInspectorHeader params={params}>{noun}</CanvasInspectorHeader>
-      <Empty variant="placeholder">
-        <EmptyDescription>This environment has no such {noun.toLowerCase()}. It may have been deleted.</EmptyDescription>
-      </Empty>
+      <div className="p-4">
+        <Empty variant="placeholder">
+          <EmptyDescription>This environment has no such {noun.toLowerCase()}. It may have been deleted.</EmptyDescription>
+        </Empty>
+      </div>
     </div>
   );
 }
