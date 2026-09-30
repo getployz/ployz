@@ -1,6 +1,6 @@
 import type { DeploymentSummary, DomainRow, ReviewLifecycleKind, ServiceListing } from "@ployz/sdk";
 import { plural } from "#/lib/plural";
-import type { RuntimeServiceRecord } from "#/modules/runtime/runtime.collection";
+import type { RuntimeServiceRecord, RuntimeVolumeRecord } from "#/modules/runtime/runtime.collection";
 import type { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { containerServing } from "#/routes/_protected/cloud/$organizationSlug/-components/services-online";
 import type { Lit } from "../deployment-page";
@@ -31,17 +31,23 @@ function crashedLine(containers: RuntimeServiceRecord["containers"]): RuntimeLin
   return { ...line(last?.oom_killed ? "Out of memory" : "Crashed", "crashed", true), since: last?.stopped_at ? new Date(last.stopped_at) : null };
 }
 
-/** What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it). */
-function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, deploying: boolean) {
+/**
+ * What evidence says of a Service (`runtime`, null when none names it; `whole`, no Server is missing from it).
+ * `chip`: a Deploy in flight that targets it; until its first container runs, it's Starting.
+ */
+function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, whole: boolean, desiredReplicas: number | null, chip: DeployChipState | null) {
+  const inFlight = chip?.kind === "deploying" || chip?.kind === "queued";
+  if (inFlight && !runtime?.containers.length) return line("Starting", "quiet");
   if (!runtime) return whole ? line("Not running", "bad", true) : line("Deployed", "quiet");
   if (runtime.containers.length === 0) return line("Not running", "bad", true);
   const running = runtime.containers.filter((container) => container.runtime?.state === "running");
-  if (running.length === 0) return crashedLine(runtime.containers);
+  // With a Server missing from the evidence, a replica may run there: claim no crash.
+  if (running.length === 0) return whole ? crashedLine(runtime.containers) : line("Not seen running", "quiet");
   const serving = running.filter(containerServing).length;
   // None serves yet: Unhealthy once a health check fails, else still Starting.
   if (serving === 0) return running.some((container) => container.runtime?.health === "unhealthy") ? line("Unhealthy", "warn") : line("Starting", "quiet");
   // A replica missing from partial evidence may be healthy on the Server that didn't report.
-  if (whole && !deploying && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
+  if (whole && chip?.kind !== "deploying" && desiredReplicas !== null && serving < desiredReplicas) return line("Degraded", "warn");
   return line("Online", "ok");
 }
 
@@ -55,11 +61,12 @@ export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "in
  * A Service's status line: what runs now, from runtime evidence. Staged work and Deploys never replace it, and it never
  * guesses: before evidence it waits, and evidence that isn't current reads grey with its age.
  * `desiredReplicas`: how many it asks for, when known; fewer serving reads Degraded, except while a Deploy rolls them.
+ * `chip`: its Deploy chip, which says whether a Deploy in flight targets it.
  */
 export function runtimeLine(
   service: Pick<ServiceListing, "change" | "source">,
   runtime: Pick<RuntimeServiceRecord, "containers"> | null,
-  { lens, desiredReplicas, deploying }: { lens: RuntimeLens; desiredReplicas: number | null; deploying: boolean },
+  { lens, desiredReplicas, chip }: { lens: RuntimeLens; desiredReplicas: number | null; chip: DeployChipState | null },
 ): RuntimeLine {
   if (service.change === "create") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
@@ -74,20 +81,45 @@ export function runtimeLine(
     case "unavailable":
       // The connection dropped: the last evidence, grey, from when it was current; none seen yet, it waits.
       return lens.observedAt === null ? line("Checking", "pending")
-        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
+        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, chip), tone: "quiet", down: false, since: new Date(lens.observedAt) };
     case "observed":
-      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
+      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, chip);
   }
 }
 
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */
 export type NodeIssues = { count: number; tone: "bad" | "warn" };
 
-/** What on a node the user can fix: a Service that's down or struggling, and domains that need them. */
-export function nodeIssues(status: RuntimeLine, domains: readonly Pick<DomainRow, "status">[]): NodeIssues | null {
-  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length;
+/**
+ * What on a node the user can fix: a Service that's down or struggling, domains that need them, and Volumes filling up
+ * (`fills`, each Volume's `volumeFill`).
+ */
+export function nodeIssues(status: Pick<RuntimeLine, "down" | "tone">, domains: readonly Pick<DomainRow, "status">[], fills: readonly (number | null)[]): NodeIssues | null {
+  const count = (status.down || status.tone === "warn" ? 1 : 0) + domains.filter((domain) => domain.status === "needs_attention").length
+    + fills.filter((fill) => fillTone(fill) !== null).length;
   return count === 0 ? null : { count, tone: status.down ? "bad" : "warn" };
 }
+
+/** The Docker Volume holding a Volume's data on each Server: lowering names it `vol-{id}`, scoped to the Namespace. */
+export const dockerVolumeName = (namespace: string, volumeId: string) => `${namespace}_vol-${volumeId}`;
+
+/**
+ * How full a Volume is, 0 to 1, on the fullest Server holding it (one per Server); null when none reports a bound, as
+ * plain Docker storage never does.
+ */
+export function volumeFill(volumes: readonly Pick<RuntimeVolumeRecord, "name" | "usedBytes" | "boundBytes">[], dockerVolume: string): number | null {
+  const fills = volumes.filter((volume) => volume.name === dockerVolume && volume.boundBytes > 0).map((volume) => volume.usedBytes / volume.boundBytes);
+  return fills.length === 0 ? null : Math.min(1, Math.max(...fills));
+}
+
+/** A fill that needs the user: amber from 80%, red from 95%; null below. */
+export function fillTone(fill: number | null): "warn" | "bad" | null {
+  if (fill === null || fill < 0.8) return null;
+  return fill < 0.95 ? "warn" : "bad";
+}
+
+/** A fill as copy: "92% full". Rounded down, so 99.6% never reads full. */
+export const fillText = (fill: number) => `${Math.floor(fill * 100)}% full`;
 
 /** The public domain a Service's card shows, of its domains: the first custom one, else the generated one; `live` once it's set up. */
 export function publicDomain(domains: readonly DomainRow[]) {
@@ -118,16 +150,22 @@ export function stagedChip(change: ReviewLifecycleKind, changeCount: number): De
   return { kind: "staged", label: changeCount === 0 ? "Changed" : plural(changeCount, "change"), variant };
 }
 
+/** A Deployment in flight with the ids of the nodes it targets (`nodes`), null until its view arrives. */
+export type InFlightTargets = Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at"> & { nodes: readonly string[] | null };
+
 /**
  * A Service's chip: anything about Deploys. A Deploy in flight that targets it (running, else queued), else what the
- * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; one naming no Services deploys every one.
+ * next Deploy does to it. `inFlight`: the Environment's Deployments in flight; until one's nodes arrive, one naming no
+ * Services targets every one.
  */
 export function deployChip(
-  service: Pick<ServiceListing, "name" | "change">,
+  service: Pick<ServiceListing, "id" | "name" | "change">,
   changeCount: number,
-  inFlight: readonly Pick<DeploymentSummary, "status" | "services" | "started_at" | "admitted_at">[],
+  inFlight: readonly InFlightTargets[],
 ): DeployChipState | null {
-  const targeting = inFlight.filter((deployment) => deployment.services.length === 0 || deployment.services.includes(service.name));
+  const targeting = inFlight.filter((deployment) => deployment.nodes === null
+    ? deployment.services.length === 0 || deployment.services.includes(service.name)
+    : deployment.nodes.includes(service.id));
   const running = targeting.find((deployment) => deployment.status !== "queued");
   if (running) return { kind: "deploying", since: running.started_at ?? running.admitted_at };
   if (targeting.length > 0) return { kind: "queued" };

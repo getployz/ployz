@@ -24,6 +24,9 @@ describe("runtimeSnapshotFromWatchFrame", () => {
       runtime: { state: "exited", code: 137, stopped_at: "2026-08-17T23:58:00.000Z", oom_killed: true },
     } as const;
     const volume = runtimeWatchVolumeFixture("machine-a", "data");
+    const provisioned = runtimeWatchVolumeFixture("machine-a", "production_vol-pg", {
+      storage: { kind: "provisioned", mountpoint: "/pool/pg", bound_bytes: 10_000, used_bytes: 9_200 },
+    });
     const certificate = runtimeWatchCertificateFixture("api.example.test", {
       status: "pending",
       last_error: "waiting for DNS",
@@ -68,7 +71,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           hook_containers: [hook],
         },
       ],
-      volumes: [volume],
+      volumes: [volume, provisioned],
       certificates: [certificate],
       incomplete_ids: {
         machines: ["machine-b" as typeof api.machine_id],
@@ -79,7 +82,10 @@ describe("runtimeSnapshotFromWatchFrame", () => {
     }));
     const snapshot = runtimeSnapshotFromWatchFrame(frame);
 
-    expect(frame).not.toHaveProperty("volumes");
+    // Only a Provisioned Volume's usage crosses: no mountpoint, labels or plain Docker volumes.
+    expect(frame.volumes).toEqual([
+      { id: { machine_id: "machine-a", name: "production_vol-pg" }, storage: { kind: "provisioned", bound_bytes: 10_000, used_bytes: 9_200 } },
+    ]);
     expect(frame.incomplete_ids.volumes).toEqual([
       { machine_id: "machine-a", name: "data" },
     ]);
@@ -132,6 +138,7 @@ describe("runtimeSnapshotFromWatchFrame", () => {
           observedAt: OBSERVED_AT,
         },
       ],
+      volumes: [{ machineId: "machine-a", name: "production_vol-pg", usedBytes: 9_200, boundBytes: 10_000 }],
       certificates: [
         {
           hostname: "api.example.test",

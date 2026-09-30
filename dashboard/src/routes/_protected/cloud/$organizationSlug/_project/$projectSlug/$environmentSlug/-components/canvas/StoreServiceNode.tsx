@@ -13,30 +13,31 @@ import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
 import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
-import { RuntimeLensContext } from "./RuntimeLensProvider";
+import { RuntimeLensContext, VolumeFillContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
-import { useInFlightDeployments } from "#/modules/config-store/store-view.queries";
+import { useInFlightTargets } from "#/modules/config-store/store-view.queries";
 import { useRuntimeService } from "#/providers/runtime-provider";
 
 /**
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, selected, compact = false, className }:
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, trays, selected, compact = false, className }:
   StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
   const runtimeLens = use(RuntimeLensContext);
-  const inFlight = useInFlightDeployments(params.organizationSlug, store);
+  const fillOf = use(VolumeFillContext);
+  const inFlight = useInFlightTargets(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
   const chip = deployChip(service, changeCount, inFlight);
-  const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, deploying: chip?.kind === "deploying" });
-  const issues = nodeIssues(status, domains);
+  const status = runtimeLine(service, runtime, { lens: runtimeLens, desiredReplicas, chip });
+  const issues = nodeIssues(status, domains, trays.map((tray) => fillOf(tray.volume.id)));
   const domain = publicDomain(domains);
   const surface = stagedSurface(light, service.change);
   const icon = <Avatar><AvatarFallback>{getServiceIcon({ source: { type: service.source } })}</AvatarFallback></Avatar>;
