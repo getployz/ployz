@@ -216,7 +216,7 @@ pub(crate) fn view(tx: &mut dyn Tx, branch: &Environment) -> Result<BranchView, 
                     .services
                     .iter()
                     .filter(|service| references(service, lineage))
-                    .map(|service| service.slug.clone())
+                    .filter_map(|service| ServiceName::parse(service.slug.as_str()).ok())
                     .collect(),
             }
         })

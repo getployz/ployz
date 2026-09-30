@@ -429,7 +429,7 @@ pub struct LiveNode {
     /// It holds its owner's real data: a Volume, or a Service mounting one.
     pub data: bool,
     /// The Branch's own Services whose variables reference it, by name.
-    pub used_by: Vec<String>,
+    pub used_by: Vec<ServiceName>,
 }
 
 /// A Branch after a change.

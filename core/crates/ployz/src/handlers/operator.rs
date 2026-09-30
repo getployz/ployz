@@ -270,7 +270,7 @@ fn build_logs(root: &ArgMatches, id: &DeploymentId, named: &[String]) -> Result<
             .map_err(super::store::failed(leaf, &["logs"]))?
             .builds
             .into_iter()
-            .map(|build| build.service)
+            .map(|build| build.service.to_string())
             .collect()
     } else {
         named.to_vec()
