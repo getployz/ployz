@@ -1,8 +1,18 @@
 import type { ConfigCommand, ConfigQuery, ConfigView, ConfigWritten, JsonValue } from "@ployz/sdk";
-import { Schema } from "effect";
+import { Data, Schema } from "effect";
 
 /** A Store refusal as the Store words it: the RPC error vocabulary, never the rejected value. */
 export type StoreRefusal = { code: string; message: string; details: JsonValue };
+
+/**
+ * The Store refused a call, in the RPC error vocabulary: `conflict` carries fresh state, `not_found` names what's
+ * missing. Cloud fails with it; the browser's writer rejects with it.
+ */
+export class StoreRefused extends Data.TaggedError("StoreRefused")<StoreRefusal> {
+  get refusal(): StoreRefusal {
+    return { code: this.code, message: this.message, details: this.details };
+  }
+}
 
 /**
  * What a Store read or write returns across the server-function boundary. A refusal is an outcome, not a failure:

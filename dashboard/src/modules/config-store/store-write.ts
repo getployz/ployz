@@ -5,20 +5,9 @@ import { observeFailure, type Persistable } from "#/collections/query-collection
 import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
-import type { StoreRefusal } from "./store.contract";
+import { StoreRefused } from "./store.contract";
 import { cachedRevision, environmentKey, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
 import { applyOptimistic } from "./store-optimistic";
-
-/** A Store refusal thrown to a write's caller: `code` and `details` as the Store gave them. */
-export class StoreRefused extends Error {
-  readonly code: string;
-  readonly details: unknown;
-  constructor(refusal: StoreRefusal) {
-    super(refusal.message);
-    this.code = refusal.code;
-    this.details = refusal.details;
-  }
-}
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
 export type StoreEdit = {

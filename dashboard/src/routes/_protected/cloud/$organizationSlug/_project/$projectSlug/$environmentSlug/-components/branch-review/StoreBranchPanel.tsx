@@ -20,7 +20,8 @@ import {
 } from "#/modules/config-store/store-view.queries";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
-import { StoreRefused, useStoreWriter } from "#/modules/config-store/store-write";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import { CanvasInspectorHeader } from "../CanvasInspectorHeader";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";

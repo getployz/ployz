@@ -1,11 +1,11 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigStore } from "@ployz/sdk";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { Data, Effect, Stream } from "effect";
+import { Effect, Stream } from "effect";
 import { uploadChunk } from "#/modules/config-store/tables";
 import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
-import type { StoreRefusal } from "./store.contract";
+import { StoreRefused } from "./store.contract";
 import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
 import { IN_FLIGHT, isInFlight } from "./store-deployments";
 
@@ -14,16 +14,14 @@ const UPLOAD_LIMIT = 256 * 1024 * 1024;
 /** Each stored chunk holds at most this much of the upload. */
 const CHUNK_SIZE = 1024 * 1024;
 
-class UploadRefused extends Data.TaggedError("UploadRefused")<{ readonly refusal: StoreRefusal }> {}
-
-const refused = (code: string, message: string) => new UploadRefused({ refusal: { code, message, details: null } });
+const refused = (code: string, message: string) => new StoreRefused({ code, message, details: null });
 
 /** The Store's answer to "does Deployment `deploymentId` exist in this Organization?", as a refusal when it does. */
 const notAdmittedYet = (store: ConfigStore, organizationId: string, deploymentId: string) =>
   storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
     Effect.matchEffect({
       onSuccess: () => Effect.fail(refused("conflict", "This Deployment was admitted already; upload its source before admitting it.")),
-      onFailure: (error) => error.code === "not_found" ? Effect.void : Effect.fail(refused(error.code, error.message)),
+      onFailure: (error) => error.code === "not_found" ? Effect.void : Effect.fail(error),
     }),
   );
 
@@ -72,7 +70,7 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
       if (pending.length > 0) yield* insert(pending);
     })).pipe(Effect.catchIf(isUniqueViolation, () => Effect.fail(refused("conflict", "This Deployment has its upload already."))));
     return undefined;
-  }).pipe(Effect.catchTag("UploadRefused", (error) => Effect.succeed(error.refusal)));
+  }).pipe(Effect.catchTag("StoreRefused", (error) => Effect.succeed(error.refusal)));
 });
 
 /**

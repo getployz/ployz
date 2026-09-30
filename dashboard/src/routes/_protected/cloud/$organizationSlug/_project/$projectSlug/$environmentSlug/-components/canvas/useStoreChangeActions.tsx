@@ -1,7 +1,8 @@
 import { useRef, useState } from "react";
 import type { EnvironmentRef } from "@ployz/sdk";
 import { DeletionDialog, type DeletionCheck, type DeletionItem } from "#/components/deletion-dialog";
-import { useStoreWriter, StoreRefused } from "#/modules/config-store/store-write";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { volumeLoss, type VolumeLoss } from "#/modules/config-store/store-volumes";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 

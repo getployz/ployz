@@ -7,7 +7,8 @@ import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
 import type { Actor } from "#/modules/identity/actor";
 import { user } from "#/modules/identity/tables";
-import { cloudStore, StoreRefused, storeTry } from "#/modules/config-store/store-sdk.server";
+import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
+import { StoreRefused } from "#/modules/config-store/store.contract";
 import { getOrganizationForUserBySlug } from "#/modules/organization/organization-state.server";
 import { sendInngestEvent } from "#/modules/inngest/client";
 import {
