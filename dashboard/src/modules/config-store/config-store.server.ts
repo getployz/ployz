@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
-import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten } from "@ployz/sdk";
+import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, SystemEvent } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
-import { Effect, Schema } from "effect";
+import { Effect } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
@@ -18,7 +18,7 @@ import {
 import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
-import { loadOrganizationConnections } from "#/modules/machines/connections.server";
+import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
 import type { StoreAnswer, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
@@ -33,8 +33,7 @@ export const readStore = <Q extends ConfigQuery>(organizationId: string, query: 
  */
 export const cancelStoreGithubBuilds = Effect.fn("ConfigStore.cancelGithubBuilds")(function* (organizationId: string, deploymentId: string) {
   const store = yield* cloudStore;
-  const loaded = yield* loadOrganizationConnections(organizationId);
-  const connections = loaded.kind === "ready" ? loaded.connections : [];
+  const connections = yield* connectionsOf(organizationId);
   const builds = yield* storeTry(() => store.githubCancel(deploymentId, connections));
   yield* Effect.forEach(builds, ({ run }) => cancelGithubRun({ installationId: run.installation_id, fullName: run.repository, runId: run.run_id }).pipe(
     Effect.ignore,
@@ -126,18 +125,17 @@ const principalFor = Effect.fn("ConfigStore.principalFor")(function* (userId: st
   return row === undefined ? null : row.name || row.email;
 });
 
-/** Admissions carry how many Servers the Organization has enrolled, so the Store refuses one nothing could run. */
-const Admission = Schema.Struct({ command: Schema.Literals(["admit", "start"]) });
-
-const serversFor = Effect.fn("ConfigStore.serversFor")(function* (organizationId: string, call: StoreCall) {
-  if (call.operation !== "write" || !Schema.is(Admission)(call.command)) return undefined;
-  return yield* organizationServers(organizationId);
+/** The Organization's Servers, to dial; none while it has no pairing. */
+export const connectionsOf = Effect.fn("ConfigStore.connectionsOf")(function* (organizationId: string) {
+  const loaded = yield* loadOrganizationConnections(organizationId);
+  return loaded.kind === "ready" ? loaded.connections : [];
 });
 
-/** How many Servers the Organization has enrolled: evidence for anything that may admit a Deployment. */
-export const organizationServers = Effect.fn("ConfigStore.organizationServers")(function* (organizationId: string) {
-  const loaded = yield* loadOrganizationConnections(organizationId);
-  return loaded.kind === "ready" ? loaded.connections.length : 0;
+/** Something Cloud observed, told to the Organization's Store with how many Servers could run what it admits. */
+export const storeSystem = Effect.fn("ConfigStore.system")(function* (organizationId: string, event: SystemEvent) {
+  const store = yield* cloudStore;
+  const servers = yield* countOrganizationMachines(organizationId);
+  return yield* storeTry(() => store.system(organizationId, event, { servers }));
 });
 
 /**
@@ -159,7 +157,8 @@ export const gatherTrusted = Effect.fn("ConfigStore.gatherTrusted")(function* (
     }))),
   );
   const volumes = yield* gatherVolumeEvidence(organizationId, call, read);
-  const servers = yield* serversFor(organizationId, call);
+  // An admission carries how many Servers the Organization has enrolled, so the Store refuses one nothing could run.
+  const servers = call.operation === "write" && call.command.command === "admit" ? yield* countOrganizationMachines(organizationId) : undefined;
   const trusted: ConfigTrusted = { ...git, domains };
   if (volumes !== undefined) trusted.volumes = volumes;
   if (servers !== undefined) trusted.servers = servers;
@@ -196,7 +195,10 @@ export const callStore = <C extends StoreCall>(organizationId: string, userId: s
     if (call.operation === "read") return { ok: true, value: yield* storeTry(() => store.read(organizationId, call.query, trusted)) };
     const principal = yield* principalFor(userId).pipe(Effect.orDie);
     const written = yield* storeTry(() => store.write(organizationId, call.command, trusted, principal));
-    yield* afterWrite(organizationId, call.command, written, read);
+    // The write committed: nothing after it may answer as its refusal. What failed is logged; sweeps redo it.
+    yield* afterWrite(organizationId, call.command, written, read).pipe(
+      Effect.catchCause((cause) => Effect.logWarning("Cloud's follow-up to a committed Store write failed.", cause)),
+    );
     return { ok: true, value: written };
   }).pipe(
     // SAFETY: a read answers its query's view, a write what it wrote.

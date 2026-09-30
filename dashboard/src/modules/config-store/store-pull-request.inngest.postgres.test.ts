@@ -85,7 +85,6 @@ it.live(
           events: [delivery(id)],
           steps: [
             { id: "dispatch", handler: () => dispatched.push(id) },
-            { id: "dispatch-removals", handler: () => dispatched.push(`${id}-removal`) },
           ],
         }).execute()).result as { admitted: string[]; removals: string[]; check: string });
       const environments = () => Effect.promise(async () => {
@@ -124,7 +123,8 @@ it.live(
       Object.assign(pull, { state: "closed", updated_at: "2026-09-29T13:00:00Z" });
       const closed = yield* run("close-again");
       expect(closed.removals).toHaveLength(1);
-      expect(dispatched).toContain("close-again-removal");
+      // Admitted like any removal, so Cloud hands it to its worker.
+      expect(requested).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ deploymentId: closed.removals[0] }) }));
       expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: closed.removals[0] ?? "" })))
         .toMatchObject({ remove: true, status: "queued" });
     }),

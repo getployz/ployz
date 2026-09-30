@@ -22,6 +22,7 @@ const DEPLOYED = "00000000-0000-4000-8000-00000000a101";
 const CANCELLED = "00000000-0000-4000-8000-00000000a102";
 const LOST = "00000000-0000-4000-8000-00000000a103";
 const QUEUED = "00000000-0000-4000-8000-00000000a104";
+const UNCLAIMED = "00000000-0000-4000-8000-00000000a105";
 const SECRET = "s3cr3t-never-in-a-step";
 const here = { project: null, environment: null };
 
@@ -95,6 +96,12 @@ it.live(
       expect(yield* stop("cancelled-run")).toMatchObject({ abandoned: { id: LOST } });
       // Recorded runs are forgotten once stopped, and other functions' runs were never recorded.
       expect(yield* stop("cancelled-run")).toEqual({ skipped: true });
+
+      // A run cancelled before it claimed its Deployment (waiting on GitHub builds) cancels it: nothing else would run it.
+      yield* write({ command: "admit", admit: "deploy", id: UNCLAIMED, environment: here, services: [], version: null, accept_volume_loss: [] });
+      yield* recordStoreDeploymentRun("early-run", admitted(UNCLAIMED).data).pipe(Effect.provide(services));
+      expect(yield* stop("early-run")).toEqual({ cancelled: UNCLAIMED });
+      expect(yield* Effect.promise(() => store.read(ORGANIZATION, { query: "deployment", id: UNCLAIMED }))).toMatchObject({ status: "cancelled" });
 
       // An admission whose hand-off was lost is handed over again once it has waited a minute, unless a worker run
       // holds its Environment's queue.

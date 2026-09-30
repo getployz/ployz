@@ -1,10 +1,9 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
-import { Effect } from "effect";
-import { gatherTrusted, organizationServers } from "#/modules/config-store/config-store.server";
+import { Effect, Option, Schema } from "effect";
+import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import type { StoreCall, StoreRead } from "./store.contract";
 import { StoreGithubFailure, admitted, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
@@ -61,8 +60,7 @@ export const observeStorePullRequest = Effect.fn("StorePullRequest.observe")(fun
       if (head !== null && (yield* descendsFrom(payload.installationId, repository, merge, head))) reached = head;
     }
     const event: SystemEvent = pullRequestEvent(payload.repositoryId, payload.number, { ...live, updatedAt }, reached);
-    const servers = yield* organizationServers(organizationId);
-    yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event, { servers })), done);
+    yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
   }
   return done;
 });
@@ -88,40 +86,37 @@ export const sweepStores = Effect.fn("StorePullRequest.sweep")(function* (now: D
 export const sweepStore = Effect.fn("StorePullRequest.sweepOne")(function* (
   organizationId: string, now: Date, done: StoreOutcome = { deployments: [], closing: [], check: false },
 ) {
-  const store = yield* cloudStore;
   const event: SystemEvent = { event: "sweep", now: Math.floor(now.getTime() / 1000) };
-  const servers = yield* organizationServers(organizationId);
-  yield* collect(organizationId, yield* storeTry(() => store.system(organizationId, event, { servers })), done);
+  yield* collect(organizationId, yield* storeSystem(organizationId, event), done);
   return done;
 });
 
+/** What a `confirmation_required` refusal asks to accept, and the version that binds the answer. */
+const Confirmation = Schema.Struct({ accept: Schema.Array(Schema.String), version: Schema.String });
+
 /**
- * Take each Branch the Store is closing off the Servers: its removal Deployment accepts every Volume loss the Servers
- * report, since the system closes it. Resolves to the removals to dispatch. One that can't be admitted now (a
- * Deployment still running, Servers not answering) waits for the next sweep.
+ * Take each Branch the Store is closing off the Servers, admitted like any removal (and so handed to the worker): the
+ * system closes it, so it accepts every Volume loss the Store asks about, bound to the version the Store gave. Resolves
+ * to the removals admitted. One that can't be admitted now (a Deployment still running, Servers not answering) waits for
+ * the next sweep.
  */
 export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(function* (closing: StoreOutcome["closing"]) {
-  const store = yield* cloudStore;
-  const removals: ConfigDeploymentAdmittedEventData[] = [];
+  const removals: string[] = [];
   for (const { organizationId, environment: summary } of closing) {
-    const read: StoreRead = (query) => store.read(organizationId, query);
     const environment = { project: summary.project, environment: summary.name };
-    const written = yield* Effect.gen(function* () {
-      const losses = yield* storeTry(() => read({ query: "removals", environment, remove: true }));
-      const call = {
-        operation: "write", command: {
-          command: "admit", admit: "remove", id: crypto.randomUUID(), environment, version: null,
-          accept_volume_loss: losses.volumes.map((volume) => volume.name),
-        },
-      } satisfies StoreCall;
-      const trusted = yield* gatherTrusted(organizationId, call, read);
-      return yield* storeTry(() => store.write(organizationId, call.command, trusted));
+    const admit = (accept: string[], version: string | null) => callStore(organizationId, null, {
+      operation: "write",
+      command: { command: "admit", admit: "remove", id: crypto.randomUUID(), environment, version, accept_volume_loss: accept },
+    });
+    const admitted = yield* Effect.gen(function* () {
+      const first = yield* admit([], null);
+      if (first.ok || first.refusal.code !== "confirmation_required") return first;
+      const asked = Schema.decodeUnknownOption(Confirmation)(first.refusal.details);
+      return Option.isSome(asked) ? yield* admit([...asked.value.accept], asked.value.version) : first;
     }).pipe(Effect.option);
-    if (written._tag === "Some" && written.value.written === "deployment") {
-      removals.push({ organizationId, environmentId: summary.id, deploymentId: written.value.id });
-    } else {
-      yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment });
-    }
+    const result = Option.getOrUndefined(admitted);
+    if (result?.ok && result.value.written === "deployment") removals.push(result.value.id);
+    else yield* Effect.logWarning("A closing Branch's removal was not admitted; the next sweep retries it.", { organizationId, environment, result });
   }
   return removals;
 });

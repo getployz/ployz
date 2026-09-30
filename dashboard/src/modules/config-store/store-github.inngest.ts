@@ -25,8 +25,7 @@ import { runInngestEffect } from "#/server/run.server";
 export async function followUp(step: Pick<PloyzStepTools, "run" | "sendEvent">, done: Pick<StoreOutcome, "deployments" | "closing">, runEffect: StoreEffectRunner) {
   if (done.deployments.length > 0) await step.sendEvent("dispatch", done.deployments.map(createConfigDeploymentAdmittedEvent));
   const removals = done.closing.length > 0 ? await step.run("close", () => runEffect(closeStoreEnvironments(done.closing))) : [];
-  if (removals.length > 0) await step.sendEvent("dispatch-removals", removals.map(createConfigDeploymentAdmittedEvent));
-  return { admitted: done.deployments.map((deployment) => deployment.deploymentId), removals: removals.map((removal) => removal.deploymentId) };
+  return { admitted: done.deployments.map((deployment) => deployment.deploymentId), removals };
 }
 
 /** A push reaches the Config Store: one branch at a time, so heads apply in the order Cloud reads them. */

@@ -120,7 +120,8 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
       const expects = "expect" in command;
       const save = async () => {
         const written = await send(expects ? { ...command, expect: expected(key) } : command);
-        if (expects && "environment" in written && typeof written.environment.revision === "number") committed.set(key, written.environment.revision);
+        // A copied node answers as a Service, a storage choice as a Volume: each the revision it saved.
+        if (expects && (written.written === "service" || written.written === "volume")) committed.set(key, written.environment.revision);
         return written;
       };
       // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
