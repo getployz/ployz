@@ -393,13 +393,20 @@ fn finish_removal(
     };
     crate::output::finish(&removal, || {
         let environment = &removed.environment;
-        if let Some(deployment) = deployment {
-            say!(
+        match deployment {
+            Some(deployment) if super::teardown::left_on_old_servers(deployment) => say!(
+                "Left {}/{} on old servers: no Server was left to take it off (Deployment #{}).",
+                environment.project,
+                environment.name,
+                deployment.number
+            ),
+            Some(deployment) => say!(
                 "Removed {}/{} from the Servers (Deployment #{}).",
                 environment.project,
                 environment.name,
                 deployment.number
-            );
+            ),
+            None => {}
         }
         say!(
             "Removed Environment {}/{}.",

@@ -334,14 +334,15 @@ pub(super) fn record(config: &Path, environment: EnvironmentSummary) -> Result<L
 }
 
 /// Point this device's links to Project `old` at `new` after a rename, in the
-/// Organization commands act in. A link from another Organization stays.
+/// `acting` Organization. A link from another Organization stays.
 /// Returns how many moved.
 pub(super) fn rename_project(
     config: &Path,
+    acting: Option<&Organization>,
     old: &ProjectName,
     new: &ProjectName,
 ) -> Result<usize, Error> {
-    let Some(acting) = resolved_organization(config)? else {
+    let Some(acting) = acting else {
         return Ok(0);
     };
     let mut links = load(config)?;

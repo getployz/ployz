@@ -111,19 +111,22 @@ fn rename(root: &ArgMatches) -> Result<(), Error> {
         project: ProjectName::parse(required(matches, "project")?)?,
         name: ProjectName::parse(required(matches, "name")?)?,
     };
+    let config = super::config_path(matches)?;
     let store = store(root)?;
+    // Resolved before the write, so a failed lookup cannot strand a done rename.
+    let acting = super::link::identity(&store)?.organization;
     let renamed = store.write(&rename)?;
-    let links = super::link::rename_project(
-        &super::config_path(matches)?,
-        &rename.project,
-        &renamed.name,
-    )?;
-    crate::output::finish(&json!({ "project": renamed, "links": links }), || {
-        say!("Renamed Project {} to {}.", rename.project, renamed.name);
-        if links > 0 {
-            say!("Moved {links} linked director(ies) on this device to it.");
-        }
-    })
+    say!("Renamed Project {} to {}.", rename.project, renamed.name);
+    // The rename is committed; moving this device's links is a follow-up.
+    let links =
+        super::link::rename_project(&config, acting.as_ref(), &rename.project, &renamed.name);
+    if let Ok(moved @ 1..) = links {
+        say!("Moved {moved} linked director(ies) on this device to it.");
+    }
+    crate::output::emit_committed(
+        json!({ "project": renamed, "links": links.as_ref().ok() }),
+        links.map(drop),
+    )
 }
 
 /// What `project rm` removed, and the Deployments that took it off the Servers.
@@ -199,10 +202,17 @@ fn finish(removed: &ProjectRemoved, ran: &[DeploymentSummary]) -> Result<(), Err
     };
     crate::output::finish(&removal, || {
         for deployment in ran {
-            say!(
-                "Took an Environment off the Servers (Deployment #{}).",
-                deployment.number
-            );
+            if super::teardown::left_on_old_servers(deployment) {
+                say!(
+                    "Left an Environment on old servers: no Server was left to take it off (Deployment #{}).",
+                    deployment.number
+                );
+            } else {
+                say!(
+                    "Took an Environment off the Servers (Deployment #{}).",
+                    deployment.number
+                );
+            }
         }
         say!(
             "Removed Project {} and its Environments ({}).",

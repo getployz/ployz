@@ -125,12 +125,19 @@ async fn an_image_service_deploys_through_the_hidden_store() {
         "the Deploy created the Volume"
     );
     ployz(&["volume", "rm", "data"]);
-    let (code, refused) = attempt(address, &store, &["deploy"]);
+    let (code, refused) = attempt(address, &store, &["deploy", "--message", "drop data"]);
     assert_eq!(code, Some(1), "{refused}");
     let refused = &refused["error"];
     assert_eq!(refused["code"], json!("confirmation_required"), "{refused}");
     assert_eq!(refused["details"]["accept"], json!(["data"]));
     let version = refused["details"]["version"].as_str().unwrap();
+    // The retry keeps what was typed besides the acceptance.
+    assert_eq!(
+        refused["details"]["next"],
+        json!(format!(
+            "ployz deploy --message 'drop data' --accept-volume-loss data --expect-version {version}"
+        ))
+    );
     assert!(
         held(&mut client, &docker).await,
         "a refusal deletes nothing"
