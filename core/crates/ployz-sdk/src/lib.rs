@@ -425,6 +425,20 @@ impl Client {
         to_json(&removed)
     }
 
+    /// Take `machine` out of the Cluster without resetting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] JSON payload when the session is closed or the
+    /// Machine can't be taken out: not visible, or the last one while held.
+    #[napi]
+    pub async fn remove_machine_membership(&self, machine: String) -> Result<()> {
+        self.inner
+            .remove_machine_membership(&machine)
+            .await
+            .map_err(rpc_to_napi)
+    }
+
     /// Apply one Machine policy edit (Machine Roles and build concurrency) to `machine`.
     ///
     /// `update` is a partial MachineUpdate; omitted fields keep their values.

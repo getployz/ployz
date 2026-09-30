@@ -142,6 +142,8 @@ export type MachineRemoveAttemptContext = {
   state: MachineRemoveAttemptState;
   inngestRunId: string | null;
   confirmDataLoss: DataLossIdentity[];
+  /** Take the Server out without resetting it: it keeps its state, and Cloud never lets go of the Cluster for it. */
+  noReset: boolean;
 };
 
 export type MachineRemoveCompletion =

@@ -114,6 +114,7 @@ export async function executeProcessMachineRemove({
         machineId: attempt.machineId,
         generation: removed.generation,
         resetWarning: removed.resetWarning,
+        noReset: attempt.noReset,
       }),
     ),
   );

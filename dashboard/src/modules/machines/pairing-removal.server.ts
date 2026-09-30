@@ -93,14 +93,14 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
 );
 
 /**
- * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, was reset under Cloud's own
- * connection and left the Cluster; the reset took every key Cloud held there. Cloud drops that Server's row (its
+ * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, left the Cluster under Cloud's own
+ * connection: reset, which took every key Cloud held there, or only taken out (`membership`), keeping its state. Cloud drops that Server's row (its
  * device keys cascade). When no other Server of that pairing remains, the Cluster went with it: Cloud forgets the
  * pairing and its enrollment tokens outright, with no Clear to confirm. A pairing that changed since, or another
  * Server, keeps Cloud's hold, so a replay after a new Server was paired forgets nothing.
  */
 export const releaseRemovedServer = Effect.fn("PairingRemoval.releaseRemoved")(
-  function* (input: { organizationId: string; machineId: string; generation: string }) {
+  function* (input: { organizationId: string; machineId: string; generation: string; removal: "reset" | "membership" }) {
     const { organizationId } = input;
     const database = yield* Database;
     return yield* database.transaction(Effect.gen(function* () {
@@ -121,6 +121,9 @@ export const releaseRemovedServer = Effect.fn("PairingRemoval.releaseRemoved")(
       const [other] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
         .where(eq(organizationMachine.organizationId, organizationId)).limit(1);
       if (other) return { kind: "others_remain" } satisfies ServerRelease;
+      if (input.removal === "membership") {
+        return { kind: "kept", reason: "it left the Cluster without a reset, so Cloud keeps the pairing." } satisfies ServerRelease;
+      }
       yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
       yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
       return { kind: "released" } satisfies ServerRelease;

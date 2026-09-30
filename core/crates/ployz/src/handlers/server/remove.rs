@@ -27,7 +27,7 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     let selector = target(matches, "server")?.to_owned();
     let no_reset = matches.get_flag("no-reset");
     let runtime = runtime()?;
-    let (mut client, selected, cloud, observed, services, replicated_services) = runtime.block_on(async {
+    let (mut client, selected, hold, cloud, observed, services, replicated_services) = runtime.block_on(async {
         let mut client = super::connect(matches, options.context()).await?;
         let machines = client.machines().await?;
         let selected = select_machine(&machines, &selector)?;
@@ -42,9 +42,11 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
             ));
         }
         // Before anything is listed or confirmed: a removal that can't happen asks nothing.
-        let cloud = match refuse_last_managed(&client, &machines, selected.id).await? {
-            CloudHold::None => None,
-            CloudHold::Last => Some(cloud_removal(matches, &selected, no_reset).await?),
+        let hold = refuse_last_managed(&client, &machines, selected.id).await?;
+        let cloud = if hold == CloudHold::Last || cloud_manages(&client, current).await? {
+            Some(cloud_removal(matches, &selected, hold, no_reset).await?)
+        } else {
+            None
         };
         let observed = if no_reset {
             ployz_core::ObservedDataLoss { data_loss: Vec::new() }
@@ -63,12 +65,12 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         }
         let services = services_on(&selected.id, &live);
         let replicated_services = replicated_services_on(&selected.id, &live);
-        Ok::<_, Error>((client, selected, cloud, observed, services, replicated_services))
+        Ok::<_, Error>((client, selected, hold, cloud, observed, services, replicated_services))
     })?;
     for line in service_warnings(&selected.name, &services) {
         eprintln!("{line}");
     }
-    if cloud.is_some() {
+    if hold == CloudHold::Last {
         output::warn(format!(
             "Server {} is the last Server: whatever runs on it stops, and nothing runs until you add a Server.",
             selected.name
@@ -101,7 +103,8 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
         // TODO: do not reroute away from the current entry before removal.
         // TODO: there is no drain or unschedulable phase before cleanup.
         if let Some(credential) = &cloud {
-            let removed = cloud_account::remove_server(credential, &selected.id, &confirmation).await?;
+            let reset = (!no_reset).then_some(&confirmation);
+            let removed = cloud_account::remove_server(credential, &selected.id, reset).await?;
             reset_failure = removed.reset_warning;
             if let Release::Kept { reason } = &removed.release {
                 output::warn(format!("Cloud keeps its hold on the Cluster: {reason}"));
@@ -163,14 +166,16 @@ pub(in crate::handlers) fn remove(root: &ArgMatches) -> Result<(), Error> {
     })
 }
 
-/// Cloud holds this last Server, so Cloud removes it, witnessing the reset, and lets go
-/// of it. That needs the reset and a Cloud credential; without either nothing happens.
+/// Cloud manages this Server, so Cloud removes it through its durable removal and drops
+/// its own hold: its row for it, and the Cluster with its last Server. That needs a
+/// Cloud credential, and for the last Server the reset; without either nothing happens.
 async fn cloud_removal(
     matches: &ArgMatches,
     selected: &Machine,
+    hold: CloudHold,
     no_reset: bool,
 ) -> Result<Credential, Error> {
-    if no_reset {
+    if hold == CloudHold::Last && no_reset {
         return Err(Error::conflict(format!(
             "Server {} is the last Server and Cloud manages it; Cloud lets go of it only by resetting it. Drop --no-reset. No changes made.",
             selected.name
@@ -182,7 +187,7 @@ async fn cloud_removal(
         Err(LoginError::SignedOut) => Err(Error::detailed(
             RpcErrorCode::Conflict,
             format!(
-                "Server {} is the last Server and Cloud manages it, so Cloud removes it and lets go of it. \
+                "Cloud manages Server {}, so Cloud removes it and drops its hold on it. \
                  Sign in to Cloud first, or remove it from the dashboard. No changes made.",
                 selected.name
             ),
@@ -190,6 +195,29 @@ async fn cloud_removal(
         )),
         Err(error) => Err(error.into()),
     }
+}
+
+/// Whether Cloud manages this Cluster: the entry Server, which always answers, holds
+/// Cloud's key. Cloud holds every Server it enrolled, so it removes any of them itself
+/// and drops its row. Holders that can't be read refuse: they may be Cloud's.
+async fn cloud_manages(client: &crate::connect::Client, entry: MachineId) -> Result<bool, Error> {
+    let details = client
+        .invoke::<op::Inspect>(
+            ployz_core::InspectRequest::default(),
+            &MachineTarget::from(&entry),
+            Some(crate::connect::TARGET_RPC_TIMEOUT),
+        )
+        .await
+        .map_err(|error| {
+            Error::unavailable(format!(
+                "Cannot read who manages Server {entry}: {}. No changes made.",
+                error.message
+            ))
+        })?;
+    Ok(details
+        .management_clients
+        .iter()
+        .any(|label| label.as_str() == "cloud"))
 }
 
 /// Each observed Docker Volume that keeps a Volume's data, by that Volume's name, so

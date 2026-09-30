@@ -58,6 +58,8 @@ export interface PloyzSession {
     machine: MachineTarget,
     confirmDataLoss: DataLossConfirmation,
   ) => Effect.Effect<LocalMachineRemoved, PloyzSdkError>;
+  /** Take a Server out of the Cluster without resetting it: it keeps its state and keys. */
+  readonly removeMachineMembership: (machine: MachineTarget) => Effect.Effect<void, PloyzSdkError>;
   readonly dataLossIfMachineRemoved: (
     machine: MachineTarget,
   ) => Effect.Effect<ObservedDataLoss, PloyzSdkError>;
@@ -166,6 +168,8 @@ function wrapClient(client: Client): PloyzSession {
       sdkPromise("remove machine", () =>
         client.removeMachine(machine, confirmDataLoss),
       ),
+    removeMachineMembership: (machine) =>
+      sdkPromise("remove machine membership", () => client.removeMachineMembership(machine)),
     dataLossIfMachineRemoved: (machine) =>
       sdkPromise("load machine data loss", () =>
         client.dataLossIfMachineRemoved(machine),

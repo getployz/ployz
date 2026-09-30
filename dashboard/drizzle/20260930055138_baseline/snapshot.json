@@ -1545,6 +1545,19 @@
       "table": "machine_remove_attempt"
     },
     {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "no_reset",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "machine_remove_attempt"
+    },
+    {
       "type": "jsonb",
       "typeSchema": null,
       "notNull": true,

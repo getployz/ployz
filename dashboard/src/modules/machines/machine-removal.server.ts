@@ -89,7 +89,7 @@ export const completeMachineRemoveAttemptActivity = Effect.fn(
  * outcome, as the witness `releaseServerActivity` checks before it lets go of anything.
  */
 export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
-  function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss">) {
+  function* (attempt: Pick<MachineRemoveAttemptContext, "organizationId" | "machineId" | "confirmDataLoss" | "noReset">) {
     const access = yield* loadOrganizationConnections(attempt.organizationId);
     const runtime = yield* OrganizationRuntime;
     const session = yield* runtime.open(attempt.organizationId);
@@ -99,11 +99,10 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
         cause: session,
       });
     }
-    const outcome = yield* asRemoveMachineOutcome(
-      session.connected.removeMachine(asMachineId(attempt.machineId), {
-        confirmed: [...attempt.confirmDataLoss],
-      }),
-    );
+    const machine = asMachineId(attempt.machineId);
+    const outcome = yield* asRemoveMachineOutcome(attempt.noReset
+      ? session.connected.removeMachineMembership(machine).pipe(Effect.as({ reset_warning: null }))
+      : session.connected.removeMachine(machine, { confirmed: [...attempt.confirmDataLoss] }));
     return { ...outcome, generation: access.generation };
   },
 );
@@ -111,10 +110,11 @@ export const removeMachineActivity = Effect.fn("MachineRemoval.remove")(
 /**
  * What a removed Server leaves of Cloud's hold. A reset that didn't finish is a partial outcome: the Server may keep
  * Cloud's key, so Cloud keeps its row and its pairing. Otherwise `releaseRemovedServer` drops the Server's row, and
- * forgets the Cluster when it was the pairing's last; the Store then lets go of everything that ran.
+ * forgets the Cluster when a reset took the pairing's last; the Store then lets go of everything that ran. A Server
+ * taken out without a reset loses its row but never lets go of the Cluster.
  */
 export const releaseServerActivity = Effect.fn("MachineRemoval.release")(function* (input: {
-  organizationId: string; machineId: string; generation: string; resetWarning: string | null;
+  organizationId: string; machineId: string; generation: string; resetWarning: string | null; noReset: boolean;
 }) {
   if (input.resetWarning !== null) {
     return {
@@ -122,7 +122,7 @@ export const releaseServerActivity = Effect.fn("MachineRemoval.release")(functio
       reason: `its reset didn't finish (${input.resetWarning}), so it may still hold Cloud's key.`,
     } satisfies ServerRelease;
   }
-  const release = yield* releaseRemovedServer(input);
+  const release = yield* releaseRemovedServer({ ...input, removal: input.noReset ? "membership" : "reset" });
   if (release.kind === "released") yield* storeSystem(input.organizationId, { event: "cluster_forgotten" });
   return release;
 });
