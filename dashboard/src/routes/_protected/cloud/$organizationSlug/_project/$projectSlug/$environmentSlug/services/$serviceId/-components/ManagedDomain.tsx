@@ -45,8 +45,7 @@ export function ManagedDomainDialog({
   onClose,
   onSubmit,
 }: {
-  /** `port` edits only the port: a Store generated domain keeps its prefix. */
-  mode?: "edit" | "generate" | "port";
+  mode?: "edit" | "generate";
   managed: ServiceManagedHostname;
   clusterDomain: string | null;
   takenPrefixes: string[];
@@ -101,11 +100,11 @@ export function ManagedDomainDialog({
               <DialogTitle>
                 {mode === "generate"
                   ? "Generate Service Domain"
-                  : mode === "port" ? "Edit generated domain" : "Edit managed domain"}
+                  : "Edit generated domain"}
               </DialogTitle>
               <DialogDescription>
                 {mode === "edit"
-                  ? "Update your domain or target port."
+                  ? "Change its subdomain or the port it reaches."
                   : "Enter the port your app is listening on."}
               </DialogDescription>
             </DialogHeader>

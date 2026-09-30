@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   BranchView, BuildOrderView, ConfigCommand, ConfigQuery, DeploymentView, DiffView, DomainsView, EnvironmentRef, EnvironmentsView,
-  EnvironmentView, NodeChange, PrPlansView, ServiceListing, ServicesView, VolumeListing, VolumesView,
+  EnvironmentView, NodeChange, PrPlansView, ProjectsView, ServiceListing, ServicesView, VolumeListing, VolumesView,
 } from "@ployz/sdk";
 import type { StoreResult } from "./store.contract";
 import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
@@ -26,6 +26,18 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
       queryClient.setQueryData<StoreResult<V>>(query.queryKey, (old) => old?.ok ? { ok: true, value: update(old.value) } : old);
     }
   };
+  // A Setting row the Store will list in the review: its pink (`domainChanged` reads these paths).
+  const stage = (environment: EnvironmentRef, service: string, row: NodeChange["settings"][number]) =>
+    views<DiffView>("diff", environment, (view) => {
+      const node = view.changes.find((change) => change.type === "service" && change.name === service);
+      const id = node?.id ?? listed(environment).find((listing) => listing.name === service)?.id;
+      if (id === undefined) return view;
+      const had = node?.settings.some((other) => other.path === row.path) ?? false;
+      const changes: NodeChange[] = node
+        ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== row.path), row] } : change)
+        : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+      return { ...view, changes, total_count: view.total_count + (had ? 0 : 1), published: false };
+    });
   // The Services as the tab last read them.
   const listed = (environment: EnvironmentRef) => cached("services", environment).flatMap((query) => {
     // SAFETY: `cached` found only services views.
@@ -150,20 +162,26 @@ export async function applyOptimistic(queryClient: QueryClient, organizationSlug
           || (other.kind === "custom" ? other.hostname !== command.hostname : false)),
         domain,
       ] }));
-      // Its pink: the Setting row the Store will list for it (`domainChanged` reads these paths).
       const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
-      const row = { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false } as const;
-      await views<DiffView>("diff", command.environment, (view) => {
-        const node = view.changes.find((change) => change.type === "service" && change.name === service);
-        const id = node?.id ?? known?.id;
-        if (id === undefined) return view;
-        const changes: NodeChange[] = node
-          ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== path), row] } : change)
-          : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
-        return { ...view, changes, total_count: view.total_count + 1, published: false };
-      });
+      await stage(command.environment, service, { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false });
       return;
     }
+    case "set_generated_domain": {
+      const { service, prefix } = command;
+      // The hostname follows the prefix under the same Cluster Domain.
+      await views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: view.domains.map((domain) =>
+        domain.kind !== "generated" || domain.service !== service ? domain : {
+          ...domain, prefix, hostname: domain.hostname === null ? null : `${prefix}${domain.hostname.slice(domain.prefix.length)}`,
+        }) }));
+      await stage(command.environment, service, { path: `${service}.managedHostnames`, kind: "update", before: null, after: prefix, canRestore: false });
+      return;
+    }
+    case "rename_project":
+      await views<ProjectsView>("projects", null, (view) => ({ ...view, projects: view.projects.map((project) =>
+        project.name === command.project ? { ...project, name: command.name } : project) }));
+      await views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.project ? view
+        : { ...view, project: { ...view.project, name: command.name } });
+      return;
     case "remove_domain":
       await views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: view.domains.filter((domain) =>
         domain.kind === "custom" ? domain.hostname !== command.domain : domain.prefix !== command.domain && domain.hostname !== command.domain) }));
