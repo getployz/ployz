@@ -107,7 +107,7 @@ export const closeStoreEnvironments = Effect.fn("StorePullRequest.close")(functi
       const losses = yield* storeTry(() => read({ query: "removals", environment, remove: true }));
       const call = {
         operation: "write", command: {
-          command: "admit", id: crypto.randomUUID(), environment, services: [], version: null, remove: true,
+          command: "admit", admit: "remove", id: crypto.randomUUID(), environment, version: null,
           accept_volume_loss: losses.volumes.map((volume) => volume.name),
         },
       } satisfies StoreCall;

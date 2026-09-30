@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
 import { InngestTestEngine } from "@inngest/test";
-import type { ConfigCommand, JsonValue, ConfigTrusted, ServiceId, SystemEvent } from "@ployz/sdk";
+import type { ConfigCommand, JsonValue, ConfigTrusted, SystemEvent } from "@ployz/sdk";
 import { Effect, Layer } from "effect";
 import { Inngest } from "inngest";
 import { expect } from "vitest";
@@ -43,7 +43,7 @@ it.live(
       const write = (command: ConfigCommand, trusted?: ConfigTrusted) =>
         Effect.promise(() => store.write(ORGANIZATION, command, trusted));
       yield* write({ command: "create_project", id: PROJECT, name: "shop", default_environment: ENVIRONMENT });
-      yield* write({ command: "create_git_service", id: SERVICE as ServiceId, environment: here, name: "web", repository: "acme/web", branch: null }, {
+      yield* write({ command: "create_git_service", id: SERVICE, environment: here, name: "web", repository: "acme/web", branch: null }, {
         repositories: [{
           repository: "acme/web", repository_id: 42, access: { type: "github-installation", installationId: 7 },
           default_branch: "main", branches: [],

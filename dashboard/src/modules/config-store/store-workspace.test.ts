@@ -26,7 +26,7 @@ it("takes an Environment still on the Servers off them first, accepting only its
   const { sent, commit } = store(refused("conflict", { deployed: true, deployment: "d1", environment: "staging" }), null);
   const step = await teardownStep(commit, { project: "shop", environment: null }, { staging: ["pg"], production: ["files"] });
   expect(sent[0]).toEqual({ command: "remove_project", project: "shop" });
-  expect(sent[1]).toMatchObject({ command: "admit", environment: { project: "shop", environment: "staging" }, remove: true, accept_volume_loss: ["pg"] });
+  expect(sent[1]).toMatchObject({ command: "admit", admit: "remove", environment: { project: "shop", environment: "staging" }, accept_volume_loss: ["pg"] });
   expect(step).toEqual({ done: false, environment: "staging", deployment: (sent[1] as { id: string }).id });
 });
 
