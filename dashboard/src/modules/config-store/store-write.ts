@@ -116,14 +116,17 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
     commit(command: ConfigCommand, handles: readonly string[] = []): { isPersisted: { promise: Promise<ConfigWritten> } } {
       const key = "environment" in command && command.environment ? environmentKey(command.environment) : "";
       applyOptimistic(queryClient, organizationSlug, command);
-      const expects = command.command === "set_volume_storage";
+      // A command that edits Working State expects the newest revision, as an edit does, and is tracked like one.
+      const expects = "expect" in command;
       const save = async () => {
-        const written = await send(command.command === "set_volume_storage" ? { ...command, expect: expected(key) } : command);
-        if (written.written === "volume") committed.set(key, written.environment.revision);
+        const written = await send(expects ? { ...command, expect: expected(key) } : command);
+        if (expects && "environment" in written && typeof written.environment.revision === "number") committed.set(key, written.environment.revision);
         return written;
       };
+      // Only the edits made before it: an edit queued behind it in its own Environment must not be waited for.
       // ponytail: waits for edits in every Environment, not just the ones it touches; edits settle in a round trip.
-      const work = SPANS.has(command.command) ? async () => { await Promise.all(unsettled); return save(); } : save;
+      const preceding = SPANS.has(command.command) ? [...unsettled] : [];
+      const work = async () => { await Promise.all(preceding); return save(); };
       const promise = queued(key, ["store-command", organizationSlug, key], [], work,
         () => queryClient.invalidateQueries({ queryKey: storeViewPrefix(organizationSlug) }), expects, handles);
       if (expects) trackEdit(promise);
