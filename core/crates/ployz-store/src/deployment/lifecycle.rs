@@ -693,8 +693,10 @@ pub(super) enum Evidence<'run> {
 /// nothing for is Unchanged; one it plans for is Pending until confirmed or executed, then all
 /// completed is Deployed (Removed once it left Saved State), some ran is Failed and
 /// none ran is Not attempted. A kept Volume follows the targeted Services mounting
-/// it, and is Unchanged when Applied State already holds it as saved; one no targeted
-/// Service mounts is Deployed only by a Deploy that succeeded. A removed
+/// it: Deployed once one of them is. It is Unchanged when Applied State already
+/// holds it as saved. One no targeted Service mounts is Not attempted when new
+/// (nothing creates its storage), and a held one is Deployed only by a Deploy that
+/// succeeded. A removed
 /// Volume is Removed once the Deploy succeeded and every Docker Volume it deletes is
 /// gone; Failed when one wasn't deleted, and Not attempted when the Deploy failed first.
 /// While it runs, a Deployment stores only what is settled; its Pending nodes matter
@@ -705,11 +707,16 @@ pub(super) fn node_outcomes(
     applied: &SavedEnvironmentIntent,
     evidence: &Evidence<'_>,
 ) -> BTreeMap<String, NodeStatus> {
+    // A Service confirmed or executed lands Deployed, or Removed once it left Saved State.
+    let landed = |kept: bool| {
+        if kept {
+            NodeStatus::Deployed
+        } else {
+            NodeStatus::Removed
+        }
+    };
     let service = |name: &ServiceName, kept: bool| match evidence {
-        Evidence::Planned { confirmed, .. } if confirmed.contains(name) => match kept {
-            true => NodeStatus::Deployed,
-            false => NodeStatus::Removed,
-        },
+        Evidence::Planned { confirmed, .. } if confirmed.contains(name) => landed(kept),
         Evidence::Planned { preview, .. } => {
             if preview
                 .operations
@@ -723,11 +730,7 @@ pub(super) fn node_outcomes(
         }
         Evidence::Executed { projection, .. } => {
             if projection.confirmed_services.contains(name) {
-                if kept {
-                    NodeStatus::Deployed
-                } else {
-                    NodeStatus::Removed
-                }
+                landed(kept)
             } else if projection.failed_services.contains(name) {
                 NodeStatus::Failed
             } else if projection.unattempted_services.contains(name) {
@@ -781,10 +784,20 @@ pub(super) fn node_outcomes(
             NodeStatus::Pending
         } else if applied.volumes.contains(volume) {
             NodeStatus::Unchanged
-        } else if matches!(evidence, Evidence::Planned { .. }) {
+        } else if mounting.is_empty()
+            && !applied
+                .volumes
+                .iter()
+                .any(|held| held.resource_id == volume.resource_id)
+        {
+            // Storage work comes only with a mount: nothing a Deploy runs creates it.
+            NodeStatus::NotAttempted
+        } else if matches!(evidence, Evidence::Planned { .. })
+            && !mounting.contains(&NodeStatus::Deployed)
+        {
             NodeStatus::Pending
         } else if mounting.is_empty() && !succeeded(evidence) {
-            // No Service's work confirms it: only a Deploy that fully ran does.
+            // A held Volume no Service mounts changes only with a Deploy that fully ran.
             NodeStatus::NotAttempted
         } else {
             NodeStatus::Deployed

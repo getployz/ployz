@@ -778,7 +778,7 @@ fn a_deployed_volume_rename_discards_by_its_row() {
 }
 
 #[test]
-fn an_unmounted_volume_deploys_only_with_a_deploy_that_succeeded() {
+fn a_new_unmounted_volume_is_not_deployed_by_a_deploy_that_succeeded() {
     let (store, who) = shop();
     store
         .write(
@@ -793,51 +793,46 @@ fn an_unmounted_volume_deploys_only_with_a_deploy_that_succeeded() {
         )
         .unwrap();
     admit(&store, &who, 1, &[], None).unwrap();
+    run(&store, 1, Vec::new());
+    // No Service mounts it, so nothing that ran created its storage.
+    assert!(
+        outcomes(&store, &who, 1).contains(&("spare".to_owned(), NodeStatus::NotAttempted)),
+        "{:?}",
+        outcomes(&store, &who, 1)
+    );
+    assert!(
+        diff(&store, &who)
+            .changes
+            .iter()
+            .any(|change| change.name == "spare")
+    );
+}
+
+#[test]
+fn a_new_volume_is_deployed_once_the_service_mounting_it_is_confirmed() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    prepare(&store, 1, &["web"]);
     let runner = RunnerId::parse("runner").unwrap();
-    store.claim(&id(1), &runner).unwrap();
-    let operation = json!({"type": "remove_container", "machine_id": "a".repeat(32), "container_id": "a".repeat(64)});
-    let preview: DeployPreview = serde_json::from_value(json!({
-        "namespace": "shop-production",
-        "operations": [{
-            "index": 0, "machine_id": "a".repeat(32), "service_name": "web",
-            "operation": operation, "status": {"type": "pending"}
-        }],
-        "warnings": [], "would_remove": [], "preserved_volumes": []
-    }))
-    .unwrap();
-    store
-        .record(&id(1), &runner, RunEvidence::Prepared(preview))
-        .unwrap();
-    let failed: DeployOutcome<ployz_core::ExecutionError> = serde_json::from_value(json!({
-        "type": "failed", "completed": [],
-        "failed": {"type": "operation", "operation": operation, "error": {
-            "type": "machine", "action": "RemoveContainer",
-            "error": {"code": "internal", "message": "busy", "details": {}}
-        }},
-        "unexecuted": []
-    }))
-    .unwrap();
     store
         .record(
             &id(1),
             &runner,
-            RunEvidence::Executed {
-                outcome: Box::new(failed),
-                removed: Vec::new(),
-            },
+            RunEvidence::Confirmed(vec![ServiceName::parse("web").unwrap()]),
         )
         .unwrap();
-    let outcomes: Vec<(String, NodeStatus)> = store
-        .read(&who, &ployz_store::DeploymentQuery { id: id(1) })
-        .unwrap()
-        .nodes
-        .into_iter()
-        .map(|node| (node.node.name().to_owned(), node.outcome))
-        .collect();
-    assert!(
-        outcomes.contains(&("spare".to_owned(), NodeStatus::NotAttempted)),
-        "{outcomes:?}"
+    assert_eq!(
+        outcomes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("data".to_owned(), NodeStatus::Deployed),
+        ]
     );
+    // Applied State holds the Volume web mounts, whatever happens to the runner.
+    store
+        .record(&id(1), &runner, RunEvidence::Abandoned)
+        .unwrap();
+    assert!(diff(&store, &who).changes.is_empty());
 }
 
 #[test]
