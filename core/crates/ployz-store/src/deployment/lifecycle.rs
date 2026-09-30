@@ -472,11 +472,11 @@ pub(crate) fn record(
             Ok(stored.summary)
         }
         RunEvidence::Prepared(preview) => {
-            let parsed = serde_json::to_value(preview)
+            // Redacted before anything keeps it.
+            let preview = serde_json::to_value(preview)
                 .ok()
                 .and_then(|preview| parse_runtime_preview(preview).ok())
                 .ok_or_else(|| invalid_evidence("Deploy Preview"))?;
-            let preview = serde_json::to_value(&parsed).expect("a Deploy Preview is JSON");
             match &stored.run.preview {
                 Some(recorded) if *recorded == preview => return Ok(stored.summary),
                 Some(_) => {
@@ -492,7 +492,7 @@ pub(crate) fn record(
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
             // What the preview already settles shows while it runs; the rest reads
             // as Pending until what executing it did replaces these.
-            stored.run.nodes = settled(&stored.nodes, &saved, &applied, &parsed, &[]);
+            stored.run.nodes = settled(&stored.nodes, &saved, &applied, &preview, &[]);
             stored.run.preview = Some(preview);
             save(tx, &mut stored)?;
             Ok(stored.summary)
@@ -512,7 +512,7 @@ pub(crate) fn record(
                     json!({ "deployment": id }),
                 ));
             }
-            let Some(preview) = stored.run.preview.clone() else {
+            let Some(preview) = &stored.run.preview else {
                 return Err(error::conflict(
                     "Record the Deploy Preview before what executing it did",
                     json!({ "deployment": id }),
@@ -550,18 +550,12 @@ pub(crate) fn record(
         }
         RunEvidence::Confirmed(services) => {
             running(&stored)?;
-            if stored.run.preview.is_none() || stored.run.outcome.is_some() {
+            let (Some(preview), None) = (&stored.run.preview, &stored.run.outcome) else {
                 return Err(error::conflict(
                     "Confirm Services between the Deploy Preview and the outcome",
                     json!({ "deployment": id }),
                 ));
-            }
-            let preview: DeployPreview = stored
-                .run
-                .preview
-                .clone()
-                .and_then(|preview| serde_json::from_value(preview).ok())
-                .ok_or_else(|| error::corrupt("Deploy Preview"))?;
+            };
             // Everything confirmed so far, and these now.
             let mut confirmed = services;
             for node in &stored.nodes {

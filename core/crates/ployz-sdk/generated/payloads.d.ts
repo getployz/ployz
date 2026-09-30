@@ -72,7 +72,7 @@ checks: Array<PullRequestRef>, };
 
 export type Batch = {
 /**
- * The Environment every command writes. A command naming one is refused.
+ * The Environment every command writes. A command naming another is refused.
  */
 environment: EnvironmentRef,
 /**
@@ -887,7 +887,7 @@ nodes: Array<NodeOutcome>,
 /**
  * The Deploy Preview its runner prepared, with environment values removed.
  */
-preview: JsonValue | null, outcome: Outcome | null,
+preview: DeployPreview | null, outcome: Outcome | null,
 /**
  * Its Git Services' builds, once their commits are pinned.
  */
