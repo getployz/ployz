@@ -349,6 +349,14 @@ async fn node_smoke_covers_connect_about_preview_run_and_close() {
         .await;
 }
 
+#[tokio::test]
+async fn node_store_seams_refuse_malformed_github_input() {
+    UnixSession::start()
+        .await
+        .assert_sdk_script("node_store.js", MachineId::random(), &[])
+        .await;
+}
+
 pub(super) fn advertised_description() -> ContractDescription {
     ContractDescription {
         machine_id: MachineId::parse("0123456789abcdef0123456789abcdef").unwrap(),
