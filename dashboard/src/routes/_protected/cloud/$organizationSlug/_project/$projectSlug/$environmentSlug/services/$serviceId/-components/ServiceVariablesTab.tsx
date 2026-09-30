@@ -45,6 +45,7 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
       writer={writer}
       managed={<ManagedVariables managed={storeManagedExports(service, settings.environment)} />}
       valueTargets={storeReferenceTargets(settings, services, service.id)}
+      serviceNames={services.map((listed) => listed.name)}
       allowSealOnCreate
       onCreateVariable={({ key, value, sealed, exported }) => writer.create(key, value, sealed, exported)}
       onSealVariable={(variable) => writer.seal(variable.key, variable.value.value)}
@@ -56,13 +57,14 @@ export function StoreServiceVariablesTab({ organizationSlug, environment, servic
 
 /** A Service's variables tab: its variables, the raw editor and the variables Ployz adds. */
 function ServiceVariablesView({
-  variables, writer, managed, valueTargets, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, allowSealOnCreate = false,
+  variables, writer, managed, valueTargets, serviceNames, onCreateVariable, onSealVariable, onUpdateMetadata, onApplyRaw, allowSealOnCreate = false,
 }: {
   variables: VariableRecord[];
   writer: VariableWriter;
   /** The variables Ployz adds. */
   managed: ReactNode;
   valueTargets: ReferenceTarget[];
+  serviceNames: readonly string[];
   onCreateVariable: (input: VariableAddInput) => Persistable;
   onSealVariable: (variable: PlainVariableRecord) => void;
   onUpdateMetadata: (variable: VariableRecord, patch: VariableMetadataPatch) => void;
@@ -81,6 +83,7 @@ function ServiceVariablesView({
         onSealVariable={onSealVariable}
         onUpdateMetadata={onUpdateMetadata}
         valueTargets={valueTargets}
+        serviceNames={serviceNames}
         headerActions={
           <Button
             type="button"

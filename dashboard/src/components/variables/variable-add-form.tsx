@@ -9,6 +9,7 @@ import { Input } from "#/components/ui/input";
 import { VariableValueInput } from "#/components/variables/VariableValueInput";
 import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import { getSealedVariableCollisionMessage } from "#/modules/variables/variable-raw-editor";
+import { parseDisplayToParts } from "#/modules/variables/variable-template";
 import type { VariableWriter } from "#/modules/variables/variables";
 import type { VariableRecord } from "#/modules/variables/variables";
 
@@ -54,14 +55,10 @@ function createVariableAddFormState({
   };
 }
 
-/** `${{ service.KEY }}`: a reference to another Service's variable. */
-const SERVICE_REFERENCE = /\$\{\{\s*([^.\s}]+)\.[^}\s]+\s*\}\}/gu;
-
-/** Why `value` can't be saved: it references a Service `targets` doesn't know (each Service has targets). */
-function referenceError(value: string, targets: readonly ReferenceTarget[] | undefined) {
-  if (targets === undefined) return null;
-  const owners = new Set(targets.map((target) => target.ownerSlug));
-  const unknown = [...value.matchAll(SERVICE_REFERENCE)].map((match) => match[1]).find((owner) => !owners.has(owner ?? null));
+/** Why `value` can't be saved: a `${{ service.KEY }}` names no Service of the Environment (`serviceNames`). */
+function referenceError(value: string, serviceNames: readonly string[] | undefined) {
+  if (serviceNames === undefined) return null;
+  const [unknown] = parseDisplayToParts(value, (slug) => serviceNames.includes(slug) ? { lineageId: slug, scope: "service" } : null).unresolved;
   return unknown === undefined ? null : `There's no service named ${unknown} to reference in this environment.`;
 }
 
@@ -99,6 +96,7 @@ export function VariableAddForm({
   defaultExported,
   supportsExport,
   valueTargets,
+  serviceNames,
   initial,
 }: {
   variables: VariableRecord[];
@@ -112,6 +110,8 @@ export function VariableAddForm({
   defaultExported: boolean;
   supportsExport: boolean;
   valueTargets?: ReferenceTarget[];
+  /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
+  serviceNames?: readonly string[];
 }) {
   const defaults = { allowSealOnCreate, defaultExported };
   const [state, dispatch] = useReducer(
@@ -128,7 +128,7 @@ export function VariableAddForm({
   const typedKey = state.key.trim().toUpperCase();
   const keyError = typedKey && !VARIABLE_KEY.test(typedKey)
     ? "Use letters, digits and underscores, not starting with a digit (at most 128)." : null;
-  const valueError = state.sealed ? null : referenceError(state.value, valueTargets);
+  const valueError = state.sealed ? null : referenceError(state.value, serviceNames);
 
   function handleAdd() {
     const key = typedKey;

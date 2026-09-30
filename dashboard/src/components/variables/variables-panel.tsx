@@ -45,11 +45,14 @@ export function VariablesPanel({
   renderAfterList,
   emptyState,
   valueTargets,
+  serviceNames,
 }: {
   variables: VariableRecord[];
   collection: VariableWriter;
   /** Reference targets for the value `${{ }}` autocomplete (add form + rows). */
   valueTargets?: ReferenceTarget[];
+  /** Every Service of the Environment, which a value's `${{ service.KEY }}` may name; none: unchecked. */
+  serviceNames?: readonly string[];
   /** Singular noun for the count heading, e.g. "Variable" or "Service Variable". */
   countNoun: string;
   /** Saves in the background; a refusal reopens the form with what was typed. */
@@ -111,6 +114,7 @@ export function VariablesPanel({
             defaultExported={defaultExported}
             supportsExport={supportsExport}
             valueTargets={valueTargets}
+            serviceNames={serviceNames}
           />
         </DialogContent>
       </Dialog>
