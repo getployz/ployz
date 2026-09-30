@@ -4,6 +4,7 @@
 //! with at most one action.
 
 use clap::{ArgMatches, Command};
+use ployz_core::DomainPrefix;
 use ployz_store::{
     AddDomain, DomainAction, DomainQuery, DomainRow, DomainStaged, DomainStatus, DomainsQuery,
     Hostname, RemoveDomain, SetGeneratedDomain,
@@ -39,6 +40,11 @@ pub(crate) fn command() -> Command {
             .arg(
                 positional("prefix", true)
                     .help("One DNS label, unique among the Organization's generated domains"),
+            )
+            .arg(
+                value("port", None)
+                    .value_parser(clap::value_parser!(u16).range(1..))
+                    .help("Container port it reaches [default: the container's PORT]"),
             ),
         )
         .subcommand(
@@ -99,7 +105,9 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
     let set = SetGeneratedDomain {
         environment: store::environment(matches)?,
         service: store::service_name(matches, "service")?,
-        prefix: required(matches, "prefix")?,
+        prefix: DomainPrefix::parse(required(matches, "prefix")?.trim().to_ascii_lowercase())
+            .map_err(|_| Error::usage("Expected one DNS label, like shop").with_exit(USAGE_EXIT))?,
+        port: matches.get_one::<u16>("port").copied().map(Some),
     };
     let changed = store::store(root)?
         .args([set.service.as_str(), "PREFIX"])
