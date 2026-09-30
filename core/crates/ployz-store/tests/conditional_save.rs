@@ -294,14 +294,22 @@ fn a_conditional_save_goes_live_with_the_push_that_carries_its_merge() {
         (false, "2 changes to save in Ployz".into())
     );
 
-    let saved = store
-        .write(&who, &save(&["web.env"], Some(review.version)))
+    let committed = store
+        .commit(
+            &who,
+            &Command::Move(save(&["web.env"], Some(review.version))),
+            &Trusted::default(),
+        )
         .unwrap();
+    // Cloud publishes the PR's check again.
+    assert_eq!(committed.checks.len(), 1);
+    let Written::Moved(saved) = committed.written else {
+        panic!("a Save writes Moved")
+    };
     let conditional = saved.conditional_save.unwrap();
     assert_eq!(conditional.state, SaveState::Standing);
     assert_eq!(conditional.rows, ["web.env.MODE", "web.env.TOKEN"]);
     assert!(saved.staged.is_empty());
-    assert_eq!(saved.checks.len(), 1);
     // Nothing lands before the merge.
     assert!(env(&store, &who, "production").get("MODE").is_none());
     assert_eq!(
