@@ -228,9 +228,18 @@ pub(crate) fn on_servers(
     tx: &mut dyn Tx,
     environment: &EnvironmentId,
 ) -> Result<Option<DeploymentSummary>, RpcError> {
-    if let Some(running) = deployment::in_flight(tx, environment)? {
-        return Ok(Some(running));
+    match deployment::in_flight(tx, environment)? {
+        Some(running) => Ok(Some(running)),
+        None => ran(tx, environment),
     }
+}
+
+/// The last Deployment that ran `environment` on the Servers, unless it was a
+/// removal that applied. None when nothing of it ever ran, or its removal applied.
+pub(crate) fn ran(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+) -> Result<Option<DeploymentSummary>, RpcError> {
     Ok(deployment::last_ran(tx, environment)?
         .filter(|ran| !(ran.remove && ran.status == DeploymentStatus::Applied)))
 }

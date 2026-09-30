@@ -103,27 +103,39 @@ pub(crate) fn admit(
     Ok(summary)
 }
 
-/// Apply removal `id` without a runner: nothing of its Environment is on a Server,
-/// because none is left or nothing ever ran there.
-pub(crate) fn forget(tx: &mut dyn Tx, id: &DeploymentId) -> Result<DeploymentSummary, RpcError> {
+/// How a removal of `environment` applies without a runner, if it can: nothing of
+/// it ever ran on a Server, or Cloud counted no Server left to run it. Zero
+/// enrolled Servers isn't runtime absence: that removal completes only in
+/// configuration, and says so.
+pub(crate) fn forgettable(
+    tx: &mut dyn Tx,
+    environment: &EnvironmentId,
+    trusted: &crate::Trusted,
+) -> Result<Option<Outcome>, RpcError> {
+    if crate::teardown::ran(tx, environment)?.is_none() {
+        return Ok(Some(Outcome::NeverRan));
+    }
+    Ok(trusted.no_servers().then_some(Outcome::Forgotten))
+}
+
+/// Apply removal `id` without a runner, with `outcome` from [`forgettable`]. It
+/// never started. Applied State lets go of every node, which Unknown reads.
+pub(crate) fn forget(
+    tx: &mut dyn Tx,
+    id: &DeploymentId,
+    outcome: Outcome,
+) -> Result<DeploymentSummary, RpcError> {
     let mut stored = locked(tx, id)?;
-    stored.summary.status = DeploymentStatus::Running;
-    stored.summary.started_at = Some(now());
     stored.run.nodes = stored
         .nodes
         .iter()
-        .map(|node| (node.id().to_owned(), NodeStatus::Removed))
+        .map(|node| (node.id().to_owned(), NodeStatus::Unknown))
         .collect();
-    let reason = "Nothing of this Environment was left on a Server".to_owned();
-    finish(
-        tx,
-        stored,
-        Outcome::NotExecuted {
-            reason,
-            needs_upload: Vec::new(),
-        },
-        DeploymentStatus::Applied,
-    )
+    tx.execute(
+        "DELETE FROM config_applied WHERE environment_id = ?1",
+        &[stored.summary.environment_id.as_str().into()],
+    )?;
+    end(tx, stored, outcome, DeploymentStatus::Applied)
 }
 
 /// Supersede `environment`'s queued Deployment, if any, and number the next one.
@@ -819,6 +831,16 @@ pub(super) fn finish(
         }
         None => running(&stored)?,
     }
+    end(tx, stored, outcome, status)
+}
+
+/// End `stored` with `outcome`: what it confirmed enters Applied State.
+fn end(
+    tx: &mut dyn Tx,
+    mut stored: Stored,
+    outcome: Outcome,
+    status: DeploymentStatus,
+) -> Result<DeploymentSummary, RpcError> {
     advance(tx, &stored)?;
     // A cancelled Deployment that stopped short reads cancelled, not failed.
     stored.summary.status = match (stored.summary.status, status) {
