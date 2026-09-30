@@ -159,20 +159,23 @@ export const cancelStoreDeploymentRun = Effect.fn("StoreDeployment.cancelRun")(f
   return yield* stopStoreDeploymentRun(run.organizationId, run.deploymentId, runId);
 });
 
-/** How long an admission has to reach its worker before the sweep hands it over again. */
-const UNCLAIMED_AFTER_SECONDS = 10 * 60;
+/** How long an admission has to reach its worker before Cloud hands it over again. */
+const UNCLAIMED_AFTER_SECONDS = 60;
 
 /**
- * Queued Deployments no runner claimed since well after their admission, in every Organization: the hand-off to the
- * worker may have been lost (a failed send, a crash after the commit). Handing one over again sends its admission's
- * own event, which Inngest drops while that one's run still waits its turn.
+ * Queued Deployments whose hand-off to the worker looks lost, in every Organization: admitted over a minute ago, and
+ * no worker run is recorded for a Deployment of their Environment still in flight (a run records itself first, so one
+ * waiting its turn or walking its GitHub builds holds its Environment's queue; a stale record of an ended one doesn't). A lost send or a run dropped across a Cloud redeploy stalls there.
  * ponytail: reads the Store's table directly until the Store answers this itself.
  */
 export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(function* (now: Date) {
   const { drizzle } = yield* Database;
   const before = Math.floor(now.getTime() / 1000) - UNCLAIMED_AFTER_SECONDS;
   const rows = yield* drizzle.execute<{ id: string; organization_id: string; environment_id: string }>(sql`
-    select id, organization_id, environment_id from config_deployment where status = 'queued' and admitted < ${before}`, "objects");
+    select d.id, d.organization_id, d.environment_id from config_deployment d
+    where d.status = 'queued' and d.admitted < ${before} and not exists (
+      select 1 from deployment_run r join config_deployment o on o.id = r.deployment_id
+      where o.environment_id = d.environment_id and o.status in ('queued', 'running', 'cancelling'))`, "objects");
   return rows.map((row): ConfigDeploymentAdmittedEventData => ({
     organizationId: row.organization_id, environmentId: row.environment_id, deploymentId: row.id,
   }));

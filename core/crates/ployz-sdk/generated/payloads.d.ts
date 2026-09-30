@@ -1842,7 +1842,7 @@ export type OrganizationId = string;
 
 export type OrganizationRemoved = { organization: OrganizationId, };
 
-export type Outcome = { "type": "executed", summary: JsonValue, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
+export type Outcome = { "type": "executed", summary: JsonValue, reason: string | null, } | { "type": "not_executed", reason: string, needs_upload: Array<ServiceName>, };
 
 export type PartialResult<T, E> = { successes: Array<MachineSuccess<T>>, failures: Array<MachineFailure<E>>,
 /**
@@ -2171,7 +2171,13 @@ version?: string | null,
 /**
  * As [`Deploy::accept_volume_loss`].
  */
-accept_volume_loss?: Array<VolumeName>, };
+accept_volume_loss?: Array<VolumeName>,
+/**
+ * Close a Branch: once this removal applied, the Store's sweep deletes it
+ * without its admitter coming back. Ignored for an Environment that isn't a
+ * Branch; a client that deletes it itself leaves it unset.
+ */
+close?: boolean, };
 
 export type RemovalsQuery = {
 /**

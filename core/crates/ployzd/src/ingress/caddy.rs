@@ -189,6 +189,13 @@ http:// {{\n\
 \tlog\n\
 }}\n\
 \n\
+# Unknown hostnames over HTTPS: a wildcard certificate another site pins may cover them,\n\
+# and Caddy would answer an unmatched request 200 with an empty body.\n\
+https:// {{\n\
+\trespond \"Not Found\" 404\n\
+\tlog\n\
+}}\n\
+\n\
 (common_proxy) {{\n\
 \t# Retry failed requests up to lb_retries times against other available upstreams.\n\
 \tlb_retries 3\n\

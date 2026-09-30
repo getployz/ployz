@@ -108,6 +108,11 @@ fn automatic_sites_render_routes_and_health_endpoint() {
     assert!(caddyfile.contains("respond \"Not Found\" 404"));
     assert!(caddyfile.contains("lb_retries 3"));
     assert!(caddyfile.contains("fail_duration 30s"));
+    // An unknown hostname a pinned wildcard covers gets 404 over HTTPS too, not an empty 200.
+    assert_eq!(
+        automatic_site_block(&caddyfile, "https://"),
+        "respond \"Not Found\" 404 log"
+    );
     let health = automatic_site_block(&caddyfile, "http://");
     let handler = automatic_site_block(&health, INGRESS_VERIFY_PATH);
     assert!(handler.contains(&format!("respond \"{local}\" 200")));

@@ -106,6 +106,12 @@ pub struct Removal {
     #[serde(default)]
     #[ts(as = "Option<Vec<VolumeName>>", optional)]
     pub accept_volume_loss: Vec<VolumeName>,
+    /// Close a Branch: once this removal applied, the Store's sweep deletes it
+    /// without its admitter coming back. Ignored for an Environment that isn't a
+    /// Branch; a client that deletes it itself leaves it unset.
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub close: bool,
 }
 
 /// Cancel a Deployment: a queued one never runs, and a running one stops.
@@ -297,12 +303,16 @@ fn removal(
         None,
         &losses,
     )?;
-    deployment::admit(
+    let admitted = deployment::admit(
         tx,
         who,
         (&admit.id, &[], None, None),
         id,
         deployment::NOTHING,
         &frozen,
-    )
+    )?;
+    if admit.close {
+        crate::pull_request::mark_closing(tx, id)?;
+    }
+    Ok(admitted)
 }

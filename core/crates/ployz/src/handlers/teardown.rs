@@ -178,6 +178,7 @@ pub(super) fn take_off(
                 environment: at.clone(),
                 version,
                 accept_volume_loss: accept.to_vec(),
+                close: false,
             }),
             volumes,
         )
