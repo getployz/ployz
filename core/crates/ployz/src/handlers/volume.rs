@@ -39,14 +39,9 @@ pub(crate) fn command() -> Command {
                 Command::new("set").about("Change a Volume's storage before its first deployment"),
             ))
             .arg(positional("volume", true))
-            .arg(
-                switch("managed", None)
-                    .help("Use managed storage with the default 5 GB limit")
-                    .conflicts_with("docker"),
-            )
             .group(
                 clap::ArgGroup::new("storage-change")
-                    .args(["size", "docker", "managed"])
+                    .args(["size", "docker"])
                     .required(true),
             ),
         )
@@ -125,39 +120,18 @@ fn storage_flags(command: Command) -> Command {
     command
         .arg(
             value("size", None)
-                .value_name("SIZE")
-                .value_parser(parse_size)
-                .help("Storage limit, such as 500MB or 10GB; new managed Volumes default to 5GB"),
+                .value_name("GB")
+                .value_parser(|size: &str| {
+                    ProvisionedVolumeMaximumBytes::parse(size)
+                        .map_err(|_| "Use a positive size in GB, such as 5GB or 0.5GB")
+                })
+                .help("Managed storage limit in GB, such as 10GB; new Volumes default to 5GB"),
         )
         .arg(
             switch("docker", None)
                 .conflicts_with("size")
                 .help("Advanced: use a Docker volume without an enforced storage limit"),
         )
-}
-
-fn parse_size(value: &str) -> Result<ProvisionedVolumeMaximumBytes, String> {
-    let units = [
-        ("GiB", 1_073_741_824),
-        ("MiB", 1_048_576),
-        ("GB", 1_000_000_000),
-        ("MB", 1_000_000),
-        ("B", 1),
-    ];
-    let (number, multiplier) = units
-        .iter()
-        .find_map(|(suffix, multiplier)| {
-            value
-                .strip_suffix(suffix)
-                .map(|number| (number, *multiplier))
-        })
-        .unwrap_or((value, 1));
-    number
-        .parse::<u64>()
-        .ok()
-        .and_then(|number| number.checked_mul(multiplier))
-        .and_then(|bytes| ProvisionedVolumeMaximumBytes::try_from(bytes).ok())
-        .ok_or_else(|| "Use a positive whole-number size, such as 500MB, 5GB or 10GiB".into())
 }
 
 fn requested_storage(matches: &ArgMatches) -> VolumeKind {
@@ -189,10 +163,7 @@ fn set(root: &ArgMatches) -> Result<(), Error> {
 fn storage_word(storage: VolumeKind) -> String {
     match storage {
         VolumeKind::Local {} => "Docker (no enforced storage limit)".into(),
-        VolumeKind::Provisioned { maximum_bytes } => format!(
-            "Managed ({} GB limit)",
-            maximum_bytes.get() as f64 / 1_000_000_000.0
-        ),
+        VolumeKind::Provisioned { maximum_bytes } => format!("Managed ({maximum_bytes} limit)"),
     }
 }
 
@@ -301,17 +272,3 @@ fn staged(matches: &ArgMatches, result: &VolumeStaged, what: &str) -> Result<(),
 }
 
 use super::store::volume_name;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn storage_sizes_are_positive_exact_and_cannot_overflow() {
-        assert_eq!(parse_size("5GB").unwrap().get(), 5_000_000_000);
-        assert_eq!(parse_size("500MB").unwrap().get(), 500_000_000);
-        assert_eq!(parse_size("1GiB").unwrap().get(), 1_073_741_824);
-        for value in ["0", "-1GB", "1.5GB", "unknown", "18446744073709551615GB"] {
-            assert!(parse_size(value).is_err());
-        }
-    }
-}
