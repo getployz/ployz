@@ -37,8 +37,8 @@ function evidenceLine(runtime: Pick<RuntimeServiceRecord, "containers"> | null, 
 }
 
 /**
- * What the Runtime Watch says of the Servers, as `useRuntimeLens` reads it once for the canvas: its status, whether a
- * Server is missing from its evidence, when that was current, and whether there is no Server at all.
+ * What the Runtime Watch says of the Servers, as `useRuntimeLens` reads it: its status, whether a Server is missing from
+ * its evidence, when that was current, and whether there is no Server at all.
  */
 export type RuntimeLens = Pick<ReturnType<typeof useRuntimeLens>, "status" | "incomplete" | "observedAt" | "noServers">;
 
@@ -55,14 +55,20 @@ export function runtimeLine(
   if (service.change === "create") return line("Not deployed", "idle");
   if (service.source === "empty") return line("No source", "idle");
   if (lens.noServers) return line("Needs a server", "idle");
-  if (lens.status === "unreachable") return line("Can't reach servers", "unreachable");
-  if (lens.status === "observed") return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
-  // The connection dropped: the last evidence, grey, from when it was current.
-  if (lens.status === "unavailable" && lens.observedAt !== null) {
-    return { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
+  switch (lens.status) {
+    case "no_connection":
+      return line("Needs a server", "idle");
+    case "unreachable":
+      return line("Can't reach servers", "unreachable");
+    case "connecting":
+      return line("Checking", "pending");
+    case "unavailable":
+      // The connection dropped: the last evidence, grey, from when it was current; none seen yet, it waits.
+      return lens.observedAt === null ? line("Checking", "pending")
+        : { ...evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying), tone: "quiet", down: false, since: new Date(lens.observedAt) };
+    case "observed":
+      return evidenceLine(runtime, !lens.incomplete, desiredReplicas, deploying);
   }
-  // Connecting, or no evidence was ever seen: it waits.
-  return line("Checking", "pending");
 }
 
 /** A node's ⚠ N: how many things on it the user can fix, red when one is its Service being down. */

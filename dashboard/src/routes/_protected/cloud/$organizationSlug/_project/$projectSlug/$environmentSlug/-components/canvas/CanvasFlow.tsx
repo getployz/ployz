@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { use, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -34,6 +34,7 @@ import { BranchButton } from "./BranchButton";
 import { ServiceCreatorDialog } from "./ServiceCreatorDialog";
 import { VolumeCreatorDialog } from "./VolumeCreatorDialog";
 import { useKeyboardFocusModality } from "../keyboard-focus-modality";
+import { RuntimeLensContext } from "./RuntimeLensProvider";
 import {
   ENVIRONMENT_ROUTE_FROM,
   ENVIRONMENT_SERVICE_ROUTE_TO,
@@ -198,6 +199,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
     (deploymentId) => void navigate({ to: DEPLOYMENT_PAGE_ROUTE_TO, params: { ...params, deploymentId } }));
   const inFlight = useInFlightDeployments(params.organizationSlug, ref);
   const waiting = useSavesInto(params.organizationSlug, params.projectSlug, diff.environment.name);
+  const { noServers } = use(RuntimeLensContext);
   const groups = changeGroups(diff, store.services.map(({ service }) => service));
   return (
     <>
@@ -214,7 +216,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         active={inFlight}
         notes={storeHintNotes(diff, groups)}
         waiting={waiting}
-        noServers={store.runtimeLens.noServers}
+        noServers={noServers}
       />
       {actions.dialog}
     </>

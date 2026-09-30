@@ -19,7 +19,6 @@ import { asTestDouble } from "#/lib/test-double";
 
 let workspaceWidth = 1000;
 const params = { organizationSlug: "acme", projectSlug: "shop", environmentSlug: "production" };
-const runtimeLens = { status: "observed", incomplete: false, observedAt: null, noServers: false } as const;
 const volume = asTestDouble<VolumeListing>()({ id: "data", name: "Database data", mounts: [{ service: "api", path: "/data" }], deployed: false, storage: { kind: "docker" }, storage_locked: false, change: "update" });
 
 function InspectorEditor() {
@@ -49,7 +48,7 @@ function Architecture() {
     } : null}
     canvas={<div className="canvas-graph" role="region" aria-label="Mobile architecture list">
       <Link data-canvas-node="api" to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: "api" }}>API node</Link>
-      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume], runtimeLens }} selectedNodeId={nodeId} />
+      <CanvasNodeList store={{ services: [], unmountedVolumes: [volume] }} selectedNodeId={nodeId} />
     </div>}
   >
     <Outlet />

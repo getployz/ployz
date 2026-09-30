@@ -31,11 +31,9 @@ describe("Config Store nodes", () => {
     volume("orphan", [{ service: "gone", path: "/data" }]),
   ];
   const { trays, unmounted } = volumeTrays(listings, volumes);
-  const runtimeLens = { status: "observed", incomplete: false, observedAt: null, noServers: false } as const;
   const store = {
     services: listings.map((service) => ({ service, domains: [], changeCount: 0, runtimeIdentity: null, desiredReplicas: null, trays: trays.get(service.id) ?? [] })),
     unmountedVolumes: unmounted,
-    runtimeLens,
   };
 
   it("puts a mounted Volume in a tray under each Service that mounts it, naming the others", () => {
@@ -50,7 +48,7 @@ describe("Config Store nodes", () => {
     expect(nodes.map((node) => [node.id, node.type])).toEqual([
       ["s1", "storeService"], ["s2", "storeService"], ["loose", "storeVolume"], ["orphan", "storeVolume"],
     ]);
-    expect(nodes[0]).toMatchObject({ position: { x: 480, y: 96 }, height: 144 + 2 * 40, data: { runtimeLens } });
+    expect(nodes[0]).toMatchObject({ position: { x: 480, y: 96 }, height: 144 + 2 * 40 });
     expect(nodes[1]?.height).toBe(144 + 40);
     expect(nodes[2]?.data).toMatchObject({ resourceType: "volume", resourceId: "loose", environmentId: "e" });
   });

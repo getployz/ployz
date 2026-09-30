@@ -1,3 +1,4 @@
+import { use } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Link, useLoaderData, useParams } from "@tanstack/react-router";
 import { Avatar, AvatarFallback } from "#/components/ui/avatar";
@@ -11,7 +12,8 @@ import { PickedNode } from "./PickableNode";
 import { useNodePick } from "../new-branch/branch-picking";
 import { getServiceIcon } from "./service-node-helpers";
 import { DeployChip, STAGED_CLASSES, StatusLine } from "./node-status-view";
-import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface, type RuntimeLens } from "./node-status";
+import { deployChip, nodeIssues, publicDomain, runtimeLine, stagedSurface } from "./node-status";
+import { RuntimeLensContext } from "./RuntimeLensProvider";
 import { ServiceTrays } from "./VolumeTray";
 import { useCanvasInspectorSelection } from "../useCanvasInspectorSelection";
 import type { StoreCanvasService } from "./types";
@@ -22,12 +24,13 @@ import { useRuntimeService } from "#/providers/runtime-provider";
  * A Config Store Service on the canvas and in its phone list: what runs now on its status line, anything about Deploys
  * in its chip. Opens its drawer; right-click removes it. `compact`: the phone list's two rows.
  */
-export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, runtimeLens, selected, compact = false, className }:
-  StoreCanvasService & { runtimeLens: RuntimeLens; selected: boolean; compact?: boolean; className: string }) {
+export function StoreServiceCard({ service, domains, changeCount, runtimeIdentity, desiredReplicas, selected, compact = false, className }:
+  StoreCanvasService & { selected: boolean; compact?: boolean; className: string }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
   const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const remove = useRemoveStoreService(store, service);
   const { runtime } = useRuntimeService(runtimeIdentity ?? "");
+  const runtimeLens = use(RuntimeLensContext);
   const inFlight = useInFlightDeployments(params.organizationSlug, store);
   // Under an open Deployment Page: its Node Outcome, or dimmed when it didn't target this Service.
   const light = useNodeLighting(service.id);
@@ -78,7 +81,7 @@ export function StoreServiceCard({ service, domains, changeCount, runtimeIdentit
   );
 }
 
-export function StoreServiceNode({ data }: { data: StoreCanvasService & { runtimeLens: RuntimeLens } }) {
+export function StoreServiceNode({ data }: { data: StoreCanvasService }) {
   const pick = useNodePick(data.service.name);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const trays = <ServiceTrays trays={data.trays} selectedNodeId={selectedNodeId} />;

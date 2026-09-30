@@ -5,10 +5,10 @@ import type { StoreCanvas } from "./types";
 
 /** The canvas as a list, on phones: its Services as compact cards with their Volume trays, then the Volumes nothing mounts. */
 export function CanvasNodeList({
-  store: { services, unmountedVolumes, runtimeLens },
+  store: { services, unmountedVolumes },
   selectedNodeId,
 }: {
-  store: Pick<StoreCanvas, "services" | "unmountedVolumes" | "runtimeLens">;
+  store: Pick<StoreCanvas, "services" | "unmountedVolumes">;
   selectedNodeId: string | null;
 }) {
   return (
@@ -18,7 +18,7 @@ export function CanvasNodeList({
       <div className="flex flex-col gap-3">
         {services.map((service) => (
           <div key={service.service.id}>
-            <StoreServiceCard {...service} runtimeLens={runtimeLens} selected={service.service.id === selectedNodeId} compact className="block" />
+            <StoreServiceCard {...service} selected={service.service.id === selectedNodeId} compact className="block" />
             <ServiceTrays trays={service.trays} selectedNodeId={selectedNodeId} />
           </div>
         ))}

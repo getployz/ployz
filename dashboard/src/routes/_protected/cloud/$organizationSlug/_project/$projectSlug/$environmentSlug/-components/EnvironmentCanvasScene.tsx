@@ -28,7 +28,7 @@ import { serviceChanges, serviceSettingRows } from "#/modules/config-store/store
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
 import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
 import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
-import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
+import { RuntimeLensProvider } from "./canvas/RuntimeLensProvider";
 
 /** A `replicas` Setting that says how many. */
 const isReplicaCount = Schema.is(Schema.Int);
@@ -73,7 +73,6 @@ function CanvasWithData() {
   const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace, domainsResult] = useStoreViews(organizationSlug,
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref), domainsQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
-  const runtimeLens = useRuntimeLens(organizationSlug);
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
     queryKey: ["canvas-positions", positions.id, environmentId],
@@ -109,7 +108,6 @@ function CanvasWithData() {
     unmountedVolumes: unmounted,
     live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
     diff,
-    runtimeLens,
   };
   const initialNodes = buildStoreNodes(store, canvasPositions, environmentId);
   const initialEdges = buildStoreEdges(store);
@@ -163,7 +161,9 @@ export function EnvironmentCanvasScene() {
         {/* The live canvas stays mounted under a Deployment Page, which only lights up what it changed. */}
         <DeploymentLightingProvider value={lighting}>
           <Suspense fallback={<PendingCanvas />}>
-            <CanvasWithData key={canvasKey} />
+            <RuntimeLensProvider organizationSlug={organizationSlug}>
+              <CanvasWithData key={canvasKey} />
+            </RuntimeLensProvider>
           </Suspense>
         </DeploymentLightingProvider>
         <div ref={setBottomBarSlot} className="contents" />
