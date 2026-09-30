@@ -484,7 +484,7 @@ pub enum PlanError {
     },
     /// The selected Machine has no usable ZFS storage preparation.
     #[error(
-        "Server '{machine}' cannot host managed volumes yet; enable managed volumes when adding the Server"
+        "Server '{machine}' cannot host managed volumes yet; enable managed volumes when adding the Server, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
     )]
     ProvisionedVolumeStorageRequired {
         /// Explicitly selected stateless Machine.
@@ -492,7 +492,7 @@ pub enum PlanError {
     },
     /// No observed automatically eligible Machine has usable ZFS storage preparation.
     #[error(
-        "No available Server can host managed volumes. Add a Server with managed volumes enabled"
+        "No available Server can host managed volumes. Add a Server with managed volumes enabled, or keep this data in a Docker volume instead (ployz volume add NAME --docker)"
     )]
     ProvisionedVolumeStorageUnavailable,
     /// Storage capability was unavailable for every otherwise eligible Machine.
