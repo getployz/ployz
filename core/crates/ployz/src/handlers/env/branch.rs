@@ -306,7 +306,7 @@ fn moved_out(matches: &ArgMatches, shift: Shift, moved: &Moved) -> Result<(), Er
 
 pub(super) fn copy(root: &ArgMatches) -> Result<(), Error> {
     let matches = leaf_matches(root);
-    let node = ServiceName::parse(required(matches, "node")?)?;
+    let node = store::service_name(matches, "node")?;
     let copy = CopyNode {
         environment: store::environment(matches)?,
         node,

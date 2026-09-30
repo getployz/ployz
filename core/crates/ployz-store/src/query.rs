@@ -8,7 +8,7 @@ use ts_rs::TS;
 
 pub use crate::deployment::query::{
     DeploymentQuery, DeploymentsQuery, DeploymentsView, NamespaceQuery, NamespaceView,
-    NumberedDeploymentQuery, PlanQuery, PlanView,
+    NamespacesQuery, NamespacesView, NumberedDeploymentQuery, OwnedNamespace, PlanQuery, PlanView,
 };
 pub use crate::review::diff::DiffQuery;
 pub use crate::service::query::{
@@ -155,6 +155,9 @@ queries! {
     /// Where an Environment runs on the Servers.
     Namespace(NamespaceQuery) -> NamespaceView
         => crate::deployment::query::namespace(tx, who, q);
+    /// Every Namespace the Organization's Environments own.
+    Namespaces(NamespacesQuery) -> NamespacesView
+        => crate::deployment::query::namespaces(tx, who);
     /// An Environment's public domains.
     Domains(crate::DomainsQuery) -> crate::DomainsView
         => crate::domain::domains(tx, who, q, trusted);
