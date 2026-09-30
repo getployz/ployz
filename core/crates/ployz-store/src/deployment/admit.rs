@@ -204,30 +204,13 @@ fn deploy(
         (cluster_domain, &namespace),
         trusted,
     )?;
-    // A full Deploy removes what Saved State dropped; publishing puts a removal in
-    // Saved State. Either runs the destructive review; only the first deletes.
-    let publishes = review
-        .saved
-        .as_ref()
-        .is_none_or(|saved| saved.intent != saved_intent);
-    let removed = if admit.services.is_empty() || publishes {
-        removal::removed(&review.head.applied, &saved_intent, &namespace)?
-    } else {
-        Vec::new()
-    };
-    let losses = removal::review(
+    let losses = review::destructive(
         who,
-        id,
-        (&review.view.version, admit.version.as_deref()),
-        removed,
+        &review,
+        (&saved_intent, &namespace, review::Shipping::Deploy(&admit.services)),
+        (admit.version.as_deref(), &admit.accept_volume_loss),
         trusted.volumes.as_ref(),
-        &admit.accept_volume_loss,
     )?;
-    let losses = if admit.services.is_empty() {
-        losses
-    } else {
-        Vec::new()
-    };
     let (saved, _) = review::publish(
         tx,
         who,

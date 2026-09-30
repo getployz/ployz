@@ -18,7 +18,7 @@ use crate::review::{self, Review};
 use crate::scope::{self, EnvironmentRef, EnvironmentSummary};
 use crate::settings::{NodeName, SettingPath, Target, VolumeField};
 use crate::storage::Tx;
-use crate::{Actor, Trusted, deployment, removal};
+use crate::{Actor, Trusted, deployment};
 
 /// Put Working State in Saved State without deploying it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
@@ -87,24 +87,13 @@ pub(crate) fn publish(
     // Saved State then holds the removal, which the next full Deploy ships: the
     // same destructive review, before anything is saved.
     let target = canonicalize_environment_intent(environment.working.clone());
-    let publishes = review
-        .saved
-        .as_ref()
-        .is_none_or(|saved| saved.intent != target);
-    let removed = match publishes && !review.head.applied.volumes.is_empty() {
-        true => {
-            let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
-            removal::removed(&review.head.applied, &target, &namespace)?
-        }
-        false => Vec::new(),
-    };
-    removal::review(
+    let namespace = deployment::namespace(tx, who, &environment.summary, false)?;
+    review::destructive(
         who,
-        &environment.summary.id,
-        (&review.view.version, publish.version.as_deref()),
-        removed,
+        &review,
+        (&target, &namespace, review::Shipping::Publish),
+        (publish.version.as_deref(), &publish.accept_volume_loss),
         trusted.volumes.as_ref(),
-        &publish.accept_volume_loss,
     )?;
     let (saved, created) = review::publish(
         tx,

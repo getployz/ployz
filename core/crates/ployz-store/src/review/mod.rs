@@ -177,6 +177,50 @@ pub(crate) fn review(tx: &mut dyn Tx, environment: &Environment) -> Result<Revie
     Ok(Review { view, saved, head })
 }
 
+/// What the destructive review gates.
+pub(crate) enum Shipping<'a> {
+    /// Deploying these Services of Working State; none deploys all of it.
+    Deploy(&'a [ployz_core::ServiceName]),
+    /// Publishing Working State without deploying it.
+    Publish,
+}
+
+/// The Volume data shipping `target` would delete, each accepted by name in
+/// `accepted` under the reviewed `version`.
+/// A full Deploy removes what Applied State holds and `target` dropped; publishing
+/// puts that removal in Saved State for the next full Deploy, so it is reviewed
+/// then too. Only a full Deploy's losses come back: it alone deletes them.
+///
+/// # Errors
+/// `confirmation_required` until every loss is accepted; `unavailable` when the
+/// Servers weren't asked what they hold.
+pub(crate) fn destructive(
+    who: &Actor,
+    review: &Review,
+    (target, namespace, shipping): (&SavedEnvironmentIntent, &ployz_core::Namespace, Shipping<'_>),
+    (version, accepted): (Option<&str>, &[crate::id::VolumeName]),
+    observed: Option<&crate::VolumeObservation>,
+) -> Result<Vec<crate::VolumeLoss>, RpcError> {
+    let full = matches!(shipping, Shipping::Deploy(services) if services.is_empty());
+    let publishes = review
+        .saved
+        .as_ref()
+        .is_none_or(|saved| saved.intent != *target);
+    let removed = match full || publishes {
+        true => crate::removal::removed(&review.head.applied, target, namespace)?,
+        false => Vec::new(),
+    };
+    let losses = crate::removal::review(
+        who,
+        &review.view.environment.id,
+        (&review.view.version, version),
+        removed,
+        observed,
+        accepted,
+    )?;
+    Ok(if full { losses } else { Vec::new() })
+}
+
 /// Core compares Settings only, so a Service renamed since Head gets its name row
 /// here: a rename changes nothing else, yet only a Deploy ships it.
 fn renames(view: &mut DiffView, working: &SavedEnvironmentIntent, head: &SavedEnvironmentIntent) {
