@@ -71,7 +71,7 @@ function BranchPanel({ params, store, branch, save, update, listing }: {
   const pr = useStorePullRequest(branch.pull_request);
 
   const news = [
-    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} inFlight={removal.in_flight} label={deploymentStatusLabel(removal)} shutDown={branch.pull_request !== null}
+    removal ? <RemovalNews key="removal" lead name={name} status={removal.status} inFlight={removal.in_flight} label={deploymentStatusLabel(removal)} forgotten={removal.outcome?.type === "forgotten"} shutDown={branch.pull_request !== null}
       onFinish={() => void closing.close()} onStart={() => {
         // Back on the Servers until shut down again; the writer toasts a refusal.
         writer.commit({ command: "admit", admit: "deploy", id: crypto.randomUUID(), environment: store, services: [], version: null, accept_volume_loss: [] });
@@ -181,11 +181,11 @@ const nodeNames = (view: MoveView) => [...new Set(view.rows.map((row) => present
  * A Branch coming off the Servers: how it goes, and once it's off, the rest of closing it. A PR Environment shut down
  * stays off until the pull request's next push brings it back.
  */
-function RemovalNews({ lead, name, status, inFlight, label, shutDown, onFinish, onStart }: {
-  lead: boolean; name: string; status: DeploymentStatus; inFlight: boolean; label: string; shutDown: boolean; onFinish: () => void; onStart: () => void;
+function RemovalNews({ lead, name, status, inFlight, label, forgotten, shutDown, onFinish, onStart }: {
+  lead: boolean; name: string; status: DeploymentStatus; inFlight: boolean; label: string; forgotten: boolean; shutDown: boolean; onFinish: () => void; onStart: () => void;
 }) {
   if (status === "applied" && shutDown) {
-    return <NewsRow lead={lead} icon={<PowerOffIcon />} title="Shut down" detail="The next push brings it back"
+    return <NewsRow lead={lead} icon={<PowerOffIcon />} title={forgotten ? label : "Shut down"} detail="The next push brings it back"
       action={<span className="flex gap-2">
         <Button size="sm" variant={actionVariant(lead)} onClick={onStart}>Deploy {name}</Button>
         <Button size="sm" variant="outline" onClick={onFinish}>Close</Button>

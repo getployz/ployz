@@ -67,10 +67,6 @@ function CanvasWithData() {
   // The branch view is refused unless this is a Branch.
   const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
     [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
-  const services = requireView(servicesResult);
-  const settings = requireView(settingsResult);
-  const diff = requireView(diffResult);
-  const volumes = requireView(volumesResult);
   const { selectedNodeId } = useCanvasInspectorSelection();
   const positions = getCanvasPositionsCollection(organizationSlug, scope);
   const { data: positionRows } = useLiveSuspenseQuery({
@@ -78,6 +74,12 @@ function CanvasWithData() {
     query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.environmentId, environmentId))
       .select(({ position }) => position),
   });
+  // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
+  if ([servicesResult, settingsResult, diffResult, volumesResult].some((r) => !r.ok && r.refusal.code === "not_found")) return <PendingCanvas />;
+  const services = requireView(servicesResult);
+  const settings = requireView(settingsResult);
+  const diff = requireView(diffResult);
+  const volumes = requireView(volumesResult);
   const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
   const store = {
     services: services.services.map((service): StoreCanvasService => ({
