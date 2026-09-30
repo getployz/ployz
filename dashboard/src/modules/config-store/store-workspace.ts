@@ -52,7 +52,7 @@ export async function teardownStep(commit: Commit, target: TeardownTarget, accep
     ? { command: "remove_project", project: target.project }
     : { command: "remove_environment", environment: { project: target.project, environment: target.environment } };
   // A closed Branch goes on its own once its removal applied (see `close` below): gone is done.
-  const written = await commit(remove, target.environment === null ? [] : ["not_found"]).catch((error: unknown) => {
+  const written = await commit(remove, target.environment === null ? [] : ["not_found"]).catch((error: Error) => {
     if (target.environment !== null && error instanceof StoreRefused && error.code === "not_found") return null;
     throw error;
   });
