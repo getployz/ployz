@@ -1295,3 +1295,39 @@ fn sources_of_an_unknown_deployment_are_not_found() {
     let (store, _) = shop();
     assert_eq!(code(store.sources(&id(9))), RpcErrorCode::NotFound);
 }
+
+#[test]
+fn a_service_confirmed_mid_run_stays_deployed_when_the_runner_is_lost() {
+    let (store, who) = shop();
+    admit(&store, &who, 1, &[], None).unwrap();
+    let a = runner("runner-a");
+    store.claim(&id(1), &a).unwrap();
+    let web = ServiceName::parse("web").unwrap();
+    assert_eq!(
+        code(store.record(&id(1), &a, RunEvidence::Confirmed(vec![web.clone()]))),
+        RpcErrorCode::Conflict
+    );
+    store
+        .record(&id(1), &a, RunEvidence::Prepared(preview(&["web", "api"])))
+        .unwrap();
+    store
+        .record(&id(1), &a, RunEvidence::Confirmed(vec![web]))
+        .unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Pending)
+        ]
+    );
+    store.record(&id(1), &a, RunEvidence::Abandoned).unwrap();
+    assert_eq!(
+        nodes(&store, &who, 1),
+        [
+            ("web".to_owned(), NodeStatus::Deployed),
+            ("api".to_owned(), NodeStatus::Unknown)
+        ]
+    );
+    // web is in Applied State: only api is still to deploy.
+    assert_eq!(changed(&store, &who), ["api"]);
+}
