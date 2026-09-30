@@ -91,7 +91,7 @@ const decodeShown = Schema.decodeUnknownOption(Schema.Union([
 export function shownValue(value: JsonValue): string {
   if (value === null) return "";
   return Option.match(decodeShown(value), {
-    onNone: () => typeof value === "object" ? JSON.stringify(value) : String(value),
+    onNone: () => JSON.stringify(value),
     onSome: (shown) => {
       if (Schema.is(Schema.String)(shown)) return shown;
       if ("hostname" in shown) return shown.hostname;
