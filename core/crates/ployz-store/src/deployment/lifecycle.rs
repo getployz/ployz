@@ -572,7 +572,7 @@ pub(crate) fn record(
             }
             let saved = saved_at(tx, &stored.summary.environment_id, stored.summary.saved)?;
             let applied = applied_state(tx, &stored.summary.environment_id, &saved)?;
-            stored.run.nodes = settled(&stored.nodes, &saved, &applied, &preview, &confirmed);
+            stored.run.nodes = settled(&stored.nodes, &saved, &applied, preview, &confirmed);
             advance(tx, &stored)?;
             save(tx, &mut stored)?;
             Ok(stored.summary)

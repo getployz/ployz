@@ -113,9 +113,7 @@ impl Environment {
             .get_mut(index)
             .expect("position is in bounds"))
     }
-}
 
-impl Environment {
     /// The Volume named `name` in Working State, to change.
     pub(crate) fn volume_mut(
         &mut self,
@@ -126,11 +124,7 @@ impl Environment {
             .volumes
             .iter()
             .position(|volume| volume.name == name.as_str())
-            .ok_or_else(|| {
-                self.volume(name)
-                    .err()
-                    .unwrap_or_else(|| error::corrupt("Volume"))
-            })?;
+            .ok_or_else(|| no_volume(name, &self.summary.name, &self.working))?;
         Ok(self
             .working
             .volumes
@@ -144,23 +138,26 @@ impl Environment {
             .volumes
             .iter()
             .find(|volume| volume.name == name.as_str())
-            .ok_or_else(|| {
-                let names = self
-                    .working
-                    .volumes
-                    .iter()
-                    .map(|volume| volume.name.as_str())
-                    .collect::<Vec<_>>();
-                error::choices(
-                    format!(
-                        "No Volume named {name} in Environment {}",
-                        self.summary.name
-                    ),
-                    name.as_str(),
-                    names.iter().copied(),
-                )
-            })
+            .ok_or_else(|| no_volume(name, &self.summary.name, &self.working))
     }
+}
+
+/// `volume` names no Volume in Working State: list the ones it could mean.
+fn no_volume(
+    volume: &VolumeName,
+    environment: &EnvironmentName,
+    working: &SavedEnvironmentIntent,
+) -> RpcError {
+    let names = working
+        .volumes
+        .iter()
+        .map(|volume| volume.name.as_str())
+        .collect::<Vec<_>>();
+    error::choices(
+        format!("No Volume named {volume} in Environment {environment}"),
+        volume.as_str(),
+        names.iter().copied(),
+    )
 }
 
 /// `service` names no Service in Working State: list the ones it could mean.

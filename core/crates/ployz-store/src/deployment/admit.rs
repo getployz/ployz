@@ -15,10 +15,10 @@ use crate::domain;
 use crate::error;
 use crate::id::{DeploymentId, Hostname, VolumeName};
 use crate::registry;
+use crate::review;
 use crate::scope::{self, EnvironmentRef};
 use crate::storage::Tx;
 use crate::{Actor, Trusted};
-use crate::{removal, review};
 
 /// Queue a Deployment: a Deploy of Saved State, a retry of an ended Deployment, or
 /// the removal of an Environment from the Servers.
@@ -292,18 +292,15 @@ fn removal(
     review::check(&review, admit.version.as_deref())?;
     let namespace = deployment::namespace(tx, who, &environment.summary, true)?;
     let empty = crate::scope::empty(&environment.working.environment_slug);
-    let losses = if forget.is_some() {
-        Vec::new()
-    } else {
-        let removed = removal::removed(&review.head.applied, &empty, &namespace)?;
-        removal::review(
+    let losses = match forget {
+        Some(_) => Vec::new(),
+        None => review::destructive(
             who,
-            id,
-            (&review.view.version, admit.version.as_deref()),
-            removed,
+            &review,
+            (&empty, &namespace, review::Shipping::Deploy(&[])),
+            (admit.version.as_deref(), &admit.accept_volume_loss),
             trusted.volumes.as_ref(),
-            &admit.accept_volume_loss,
-        )?
+        )?,
     };
     let frozen = deployment::freeze(
         id,

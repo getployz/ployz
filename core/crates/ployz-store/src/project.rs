@@ -75,24 +75,27 @@ pub struct EnvironmentCreated {
     pub environment: EnvironmentSummary,
 }
 
+/// Refuse `name` when another Project of the Organization has it.
+fn name_free(tx: &mut dyn Tx, who: &Actor, name: &ProjectName) -> Result<(), RpcError> {
+    let taken = tx.query(
+        "SELECT id FROM config_project WHERE organization_id = ?1 AND name = ?2",
+        &[who.organization.as_str().into(), name.as_str().into()],
+    )?;
+    if taken.is_empty() {
+        return Ok(());
+    }
+    Err(error::conflict(
+        format!("A Project named {name} already exists"),
+        json!({ "project": name }),
+    ))
+}
+
 pub(crate) fn create_project(
     tx: &mut dyn Tx,
     who: &Actor,
     create: &CreateProject,
 ) -> Result<ProjectCreated, RpcError> {
-    let taken = tx.query(
-        "SELECT id FROM config_project WHERE organization_id = ?1 AND name = ?2",
-        &[
-            who.organization.as_str().into(),
-            create.name.as_str().into(),
-        ],
-    )?;
-    if !taken.is_empty() {
-        return Err(error::conflict(
-            format!("A Project named {} already exists", create.name),
-            json!({ "project": create.name }),
-        ));
-    }
+    name_free(tx, who, &create.name)?;
     tx.execute(
         "INSERT INTO config_project (id, organization_id, name, default_environment_id) \
          VALUES (?1, ?2, ?3, ?4)",
@@ -189,19 +192,7 @@ pub(crate) fn rename_project(
 ) -> Result<ProjectSummary, RpcError> {
     let project = scope::project(tx, who, Some(&rename.project))?;
     if rename.name != project.name {
-        let taken = tx.query(
-            "SELECT id FROM config_project WHERE organization_id = ?1 AND name = ?2",
-            &[
-                who.organization.as_str().into(),
-                rename.name.as_str().into(),
-            ],
-        )?;
-        if !taken.is_empty() {
-            return Err(error::conflict(
-                format!("A Project named {} already exists", rename.name),
-                json!({ "project": rename.name }),
-            ));
-        }
+        name_free(tx, who, &rename.name)?;
         tx.execute(
             "UPDATE config_project SET name = ?1 WHERE id = ?2",
             &[rename.name.as_str().into(), project.id.as_str().into()],
