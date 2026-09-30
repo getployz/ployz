@@ -98,6 +98,7 @@ const COMMAND_FILES = {
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StorePullRequestNews.tsx": "Save for the merge seals values on the server and changes the pull request's check on GitHub, an external service",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/new-branch/StoreNewBranchPanel.tsx": "the page opens a new Branch's canvas once the Store has it and Cloud knows its route",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/canvas/useServiceCreator.ts": "hands a new Project's Service save to service-create-command, whose next page can't show it before the Store has it",
+  "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/useDeleteService.ts": "a Database Preset's removal shows at once; its Volume's data goes only once the Store accepts the Service's removal",
   "routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel.tsx": "closing a Branch is destructive: it waits for its removal, and a Save that closes the Branch after waits until the Parent has it",
 };
 
