@@ -25,6 +25,7 @@ import {
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
   mintCliMachineEnrollment,
+  CLUSTER_UNREACHABLE,
   mintMachineEnrollment,
   readMachineEnrollment,
   resetPendingOrganizationEnrollment,
@@ -384,7 +385,7 @@ describe("organization enrollment coordinator", () => {
     const indeterminate = await coordinator.enroll({
       token: tokens[0] ?? "", identity: identity(31),
     });
-    expect(indeterminate).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(indeterminate).toMatchObject({ failure: { _tag: "Conflict", message: CLUSTER_UNREACHABLE } });
     expect(fake.registerCalls()).toBe(calls);
     expect((await harness.pool.query("select founder_machine_id from organization_pairing")).rows)
       .toEqual([{ founder_machine_id: founderMachineId }]);
@@ -805,7 +806,7 @@ describe("organization enrollment coordinator", () => {
       : fake.coordinator.completeFounding(attempt);
     await dialing;
     await fake.coordinator.disable();
-    expect(await pending).toMatchObject({ failure: { _tag: "PloyzProviderError" } });
+    expect(await pending).toMatchObject({ failure: { _tag: phase === "join" ? "Conflict" : "PloyzProviderError" } });
     expect(aborted).toBe(true);
     expect(fake.registerCalls()).toBe(0);
     expect(fake.observations()).toBe(0);

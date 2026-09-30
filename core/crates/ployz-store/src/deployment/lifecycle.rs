@@ -445,6 +445,33 @@ pub(crate) fn cancel(
     Ok(stored.summary)
 }
 
+/// Cancel every Deployment of `who`'s Organization that may still run, claimed or
+/// not, without waiting on a runner: its Servers are gone, so none will record what
+/// ran. The caller holds each Environment's lock. Returns them, oldest first.
+pub(crate) fn cancel_in_flight(
+    tx: &mut dyn Tx,
+    who: &Actor,
+) -> Result<Vec<DeploymentId>, RpcError> {
+    let rows = tx.query(
+        &format!(
+            "SELECT id FROM config_deployment WHERE organization_id = ?1 AND {} \
+             ORDER BY admitted, id",
+            in_flight_sql()
+        ),
+        &[who.organization.as_str().into()],
+    )?;
+    let mut cancelled = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id = row.parse::<DeploymentId>(0, "Deployment")?;
+        let mut stored = load(tx, &id)?;
+        stored.summary.status = DeploymentStatus::Cancelled;
+        stored.summary.ended_at = Some(now());
+        save(tx, &mut stored)?;
+        cancelled.push(id);
+    }
+    Ok(cancelled)
+}
+
 /// Record `runner`'s evidence. Only the runner that claimed the Deployment may, and
 /// recording the same evidence again changes nothing.
 pub(crate) fn record(

@@ -20,7 +20,10 @@ use ts_rs::TS;
 use crate::Actor;
 use crate::deployment::{self, DeploymentStatus, DeploymentSummary};
 use crate::error;
-use crate::id::{EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName};
+use crate::id::{
+    DeploymentId, EnvironmentId, EnvironmentName, OrganizationId, ProjectId, ProjectName,
+    VolumeName,
+};
 use crate::project::ProjectSummary;
 use crate::scope::{self, Environment, EnvironmentRef, EnvironmentSummary};
 use crate::storage::Tx;
@@ -576,4 +579,73 @@ pub(crate) fn remove_organization(
     Ok(OrganizationRemoved {
         organization: who.organization.clone(),
     })
+}
+
+/// A Volume Applied State holds: a Deploy put it on the Servers, so they may hold
+/// its data.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, TS)]
+pub struct AppliedVolume {
+    pub project: ProjectName,
+    pub environment: EnvironmentName,
+    pub volume: VolumeName,
+}
+
+/// Every Volume Applied State holds in `who`'s Organization, sorted: exactly what
+/// [`forget_cluster`] lets go of.
+pub(crate) fn applied_volumes(
+    tx: &mut dyn Tx,
+    who: &Actor,
+) -> Result<Vec<AppliedVolume>, RpcError> {
+    let rows = tx.query(
+        "SELECT p.name, e.name, a.node FROM config_applied a \
+         JOIN config_environment e ON e.id = a.environment_id \
+         JOIN config_project p ON p.id = e.project_id \
+         WHERE a.organization_id = ?1 AND a.node_type = 'volume'",
+        &[who.organization.as_str().into()],
+    )?;
+    let mut volumes = rows
+        .iter()
+        .map(|row| {
+            let node: ployz_core::config::SavedVolumeIntent = row.json(2, "Applied Volume")?;
+            Ok(AppliedVolume {
+                project: row.parse(0, "Applied Volume")?,
+                environment: row.parse(1, "Applied Volume")?,
+                volume: VolumeName::try_from(node.name)
+                    .map_err(|_| error::corrupt("Applied Volume"))?,
+            })
+        })
+        .collect::<Result<Vec<_>, RpcError>>()?;
+    volumes.sort();
+    Ok(volumes)
+}
+
+/// Forget what `who`'s Organization's Servers held once its Cluster is gone (see
+/// [`crate::SystemEvent::ClusterForgotten`]): cancel every Deployment that might still
+/// run, and let go of Applied State, each Environment's Namespace and its Volumes'
+/// fixed storage. Returns the cancelled Deployments.
+pub(crate) fn forget_cluster(tx: &mut dyn Tx, who: &Actor) -> Result<Vec<DeploymentId>, RpcError> {
+    let organization = who.organization.as_str();
+    let environments = tx
+        .query(
+            "SELECT id FROM config_environment WHERE organization_id = ?1",
+            &[organization.into()],
+        )?
+        .iter()
+        .map(|row| row.parse::<EnvironmentId>(0, "Environment"))
+        .collect::<Result<Vec<_>, RpcError>>()?;
+    // Every Deployment write locks its Environment; so does this, against a concurrent admission.
+    scope::lock_all(tx, environments)?;
+    let cancelled = deployment::cancel_in_flight(tx, who)?;
+    for table in ["config_applied", "config_namespace"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE organization_id = ?1"),
+            &[organization.into()],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM config_volume_storage WHERE environment_id IN \
+         (SELECT id FROM config_environment WHERE organization_id = ?1)",
+        &[organization.into()],
+    )?;
+    Ok(cancelled)
 }

@@ -818,8 +818,9 @@ fn with_no_server_left_a_removal_applies_at_once() {
 fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
     let (store, who) = shop();
     deploy(&store, &who, "production", 1, &["web", "db"]);
-    let data_deployed = || {
-        store
+    admit(&store, &who, "staging", 3, false, &[], None).unwrap();
+    let data = || {
+        let listing = store
             .read(
                 &who,
                 &ployz_store::VolumesQuery {
@@ -827,21 +828,65 @@ fn a_forgotten_cluster_leaves_nothing_deployed_and_its_removal_forgotten() {
                 },
             )
             .unwrap()
-            .volumes[0]
-            .deployed
+            .volumes
+            .remove(0);
+        (listing.deployed, listing.storage_locked)
     };
-    assert!(data_deployed());
+    assert_eq!(data(), (true, true));
+    let applied = store.applied_volumes(&who).unwrap();
+    assert_eq!(
+        applied
+            .iter()
+            .map(|lost| format!("{}/{}/{}", lost.project, lost.environment, lost.volume))
+            .collect::<Vec<_>>(),
+        ["shop/production/data"]
+    );
 
-    store
+    let forgotten = store
         .system(
             &who.organization,
             &SystemEvent::ClusterForgotten,
             &Trusted::default(),
         )
         .unwrap();
-    // Nothing reads Deployed; the configuration stays.
-    assert!(!data_deployed());
+    let ployz_store::Written::Automated(forgotten) = forgotten else {
+        panic!("not automated: {forgotten:?}");
+    };
+    // What might still have run is cancelled; history stays.
+    assert_eq!(forgotten.cancelled, vec![id(3)]);
+    let status = |n| {
+        store
+            .read(&who, &ployz_store::DeploymentQuery { id: id(n) })
+            .unwrap()
+            .deployment
+            .status
+    };
+    assert_eq!(
+        (status(1), status(3)),
+        (DeploymentStatus::Applied, DeploymentStatus::Cancelled)
+    );
+    // Nothing reads Deployed, no Namespace is held and storage may be chosen again; the configuration stays.
+    assert_eq!(data(), (false, false));
+    assert!(store.applied_volumes(&who).unwrap().is_empty());
+    assert!(
+        store
+            .read(&who, &ployz_store::NamespacesQuery {})
+            .unwrap()
+            .namespaces
+            .is_empty()
+    );
     assert_eq!(listed(&store, &who), ["production*", "staging"]);
+    // Nothing is left for a Deploy to ask before deleting: the data went with the Servers.
+    let removals = store
+        .read(
+            &who,
+            &RemovalsQuery {
+                environment: at("production"),
+                remove: true,
+            },
+        )
+        .unwrap();
+    assert!(removals.volumes.is_empty());
 
     // What ran is still counted as ran, so its removal says it was left where it ran.
     set_default(&store, &who, "staging");

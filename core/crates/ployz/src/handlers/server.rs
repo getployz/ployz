@@ -30,6 +30,7 @@ use super::{Error, leaf_matches, string_values, with_client};
 mod add;
 mod clean;
 mod enroll;
+mod forget;
 mod helpers;
 mod init;
 mod inspect;
@@ -432,6 +433,7 @@ pub(crate) fn command() -> Command {
         .subcommand(
             log_flags(base("logs", "Show Server daemon logs")).arg(Arg::new("service").num_args(0..).action(ArgAction::Append)),
         )
+        .subcommand(forget::command())
         .subcommand(base("ls", "List Servers"))
         .subcommand(
             base("rm", "Remove a Server")
@@ -517,6 +519,7 @@ pub(super) fn handler(path: &str) -> Option<super::Handler> {
         "add" => enroll::add,
         "build-cache-clear" => clear_build_cache,
         "clean" => clean::clean,
+        "forget" => forget::forget,
         "inspect" => inspect,
         "logs" => super::operator::machine_logs,
         "ls" => list,

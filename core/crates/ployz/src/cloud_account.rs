@@ -468,6 +468,78 @@ async fn store_answer<T: DeserializeOwned>(
     Ok(answer(credential, status, &bytes)?)
 }
 
+/// Why a Server didn't count as reachable when Cloud tried it. One that answered
+/// refuses the whole forget, so it never appears here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Reach {
+    /// Cloud tried and it didn't answer in time.
+    DidntAnswer,
+    /// Cloud holds no connection to try, such as a founder that never published one.
+    NoConnection,
+}
+
+/// One Server of the Organization as Cloud found it when it tried. Its name is the
+/// one enrollment assigned, else its ID.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ObservedServer {
+    pub(crate) id: MachineId,
+    pub(crate) name: String,
+    pub(crate) reach: Reach,
+}
+
+/// What forgetting the Organization's Servers lets go of: each Server with what Cloud
+/// observed of it, and each Volume a Deploy put on them.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ForgetCheck {
+    pub(crate) organization: String,
+    pub(crate) servers: Vec<ObservedServer>,
+    pub(crate) volumes: Vec<ployz_store::AppliedVolume>,
+}
+
+/// What forgetting the Organization's Servers let go of, with the Deployments that
+/// might still have run, cancelled.
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ServersForgotten {
+    #[serde(flatten)]
+    pub(crate) check: ForgetCheck,
+    pub(crate) cancelled: Vec<ployz_store::DeploymentId>,
+}
+
+/// What forgetting the credential's Organization's Servers would let go of. Cloud
+/// tries each Server first.
+///
+/// # Errors
+///
+/// Returns Cloud's refusal (`conflict` while a Server answers or one is still
+/// joining, `forbidden` for a member who isn't an owner or admin), or a Cloud failure.
+pub(crate) async fn check_forget_servers(
+    credential: &Credential,
+) -> Result<ForgetCheck, StoreCallError> {
+    let url = format!("{}/api/cli/forget-servers", credential.cloud());
+    store_answer(credential, send(credential, Method::GET, &url, None).await?).await
+}
+
+/// Forget the Servers of the credential's Organization, named `organization`: Cloud
+/// tries each again and forgets them only when none answers and nothing changed.
+///
+/// # Errors
+///
+/// As [`check_forget_servers`], and `invalid_argument` for another Organization than
+/// the credential's.
+pub(crate) async fn forget_servers(
+    credential: &Credential,
+    organization: &str,
+) -> Result<ServersForgotten, StoreCallError> {
+    let url = format!("{}/api/cli/forget-servers", credential.cloud());
+    let body = serde_json::json!({ "organization": organization });
+    store_answer(
+        credential,
+        send(credential, Method::POST, &url, Some(&body)).await?,
+    )
+    .await
+}
+
 /// What `org rm` did: whether the Organization is gone, and which Servers confirmed
 /// clearing Cloud's key and every device key. Until all do, it stays, disabled.
 #[derive(Debug, Serialize, Deserialize)]

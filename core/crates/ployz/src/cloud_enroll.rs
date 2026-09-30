@@ -13,6 +13,9 @@ const DEFAULT_RETRY_AFTER: u64 = 2;
 const PROTOCOL_VERSION: u8 = 1;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long enrollment waits for another Server to finish founding: past Cloud's own
+/// ten minutes for a fresh founding claim, so Cloud answers first.
+const FOUNDER_WAIT: Duration = Duration::from_secs(15 * 60);
 
 /// Failures talking to Cloud enroll.
 #[derive(Debug, Error)]
@@ -28,6 +31,11 @@ pub(crate) enum Error {
     #[error("enroll HTTP {status}: {body}")]
     Status { status: u16, body: String },
     #[error(
+        "waited {} minutes for another Server to found this Organization; if it was deleted, run ployz server forget or use Forget Servers in the dashboard",
+        FOUNDER_WAIT.as_secs() / 60
+    )]
+    FounderWait,
+    #[error(
         "Cloud {operation} failed: {detail}; rerun the same ployz server add command without --reset (keep all other options)"
     )]
     RetrySameCommand {
@@ -42,7 +50,10 @@ impl Error {
             Self::Timeout(error) | Self::Connect(error) | Self::Http(error) => {
                 crate::setup_retry::transient_http(error)
             }
-            Self::Json(_) | Self::Status { .. } | Self::RetrySameCommand { .. } => false,
+            Self::Json(_)
+            | Self::Status { .. }
+            | Self::RetrySameCommand { .. }
+            | Self::FounderWait => false,
         }
     }
 }
@@ -258,6 +269,7 @@ struct EnrollCallback<'a> {
 pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outcome, Error> {
     let http = http_client()?;
     let mut announced_wait = false;
+    let deadline = tokio::time::Instant::now() + FOUNDER_WAIT;
     loop {
         let response = crate::setup_retry::run(
             &mut (),
@@ -285,6 +297,9 @@ pub(crate) async fn enroll(url: &str, identity: &EnrollIdentity) -> Result<Outco
                 if !announced_wait {
                     eprintln!("Another Machine is founding this Organization; waiting...");
                     announced_wait = true;
+                }
+                if tokio::time::Instant::now() + retry_after > deadline {
+                    return Err(Error::FounderWait);
                 }
                 tokio::time::sleep(retry_after).await;
             }

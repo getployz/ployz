@@ -42,7 +42,7 @@ function RouteComponent() {
     return <DashboardPage width="content"><ServerPageSkeleton /></DashboardPage>;
   }
   if (state === "unreachable" || (state === "stale" && !server)) {
-    return <DashboardPage width="content"><ServersUnreachable /></DashboardPage>;
+    return <DashboardPage width="content"><ServersUnreachable organizationSlug={organizationSlug} /></DashboardPage>;
   }
   if (!server) {
     return (

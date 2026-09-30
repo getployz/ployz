@@ -23,6 +23,7 @@ import {
 } from "#/modules/machines/server-access.server";
 import { refusal } from "#/modules/config-store/config-store.server";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
+import { checkForgetServers, forgetServers } from "#/modules/machines/forget-servers.server";
 import { startMachineRemove } from "#/modules/machines/machine-removal.server";
 import { loadAuthorizedMachineRemoveAttempt } from "#/modules/machines/machine-removal.repository";
 import type { MachineRemoveAttemptView } from "#/modules/machines/machine-removal";
@@ -41,6 +42,11 @@ const RemoveServer = Schema.Union([
   Schema.Struct({ no_reset: Schema.Literal(true) }),
 ]);
 
+/** `server forget`: the Organization's slug, as the user typed it. */
+const ForgetServers = Schema.Struct({ organization: Schema.String });
+
+const forgetter = (caller: Caller) => ({ userId: caller.userId, organizationId: caller.organization.id });
+
 const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, request: Request, message: string) =>
   Effect.tryPromise({ try: () => request.json(), catch: () => new Validation({ message, userFacing: true }) }).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(schema)),
@@ -49,7 +55,7 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, requ
 
 /**
  * `/api/cli/*`: the `ployz` CLI's account surface (Organizations and their removal, Organization Tokens and signed-in devices,
- * GitHub connections, billing), and removing a Server Cloud manages, through the dashboard's durable removal. Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
+ * GitHub connections, billing), and removing a Server Cloud manages, through the dashboard's durable removal, or forgetting deleted ones (Forget Servers). Every call acts as one Caller, bound to one Organization. Replies are snake_case JSON for the CLI.
  */
 export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Request) {
   const caller = yield* resolveCaller(request.headers);
@@ -108,6 +114,22 @@ export const handleCliRequest = Effect.fn("Cli.handle")(function* (request: Requ
         : null;
       if (attempt === null) return yield* new NotFound({ message: "No such Server removal." });
       return serverRemoval(attempt);
+    }
+    case "GET forget-servers": {
+      const checked = yield* checkForgetServers(forgetter(caller));
+      return checked.ok ? { organization: caller.organization.slug, ...checked.value } : refusal(checked.refusal);
+    }
+    case "POST forget-servers": {
+      const input = yield* decodeBody(ForgetServers, request, "Forgetting the Servers takes the Organization's slug.");
+      if (input.organization !== caller.organization.slug) {
+        return refusal({
+          code: "invalid_argument",
+          message: `This credential acts in Organization ${caller.organization.slug}, not ${input.organization}. No changes made.`,
+          details: { next: `ployz org use ${input.organization}` },
+        });
+      }
+      const forgotten = yield* forgetServers(forgetter(caller));
+      return forgotten.ok ? { organization: caller.organization.slug, ...forgotten.value } : refusal(forgotten.refusal);
     }
     case "POST server-access":
       return yield* provideServerAccess(caller);

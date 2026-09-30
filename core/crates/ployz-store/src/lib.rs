@@ -74,7 +74,7 @@ pub use scope::{EnvironmentRef, EnvironmentSummary};
 pub use sealing::SealingKey;
 pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
-    EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
+    AppliedVolume, EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
     RemoveEnvironment, RemoveProject, SetDefaultEnvironment, Teardown,
 };
@@ -347,6 +347,15 @@ impl ConfigStore {
     pub fn remove_organization(&self, who: &Actor) -> Result<OrganizationRemoved, RpcError> {
         self.storage
             .write(|tx| teardown::remove_organization(tx, who))
+    }
+
+    /// The Volumes a Deploy put on the Organization's Servers: exactly what
+    /// [`SystemEvent::ClusterForgotten`] lets go of. In-process only.
+    ///
+    /// # Errors
+    /// Returns a storage error.
+    pub fn applied_volumes(&self, who: &Actor) -> Result<Vec<AppliedVolume>, RpcError> {
+        self.storage.read(|tx| teardown::applied_volumes(tx, who))
     }
 
     /// Hand a pinned Git build that hasn't started to GitHub run `run`. In-process only.
