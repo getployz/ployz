@@ -261,6 +261,7 @@ CREATE TABLE "organization_billing_state" (
 	"organization_id" uuid PRIMARY KEY,
 	"active_subscription_id" text,
 	"current_period_end" timestamp with time zone,
+	"cancel_at_period_end" boolean DEFAULT false NOT NULL,
 	"has_active_subscription" boolean DEFAULT false NOT NULL,
 	"synced_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"source_updated_at" timestamp with time zone,
