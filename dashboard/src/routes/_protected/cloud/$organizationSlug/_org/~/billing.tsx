@@ -13,6 +13,7 @@ import { Item, ItemActions, ItemContent, ItemDescription, ItemTitle } from "#/co
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
 import { cn } from "#/lib/utils";
+import { PRO_PRICE } from "#/modules/billing/billing";
 import { billingStateQueryOptions } from "#/modules/billing/billing.queries";
 import { createCustomerPortalServerFn } from "#/modules/billing/billing.functions";
 import { useEmbeddedCheckout } from "#/modules/billing/use-embedded-checkout";
@@ -108,7 +109,7 @@ function RouteComponent() {
         <Plan name="Free" price="$0" current={!subscribed} features={FREE_FEATURES} />
         <Plan
           name="Pro"
-          price="$9"
+          price={PRO_PRICE}
           current={subscribed}
           features={PRO_FEATURES}
           className="border-t md:border-t-0 md:border-l"
@@ -116,7 +117,7 @@ function RouteComponent() {
           {subscribed ? null : (
             <Button className="self-start" disabled={busy} onClick={() => void openCheckout()}>
               {pending ? <Spinner data-icon="inline-start" /> : null}
-              Upgrade to Pro · $9/mo
+              Upgrade to Pro · {PRO_PRICE}/mo
             </Button>
           )}
         </Plan>

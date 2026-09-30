@@ -105,7 +105,7 @@ export const persistOrganizationBillingStateSnapshot = Effect.fn(
   return snapshot;
 });
 
-const getAuthorizedBillingScope = Effect.fn("Billing.authorizeScope")(
+export const getAuthorizedBillingScope = Effect.fn("Billing.authorizeScope")(
   function* (actor: Actor, organizationSlug: string) {
     const organization = yield* getOrganizationForUserBySlug(
       actor.userId,

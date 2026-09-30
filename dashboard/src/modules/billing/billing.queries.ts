@@ -10,8 +10,8 @@ export const billingKeys = {
     [...billingKeys.all, organizationSlug] as const,
   state: (organizationSlug: string) =>
     [...billingKeys.org(organizationSlug), "state"] as const,
-  customDomains: (organizationSlug: string) =>
-    [...billingKeys.org(organizationSlug), "customDomains"] as const,
+  customDomainCapability: (organizationSlug: string) =>
+    [...billingKeys.org(organizationSlug), "customDomainCapability"] as const,
 };
 
 export function billingStateQueryOptions(organizationSlug: string) {
@@ -26,9 +26,9 @@ export function billingStateQueryOptions(organizationSlug: string) {
   });
 }
 
-export function customDomainsAllowedQueryOptions(organizationSlug: string) {
+export function customDomainCapabilityQueryOptions(organizationSlug: string) {
   return queryOptions({
-    queryKey: billingKeys.customDomains(organizationSlug),
+    queryKey: billingKeys.customDomainCapability(organizationSlug),
     queryFn: ({ signal }) =>
       getCustomDomainsAllowedServerFn({
         data: { organizationSlug },

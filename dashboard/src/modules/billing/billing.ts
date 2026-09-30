@@ -1,5 +1,8 @@
 import { Schema } from "effect";
 
+/** Pro's monthly price, as the dashboard quotes it. */
+export const PRO_PRICE = "$9";
+
 export const ManagedSubscriptionSnapshot = Schema.Struct({
   activeSubscriptionId: Schema.NullOr(Schema.String),
   currentPeriodEnd: Schema.NullOr(Schema.Date),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { toast } from "sonner";
 import { createEmbeddedCheckoutServerFn } from "#/modules/billing/billing.functions";
@@ -8,20 +8,18 @@ import { openCheckoutWhileHere } from "#/modules/billing/checkout";
  * Polar's embedded checkout for an Organization, over the current page. With `onSuccess` the buyer stays where they
  * are instead of following Polar's redirect to the success URL. Leaving the Organization closes it.
  */
-export function useEmbeddedCheckout(organizationSlug: string, onSuccess?: () => void) {
+export function useEmbeddedCheckout(organizationSlug: string) {
   const [pending, setPending] = useState(false);
   const createEmbeddedCheckout = useServerFn(createEmbeddedCheckoutServerFn);
   const activeCheckoutRef = useRef<{ close(): void } | null>(null);
   // Identifies this organization's visit; a checkout that resolves after it ends must not open.
   const visitRef = useRef<object | null>(null);
-  const onSuccessRef = useRef(onSuccess);
-  onSuccessRef.current = onSuccess;
 
-  const closeActiveCheckout = useCallback(() => {
+  function closeActiveCheckout() {
     const activeCheckout = activeCheckoutRef.current;
     activeCheckoutRef.current = null;
     activeCheckout?.close();
-  }, []);
+  }
 
   useEffect(() => {
     visitRef.current = {};
@@ -29,9 +27,9 @@ export function useEmbeddedCheckout(organizationSlug: string, onSuccess?: () => 
       visitRef.current = null;
       closeActiveCheckout();
     };
-  }, [organizationSlug, closeActiveCheckout]);
+  }, [organizationSlug]);
 
-  async function openCheckout() {
+  async function openCheckout({ onSuccess }: { onSuccess?: () => void } = {}) {
     const visit = visitRef.current;
     try {
       setPending(true);
@@ -52,11 +50,10 @@ export function useEmbeddedCheckout(organizationSlug: string, onSuccess?: () => 
         }
       });
       activeCheckout.addEventListener("success", (event) => {
-        const stay = onSuccessRef.current;
-        if (!stay) return;
+        if (!onSuccess) return;
         event.preventDefault();
         closeActiveCheckout();
-        stay();
+        onSuccess();
       });
       activeCheckoutRef.current = activeCheckout;
     } catch {
