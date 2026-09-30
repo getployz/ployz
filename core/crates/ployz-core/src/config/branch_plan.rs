@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{ConfigError, EnvironmentNodeType, SavedEnvironmentIntent};
-use crate::ProjectName;
 
 /// A starting selection: every preset derives its picks from the focus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
@@ -224,23 +223,4 @@ fn close_over<'a>(links: &[(&'a str, &'a str)], mut step: impl FnMut(&'a str, &'
         .iter()
         .fold(false, |changed, (user, used)| step(user, used) | changed)
     {}
-}
-
-/// Admit a Branch's Project namespace under the runtime's Project name rule.
-///
-/// # Errors
-/// Returns ConfigError saying why the name would fail at deploy.
-pub fn check_branch_name(name: &str) -> Result<ProjectName, ConfigError> {
-    let why = if name.is_empty() {
-        "Project name is empty"
-    } else if name.len() > 63 {
-        "Project name is longer than 63 characters"
-    } else {
-        match ProjectName::parse(name) {
-            Ok(name) if name.is_reserved() => "Project name is reserved for the system Project",
-            Ok(name) => return Ok(name),
-            Err(_) => "Project name must be a lowercase DNS label",
-        }
-    };
-    Err(ConfigError::at("projectName", why))
 }

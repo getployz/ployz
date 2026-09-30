@@ -83,7 +83,7 @@ export function runtimeWatchContainerFixture(
     display_name: containerId,
     created_at_unix_nanos: 0,
     machine_id: machineId as MachineId,
-    project_name: "production",
+    namespace: "production",
     kind: "service_container",
     runtime: { state: "running", health: "healthy" },
     effective_healthcheck: null,

@@ -24,7 +24,9 @@ import {
   enrollMachine,
   reserveEnrollmentAssignment,
   hashEnrollmentToken,
+  mintCliMachineEnrollment,
   mintMachineEnrollment,
+  readMachineEnrollment,
   resetPendingOrganizationEnrollment,
 } from "#/modules/machines/enrollment.server";
 import { disableOrganizationPairing, revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
@@ -33,6 +35,10 @@ import { readCollection } from "#/collections/read.server";
 import { OrganizationRuntime, OrganizationRuntimeLive } from "#/modules/runtime/organization-runtime.server";
 import { makePloyzLayer } from "#/modules/runtime/ployz.server";
 import { InngestClient } from "#/modules/inngest/client";
+import { GithubApi } from "#/modules/github/github-observation.api";
+import { Polar } from "#/modules/billing/polar-provider.server";
+import { fakeGithubApi } from "#/test/fake-github";
+import { CloudStoreLive } from "#/modules/config-store/store-sdk.server";
 import { AppConfig } from "#/server/config.server";
 import { Database, DatabaseLive } from "#/server/database.server";
 import {
@@ -130,8 +136,11 @@ function enrollmentTestClient(
     Layer.succeed(Database, database),
     Layer.succeed(InngestClient, inngest),
     Layer.succeed(SecretEncryption, enrollmentSettings.encryption),
+    // The founder's join asks for its published Environments to deploy (an Inngest event); these tests publish none.
+    Layer.succeed(GithubApi, fakeGithubApi().service),
+    Layer.succeed(Polar, { mode: "self_hosted" }),
   );
-  const layer = OrganizationRuntimeLive.pipe(Layer.provideMerge(dependencies));
+  const layer = Layer.mergeAll(OrganizationRuntimeLive, CloudStoreLive).pipe(Layer.provideMerge(dependencies));
   const runtime = ManagedRuntime.make(layer);
   disposeClients.push(() => runtime.dispose());
   return {
@@ -153,6 +162,10 @@ function enrollmentTestClient(
           completeMachineEnrollment(input),
         ),
       ),
+    mintCli: () => runtime.runPromise(mintCliMachineEnrollment({ userId }, { organizationSlug: "enroll" })),
+    read: (id: string, actor = userId) => runtime.runPromise(
+      Effect.result(readMachineEnrollment({ userId: actor }, { organizationSlug: "enroll", id })),
+    ),
     resetPendingEnrollment: (_organizationId: string) =>
       runtime.runPromise(
         Effect.result(
@@ -233,7 +246,7 @@ describe("organization enrollment coordinator", () => {
             { userId },
             { organizationSlug: "enroll" },
           );
-          expect(minted.command).toContain("ployz cloud enroll 'pmet_");
+          expect(minted.command).toContain("ployz server add --token 'pmet_");
 
           const outsider = "00000000-0000-4000-8000-000000000499";
           const denied = yield* readCollection({ userId: outsider }, { ...enrollment, userId: outsider }).pipe(Effect.exit);
@@ -476,6 +489,24 @@ describe("organization enrollment coordinator", () => {
     if (Result.isFailure(result) || result.success.kind !== "initialize") throw new Error("Founder missing");
     return { token: tokens[0] ?? "", machineId: identity(0).machineId, pairingCredential: result.success.pairing.secret };
   }
+
+  it("reports the Server that completed enrollment with a CLI-minted token, and only to members", async () => {
+    const fake = fakeSession(harness.database);
+    const minted = await fake.coordinator.mintCli();
+    expect(minted.token).toMatch(/^pmet_/u);
+    expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "pending" } });
+    expect(await fake.coordinator.read(minted.id, "00000000-0000-4000-8000-000000000499")).toMatchObject({ failure: {} });
+
+    const founder = await pendingFounder(fake);
+    const attempt = { ...founder, token: minted.token };
+    await fake.coordinator.publish({ ...attempt, capability });
+    expect(await fake.coordinator.completeFounding(attempt)).toMatchObject({ success: { machineId: founder.machineId } });
+    expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "joined", machineId: founder.machineId } });
+
+    await harness.pool.query("update machine_enrollment_token set joined_machine_id = null, expires_at = now() where id = $1", [minted.id]);
+    expect(await fake.coordinator.read(minted.id)).toMatchObject({ success: { status: "expired" } });
+    expect(await fake.coordinator.read("00000000-0000-4000-8000-000000000498")).toMatchObject({ failure: { _tag: "NotFound" } });
+  });
 
   it("encrypts the authenticated candidate before completion and preserves it on exact retry", async () => {
     const fake = fakeSession(harness.database);

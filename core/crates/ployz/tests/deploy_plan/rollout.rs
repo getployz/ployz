@@ -280,11 +280,11 @@ fn planning_does_not_count_hook_containers_toward_replicated_count() {
 }
 
 #[test]
-fn two_projects_can_each_own_the_same_service_name() {
+fn two_namespaces_can_each_own_the_same_service_name() {
     let requested = requested(ServiceMode::Global);
     let mut other = container('c', '1', &requested, &service_id('d'));
     other
-        .try_update(|parts| parts.project_name = ProjectName::parse("shop-prod").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("shop-prod").unwrap())
         .unwrap();
     let plan = plan_deploy(
         [&requested],

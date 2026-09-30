@@ -12,6 +12,7 @@ describe("billing policy", () => {
             id: "sub-retired-teams",
             productId: "product-teams",
             currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+            cancelAtPeriodEnd: false,
           },
         ],
         productId,
@@ -19,6 +20,7 @@ describe("billing policy", () => {
     ).toEqual({
       activeSubscriptionId: null,
       currentPeriodEnd: null,
+      cancelAtPeriodEnd: false,
       hasActiveSubscription: false,
     });
   });
@@ -32,14 +34,21 @@ describe("billing policy", () => {
             id: "sub-earlier",
             productId,
             currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+            cancelAtPeriodEnd: false,
           },
-          { id: "sub-later", productId, currentPeriodEnd: later },
+          {
+            id: "sub-later",
+            productId,
+            currentPeriodEnd: later,
+            cancelAtPeriodEnd: true,
+          },
         ],
         productId,
       ),
     ).toEqual({
       activeSubscriptionId: "sub-later",
       currentPeriodEnd: later,
+      cancelAtPeriodEnd: true,
       hasActiveSubscription: true,
     });
   });

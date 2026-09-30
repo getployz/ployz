@@ -1,22 +1,20 @@
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Effect, Option, Schema } from "effect";
 import { getClusterDomainCollection, getOrganizationEnrollmentCollection } from "#/collections/collections";
 import { reconcileCollection } from "#/collections/query-collection";
 import { useCollectionScope } from "#/collections/use-collection-scope";
-import { prefetchRemote } from "#/collections/route-data";
+import { prefetchStoreViews } from "#/collections/route-data";
 import { DashboardPage } from "#/components/dashboard-page";
-import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
 import { organizationEnrollmentStatus } from "#/modules/machines/enrollment";
 import { resetPendingOrganizationEnrollmentServerFn } from "#/modules/machines/enrollment.functions";
-import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { useDeletionNodes } from "#/routes/_protected/cloud/$organizationSlug/-components/deletion-items";
-import { TeardownDangerSection } from "#/routes/_protected/cloud/$organizationSlug/-components/teardown-danger-section";
-import { BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
+import { BUILD_ORDER_QUERY, BuildsSettings } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/builds-settings";
 import { PendingEnrollmentResetSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/PendingEnrollmentResetSection";
 import { ClusterDomainSection } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/ClusterDomainSection";
 import { checkClusterDomainNowServerFn } from "#/modules/cluster-domain/cluster-domain.functions";
+import { projectsQuery } from "#/modules/config-store/store-view.queries";
+import { StoreOrganizationDanger } from "#/routes/_protected/cloud/$organizationSlug/_org/-components/store-organization-danger";
 
 const settingsSectionSchema = Schema.Literals(["general", "builds"]);
 
@@ -31,18 +29,13 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_org/~/settings",
 )({
   validateSearch: Schema.toStandardSchemaV1(settingsSearchSchema),
-  loader: async ({ params, context }) => {
-    await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug: params.organizationSlug, scope: "organization" }));
-  },
+  loader: ({ params, context }) => prefetchStoreViews(context, params.organizationSlug, projectsQuery(), BUILD_ORDER_QUERY),
   component: RouteComponent,
 });
 
 function RouteComponent() {
   const { organizationSlug } = Route.useParams();
   const { section = "general" } = Route.useSearch();
-  const navigate = useNavigate();
-  const { projects } = useWorkspace(organizationSlug);
-  const nodes = useDeletionNodes(organizationSlug);
 
   return (
     <DashboardPage width="content">
@@ -51,20 +44,7 @@ function RouteComponent() {
         <div className="flex flex-col gap-8">
           <EnrollmentSection organizationSlug={organizationSlug} />
           <ClusterDomainSettings organizationSlug={organizationSlug} />
-          <TeardownDangerSection
-            organizationSlug={organizationSlug}
-            scope="organization"
-            name={organizationSlug}
-            place={organizationSlug}
-            title="Delete this organization"
-            description="Its projects and data go with it, and its servers are reset."
-            actionLabel="Delete organization"
-            items={[...projects.map((project) => ({ kind: "project" as const, name: project.name })), ...nodes]}
-            headingId="organization-teardown-heading"
-            onCompleted={() => {
-              void navigate({ to: "/cloud", replace: true });
-            }}
-          />
+          <StoreOrganizationDanger organizationSlug={organizationSlug} />
         </div>
       )}
     </DashboardPage>

@@ -1,1 +1,0 @@
-ALTER TABLE "environment_deployment" ADD COLUMN "target_nodes" jsonb DEFAULT '{"version":1,"nodes":[]}' NOT NULL;

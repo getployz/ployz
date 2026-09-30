@@ -8,8 +8,8 @@ pub mod framing;
 pub use enrollment::*;
 mod host_config;
 mod machine_telemetry;
+pub mod namespace;
 mod ports;
-pub mod project;
 mod release;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod routing;
@@ -25,8 +25,8 @@ pub use domain::*;
 pub use framing::*;
 pub use host_config::*;
 pub use machine_telemetry::*;
+pub use namespace::*;
 pub use ports::*;
-pub use project::*;
 pub use release::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use routing::*;

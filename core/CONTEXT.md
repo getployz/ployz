@@ -1,6 +1,6 @@
 # Ployz
 
-Ployz is a cluster of Docker machines. The CLI is `ployz`. The daemon is `ployzd`. Operational semantics stay deliberately weak: a Cluster is what one entry Machine observes, not a globally authoritative entity.
+Ployz is a cluster of Docker machines and a Config Store that holds what you deploy to it. The CLI is `ployz`. The daemon is `ployzd`. Operational semantics stay deliberately weak: a Cluster is what one entry Machine observes, not a globally authoritative entity.
 
 Architectural bets and their red flags live in [DESIGN.md](DESIGN.md).
 
@@ -25,6 +25,10 @@ _Avoid_: Controller, leader, source of Cluster truth
 **Machine**:
 A durable participant identity in a Cluster. Its local lifecycle and its membership as observed by another Machine are separate facts.
 _Avoid_: Node, host, member
+
+**Server**:
+The user-facing name for a Machine, used alike by the CLI and Cloud. Code and this glossary say Machine.
+_Avoid_: Machine in user-facing copy, node, host
 
 **Machine Label**:
 An operator-assigned key/value classification of a Machine used to select placement candidates. It is metadata, not evidence of runtime capability or permission to accept work.
@@ -63,7 +67,7 @@ An observer-derived grouping of Service Containers. It is not an independently p
 _Avoid_: Workload, application, desired service
 
 **Qualified Service**:
-Logical Service identity: a Project Name plus a Service Name, written `project/name`. It is not a Service ID.
+Logical Service identity: a Namespace plus a Service Name, written `namespace/name`. It is not a Service ID.
 _Avoid_: Service Name as identity, global service name
 
 **Service ID**:
@@ -82,8 +86,12 @@ _Avoid_: Service Name as identity
 One Service Name this Deploy will apply from the target. Attempts are implicitly required until a requirement distinction exists. An empty selected list on Plan Options is full reconciliation; a non-empty list is partial. There is no independent prune flag.
 _Avoid_: selected-service list as a prune flag
 
+**Service Template**:
+The preset, by ID and version, an authored Service was created from, such as PostgreSQL version 1. It is authoring metadata: it changes nothing that runs, and the Service's own Settings stay authoritative. A template's Volume is found through the Service's mounts.
+_Avoid_: preset as a stored entity, template group
+
 **Service Container**:
-A managed Docker container carrying the Resolved Service Spec from its creation and the Project that owns it. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
+A managed Docker container carrying the Resolved Service Spec from its creation and the Namespace that owns it. It is one observed instance of a Service, not a replica identity or the canonical Service definition.
 _Avoid_: Replica, service record
 
 **Healthcheck**:
@@ -99,7 +107,7 @@ A Healthcheck with a non-empty command that probes the container.
 _Avoid_: enabled healthcheck
 
 **Hook Container**:
-A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. It records the same owning Project as the Service's regular containers. Its identity and runtime observation remain distinct from those of Service Containers.
+A managed Docker container that executes a pre-deploy hook rather than serving as an instance of the Service. It records the same owning Namespace as the Service's regular containers. Its identity and runtime observation remain distinct from those of Service Containers.
 _Avoid_: Service Container, sidecar
 
 **Container ID**:
@@ -122,9 +130,9 @@ _Avoid_: Current service spec, desired state
 The exact service configuration attached to a Service Container when it is created. Different observed containers in one Service may legitimately carry different Resolved Service Specs.
 _Avoid_: Current service spec, canonical service spec
 
-**Project**:
-An observer-derived ownership namespace. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure.
-_Avoid_: Compose project, deployment resource
+**Namespace**:
+The observer-derived ownership group of the Containers one Environment deploys, named in their labels and Internal DNS. It is not a persisted resource or a workflow. `ployz-system` is reserved for Ployz infrastructure.
+_Avoid_: Project (the product grouping), Compose project, deployment resource
 
 **Direct Image Transfer**:
 A bounded operation that makes an image held by one Machine, such as a Build result, available on selected Machines without requiring an external registry. It preserves layer-aware transfer.
@@ -138,6 +146,10 @@ _Avoid_: Image prune, garbage collection
 The work to produce one container image from source and a build recipe. A Deploy with three Git-sourced Services has three Builds.
 _Avoid_: Deploy, whole-project build as one Build
 
+**Build Method**:
+How a Service's image is described for building: a Dockerfile or Railpack.
+_Avoid_: Builder, builder type
+
 **Build Concurrency**:
 How many Build Attempts one Machine runs at once, recorded on its Machine record. Unset means automatic: 1 when the Machine accepts Services, otherwise one per 4 GB of RAM, clamped to 1–4. Each running Build Attempt holds one build slot and never the Machine's mutation lock.
 _Avoid_: build parallelism, worker count
@@ -145,6 +157,10 @@ _Avoid_: build parallelism, worker count
 **Build Receipt**:
 Evidence associating captured build inputs with a completed image and its verified platforms. It does not establish that the image remains available or that a Deploy succeeded.
 _Avoid_: Applied State, cached deployment
+
+**Uploaded Source**:
+A Service's build input uploaded from a local directory for one Deploy, identified by a hash of its files and never by a commit.
+_Avoid_: dirty commit, local commit, HEAD as its identity
 
 **Build Attempt**:
 One execution of a Build, which may succeed, fail, or stop before producing an image.
@@ -155,8 +171,8 @@ A Machine-minted permission to push one Build's image into that Machine and noth
 _Avoid_: CI credential, push token, Management Capability
 
 **Deploy**:
-A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow.
-_Avoid_: Deployment resource, reconciliation loop
+A bounded command attempt that calculates and executes work against an observer-relative snapshot. It is not a persistent resource or durable workflow; its record is a Deployment.
+_Avoid_: Deployment (the record), reconciliation loop
 
 **Global catch-up**:
 A bounded membership-command operation that establishes this Machine's running Service Container for every observed eligible Global before the command completes. Unknown eligibility or incomplete placement is a reported outcome; it is not a Cluster-wide Deploy and has no background retry.
@@ -172,35 +188,156 @@ _Avoid_: Current service spec, canonical service spec, desired Global state
 
 **Deploy Intent**:
 The complete desired Services for one Deploy together with which of those Services this command applies. Empty `selected` is full reconciliation of the target, including removal of observer-visible Services the target no longer declares. Services in the target that are not applied are unchanged.
-It is the only authored model: Cloud authors it today and the CLI will read it from a file later. Compose files are not an input.
+It is derived from an Environment's Saved State when a Deploy is admitted, never authored directly. Compose files are not an input.
 _Avoid_: leftover filtered Compose project, Compose as an authoring format, Cloud Attempt Target, Full/Partial/Adhoc as kinds of Deploy
 
+**Config Store**:
+The home of authored configuration and its history: Projects, their Environments, Working and Saved State, and deploy history. Every client changes authored configuration only through it. Cloud hosts one per Organization; the Cluster never holds it.
+_Avoid_: Cloud database, config file, Org Store (the dashboard's browser cache), control plane
+
+**Project**:
+A named group of Environments in one Config Store.
+_Avoid_: Namespace, app, stack
+
+**Environment**:
+One Project's authored configuration of Services and Volumes, with its own Working and Saved State, deployed to its own Namespace.
+_Avoid_: Namespace, stage, workspace
+
+**Default Environment**:
+The Environment a project opens, chosen in the project's settings. There is no per-user remembered Environment.
+_Avoid_: Remembered environment, primary environment, main environment
+
+**Directory Link**:
+A directory's recorded Project and Environment, kept on this device beside the CLI config and inherited by its subdirectories. `--project`/`--env` and `PLOYZ_PROJECT`/`PLOYZ_ENV` take precedence over it, in that order; a link made in another Organization is refused.
+_Avoid_: Project file, workspace, current project
+
+**Setting**:
+One named, user-facing value of an Environment Node, Environment, Project or Organization, addressed by a path such as `web.replicas`. It is staged until a Deploy or applies immediately; the settings catalog lists every Setting with its type and default, and the stored configuration behind it is never addressed directly.
+_Avoid_: Field, option, config key, storage path
+
+**Environment Node**:
+A deployable element of an Environment whose desired configuration participates in reviewed snapshots. Services and Environment Resources are Environment Nodes, while retaining distinct storage and lifecycle behavior.
+_Avoid_: Canvas node when referring to deployment identity
+
+**Environment Resource**:
+A non-Service Environment Node with stable identity and type-owned configuration and lifecycle behavior. Volumes are the current Environment Resource type; effects on a Service's container template remain Service-owned.
+_Avoid_: Generic canvas item, Service subtype
+
+**Service Metadata**:
+A Service's name. Renaming it is a staged change to its slug in Working State, shipped by the next Deploy like any other; Private DNS stays as it was, so other Services keep reaching it. Private DNS changes only when set itself, also staged, and no two Services share a name or Private DNS name. References target IDs; managed `PLOYZ_SERVICE_NAME` exports the stable Private DNS name.
+_Avoid_: Deployable name, DNS alias
+
+**Volume Kind**:
+The explicit, user-chosen kind of an Environment's Volume: a Provisioned Volume (sized, quota-enforced, hosted only on a Server with a managed pool) or a plain Docker Volume (unsized, any Server). Both are machine-local. Creation defaults to a Provisioned Volume; plain Docker storage requires an explicit opt-out. The kind and maximum can change in Working State until the first Deployment targeting that Volume is admitted. Admission fixes both, including failed, cancelled and pending attempts, because frozen attempts can prepare storage or be retried. Saved documents always carry the explicit kind and never infer it from a missing size.
+_Avoid_: Storage class, volume type dropdown
+
+**Registry Credential**:
+Current encrypted authentication material owned by a Service identity, with a new revision on rotation. Deployable configuration contains only its stable credential reference. Connecting or disconnecting that reference is staged; rotating its contents is immediate. Admission freezes the credential revision and encrypted material with the deployment snapshots. Discard cannot undo a rotation.
+_Avoid_: Saved credential contents, credential revision as configuration
+
+**Working State**:
+The mutable Environment configuration currently being edited, with a revision that advances as edits are persisted. Persisting edits preserves Working State without publishing it as Saved State or making it eligible for deployment. Removing a Volume from Working State also deletes its draft identity and Node Introduction when no Saved revision, deployment snapshot, removal attempt, or other Node Introduction retains it. Retained identity alone does not make a Volume visible on the canvas; runtime connectivity does not determine draft retention.
+_Avoid_: Saved State, deployable revision, client diff ledger
+
+**Saved State**:
+An Environment's published configuration revisions. The latest is the only configuration a Deploy is admitted from; publishing Working State adds a revision without deploying.
+_Avoid_: Working State, deployed configuration, draft
+
+**Publish**:
+Adding a revision to an Environment's Saved State from its Working State without deploying. A manual Deploy publishes first.
+_Avoid_: Save (a Branch Save), commit, promote
+
+**Deployment**:
+The Config Store's record of one Deploy: its Attempt Target, who started it and from what source, its Node Outcomes and its events. It stays after the Deploy ends; its runner is recorded, so a Deployment whose runner is gone reads as outcome unknown, never as running.
+_Avoid_: Deploy (the command), Cloud Deployment Attempt, Deploy Record
+
+**Attempt Target**:
+The immutable complete runtime target frozen when a Deployment starts. One compiler materializes Derived Service Configuration from Saved State, then combines it with trigger-specific source revisions and required or opportunistic deployment requirements.
+_Avoid_: Saved state, deploy preview, mutable queued request
+
+**Node Outcome**:
+One Environment Node's result within a Deployment: Deployed, Removed, Failed, Not attempted (an earlier failure stopped work before reaching it), or Unchanged (in the Attempt Target without a difference). A Service is Deployed the moment its container is replaced, not when the attempt ends. User-facing copy uses these labels verbatim.
+_Avoid_: Applied, Skipped, Succeeded, Live (the Environment as it is now is not an outcome)
+
+**Applied State**:
+The per-Environment-Node projection of the latest confirmed runtime outcomes. Successful or removed nodes advance independently; failed or skipped nodes retain their previous Applied State.
+_Avoid_: Latest deployment, active attempt, all-or-nothing baseline, "Applied" in user-facing copy
+
+**Environment Change Set**:
+One pure, serializable comparison from the latest queued or running Deployment's Saved revision to Working State, falling back to per-node Applied State when none is active. Accepted deployment hides the submitted changes; later edits compare against that submission. Failed or cancelled work reappears against confirmed Applied State. A node never deployed compares against its Node Introduction, published or not, so every edit of it is a change; once it is in Applied State, never again. Lifecycle changes and setting changes are counted once; deployment progress is separate.
+_Avoid_: Persisted diff, mutation log, deployment snapshot
+
+**Environment Publication Review**:
+Authority to publish the current Working State revision against one exact Saved State basis; later Working State edits invalidate that review. It always names the reviewed Working fingerprint, the Saved revision observed by the reviewer (or that no Saved State existed), and the complete destructive Service and Volume set, including Volume evidence; the set is explicit even when empty. Publish and manual Deploy supply this authority. Automated deployment triggers consume existing Saved State. Publication conflicts when its Saved basis is no longer latest; commands never silently rebase onto another user's revision.
+_Avoid_: Optional destructive callback, deploy-only review, implicit safe publisher
+
+**Saved State Command**:
+One atomic mutation of Saved State that names the exact Saved revision it was constructed from. The Saved State aggregate serializes commands per Environment and refuses a stale basis. Discard publishes at most one replacement revision in the same transaction as its Working State reset.
+_Avoid_: Latest-state mutation, automatic rebase, loop of Saved writes
+
+**Discard**:
+One command restoring a field, node, or the whole Environment to the Environment Change Set's comparison baseline in Working and Saved State. It guards the Working revision, Saved basis, and comparison baseline and writes both states atomically. A new-node field reset uses its Node Introduction without publishing that node. Discard never changes an accepted deployment's target.
+_Avoid_: Layered reset plans, loop of Saved writes, implicit deployment cancellation
+
+**Node Introduction**:
+The strictly versioned configuration an environment node had immediately after its creation transaction finalized. It is the comparison and reset source for edits made before the node has Applied State; it is not a second editable draft.
+_Avoid_: Initial diff, creation event log, default config
+
+**Derived Service Configuration**:
+The disposable compiler output produced from a complete Saved State authoring graph. It resolves attached Volumes into each Service's environment, mounts, and variable producer index. It belongs to an Attempt Target and is never independently edited or read as Saved authority.
+At runtime lowering, Core supplies `PORT=8080` only when resolved authored variables omit `PORT`. Generated and custom domains with a null target port follow this container `PORT`; explicit targets override routing only. HTTP healthchecks use the container `PORT`. Invalid authored values are not replaced by the default and fail lowering when a port is required.
+_Avoid_: Saved Service config, copied consumer snapshot, second source of truth
+
 **Branch**:
-Authored configuration made from another's, its Parent's, and deployed to its own Project. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Project as Live Nodes. Branching rules are pure authored-configuration rules, the same for every client.
+An Environment made from another, its Parent, and deployed to its own Namespace. Its nodes keep their Parent's lineage. It runs Own Copies of the nodes picked, and uses what those need from its Parent's Namespace as Live Nodes. It closes when it is deleted after a Save, unless it is a Kept Branch. Branching rules are pure authored-configuration rules, the same for every client.
 _Avoid_: Fork, clone, preview; "branch" alone for a Git branch
 
+**Conditional Save**:
+A PR Environment's Save into one of its Destinations that goes live with its pull request's merge. It keeps what landing needs, sealed secrets and registry credentials included, so it lands even once the PR Environment is gone. Where the Destination changed a row too, the pull request's value lands only as a hint, which a take stages.
+_Avoid_: Approval, deferred save
+
 **Parent**:
-The authored configuration a Branch was made from, whose Project lends the Branch its Live Nodes.
+The Environment a Branch was made from, whose Namespace lends the Branch its Live Nodes. An Environment without one, such as production, is a root.
 _Avoid_: Base, upstream
 
 **Own Copy**:
-A node a Branch deploys in its own Project, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty.
+A node a Branch deploys in its own Namespace, made from its Parent's configuration with the same lineage. An Own Copy of a Volume starts empty.
 _Avoid_: Clone (a copy of data)
 
 **Live Node**:
-A node a Branch uses without deploying it. It is reached in the Project that runs it as `{service}.{project}.internal`, with the values it has there.
+A node a Branch uses without deploying it. It is reached in the Namespace that runs it as `{service}.{namespace}.internal`, with the values it has there.
 _Avoid_: Portal, shared node, borrowed node
 
 **Setup Command**:
 A command a Branch adds after one Own Copy's own pre-deploy command, in the same Hook Container, until that Service first deploys successfully. It prepares the Own Copy's data, for example by seeding it.
 _Avoid_: Seed script, data hook, post-deploy hook
 
+**Kept Branch**:
+A Branch that stays after saving and never closes on its own, such as staging.
+_Avoid_: Long-lived environment, permanent branch
+
+**Starting point**:
+A Branch that was never deployed, kept as the recipe other Branches copy from. Its nodes stay staged until it deploys once.
+_Avoid_: Template, draft branch
+
+**Destination**:
+Where a Branch saves its changes: its Parent, or for a PR Environment, each Environment that deploys the pull request's target Git branch with nothing in its Parent chain deploying that Git branch too. Environments below a Destination that deploy the same Git branch get the merged code but not the settings; they catch up by Update. A pull request whose target Git branch nothing deploys has no Destination.
+_Avoid_: Target, save target
+
+**Save**:
+Putting a Branch's changes, chosen change by change, into its Destination's Working State, where they become the Destination's changes to deploy. Save never waits for the Branch to deploy: it takes the Branch's Working State, whether or not it runs. The Branch is deleted after saving unless it is kept or the user opts out.
+_Avoid_: Merge (a GitHub merge only), promote, deploy to parent, Publish
+
+**Update**:
+Staging the Parent's changes since the Branch was made or last updated in the Branch's Working State, to ship with the Branch's next Deploy.
+_Avoid_: Pull, sync, rebase
+
 **Deploy Snapshot**:
 The observer-relative Machine, Service Container, and Docker Volume observations gathered for one Deploy, including target-specific Container and Docker Volume failures and omissions. Completeness is relative to the entry Machine's current visible required fan-out, not Cluster truth.
 _Avoid_: current cluster state, desired state, cluster snapshot, authoritative Cluster completeness
 
 **Prune Refusal**:
-Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Project.
+Why a full reconciliation must not remove visible drift. Observer-relative; never a claim of Cluster completeness. Absence means this Deploy may remove obsolete Services owned by the resolved user Namespace.
 _Avoid_: prune flag, Cluster-complete snapshot
 
 **Deploy Plan**:
@@ -244,8 +381,8 @@ A ZFS storage budget on one storage-ready Machine. Provisioned Volumes live on i
 _Avoid_: Cluster pool, auto-created pool, dedicated disk, Machine ZFS Pool, ZFS-enabled cluster
 
 **Provisioned Volume**:
-A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected.
-_Avoid_: Managed Volume, Managed ZFS Volume, cluster volume, storage class, CSI volume
+A Docker Volume backed by a dataset on a Machine Pool, with a declared maximum size. An ordinary named Docker Volume is not one and is unaffected. User-facing copy (CLI output, errors, dashboard) calls it a Managed volume and an ordinary one a Docker volume; Provisioned stays the wire and code name. A Machine without a Machine Pool reads Docker only.
+_Avoid_: Managed ZFS Volume, cluster volume, storage class, CSI volume; Managed volume in wire or code names
 
 **Service Volume Reference**:
 A name used within one Service specification to refer to storage. It is not the Docker Volume name or a machine-independent storage identity.
@@ -311,8 +448,8 @@ _Avoid_: Activated configuration, accepted configuration
 An observer-local, TTL-zero A answer derived from Serving Containers and optionally filtered by this Machine's Membership Observations. It is not persisted or Cluster truth even though the DNS response is authoritative for the `.internal` zone.
 _Avoid_: Service registry record, Cluster-wide endpoint set
 
-**Caller Project**:
-The Project attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container or Hook Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Project. A `{service}.internal` query uses that Project as the missing label; without a Caller Project the name is NXDOMAIN.
+**Caller Namespace**:
+The Namespace attributed to an Internal DNS query by matching its source Container Address to exactly one visible Service Container or Hook Container. It is observer-relative attribution, not authenticated identity; zero or several matches mean there is no Caller Namespace. A `{service}.internal` query uses that Namespace as the missing label; without a Caller Namespace the name is NXDOMAIN.
 _Avoid_: caller identity, authenticated client, source registry
 
 **Ingress Hostname**:
@@ -356,7 +493,7 @@ Cloud's Organization-scoped association with one Cluster generation, held on eac
 _Avoid_: live connection, Cluster authority, per-Machine identity, Management Client
 
 **Standalone Cluster**:
-A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. It is fully operable but receives no Cloud-driven features; today only Cloud holds a Management Client.
+A Cluster with no Cloud Pairing, operated through the CLI over SSH contexts. Its runtime is fully operable, but it has no Config Store, so it receives no authored configuration or other Cloud-driven features.
 _Avoid_: self-hosted cluster, offline mode, unpaired as a fault
 
 **Release Channel**:
@@ -377,7 +514,7 @@ It is shared administrative authority, not per-user access; rotating a Managemen
 _Avoid_: per-user permission, read-only grant, Pairing Credential, management endpoint
 
 **Management Client**:
-One named holder slot on a Machine, such as `cloud`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
+One named holder slot on a Machine, such as `cloud` or a signed-in device's `cli-<device>`, whose client key may use the management transport. Setting it mints a Management Capability for that holder; clearing it revokes only that holder's connections and leaves a Cleared tombstone of its public keys. A redial with a tombstoned key is refused with `CLIENT_CLEARED`, confirming the removal; any other refused key gets `CLIENT_REFUSED`. The Machine knows holders, never the people or Organizations behind them.
 _Avoid_: Cloud Pairing, user, session, per-user permission
 
 **Management Identity**:

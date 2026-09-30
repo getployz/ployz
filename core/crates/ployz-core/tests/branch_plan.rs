@@ -3,7 +3,7 @@
     reason = "Fixed test fixtures use indexing; missing entries must fail the test."
 )]
 
-use ployz_core::config::{ConfigError, config_request};
+use ployz_core::config::{ConfigError, parse_environment_intent, plan_branch};
 use serde_json::{Value, json};
 
 fn id(n: u32) -> String {
@@ -34,14 +34,19 @@ fn service(n: u32, slug: &str, refs: &[u32], mounts: &[u32]) -> Value {
 fn parent() -> Value {
     json!({"version":1,"environmentSlug":"production",
         "services":[service(1,"web",&[2,99],&[10]),service(2,"api",&[3],&[]),service(3,"db",&[],&[11]),service(4,"cron",&[],&[])],
-        "volumes":[{"resourceId":id(110),"resourceLineageId":id(10),"name":"uploads"},
-                   {"resourceId":id(111),"resourceLineageId":id(11),"name":"data"}]})
+        "volumes":[{"resourceId":id(110),"resourceLineageId":id(10),"name":"uploads","storage":{"kind":"docker"}},
+                   {"resourceId":id(111),"resourceLineageId":id(11),"name":"data","storage":{"kind":"docker"}}]})
 }
 
 fn plan(deployed: &[u32], focus: &[u32], picks: Value) -> Result<Value, ConfigError> {
     let ids = |ns: &[u32]| ns.iter().map(|n| id(*n)).collect::<Vec<_>>();
-    config_request(json!({"operation":"plan_branch","parent":parent(),
-        "deployed":ids(deployed),"focus":ids(focus),"picks":picks}))
+    plan_branch(
+        &parse_environment_intent(parent()).unwrap(),
+        &ids(deployed),
+        &ids(focus),
+        &serde_json::from_value(picks).unwrap(),
+    )
+    .map(|plan| serde_json::to_value(plan).unwrap())
 }
 
 fn own(ns: &[u32]) -> Value {
@@ -149,30 +154,6 @@ fn unknown_lineages_and_invalid_parents_are_refused() {
     assert_eq!(plan(&[], &[1], own(&[42])).unwrap_err().path, "picks.own");
     // A lineage the Parent only uses live has no configuration to copy.
     assert_eq!(plan(&[], &[1], own(&[99])).unwrap_err().path, "picks.own");
-    let error = config_request(json!({"operation":"plan_branch","parent":{"version":2},
-        "deployed":[],"focus":[],"picks":{"preset":"all"}}))
-    .unwrap_err();
+    let error = parse_environment_intent(json!({"version":2})).unwrap_err();
     assert_eq!(error.path, "environment");
-}
-
-#[test]
-fn the_name_check_follows_the_project_name_rule() {
-    let check = |name: &str| config_request(json!({"operation":"check_branch_name","name":name}));
-    assert_eq!(check("shop-pr-12").unwrap(), json!("shop-pr-12"));
-    for (name, message) in [
-        ("", "Project name is empty"),
-        (&"a".repeat(64), "Project name is longer than 63 characters"),
-        ("Shop_PR", "Project name must be a lowercase DNS label"),
-        ("-shop", "Project name must be a lowercase DNS label"),
-        (
-            "ployz-system",
-            "Project name is reserved for the system Project",
-        ),
-    ] {
-        let error = check(name).unwrap_err();
-        assert_eq!(
-            (error.path.as_str(), error.message.as_str()),
-            ("projectName", message)
-        );
-    }
 }

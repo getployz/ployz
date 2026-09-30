@@ -9,11 +9,11 @@ import { VariableRowHeading } from "#/components/variables/variable-row-heading"
 import { VariableRowValue } from "#/components/variables/variable-row-value";
 export type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
 import type { VariableMetadataPatch } from "#/components/variables/variable-row-types";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
-import { referencesDeletedOwner } from "#/modules/environment-design/variable-template";
-import type { VariableWriter } from "#/modules/environment-design/variable-collections";
-import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
+import { referencesDeletedOwner } from "#/modules/variables/variable-template";
+import type { VariableWriter } from "#/modules/variables/variables";
+import type { PlainVariableRecord } from "#/modules/variables/variables";
+import type { VariableRecord } from "#/modules/variables/variables";
 
 export function VariableRow({
   variable,
@@ -49,7 +49,6 @@ export function VariableRow({
   function handleSave() {
     collection.update(variable.id, (draft) => {
       draft.value = { type: "plain", value: state.editValue };
-      draft.updatedAt = new Date();
     });
     dispatch({ type: "saveSucceeded" });
   }
@@ -61,7 +60,8 @@ export function VariableRow({
   }
 
   return (
-    <div className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0">
+    <div data-changed={variable.changed || undefined}
+      className="grid grid-cols-2 items-center gap-3 border-b py-2 last:border-b-0 data-[changed=true]:bg-changed-soft">
       <VariableRowHeading
         variableKey={variable.key}
         exported={variable.exported}

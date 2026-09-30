@@ -1,6 +1,4 @@
 import { useState } from "react";
-import { Loader2Icon } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "#/components/ui/button";
 import {
   Dialog,
@@ -8,6 +6,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "#/components/ui/dialog";
 import {
   Field,
@@ -15,57 +14,64 @@ import {
   FieldLabel,
 } from "#/components/ui/field";
 import { Input } from "#/components/ui/input";
+import type { VolumeKind } from "@ployz/sdk";
+import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
+import { DEFAULT_VOLUME_GB, volumeStorage } from "#/modules/config-store/store-volumes";
+import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
 import type { FlowPosition } from "./types";
 
 export function VolumeCreatorDialog({
+  organizationSlug,
   open,
   onOpenChange,
   position,
   onCreate,
 }: {
+  organizationSlug: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   position: FlowPosition;
   onCreate: (input: {
     name: string;
+    storage: VolumeKind;
     position: FlowPosition;
-  }) => Promise<void>;
+  }) => void;
 }) {
   const [name, setName] = useState("data");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [managed, setManaged] = useState(true);
+  const [sizeGB, setSizeGB] = useState(DEFAULT_VOLUME_GB);
   const trimmedName = name.trim();
+  const runtime = useRuntimeLens(organizationSlug);
+  const needsServer = runtime.noServers || (runtime.status === "observed" && !runtime.incomplete
+    && runtime.machines.every((machine) => machine.storage !== null)
+    && !runtime.machines.some((machine) => machine.acceptsServices && ["up", "suspect"].includes(machine.membership)
+      && (machine.storage === "ready" || machine.storage === "pool")));
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!trimmedName || isSubmitting) {
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      await onCreate({
-        name: trimmedName,
-        position,
-      });
-      onOpenChange(false);
+  function changeOpen(open: boolean) {
+    onOpenChange(open);
+    if (!open) {
       setName("data");
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : "The volume couldn’t be created. Check the name and try again.",
-      );
-    } finally {
-      setIsSubmitting(false);
+      setManaged(true);
+      setSizeGB(DEFAULT_VOLUME_GB);
     }
   }
 
+  // The Volume shows at once and saves in the background; a refused name comes back as a toast.
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const storage = volumeStorage(managed, sizeGB);
+    if (!trimmedName || !storage) return;
+    onCreate({ name: trimmedName, storage, position });
+    changeOpen(false);
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={changeOpen}>
       <DialogContent>
-        <form onSubmit={(event) => void handleSubmit(event)}>
+        <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Create volume</DialogTitle>
+            <DialogDescription>Files stored here survive deployments and restarts.</DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
             <Field>
@@ -78,20 +84,18 @@ export function VolumeCreatorDialog({
                 autoFocus
               />
             </Field>
+            <VolumeStorageFields managed={managed} sizeGB={sizeGB} onManagedChange={setManaged} onSizeChange={setSizeGB} />
+            {managed && needsServer ? <p className="text-sm text-muted-foreground">Managed volumes need a compatible server before deployment.</p> : null}
           </FieldGroup>
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={isSubmitting}
+              onClick={() => changeOpen(false)}
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={!trimmedName || isSubmitting}>
-              {isSubmitting ? <Loader2Icon data-icon="inline-start" /> : null}
-              {isSubmitting ? "Creating…" : "Create volume"}
-            </Button>
+            <Button type="submit" disabled={!trimmedName || !volumeStorage(managed, sizeGB)}>Create volume</Button>
           </DialogFooter>
         </form>
       </DialogContent>

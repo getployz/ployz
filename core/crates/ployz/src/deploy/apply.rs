@@ -1,27 +1,20 @@
-use std::{io, num::NonZeroU32};
+use std::io;
 
-use ployz_core::{
-    DataLossConfirmation, DeployEvent, DeployIntent, OperationRow, ProjectName,
-    RequestedServiceSpec, ServiceSelector,
-};
+use ployz_core::{DeployEvent, DeployIntent, Namespace, OperationRow, RequestedServiceSpec};
 use tokio_util::sync::CancellationToken;
 use unicode_segmentation::UnicodeSegmentation as _;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{
-    connect::Client,
-    failure::Failure,
-    output::{say, say_inline},
-};
+use crate::{connect::Client, failure::Failure, output::say_inline};
 
 use super::{
-    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError, VolumeFate,
-    pipeline::{plan_options, plan_scale},
+    DeployError, DeployOutcome, DeployPlan, DeployPreview, ExecutionError,
+    pipeline::plan_options,
     render,
     report::{self, Ink},
 };
 
-/// Apply one Ployz infrastructure Service in the reserved system Project.
+/// Apply one Ployz infrastructure Service in the reserved system Namespace.
 pub(crate) async fn apply_requested(
     client: &mut Client,
     requested: &RequestedServiceSpec,
@@ -37,7 +30,7 @@ pub(crate) async fn apply_requested(
         async |client| {
             client
                 .preview(DeployIntent::apply_one(
-                    ProjectName::system(),
+                    Namespace::system(),
                     requested.clone(),
                     plan_options(force_recreate, skip_health_monitor),
                 ))
@@ -77,12 +70,6 @@ pub(crate) enum ApplyError {
     },
 }
 
-impl From<Failure> for ApplyError {
-    fn from(error: Failure) -> Self {
-        Self::Prepare(error)
-    }
-}
-
 impl From<DeployError> for ApplyError {
     fn from(error: DeployError) -> Self {
         Self::Prepare(error.into())
@@ -113,95 +100,6 @@ fn closing_failure(
         ployz_core::RpcErrorCode::Internal,
         text.trim().to_owned(),
         serde_json::json!({ "outcome": outcome }),
-    )
-}
-
-pub(crate) struct ConfirmGate<'a> {
-    pub auto_confirm: bool,
-    pub context: &'a str,
-}
-
-pub(crate) async fn deploy_scale(
-    client: &mut Client,
-    selector: &ServiceSelector,
-    replicas: NonZeroU32,
-    skip_health_monitor: bool,
-    gate: ConfirmGate<'_>,
-) -> Result<Outcome, ApplyError> {
-    let preview = plan_scale(
-        client,
-        selector,
-        replicas,
-        plan_options(false, skip_health_monitor),
-    )
-    .await?;
-    print_warnings(&preview);
-    let cancellation = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancellation.clone().drop_guard();
-    confirm_and_execute(client, &preview, gate, &cancellation).await
-}
-
-async fn confirm_and_execute(
-    client: &Client,
-    preview: &DeployPlan,
-    gate: ConfirmGate<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Outcome, ApplyError> {
-    say_inline!("{}", render::plan_text(preview, gate.context));
-    if preview.noop() {
-        return Ok(nothing_done());
-    }
-    if !gate.auto_confirm
-        && !crate::cancellation::read(
-            cancellation,
-            confirm(&render::confirm_prompt(gate.context), cancellation),
-        )
-        .await?
-    {
-        say!("No changes were made.");
-        return Ok(nothing_done());
-    }
-    finish(
-        stream_confirm(
-            client,
-            preview,
-            format!("Deploying to {}", gate.context),
-            Ink::human(),
-            cancellation,
-        )
-        .await,
-        &format!("Deployed to {}", gate.context),
-    )
-}
-
-pub(crate) async fn remove_project(
-    client: &mut Client,
-    name: &ProjectName,
-    volumes: VolumeFate,
-    context: &str,
-    confirm_data_loss: &DataLossConfirmation,
-) -> Result<Outcome, ApplyError> {
-    let preview = client
-        .prepare_project_destroy(name, confirm_data_loss, volumes)
-        .await
-        .map_err(crate::failure::refusal_from_rpc)?;
-    print_warnings(&preview);
-    say_inline!("{}", render::removal_plan_text(&preview, context));
-    if preview.noop() {
-        return Ok(nothing_done());
-    }
-    let cancellation = crate::cancellation::on_ctrl_c();
-    let _stop_listener = cancellation.clone().drop_guard();
-    finish(
-        stream_confirm(
-            client,
-            &preview,
-            format!("Removing Project {name} from {context}"),
-            Ink::human(),
-            &cancellation,
-        )
-        .await,
-        &format!("Removed Project {name} from {context}"),
     )
 }
 
@@ -326,18 +224,6 @@ fn print_warnings(preview: &DeployPreview) {
     }
 }
 
-async fn confirm(prompt: &str, cancellation: &CancellationToken) -> Result<bool, Failure> {
-    if !crate::output::interactive() {
-        return Err(Failure::usage(
-            "confirmation requires a terminal; pass --yes to continue",
-        ));
-    }
-    crate::output::say_inline!("{prompt}");
-    let input =
-        crate::cancellation::read_line(cancellation, io::BufReader::new(io::stdin())).await?;
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES"))
-}
-
 /// Terminal evidence of a Deploy that ran to completion.
 pub(crate) type Outcome = DeployOutcome<ExecutionError>;
 
@@ -345,27 +231,6 @@ pub(crate) type Outcome = DeployOutcome<ExecutionError>;
 fn nothing_done() -> Outcome {
     DeployOutcome::Success {
         completed: Vec::new(),
-    }
-}
-
-/// The `--json` result of a Deploy: its terminal evidence.
-///
-/// # Errors
-///
-/// Returns a serialization or stdout write error.
-pub(crate) fn emit_outcome(result: Result<Outcome, ApplyError>) -> Result<(), Failure> {
-    match result {
-        Ok(outcome) => crate::output::emit(&serde_json::json!({ "outcome": outcome })),
-        // Execution committed: its outcome is the result, and the failure makes it partial.
-        Err(ApplyError::Execute {
-            outcome,
-            rows,
-            live_shown,
-        }) => {
-            crate::output::emit(&serde_json::json!({ "outcome": outcome }))?;
-            Err(closing_failure(&outcome, &rows, live_shown))
-        }
-        Err(ApplyError::Prepare(error)) => Err(error),
     }
 }
 
@@ -392,7 +257,7 @@ fn finish(
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::project_not_found;
+    use super::super::pipeline::namespace_not_found;
     use super::*;
     use crate::deploy::DeployWarning;
     use crate::dns::ingress_dns_warnings;
@@ -464,7 +329,7 @@ mod tests {
             .into_iter()
             .map(DeployWarning::from)
             .collect(),
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
         );
         assert_eq!(
             preview
@@ -490,10 +355,10 @@ mod tests {
     #[test]
     fn incomplete_empty_view_is_not_reported_as_missing() {
         let mut preview =
-            DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
-        assert!(project_not_found(&preview));
+            DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
+        assert!(namespace_not_found(&preview));
         preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
-        assert!(!project_not_found(&preview));
+        assert!(!namespace_not_found(&preview));
     }
 
     #[test]

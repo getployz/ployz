@@ -1,9 +1,12 @@
-import { applyCreatedResource } from "#/modules/environment-design/apply-created-node";
-import { useCollectionScope } from "#/collections/use-collection-scope";
 import { useRef, useState } from "react";
+import type { VolumeKind } from "@ployz/sdk";
 import { useReactFlow } from "@xyflow/react";
-import { useServerFn } from "@tanstack/react-start";
-import { createVolumeResourceServerFn } from "#/modules/environment-design/resource-functions";
+import { useLoaderData } from "@tanstack/react-router";
+import { usePlaceNewNode } from "./useCanvasPositionMutation";
+import { createVolumeCommand } from "#/modules/config-store/store-volumes";
+import { useStoreWriter } from "#/modules/config-store/store-write";
+import { slugifySegment } from "#/utils/slug";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { SERVICE_NODE_SIZE } from "./constants";
 import type { CanvasResourceNode, FlowPosition } from "./types";
@@ -17,9 +20,10 @@ export function useVolumeCreator(
   environmentId: string,
   getViewportCenter: () => FlowPosition,
 ) {
-  const collectionScope = useCollectionScope();
   const flow = useReactFlow<CanvasResourceNode>();
-  const createVolumeResource = useServerFn(createVolumeResourceServerFn);
+  const place = usePlaceNewNode(params.organizationSlug);
+  const writer = useStoreWriter(params.organizationSlug);
+  const { store } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [creatorPosition, setCreatorPosition] = useState<FlowPosition>({
     x: 0,
@@ -60,23 +64,15 @@ export function useVolumeCreator(
     });
   }
 
-  async function createVolume(input: {
+  /** On the canvas at once, saved in the background; a refused create goes again with a toast. */
+  function createVolume(input: {
     name: string;
+    storage: VolumeKind;
     position: FlowPosition;
   }) {
-    const result = await createVolumeResource({
-      data: {
-        organizationSlug: params.organizationSlug,
-        environmentId,
-        name: input.name,
-        x: input.position.x,
-        y: input.position.y,
-      },
-    });
-
-    await applyCreatedResource(params.organizationSlug, collectionScope, result);
-
-    return result.data;
+    const id = crypto.randomUUID();
+    place({ environmentId, resourceType: "volume", resourceId: id, ...input.position });
+    writer.commit(createVolumeCommand(id, store, slugifySegment(input.name) || "data", input.storage));
   }
 
   return {

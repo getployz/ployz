@@ -144,7 +144,7 @@ impl Fixture {
         fs::write(project_root.join("ignored"), "excluded-private-value").unwrap();
         fs::write(project_root.join(".dockerignore"), "ignored\n").unwrap();
         let intent = ployz_core::config::lower_deployment(
-            serde_json::from_value(serde_json::json!({"projectName": "demo", "snapshots": [{
+            serde_json::from_value(serde_json::json!({"namespace": "demo", "snapshots": [{
                 "config": {"version": 2, "privateDns": "api", "healthcheck": {"type": "none"},
                     "restartPolicy": "on-failure", "source": {"type": "image", "version": 1,
                     "image": "example.test/api:built", "credentials": {"type": "none"}}},

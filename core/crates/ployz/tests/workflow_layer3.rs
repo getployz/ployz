@@ -52,13 +52,18 @@ async fn deploy_scale_and_rename_execute_through_the_sdk_and_cli() {
     );
     wait_for_services(&mut client, &["scaled-workflow"], 1).await;
     // An unchanged Deploy Intent plans nothing, so its Containers stay.
-    let unchanged = session.preview(scaled).await.unwrap();
+    let unchanged = session.preview(scaled.clone()).await.unwrap();
     assert!(unchanged.noop(), "{:?}", unchanged.preview());
     unchanged.close();
-    assert_success(ployz(
-        address,
-        ["service", "scale", "--yes", "scaled-workflow", "2"],
-    ));
+    let mut two = scaled;
+    two.target.first_mut().unwrap().mode = ployz_core::ServiceMode::Replicated {
+        replicas: std::num::NonZeroU32::new(2).unwrap(),
+    };
+    let outcome = session.run(two, None).await.unwrap();
+    assert!(
+        matches!(outcome, DeployOutcome::Success { .. }),
+        "{outcome:?}"
+    );
 
     let initial_run = wait_for_services(&mut client, &["scaled-workflow"], 2).await;
     let scaled = observed_service(&initial_run, "scaled-workflow");
@@ -143,9 +148,9 @@ async fn machine_rm_warns_when_replicated_services_are_left_under_replicated() {
 
         let mut command = Command::new(env!("CARGO_BIN_EXE_ployz"));
         command
-            .args(["--connect", &format!("tcp://{address}"), "machine", "rm"])
+            .args(["--connect", &format!("tcp://{address}"), "server", "rm"])
             .args(no_reset.then_some("--no-reset"))
-            .args(["--yes", "machine-2"]);
+            .args(["--confirm", "machine-2", "machine-2"]);
         let removed = command.output().unwrap();
         assert!(
             removed.status.success(),
@@ -174,19 +179,17 @@ async fn session(address: std::net::SocketAddr) -> Session {
     .unwrap()
 }
 
-/// One image Service in Project `workflow`, lowered as Cloud authors it.
+/// One image Service in Namespace `workflow`, lowered as Cloud authors it.
 /// Cloud authors no placement; these scenarios pin one to observe it.
 fn intent(name: &str, constraint: &str, pre_deploy: Option<&str>) -> DeployIntent {
     let mut intent = ployz_core::config::lower_deployment(
-        serde_json::from_value(
-            serde_json::json!({"projectName": "workflow", "snapshots": [{
-                "config": {"version": 2, "privateDns": name, "source": {
-                    "type": "image", "version": 1, "image": SERVICE_CONTAINER_IMAGE,
-                    "credentials": {"type": "none"}
-                }, "startCommand": "sleep 60", "preDeployCommand": pre_deploy,
-                "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}
-            }]}),
-        )
+        serde_json::from_value(serde_json::json!({"namespace": "workflow", "snapshots": [{
+            "config": {"version": 2, "privateDns": name, "source": {
+                "type": "image", "version": 1, "image": SERVICE_CONTAINER_IMAGE,
+                "credentials": {"type": "none"}
+            }, "startCommand": "sleep 60", "preDeployCommand": pre_deploy,
+            "healthcheck": {"type": "none"}, "restartPolicy": "on-failure"}
+        }]}))
         .unwrap(),
     )
     .unwrap();
@@ -214,19 +217,13 @@ async fn assert_machine_rename_preserves_containers(
         .map(|container| container.as_observation().container_id)
         .collect::<BTreeSet<_>>();
     assert!(
-        !ployz(address, ["machine", "update", "machine-1", "--name", ""])
+        !ployz(address, ["server", "set", "machine-1", "--name", ""])
             .status
             .success()
     );
     assert_success(ployz(
         address,
-        [
-            "machine",
-            "update",
-            "machine-1",
-            "--name",
-            "workflow-renamed",
-        ],
+        ["server", "set", "machine-1", "--name", "workflow-renamed"],
     ));
     wait_for_machine_name(client, machine_id, "workflow-renamed").await;
     let after_rename = wait_for_services(client, &["scaled-workflow"], 2).await;

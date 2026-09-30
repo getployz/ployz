@@ -8,7 +8,7 @@ use ployz::operator::{
 use ployz_core::{
     ContainerAction, ContainerKind, ContainerSelector, ExecRequestFrame, ExecResponseFrame,
     FanoutSelector, LogBody, LogEntry, LogOrigin, LogsOptions, MachineLogService, MachineTarget,
-    ProjectName, ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op,
+    Namespace, ResolvedServiceSpec, ServiceId, ServiceSelector, StartContainerRequest, op,
     select_service,
 };
 use ployz_testkit::{Cluster, ClusterPlan};
@@ -36,7 +36,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
             .create_container(
                 machine.id,
                 ContainerKind::ServiceContainer,
-                ProjectName::parse("app").unwrap(),
+                Namespace::parse("app").unwrap(),
                 spec.clone(),
                 None,
             )
@@ -162,7 +162,7 @@ async fn exec_service_logs_and_machine_logs_cross_a_real_two_machine_cluster() {
             &first_machine_container,
             "script",
             "-qec",
-            "timeout 60 ployz service exec -T app/operator-streams sh -c 'exit 7'; echo CODE:$?",
+            "timeout 60 ployz exec -T app/operator-streams sh -c 'exit 7'; echo CODE:$?",
             "/dev/null",
         ])
         .output()
@@ -223,9 +223,17 @@ async fn assert_service_logs(
         containers: Vec::new(),
     }];
     let entries = collect_logs(
-        open_service_logs(client, &args, &[], log_options(), CancellationToken::new())
-            .await
-            .unwrap(),
+        open_service_logs(
+            client,
+            &args,
+            None,
+            &[],
+            log_options(),
+            CancellationToken::new(),
+            None,
+        )
+        .await
+        .unwrap(),
     )
     .await;
     let actual = entries
@@ -272,9 +280,11 @@ async fn assert_service_logs(
                 service: ServiceSelector::parse("undeployed").unwrap(),
                 containers: Vec::new(),
             }],
+            None,
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()
@@ -292,9 +302,11 @@ async fn assert_service_logs(
                 service: ServiceSelector::from(service_id),
                 containers: vec![ContainerSelector::parse(&selector).unwrap()],
             }],
+            None,
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .unwrap();
@@ -307,9 +319,11 @@ async fn assert_service_logs(
                 service: ServiceSelector::from(service_id),
                 containers: vec![ContainerSelector::parse("missing").unwrap()],
             }],
+            None,
             &[],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()
@@ -317,9 +331,11 @@ async fn assert_service_logs(
     let selected_machine = open_service_logs(
         client,
         &args,
+        None,
         &[FanoutSelector::parse(machines[0].name.as_str()).unwrap()],
         log_options(),
         CancellationToken::new(),
+        None,
     )
     .await
     .unwrap();
@@ -328,9 +344,11 @@ async fn assert_service_logs(
         open_service_logs(
             client,
             &args,
+            None,
             &[FanoutSelector::parse("missing").unwrap()],
             log_options(),
             CancellationToken::new(),
+            None,
         )
         .await
         .is_err()

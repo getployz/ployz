@@ -2,6 +2,12 @@ import type { RuntimeLensStatus, RuntimeMachineRecord } from "#/modules/runtime/
 
 export type ServerStatus = "online" | "building" | "offline" | "unknown";
 
+/** Storage support as observed, separate from whether the Server is online. */
+export function volumeSupportText(storage: RuntimeMachineRecord["storage"]) {
+  return storage === null ? "Volume support unknown"
+    : storage === "stateless" ? "Docker only" : "Managed volumes available";
+}
+
 /**
  * The one word a Server's status shows. A `suspect` Server still reads online: SWIM settles suspicion to up or
  * down within seconds (at most ~30s on a small cluster), so a network blip never shows and an outage reads Offline.

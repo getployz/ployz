@@ -1,24 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { Effect, Redacted } from "effect";
-import type { Polar as PolarSdk } from "@polar-sh/sdk";
-import type { PolarSubscription } from "#/modules/billing/billing";
+import {
+  makePolarClient,
+  makePolarCore,
+  POLAR_API_VERSION,
+  type Polar as PolarSdk,
+} from "#/modules/billing/polar-api";
 import {
   makePolarService,
   PolarFailure,
 } from "#/modules/billing/polar-provider.server";
 import { asTestDouble } from "#/lib/test-double";
 
-function makeSdk(items: readonly PolarSubscription[]) {
-  const list = vi.fn(async () => ({
-    [Symbol.asyncIterator]: async function* () {
-      yield { result: { items } };
-    },
-  }));
+/** Subscriptions as the Polar API sends them. */
+function makeSdk(items: readonly object[]) {
+  const iterList = vi.fn(async function* () {
+    yield* items;
+  });
   const sdk = {
-    subscriptions: { list },
+    subscriptions: { iterList },
     checkouts: { create: vi.fn() },
   } as const;
-  return { list, sdk: asTestDouble<PolarSdk>()(sdk) };
+  return { iterList, sdk: asTestDouble<PolarSdk>()(sdk) };
 }
 
 const hosted = {
@@ -30,21 +33,44 @@ const hosted = {
 };
 
 describe("Polar provider boundary", () => {
+  it("pins the Polar API version on every client", async () => {
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) =>
+      Response.json({}),
+    );
+    vi.stubGlobal("fetch", fetch);
+    try {
+      await makePolarClient(hosted).customerSessions.create({
+        external_customer_id: "user-1",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const [, sent] = fetch.mock.calls[0] ?? [];
+    const [, built] = makePolarCore(hosted).buildRequest("GET", "/v1/");
+
+    for (const init of [sent, built]) {
+      expect(new Headers(init?.headers).get("Polar-Version")).toBe(
+        POLAR_API_VERSION,
+      );
+    }
+  });
+
   it("does not construct a Polar client in self-hosted mode", () => {
     const sdk = makeSdk([]);
 
     expect(makePolarService({ mode: "self_hosted" }, sdk.sdk)).toEqual({
       mode: "self_hosted",
     });
-    expect(sdk.list).not.toHaveBeenCalled();
+    expect(sdk.iterList).not.toHaveBeenCalled();
   });
 
   it("decodes active subscriptions into the billing protocol", async () => {
     const { sdk } = makeSdk([
       {
         id: "sub-pro",
-        productId: hosted.productId,
-        currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+        product_id: hosted.productId,
+        current_period_end: "2026-04-01T00:00:00Z",
+        cancel_at_period_end: true,
       },
     ]);
 
@@ -58,17 +84,19 @@ describe("Polar provider boundary", () => {
         id: "sub-pro",
         productId: hosted.productId,
         currentPeriodEnd: new Date("2026-04-01T00:00:00.000Z"),
+        cancelAtPeriodEnd: true,
       },
     ]);
   });
 
   it("classifies invalid provider payloads without exposing their body", async () => {
     const { sdk } = makeSdk([
-      asTestDouble<PolarSubscription>()({
+      {
         id: "sub-invalid",
-        productId: hosted.productId,
-        currentPeriodEnd: "not-a-date",
-      }),
+        product_id: hosted.productId,
+        current_period_end: "not-a-date",
+        cancel_at_period_end: false,
+      },
     ]);
 
     const provider = makePolarService(hosted, sdk);

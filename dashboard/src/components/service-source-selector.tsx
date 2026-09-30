@@ -4,58 +4,21 @@ import type { ServiceGitAccess } from "@ployz/sdk";
 import { GithubRepositoryRefreshNotice } from "./github-repository-refresh-notice";
 import { Command as CommandPrimitive } from "cmdk";
 import { SourcePickerInput, SourcePickerLayout } from "#/components/source-picker-layout";
-import {
-  type ReactNode,
-  Suspense,
-  useDeferredValue,
-  useEffect,
-  useState,
-} from "react";
-import {
-  ChevronRightIcon,
-  InfoIcon,
-  TriangleAlertIcon,
-  RefreshCwIcon,
-  Settings2Icon,
-} from "lucide-react";
+import { type ReactNode, Suspense, useDeferredValue, useEffect, useState } from "react";
+import { ChevronRightIcon, InfoIcon, TriangleAlertIcon, RefreshCwIcon, Settings2Icon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import {
-  useMutation,
-  useQueryClient,
-  useSuspenseQueries,
-  useSuspenseQuery,
-} from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
 import { count, ilike, useLiveQuery } from "@tanstack/react-db";
 import { Alert, AlertDescription, AlertTitle } from "#/components/ui/alert";
 import { Button } from "#/components/ui/button";
 import { InputGroupAddon, InputGroupInput } from "#/components/ui/input-group";
 import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { imageRegistryLink, isValidImageReference } from "#/components/image-registry-link";
-import {
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "#/components/ui/empty";
-import {
-  Command,
-  CommandDialog,
-  CommandGroup,
-  CommandItem,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from "#/components/ui/command";
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "#/components/ui/empty";
+import { Command, CommandDialog, CommandGroup, CommandItem, CommandList, CommandSeparator, CommandShortcut } from "#/components/ui/command";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Spinner } from "#/components/ui/spinner";
-import {
-  githubBranchesQueryOptions,
-  githubInstallUrlQueryOptions,
-  githubRepoAccessQueryOptions,
-  githubKeys,
-} from "#/modules/github/github.queries";
+import { githubBranchesQueryOptions, githubInstallUrlQueryOptions, githubRepoAccessQueryOptions, githubKeys } from "#/modules/github/github.queries";
 import { getGithubReposCollection, getRawGithubReposCollection, preloadGithubRepos, useGithubReposReadState } from "#/modules/github/github.collection";
 import { requestGithubRepoSyncServerFn } from "#/modules/github/github.functions";
 import { useCollectionScope } from "#/collections/use-collection-scope";

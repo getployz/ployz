@@ -4,7 +4,7 @@ use ployz_core::{
     ContainerCreated, ContainerId, ContainerKind, ContainerObservation,
     ContainerRuntimeObservation, CreateContainerRequest, DeployEvent, DockerVolumeId,
     ExecutionError, FailedOperation, HookFailure, InspectContainerRequest, MachineAction,
-    MachineId, MachineTarget, MembershipObservation, OperationPhase, ProjectName, QualifiedService,
+    MachineId, MachineTarget, MembershipObservation, Namespace, OperationPhase, QualifiedService,
     RemoveContainerRequest, RemoveVolumeRequest, ResolvedServiceSpec, RpcError, RpcErrorCode,
     StartContainerRequest, StopContainerPurpose, StopContainerRequest, UpdateOrder, op,
 };
@@ -90,7 +90,7 @@ pub(super) trait MachineOperations {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError>;
@@ -176,7 +176,7 @@ impl MachineOperations for Client {
             .flat_map(|success| success.value)
             .filter(|container| {
                 container.kind == ContainerKind::ServiceContainer
-                    && container.project_name == service.project
+                    && container.namespace == service.namespace
                     && container.resolved_spec.name == service.name
             })
             .collect())
@@ -186,7 +186,7 @@ impl MachineOperations for Client {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
@@ -208,7 +208,7 @@ impl MachineOperations for Client {
                 .find_map(|container| {
                     (container.machine_id == *machine_id
                         && container.kind == kind
-                        && container.project_name == *project_name
+                        && container.namespace == *namespace
                         && container.resolved_spec == *spec)
                         .then(|| container.labels.get("ployz.creation.key").cloned())
                         .flatten()
@@ -241,8 +241,9 @@ impl MachineOperations for Client {
                         })
                 }),
                 kind,
-                project_name: project_name.clone(),
+                namespace: namespace.clone(),
                 resolved_spec: spec.clone(),
+                registry_auth: self.registry_auth.get(&spec.name).cloned(),
             },
             &MachineTarget::from(machine_id),
             None,
@@ -295,7 +296,7 @@ impl MachineOperations for Client {
                 grace_period_seconds,
             },
             &MachineTarget::from(machine_id),
-            stop_rpc_timeout(grace_period_seconds),
+            stop_rpc_timeout(grace_period_seconds, 1),
         )
         .await
         .map(|_| ())
@@ -395,12 +396,12 @@ impl<C: MachineOperations> MachineOperations for RestartTolerant<'_, C> {
         &self,
         machine_id: &MachineId,
         kind: ContainerKind,
-        project_name: &ProjectName,
+        namespace: &Namespace,
         spec: &ResolvedServiceSpec,
         replacing: Option<ContainerId>,
     ) -> Result<ContainerCreated, RpcError> {
         self.inner
-            .create_container(machine_id, kind, project_name, spec, replacing)
+            .create_container(machine_id, kind, namespace, spec, replacing)
             .await
     }
 
@@ -495,7 +496,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
 ) -> DeployOutcome<ExecutionError> {
     // TODO: there is deliberately no persisted "already run" guard at this boundary.
     let operations = plan.operations();
-    let project_name = &plan.project_name;
+    let namespace = &plan.namespace;
     let mut progress = Progress::new(plan.pending_rows(), tx);
     progress.emit();
     let client = RestartTolerant {
@@ -516,7 +517,7 @@ pub(super) async fn execute_operation_sequence<C: MachineOperations>(
             &mut progress,
             &client,
             cancellation,
-            project_name,
+            namespace,
         )
         .await
         {
@@ -556,7 +557,7 @@ async fn execute_operation<C: MachineOperations>(
     progress: &mut Progress,
     client: &C,
     cancellation: &CancellationToken,
-    project_name: &ProjectName,
+    namespace: &Namespace,
 ) -> Result<(), OperationFailure> {
     progress.set_running(index, OperationPhase::Starting);
     match operation {
@@ -589,7 +590,7 @@ async fn execute_operation<C: MachineOperations>(
             index,
             progress,
             machine_id,
-            project_name,
+            namespace,
             spec,
             *skip_health_monitor,
             cancellation,
@@ -642,7 +643,7 @@ async fn execute_operation<C: MachineOperations>(
                 index,
                 progress,
                 replacement,
-                project_name,
+                namespace,
                 cancellation,
             )
             .await
@@ -664,7 +665,7 @@ async fn execute_operation<C: MachineOperations>(
             index,
             progress,
             machine_id,
-            project_name,
+            namespace,
             spec,
             old_hook_containers,
             cancellation,
@@ -681,7 +682,7 @@ async fn execute_operation<C: MachineOperations>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress row plus Project label travel together through execute"
+    reason = "progress row plus Namespace label travel together through execute"
 )]
 async fn create_and_start<C: MachineOperations>(
     client: &C,
@@ -689,14 +690,14 @@ async fn create_and_start<C: MachineOperations>(
     progress: &mut Progress,
     machine_id: &MachineId,
     kind: ContainerKind,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     replacing: Option<ContainerId>,
     cancellation: &CancellationToken,
 ) -> Result<ContainerCreated, ExecutionError> {
     progress.set_running(index, OperationPhase::CreatingContainer);
     let created = match client
-        .create_container(machine_id, kind, project_name, spec, replacing)
+        .create_container(machine_id, kind, namespace, spec, replacing)
         .await
     {
         Ok(created) => created,
@@ -733,14 +734,14 @@ async fn create_and_start<C: MachineOperations>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress row plus Project label travel together through execute"
+    reason = "progress row plus Namespace label travel together through execute"
 )]
 async fn run_container<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     machine_id: &MachineId,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     skip_health_monitor: bool,
     cancellation: &CancellationToken,
@@ -751,7 +752,7 @@ async fn run_container<C: MachineOperations>(
         progress,
         machine_id,
         ContainerKind::ServiceContainer,
-        project_name,
+        namespace,
         spec,
         None,
         cancellation,
@@ -821,7 +822,7 @@ async fn replace_container<C: MachineOperations>(
     index: usize,
     progress: &mut Progress,
     operation: &ReplacementOperation,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     cancellation: &CancellationToken,
 ) -> Result<(), OperationFailure> {
     let stop_first = operation.spec.update.order == UpdateOrder::StopFirst;
@@ -863,7 +864,7 @@ async fn replace_container<C: MachineOperations>(
         progress,
         &operation.machine_id,
         ContainerKind::ServiceContainer,
-        project_name,
+        namespace,
         &operation.spec,
         Some(operation.old_container_id),
         cancellation,
@@ -995,14 +996,14 @@ async fn restore_old_container<C: MachineOperations>(
 
 #[expect(
     clippy::too_many_arguments,
-    reason = "progress row plus Project label travel together through execute"
+    reason = "progress row plus Namespace label travel together through execute"
 )]
 async fn run_hook<C: MachineOperations>(
     client: &C,
     index: usize,
     progress: &mut Progress,
     machine_id: &MachineId,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     spec: &ResolvedServiceSpec,
     old_hook_containers: &[(MachineId, ContainerId)],
     cancellation: &CancellationToken,
@@ -1023,7 +1024,7 @@ async fn run_hook<C: MachineOperations>(
         progress,
         machine_id,
         ContainerKind::PreDeployHook,
-        project_name,
+        namespace,
         spec,
         None,
         cancellation,

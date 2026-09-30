@@ -2,16 +2,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ConfigError, ServiceHealthcheck, ServiceSource, parse_service_config};
+use super::{
+    ConfigError, ServiceConfig, ServiceEnvValue, ServiceHealthcheck, ServiceSource, ValuePart,
+    ValuePartOwner, VolumeKind, parse_service_config,
+};
 use crate::{
-    ByteQuantity, ContainerResources, CpuNanos, DeployIntent, HealthcheckSpec, HttpHealthcheck,
-    HttpProtocol, IngressHost, PlanOptions, PortPublication, PreDeployCommand, PreDeployHook,
-    ProjectName, PullPolicy, RawVolumeSource, RequestedServiceSpec, RestartPolicy, ServiceAttempt,
-    ServiceContainerSpec, ServiceDependency, ServiceMode, ServiceMount, ServiceName, ServiceVolume,
-    ServiceVolumeGraph, VolumeDriver,
+    ByteQuantity, ContainerResources, CpuNanos, DependencyCondition, DeployIntent, HealthcheckSpec,
+    HttpHealthcheck, HttpProtocol, IngressHost, Namespace, PlanOptions, PortPublication,
+    PreDeployCommand, PreDeployHook, PullPolicy, RawVolumeSource, RequestedServiceSpec,
+    RestartPolicy, ServiceAttempt, ServiceContainerSpec, ServiceDependency, ServiceMode,
+    ServiceMount, ServiceName, ServiceVolume, ServiceVolumeGraph, VolumeDriver,
 };
 
 /// Injected into a Cloud-authored service only when it has no authored PORT.
@@ -30,37 +33,52 @@ fn target_port(
         })
 }
 
-/// Captured node settings plus adapter-resolved runtime inputs for one Project.
-#[derive(Deserialize)]
+/// Captured node settings plus adapter-resolved runtime inputs for one Namespace.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LowerDeploymentInput {
-    project_name: ProjectName,
-    snapshots: Vec<LowerDeploymentSnapshot>,
+    /// The Namespace every lowered Service runs in.
+    pub namespace: Namespace,
+    /// Each Service's captured settings and resolved inputs.
+    pub snapshots: Vec<LowerDeploymentSnapshot>,
+    /// The Volumes the Namespace holds; mounts of any other are left out.
     #[serde(default)]
-    volumes: Vec<LowerDeploymentVolume>,
+    pub volumes: Vec<LowerDeploymentVolume>,
+    /// Service ID by lineage, from the attempt's frozen variable producers. References
+    /// resolved through it order the deploy.
     #[serde(default)]
-    dependencies: BTreeMap<ServiceName, Vec<ServiceDependency>>,
+    pub lineages: BTreeMap<String, String>,
     /// Omitted preserves partial-deploy behavior; empty reconciles the complete target.
-    selected: Option<Vec<ServiceAttempt>>,
+    pub selected: Option<Vec<ServiceAttempt>>,
 }
 
-#[derive(Deserialize)]
+/// One Service's captured settings and the runtime inputs resolved for it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct LowerDeploymentSnapshot {
-    service_id: Option<String>,
-    config: Value,
-    replicas: Option<u8>,
+pub struct LowerDeploymentSnapshot {
+    /// The authored Service's ID, when it has one: references to it resolve by it.
+    pub service_id: Option<String>,
+    /// Its authored Service settings, as captured.
+    pub config: Value,
+    /// Replicas overriding the authored count, such as a PR Environment's one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicas: Option<u8>,
+    /// Its variables with every reference resolved, by key.
     #[serde(default)]
-    resolved_env: BTreeMap<String, String>,
+    pub resolved_env: BTreeMap<String, String>,
     /// Run in order after the service's own pre-deploy command, in the same hook.
     #[serde(default)]
-    setup_commands: Vec<String>,
+    pub setup_commands: Vec<String>,
 }
 
-#[derive(Deserialize)]
+/// One Volume the Namespace holds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LowerDeploymentVolume {
-    volume_resource_id: String,
+pub struct LowerDeploymentVolume {
+    /// The authored Volume's ID, as mounts name it.
+    pub volume_resource_id: String,
+    /// Its fixed storage.
+    pub storage: VolumeKind,
 }
 
 /// Lower captured authored settings and adapter-supplied image/environment inputs.
@@ -72,18 +90,24 @@ struct LowerDeploymentVolume {
 /// Returns ConfigError when a source lacks a pullable image, a setting is unsupported by the runtime,
 /// or resolved ports, limits, mounts, or commands cannot form a valid runtime request.
 pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, ConfigError> {
-    let volume_ids: BTreeSet<_> = input
+    let volume_sources: BTreeMap<_, _> = input
         .volumes
         .iter()
-        .map(|v| v.volume_resource_id.as_str())
+        .map(|v| (v.volume_resource_id.as_str(), v.storage))
         .collect();
+    let snapshots = input
+        .snapshots
+        .into_iter()
+        .map(|mut snapshot| Ok((parse_service_config(snapshot.config.take())?, snapshot)))
+        .collect::<Result<Vec<_>, ConfigError>>()?;
+    let dependencies = deployment_dependencies(&snapshots, &input.lineages);
     let mut target: Vec<RequestedServiceSpec> = Vec::new();
-    for snapshot in input.snapshots {
-        let super::ServiceConfig {
+    for (parsed, snapshot) in snapshots {
+        let ServiceConfig {
             settings: config,
             mounts: configured_mounts,
             ..
-        } = parse_service_config(snapshot.config)?;
+        } = parsed;
         let image = match &config.source {
             ServiceSource::Empty { .. } => continue,
             ServiceSource::Git { .. } => {
@@ -145,26 +169,32 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
                 policy
             }
         };
-        let mounted: Vec<_> = configured_mounts
-            .iter()
-            .filter(|m| volume_ids.contains(m.volume_resource_id.as_str()))
-            .collect();
         let mut volumes = Vec::new();
         let mut mounts = Vec::new();
-        for mount in mounted {
+        for mount in configured_mounts {
+            let Some(storage) = volume_sources.get(mount.volume_resource_id.as_str()) else {
+                continue;
+            };
             let name = format!("vol-{}", mount.volume_resource_id);
             let reference: crate::ServiceVolumeReference =
                 name.clone().try_into().map_err(lowering_error)?;
-            volumes.push(ServiceVolume {
-                reference: reference.clone(),
-                source: RawVolumeSource::Ordinary {
-                    name: name.try_into().map_err(lowering_error)?,
+            let name = name.try_into().map_err(lowering_error)?;
+            let source = match storage {
+                VolumeKind::Docker {} => RawVolumeSource::Ordinary {
+                    name,
                     driver: VolumeDriver::parse("local", BTreeMap::new())
                         .map_err(lowering_error)?,
                     labels: BTreeMap::new(),
-                }
-                .try_into()
-                .map_err(lowering_error)?,
+                },
+                VolumeKind::Provisioned { maximum_bytes } => RawVolumeSource::Provisioned {
+                    name,
+                    maximum_bytes: *maximum_bytes,
+                    labels: BTreeMap::new(),
+                },
+            };
+            volumes.push(ServiceVolume {
+                reference: reference.clone(),
+                source: source.try_into().map_err(lowering_error)?,
             });
             mounts.push(ServiceMount {
                 volume: reference,
@@ -297,7 +327,7 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             .collect()
     });
     Ok(DeployIntent::new(
-        input.project_name,
+        input.namespace,
         target,
         PlanOptions {
             force_recreate: false,
@@ -306,7 +336,89 @@ pub fn lower_deployment(input: LowerDeploymentInput) -> Result<DeployIntent, Con
             selected,
         },
     )
-    .with_dependencies(input.dependencies))
+    .with_dependencies(dependencies))
+}
+
+/// A deployed Service waits for every deployed Service its variables reference, except that
+/// edges inside a reference cycle are dropped. An HTTP healthcheck makes the wait for health.
+fn deployment_dependencies(
+    snapshots: &[(ServiceConfig, LowerDeploymentSnapshot)],
+    lineages: &BTreeMap<String, String>,
+) -> BTreeMap<ServiceName, Vec<ServiceDependency>> {
+    let deployed = || {
+        snapshots
+            .iter()
+            .filter(|(config, _)| !matches!(config.settings.source, ServiceSource::Empty { .. }))
+    };
+    let by_id: BTreeMap<&str, &ServiceConfig> = deployed()
+        .filter_map(|(config, snapshot)| Some((snapshot.service_id.as_deref()?, config)))
+        .collect();
+    let mut graph: BTreeMap<&ServiceName, (&ServiceConfig, BTreeSet<&ServiceName>)> =
+        BTreeMap::new();
+    for (config, _) in deployed() {
+        let name = &config.settings.private_dns;
+        let references = config
+            .env
+            .values()
+            .filter_map(|value| match value {
+                ServiceEnvValue::Literal { parts, .. } => parts.as_ref(),
+                ServiceEnvValue::Secret { .. } => None,
+            })
+            .flatten()
+            .filter_map(|part| match part {
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Service { lineage_id },
+                    ..
+                } => by_id.get(lineages.get(lineage_id)?.as_str()),
+                ValuePart::Ref {
+                    owner: ValuePartOwner::Self_,
+                    ..
+                }
+                | ValuePart::Text { .. } => None,
+            })
+            .map(|dependency| &dependency.settings.private_dns)
+            .filter(|dependency| *dependency != name)
+            .collect();
+        graph.insert(name, (config, references));
+    }
+    // ponytail: per-edge reachability keeps this small; use SCCs if large environments make it costly.
+    let reaches = |from: &ServiceName, target: &ServiceName| {
+        let mut pending = vec![from];
+        let mut visited = BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if name == target {
+                return true;
+            }
+            if visited.insert(name) {
+                pending.extend(graph.get(name).into_iter().flat_map(|(_, next)| next));
+            }
+        }
+        false
+    };
+    graph
+        .iter()
+        .filter_map(|(name, (_, references))| {
+            let edges: Vec<_> = references
+                .iter()
+                .filter(|dependency| !reaches(dependency, name))
+                .map(|dependency| ServiceDependency {
+                    service: (*dependency).clone(),
+                    // Normal startup already monitors Docker health. An explicit HTTP check
+                    // also gates unchanged dependencies.
+                    condition: match graph
+                        .get(dependency)
+                        .map(|(config, _)| &config.settings.healthcheck)
+                    {
+                        Some(ServiceHealthcheck::Http { .. }) => {
+                            DependencyCondition::ServiceHealthy
+                        }
+                        _ => DependencyCondition::ServiceStarted,
+                    },
+                })
+                .collect();
+            (!edges.is_empty()).then(|| ((*name).clone(), edges))
+        })
+        .collect()
 }
 
 fn lowering_error(_: impl std::fmt::Display) -> ConfigError {

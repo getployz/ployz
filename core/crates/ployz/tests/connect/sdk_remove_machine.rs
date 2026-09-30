@@ -9,6 +9,8 @@ use ployz_core::{
 };
 use tokio::time::timeout;
 
+use ployz::connect::Remover;
+
 use super::support::{DiscoveryService, confirmation, connected_client, machine};
 use super::support::{docker_volume, machine_named};
 use super::unix_session::{self, UnixSession};
@@ -141,9 +143,10 @@ async fn remove_machine_reports_a_failed_reset_instead_of_swallowing_it() {
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_managed_machine_before_mutation() {
+async fn cloud_removes_the_last_machine_it_holds() {
     let (description, entry, service) = last_machine_cluster();
-    hold_keys(&service, &["cloud"]);
+    // Cloud's own hold: its key and a device key it provisioned. The reset takes both.
+    hold_keys(&service, &["cloud", "cli-0123456789abcdef0123456789ab"]);
     let session = UnixSession::start().await;
     let spawned = session
         .spawn_machine(description.machine_id, service.clone())
@@ -157,27 +160,25 @@ async fn remove_machine_refuses_the_last_managed_machine_before_mutation() {
     .unwrap();
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
-    let error = client
+    let removed = client
         .remove_machine(entry.machine.name.as_str(), &confirmation)
         .await
-        .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        error
-            .message
-            .contains("Delete the Cluster from Cloud instead"),
-        "{}",
-        error.message
+        .unwrap();
+    assert!(removed.reset_warning.is_none());
+    assert_eq!(
+        service.reset_machines.lock().unwrap().as_slice(),
+        &[entry.machine.id]
     );
-    assert!(service.reset_machines.lock().unwrap().is_empty());
-    assert!(service.removed_machines.lock().unwrap().is_empty());
     drop(spawned);
 }
 
 #[tokio::test]
-async fn remove_machine_refuses_the_last_machine_with_a_management_client() {
+async fn remove_machine_refuses_the_last_machine_another_management_client_holds() {
     let (_description, entry, service) = last_machine_cluster();
-    hold_keys(&service, &["cloud"]);
+    hold_keys(
+        &service,
+        &["cloud", "cli-0123456789abcdef0123456789ab", "ops"],
+    );
     let (mut client, server, _) = connected_client(service.clone()).await;
     let confirmation = confirmation(Vec::<DataLoss>::new());
 
@@ -185,14 +186,16 @@ async fn remove_machine_refuses_the_last_machine_with_a_management_client() {
         .remove_machine(
             &ployz_core::MachineTarget::from(&entry.machine.id),
             &confirmation,
+            Remover::Operator,
         )
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    // Only the holder Cloud doesn't release is named.
     assert!(
         error
             .message
-            .contains("Delete the Cluster from Cloud instead"),
+            .ends_with("Disconnect `ops` from this Machine first."),
         "{}",
         error.message
     );
@@ -211,14 +214,56 @@ async fn last_machine_refusal_names_non_cloud_holders_without_cloud_teardown() {
         .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
+    assert_eq!(error.code, RpcErrorCode::Conflict);
     assert_eq!(
         error.message,
         "this is the last Machine in the Cluster and it is still managed by `cli` and `ops`; \
          removing it would leave `cli` and `ops` managing a Cluster that no longer exists. \
-         Disconnect `cli` and `ops` from this Machine first."
+         No changes made. Disconnect `cli` and `ops` from this Machine first."
     );
     assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn only_cloud_removes_the_last_machine_it_holds() {
+    let (_description, entry, service) = last_machine_cluster();
+    hold_keys(&service, &["cloud"]);
+    let (mut client, server, _) = connected_client(service.clone()).await;
+    let target = ployz_core::MachineTarget::from(&entry.machine.id);
+
+    let error = client
+        .remove_machine(
+            &target,
+            &confirmation(Vec::<DataLoss>::new()),
+            Remover::Operator,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    let error = client.remove_machine_membership(&target).await.unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(service.reset_machines.lock().unwrap().is_empty());
+    assert!(service.removed_machines.lock().unwrap().is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn unreadable_holders_of_the_last_machine_refuse_its_removal() {
+    let (_description, entry, mut service) = last_machine_cluster();
+    service.inspect_fails = true;
+    let (mut client, server, _) = connected_client(service.clone()).await;
+
+    let error = client
+        .remove_machine(
+            &ployz_core::MachineTarget::from(&entry.machine.id),
+            &confirmation(Vec::<DataLoss>::new()),
+            Remover::Operator,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, RpcErrorCode::Unavailable, "{}", error.message);
+    assert!(service.reset_machines.lock().unwrap().is_empty());
     server.abort();
 }
 
@@ -232,21 +277,15 @@ fn hold_keys(service: &DiscoveryService, labels: &[&str]) {
 #[tokio::test]
 async fn remove_machine_membership_refuses_the_last_machine_with_a_management_client() {
     let (_description, entry, service) = last_machine_cluster();
-    hold_keys(&service, &["cloud"]);
+    hold_keys(&service, &["ops"]);
     let (mut client, server, _) = connected_client(service.clone()).await;
 
     let error = client
         .remove_machine_membership(&ployz_core::MachineTarget::from(&entry.machine.id))
         .await
         .unwrap_err();
-    assert_eq!(error.code, RpcErrorCode::InvalidArgument);
-    assert!(
-        error
-            .message
-            .contains("Delete the Cluster from Cloud instead"),
-        "{}",
-        error.message
-    );
+    assert_eq!(error.code, RpcErrorCode::Conflict);
+    assert!(error.message.contains("`ops`"), "{}", error.message);
     assert!(service.reset_machines.lock().unwrap().is_empty());
     assert!(service.removed_machines.lock().unwrap().is_empty());
     server.abort();
@@ -279,6 +318,7 @@ async fn remove_machine_removes_the_final_unpaired_machine() {
         .remove_machine(
             &ployz_core::MachineTarget::from(&entry.machine.id),
             &confirmation,
+            Remover::Operator,
         )
         .await
         .unwrap();

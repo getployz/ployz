@@ -1,12 +1,7 @@
 import { cachedByCollectionScope, getDbClient, type CollectionScope } from "#/collections/scope";
-import {
-  collectionOptions,
-  localOnlyCollectionOptions,
-  type Collection,
-  type VirtualRowProps,
-} from "@tanstack/react-db";
+import { collectionOptions, localOnlyCollectionOptions, type Collection, type VirtualRowProps } from "@tanstack/react-db";
 import { Schema } from "effect";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { strictParseOptions } from "#/lib/schema";
 import { parseLiveQueryRow, withoutVirtualProps } from "#/lib/tanstack-db";
 
 /** The connection state of Cloud's one entry-local Runtime Watch. */
@@ -32,7 +27,7 @@ export const runtimeContainerRecordSchema = Schema.Struct({
   id: Schema.String,
   displayName: Schema.String,
   machineId: Schema.String,
-  projectName: Schema.String,
+  namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });
@@ -50,6 +45,9 @@ export const runtimeMachineRecordSchema = Schema.Struct({
   endpoints: Schema.Array(Schema.String),
   /** Server Policy as observed; Cloud keeps no desired copy. */
   acceptsBuilds: Schema.Boolean,
+  acceptsServices: Schema.Boolean,
+  /** Direct storage capability evidence; null means it could not be observed. */
+  storage: Schema.NullOr(Schema.Literals(["stateless", "ready", "pool"])),
   /** Explicit build concurrency; null means automatic. */
   buildConcurrency: Schema.NullOr(Schema.Number),
   /** The build concurrency the Server enforces: the explicit value or the automatic one. */
@@ -85,10 +83,6 @@ export const runtimeServiceRecordSchema = Schema.Struct({
 });
 
 export type RuntimeServiceRecord = typeof runtimeServiceRecordSchema.Type;
-
-/** How the Engine names a Cloud Service: its environment's namespace, then its private DNS name. */
-export const runtimeServiceIdentity = (service: { environmentSlug: string; privateDns: string }) =>
-  `${service.environmentSlug}/${service.privateDns}`;
 
 export function projectRuntimeServiceRecord(
   row: VirtualRowProps | RuntimeServiceRecord,

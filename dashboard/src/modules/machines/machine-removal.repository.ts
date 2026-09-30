@@ -42,6 +42,7 @@ function toContext(attempt: Attempt): MachineRemoveAttemptContext {
     state: attempt.state,
     inngestRunId: attempt.inngestRunId,
     confirmDataLoss: attempt.confirmDataLoss,
+    noReset: attempt.noReset,
   };
 }
 
@@ -50,6 +51,7 @@ function completionValues(completion: MachineRemoveCompletion, now: Date) {
     case "succeeded":
       return {
         state: "succeeded" as const,
+        result: completion.result,
         missingIdentities: null,
         failureCode: null,
         failureMessage: null,
@@ -130,6 +132,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
   requestedByUserId: string;
   machineId: string;
   confirmDataLoss: DataLossIdentity[];
+  noReset?: boolean;
 }) {
   const { drizzle } = yield* Database;
   const [attempt] = yield* drizzle
@@ -139,6 +142,7 @@ export const requestMachineRemoveAttempt = Effect.fn(
       requestedByUserId: input.requestedByUserId,
       machineId: input.machineId,
       confirmDataLoss: input.confirmDataLoss,
+      noReset: input.noReset ?? false,
       state: "pending",
     })
     .returning()

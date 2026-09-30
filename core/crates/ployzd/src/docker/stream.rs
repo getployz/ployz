@@ -343,7 +343,9 @@ fn docker_status(error: super::Error) -> Status {
     let code = match error.rpc_code() {
         RpcErrorCode::NotFound => tonic::Code::NotFound,
         RpcErrorCode::InvalidArgument => tonic::Code::InvalidArgument,
-        RpcErrorCode::Ambiguous => tonic::Code::FailedPrecondition,
+        RpcErrorCode::Ambiguous | RpcErrorCode::ConfirmationRequired => {
+            tonic::Code::FailedPrecondition
+        }
         RpcErrorCode::Conflict => tonic::Code::AlreadyExists,
         RpcErrorCode::Unavailable => tonic::Code::Unavailable,
         RpcErrorCode::Unsupported => tonic::Code::Unimplemented,

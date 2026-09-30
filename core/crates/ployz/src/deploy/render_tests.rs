@@ -2,11 +2,11 @@ use std::num::NonZeroU64;
 
 use ployz_core::{
     ContainerId, DeployOperation, DockerVolumeId, DockerVolumeName, ExecutionError,
-    FailedOperation, HealthFailure, HookFailure, MachineAction, MachineId, MachineName,
-    OperationPhase, OperationRow, OperationStatus, PreservedVolume, ProjectName,
-    ProvisionedVolumeMaximumBytes, PruneRefusal, QualifiedService, ReplacementCompensation,
-    ReplacementOperation, RequestedServiceSpec, ResolvedServiceSpec, RestartAttempt, RpcError,
-    RpcErrorCode, ServiceName, StopAttempt, UpdateOrder, VolumeToCreate,
+    FailedOperation, HealthFailure, HookFailure, MachineAction, MachineId, MachineName, Namespace,
+    OperationPhase, OperationRow, OperationStatus, PreservedVolume, ProvisionedVolumeMaximumBytes,
+    PruneRefusal, QualifiedService, ReplacementCompensation, ReplacementOperation,
+    RequestedServiceSpec, ResolvedServiceSpec, RestartAttempt, RpcError, RpcErrorCode, ServiceName,
+    StopAttempt, UpdateOrder, VolumeToCreate,
 };
 
 use super::super::report::{self, Ink, Role};
@@ -15,16 +15,12 @@ use super::*;
 
 #[test]
 fn empty_preview_prints_no_changes_without_a_prompt_body() {
-    let preview = DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("app").unwrap());
+    let preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("app").unwrap());
     assert_eq!(plan_text(&preview, "default"), "No changes.\n");
-    assert_eq!(
-        confirm_prompt("default"),
-        "Proceed with deployment to default? [y/N] "
-    );
 }
 
 #[test]
-fn removal_plan_lists_container_and_volume_removes() {
+fn plan_lists_container_and_volume_removes() {
     let machine_id = MachineId::parse("d".repeat(32)).unwrap();
     let container_id = ContainerId::parse("f".repeat(64)).unwrap();
     let volume_id = DockerVolumeId {
@@ -52,10 +48,9 @@ fn removal_plan_lists_container_and_volume_removes() {
             None,
         ),
     ];
-    let mut preview = DeployPreview::new(rows, Vec::new(), ProjectName::parse("shop").unwrap());
+    let mut preview = DeployPreview::new(rows, Vec::new(), Namespace::parse("shop").unwrap());
     preview.would_remove = vec![QualifiedService::parse("shop/web").unwrap()];
-    let text = removal_plan_text(&preview, "default");
-    assert!(text.starts_with("Removal plan\n"), "{text}");
+    let text = plan_text(&preview, "default");
     assert!(text.contains("- remove container web-1 on edge"), "{text}");
     assert!(text.contains("- remove volume shop_data on edge"), "{text}");
     preview.operations.clear();
@@ -63,7 +58,7 @@ fn removal_plan_lists_container_and_volume_removes() {
         id: volume_id,
         machine_name: Some(MachineName::parse("edge").unwrap()),
     }];
-    let preserved = removal_plan_text(&preview, "default");
+    let preserved = plan_text(&preview, "default");
     assert!(
         preserved.contains("would preserve volume shop_data on edge"),
         "{preserved}"
@@ -108,7 +103,7 @@ fn service_tree_keeps_volume_and_service_ordering() {
         volume(3, "a"),
         container(4, "web", "web-new", '3'),
     ];
-    let preview = DeployPreview::new(rows, Vec::new(), ProjectName::parse("app").unwrap());
+    let preview = DeployPreview::new(rows, Vec::new(), Namespace::parse("app").unwrap());
 
     assert_eq!(
         service_trees(&preview),
@@ -127,8 +122,7 @@ fn service_tree_keeps_volume_and_service_ordering() {
 #[test]
 fn plan_identifies_a_provisioned_volume_and_its_bound() {
     let machine_id = MachineId::parse("d".repeat(32)).unwrap();
-    let mut preview =
-        DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+    let mut preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
     preview.volumes_to_create = vec![VolumeToCreate {
         machine_id,
         machine_name: Some(MachineName::parse("edge").unwrap()),
@@ -142,7 +136,7 @@ fn plan_identifies_a_provisioned_volume_and_its_bound() {
 
     assert!(text.contains("Volumes to create\n"), "{text}");
     assert!(
-        text.contains("+ provisioned volume data (maximum 1073741824 bytes) on edge"),
+        text.contains("+ Managed volume data (maximum 1.073741824 GB) on edge"),
         "{text}"
     );
 }
@@ -164,9 +158,9 @@ fn replace_plan_matches_tree_shape() {
         Some("excalidraw/fde7ac7f11ad".into()),
         Some(ServiceName::parse("excalidraw").unwrap()),
     );
-    let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
+    let preview = DeployPreview::new(vec![row], Vec::new(), Namespace::parse("app").unwrap());
     let text = plan_text(&preview, "default");
-    assert!(text.contains("Deployment plan\ncontext: default\nproject: app\n"));
+    assert!(text.contains("Deployment plan\ncontext: default\nnamespace: app\n"));
     assert!(text.contains("~ update service excalidraw\n"));
     assert!(text.contains("  │   image: excalidraw/excalidraw:latest\n"));
     assert!(text.contains("  ╰── +/- replace container excalidraw/fde7ac7f11ad on machine-dc3c\n"));
@@ -187,7 +181,7 @@ fn plan_shows_dependency_health_wait() {
         None,
         Some(ServiceName::parse("web").unwrap()),
     );
-    let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("app").unwrap());
+    let preview = DeployPreview::new(vec![row], Vec::new(), Namespace::parse("app").unwrap());
 
     assert!(
         plan_text(&preview, "default").contains("~ wait for app/db to be healthy before app/web")
@@ -196,12 +190,11 @@ fn plan_shows_dependency_health_wait() {
 
 #[test]
 fn plan_lists_would_remove_with_observer_relative_refusal() {
-    let mut preview =
-        DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+    let mut preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
     preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
     preview.prune_refusal = Some(PruneRefusal::IncompleteSnapshot);
     let text = plan_text(&preview, "default");
-    assert!(text.contains("project: shop\n"), "{text}");
+    assert!(text.contains("namespace: shop\n"), "{text}");
     assert!(text.contains("would remove shop/debug"), "{text}");
     assert!(
         text.contains("incomplete relative to this Machine's current visible fan-out"),
@@ -218,8 +211,7 @@ fn plan_lists_would_remove_with_observer_relative_refusal() {
 
 #[test]
 fn plan_lists_preserved_volumes_instead_of_no_changes() {
-    let mut preview =
-        DeployPreview::new(Vec::new(), Vec::new(), ProjectName::parse("shop").unwrap());
+    let mut preview = DeployPreview::new(Vec::new(), Vec::new(), Namespace::parse("shop").unwrap());
     preview.preserved_volumes = vec![ployz_core::PreservedVolume {
         id: ployz_core::DockerVolumeId {
             machine_id: MachineId::parse("d".repeat(32)).unwrap(),
@@ -248,8 +240,7 @@ fn plan_shows_prune_as_remove_operations_before_confirm() {
         Some("debug/fde7ac7f11ad".into()),
         Some(ServiceName::parse("debug").unwrap()),
     );
-    let mut preview =
-        DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+    let mut preview = DeployPreview::new(vec![row], Vec::new(), Namespace::parse("shop").unwrap());
     preview.would_remove = vec![QualifiedService::parse("shop/debug").unwrap()];
     let text = plan_text(&preview, "default");
     assert!(text.contains("- remove service debug\n"), "{text}");
@@ -261,10 +252,6 @@ fn plan_shows_prune_as_remove_operations_before_confirm() {
     assert!(!text.contains("~ update service debug"), "{text}");
     assert!(!text.contains("would remove"), "{text}");
     assert!(!text.contains("will not remove"), "{text}");
-    assert_eq!(
-        confirm_prompt("default"),
-        "Proceed with deployment to default? [y/N] "
-    );
     assert!(!preview.noop());
 }
 
@@ -281,7 +268,7 @@ fn replica_shrink_still_prints_update_not_service_remove() {
         Some("web/fde7ac7f11ad".into()),
         Some(ServiceName::parse("web").unwrap()),
     );
-    let preview = DeployPreview::new(vec![row], Vec::new(), ProjectName::parse("shop").unwrap());
+    let preview = DeployPreview::new(vec![row], Vec::new(), Namespace::parse("shop").unwrap());
     let text = plan_text(&preview, "default");
     assert!(text.contains("~ update service web\n"), "{text}");
     assert!(
@@ -471,7 +458,7 @@ fn failed_deploy_footer_names_the_service_and_error_without_a_hash_dump() {
     assert!(!footer.contains("cashdash-web"), "{text}");
     assert!(!text.contains("Completed"), "{text}");
     assert!(!text.contains(&"d".repeat(32)), "{text}");
-    assert!(!text.contains("next: ployz service logs"), "{text}");
+    assert!(!text.contains("next: ployz logs"), "{text}");
 }
 
 #[test]
@@ -854,11 +841,11 @@ fn health_failure_offers_logs_when_service_is_known() {
     };
     let text = outcome_text_after(&outcome, &[row]);
     assert!(
-        text.contains("next: ployz service logs cashdash-frontend"),
+        text.contains("next: ployz logs cashdash-frontend"),
         "{text}"
     );
     assert!(
-        !text.contains("next: ployz service logs cashdash-frontend/"),
+        !text.contains("next: ployz logs cashdash-frontend/"),
         "{text}"
     );
     assert!(!text.contains('/'), "{text}");

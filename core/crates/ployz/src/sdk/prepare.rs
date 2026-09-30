@@ -211,6 +211,10 @@ pub enum PreparationError {
     Delivery(String),
     #[error("preparation cancelled; no application changes attempted")]
     Cancelled,
+    /// These uploaded Services came without source, and their receipts' images are
+    /// gone or no longer run everywhere they may be placed.
+    #[error("no upload or usable image for {0:?}")]
+    UploadNeeded(Vec<ployz_core::ServiceName>),
 }
 
 /// Caller-rendered preparation progress; no terminal or process ownership.
@@ -273,13 +277,13 @@ pub async fn prepare(
     crate::build::bind(&mut intent, &builds)?;
     let machines = read(cancellation, async { Ok(client.machines().await?) }).await?;
     let plan = read(cancellation, async {
-        Ok(crate::deploy::pipeline::plan_project(client, &intent, machines.clone()).await?)
+        Ok(crate::deploy::pipeline::plan_namespace(client, &intent, machines.clone()).await?)
     })
     .await?;
     if !builds.is_empty() {
         progress(Progress::Transfer);
     }
-    let failures = crate::deploy::pipeline::push_project_images(
+    let failures = crate::deploy::pipeline::push_namespace_images(
         client,
         &builds,
         &machines,
@@ -320,14 +324,30 @@ pub(super) async fn build_images(
     cancellation: &CancellationToken,
     progress: &impl Fn(Progress),
 ) -> Result<Vec<BuiltService>, PreparationError> {
-    if build.targets().next().is_none() {
+    // Receipts with no captured target are uploads that came without source.
+    let sourceless = reusable
+        .iter()
+        .filter(|receipt| {
+            !build
+                .targets()
+                .any(|target| target.name == receipt.name.as_str())
+        })
+        .collect::<Vec<_>>();
+    if build.targets().next().is_none() && sourceless.is_empty() {
         return Ok(Vec::new());
     }
     let machines = observe_machines(client, intent, cancellation).await?;
+    let mut builds = if sourceless.is_empty() {
+        Vec::new()
+    } else {
+        reuse_without_source(client, intent, &machines, &sourceless, cancellation).await?
+    };
     build.cover_machines(intent, &machines)?;
-    let mut builds = build
-        .reuse_images(client, intent, &machines, reusable, cancellation)
-        .await;
+    builds.extend(
+        build
+            .reuse_images(client, intent, &machines, reusable, cancellation)
+            .await,
+    );
     let targets = build.to_targets();
     let platforms = targets
         .iter()
@@ -354,6 +374,52 @@ pub(super) async fn build_images(
             .await?,
     );
     Ok(builds)
+}
+
+/// Serve each receipt alone, as a Builder outside the Cluster would: its image must
+/// still be complete on some Machine and run on every Machine its Service may be
+/// placed on. Any that can't mean a new upload.
+async fn reuse_without_source(
+    client: &Client,
+    intent: &DeployIntent,
+    machines: &[MachineObservation],
+    receipts: &[&BuiltService],
+    cancellation: &CancellationToken,
+) -> Result<Vec<BuiltService>, PreparationError> {
+    let Some(stores) = crate::build::image_stores(client, machines, cancellation).await else {
+        return Err(PreparationError::Cancelled);
+    };
+    let mut reused: Vec<BuiltService> = Vec::new();
+    let mut missing: Vec<ployz_core::ServiceName> = Vec::new();
+    // Each Service's receipts in order: the first usable one serves it.
+    for receipt in receipts {
+        let served = reused.iter().any(|built| built.name == receipt.name);
+        if served {
+            continue;
+        }
+        let holder = intent
+            .target
+            .iter()
+            .find(|spec| spec.name == receipt.name)
+            .filter(|spec| {
+                crate::build::runs_everywhere(&receipt.built, spec, &intent.namespace, machines)
+            })
+            .and_then(|_| crate::build::holder(&stores, &receipt.built, receipt.machine_id));
+        if let Some(machine_id) = holder {
+            missing.retain(|name| name != &receipt.name);
+            reused.push(BuiltService {
+                machine_id,
+                ..(*receipt).clone()
+            });
+        } else if !missing.contains(&receipt.name) {
+            missing.push(receipt.name.clone());
+        }
+    }
+    if missing.is_empty() {
+        Ok(reused)
+    } else {
+        Err(PreparationError::UploadNeeded(missing))
+    }
 }
 
 /// The Machines and, when a Service mounts provisioned volumes, their storage:

@@ -1,7 +1,7 @@
 import { Effect } from "effect";
-import { hasCachedActiveSubscription } from "#/modules/billing/billing.server";
+import { getAuthorizedBillingScope, hasCachedActiveSubscription } from "#/modules/billing/billing.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
-import type { ServiceRoute } from "#/modules/environment-design/tables";
+import type { Actor } from "#/modules/identity/actor";
 
 /** Self-hosted Cloud always allows custom domains; hosted needs an active
  * subscription, read from the cached billing row so a Polar outage cannot block edits. */
@@ -13,17 +13,10 @@ export const customDomainsAllowed = Effect.fn("Billing.customDomainsAllowed")(
   },
 );
 
-/** Only added or retargeted routes need the capability; removal never does. */
-export function routeMutationRequiresCustomDomainCapability(
-  previous: readonly ServiceRoute[],
-  next: readonly ServiceRoute[],
-) {
-  return next.some(
-    (route) =>
-      !previous.some(
-        (current) =>
-          current.hostname === route.hostname &&
-          current.targetPort === route.targetPort,
-      ),
-  );
-}
+/** Whether a member's Organization may add custom domains, so the dashboard can offer Pro before the Store refuses. */
+export const getCustomDomainCapability = Effect.fn("Billing.getCustomDomainCapability")(
+  function* (actor: Actor, input: { readonly organizationSlug: string }) {
+    const organization = yield* getAuthorizedBillingScope(actor, input.organizationSlug);
+    return yield* customDomainsAllowed(organization.id);
+  },
+);

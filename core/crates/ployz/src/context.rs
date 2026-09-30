@@ -387,6 +387,8 @@ pub enum ConnectionSource {
     Direct,
     Context(String),
     LocalSocket,
+    /// This device's Server Access, from Cloud.
+    Cloud,
 }
 
 impl fmt::Display for ConnectionSource {
@@ -395,6 +397,7 @@ impl fmt::Display for ConnectionSource {
             Self::Direct => f.write_str("the explicit connection"),
             Self::Context(name) => write!(f, "context {}", name.escape_debug()),
             Self::LocalSocket => f.write_str("the local socket"),
+            Self::Cloud => f.write_str("Cloud Server Access"),
         }
     }
 }

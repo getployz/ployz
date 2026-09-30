@@ -9,13 +9,14 @@ use serde_json::Value;
 
 use crate::{
     cloud_enroll,
+    cloud_login::LoginError,
     connect::{ConnectError, TransportError},
     context::{ConfigError, ConnectionError, ContextError},
     deploy::{DeployError, PlanError},
     image::PushError,
     ingress::IngressImageError,
+    namespace::NamespaceError,
     operator::OperatorError,
-    project::ProjectError,
     provisioning::ProvisionError,
 };
 
@@ -228,7 +229,7 @@ fn code(error: &(dyn Error + 'static)) -> RpcErrorCode {
     if error.is::<ValueError>()
         || error.is::<ConnectionError>()
         || error.is::<ConfigError>()
-        || error.is::<ProjectError>()
+        || error.is::<NamespaceError>()
         || error.is::<std::num::ParseIntError>()
         || error.is::<shell_words::ParseError>()
     {
@@ -301,7 +302,9 @@ fn operator_code(error: &OperatorError) -> RpcErrorCode {
         | OperatorError::UnsupportedLogService { .. } => RpcErrorCode::InvalidArgument,
         OperatorError::NoRegularContainer
         | OperatorError::NoContainersOnMachines { .. }
-        | OperatorError::NoMachines => RpcErrorCode::NotFound,
+        | OperatorError::NoMachines
+        | OperatorError::NoServices
+        | OperatorError::NoDeploymentContainers => RpcErrorCode::NotFound,
         OperatorError::Rpc(_)
         | OperatorError::StreamClosed
         | OperatorError::NoHealthyContainer
@@ -406,14 +409,19 @@ fn cloud_enroll_code(error: &cloud_enroll::Error) -> RpcErrorCode {
         | cloud_enroll::Error::Http(_)
         | cloud_enroll::Error::RetrySameCommand { .. } => RpcErrorCode::Unavailable,
         cloud_enroll::Error::Json(_) => RpcErrorCode::Internal,
-        cloud_enroll::Error::Status { status, .. } => match status {
-            401 | 403 => RpcErrorCode::Unauthenticated,
-            404 => RpcErrorCode::NotFound,
-            409 => RpcErrorCode::Conflict,
-            408 | 429 => RpcErrorCode::Unavailable,
-            400..=499 => RpcErrorCode::InvalidArgument,
-            _ => RpcErrorCode::Unavailable,
-        },
+        cloud_enroll::Error::Status { status, .. } => http_status_code(*status),
+    }
+}
+
+/// The `--json` code of a Cloud HTTP refusal.
+fn http_status_code(status: u16) -> RpcErrorCode {
+    match status {
+        401 | 403 => RpcErrorCode::Unauthenticated,
+        404 => RpcErrorCode::NotFound,
+        409 => RpcErrorCode::Conflict,
+        408 | 429 => RpcErrorCode::Unavailable,
+        400..=499 => RpcErrorCode::InvalidArgument,
+        _ => RpcErrorCode::Unavailable,
     }
 }
 
@@ -517,13 +525,36 @@ pub fn terminate(result: Result<(), Failure>) -> ExitCode {
             if crate::output::json() {
                 crate::output::error(&error.report());
             } else {
-                eprintln!("{error}");
+                let report = error.report();
+                eprintln!("{}", report.message);
+                for line in human_hints(&report) {
+                    eprintln!("{line}");
+                }
             }
             match error.inner {
                 Inner::Command(_, exit) | Inner::Exit(exit) => ExitCode::from(exit),
             }
         }
     }
+}
+
+/// The `details` a person acts on, as the lines success output prints them; a
+/// `next` the message already spells out (as its `Retry:`) isn't repeated.
+fn human_hints(report: &RpcError) -> Vec<String> {
+    let details = &report.details;
+    let mut lines = Vec::new();
+    if let Some(children) = details.get("valid_children").and_then(Value::as_array) {
+        let names: Vec<&str> = children.iter().filter_map(Value::as_str).collect();
+        if !names.is_empty() {
+            lines.push(format!("valid: {}", names.join(", ")));
+        }
+    }
+    if let Some(next) = details.get("next").and_then(Value::as_str)
+        && !report.message.contains(next)
+    {
+        lines.push(format!("next: {next}"));
+    }
+    lines
 }
 
 macro_rules! from_error {
@@ -557,7 +588,7 @@ from_error!(
     ProvisionError,
     IngressImageError,
     RpcError,
-    ProjectError,
+    NamespaceError,
     cloud_enroll::Error,
 );
 
@@ -594,8 +625,37 @@ impl From<DeployError> for Failure {
         match error {
             DeployError::Connect(error) => error.into(),
             DeployError::Plan(error) => error.into(),
-            DeployError::Project(error) => error.into(),
+            DeployError::Namespace(error) => error.into(),
         }
+    }
+}
+
+impl From<LoginError> for Failure {
+    /// Sign-in failures carry the command that fixes them as `details.next`.
+    fn from(error: LoginError) -> Self {
+        let (code, next) = match &error {
+            LoginError::Unreachable { .. } => (RpcErrorCode::Unavailable, None),
+            LoginError::Unsupported(_) => (RpcErrorCode::Unsupported, None),
+            LoginError::Status { status, .. } => (http_status_code(*status), None),
+            LoginError::Reply(_) | LoginError::Store { .. } => (RpcErrorCode::Internal, None),
+            LoginError::Corrupt { .. } => (RpcErrorCode::Internal, Some("ployz logout")),
+            LoginError::OtherCloud { .. } => (RpcErrorCode::Conflict, Some("ployz logout")),
+            LoginError::SignedOut
+            | LoginError::Expired
+            | LoginError::Denied
+            | LoginError::Ended => (RpcErrorCode::Unauthenticated, Some("ployz login")),
+            LoginError::AwaitingApproval { .. } => {
+                (RpcErrorCode::Unauthenticated, Some("ployz login --wait"))
+            }
+            LoginError::TokenRefused => (RpcErrorCode::Unauthenticated, Some("ployz token new")),
+            LoginError::NotMember(_) => (RpcErrorCode::Unauthenticated, Some("ployz org ls")),
+            LoginError::TokenBound | LoginError::NoBilling(_) => (RpcErrorCode::Unsupported, None),
+            LoginError::UnknownOrganization(_) => (RpcErrorCode::NotFound, Some("ployz org ls")),
+            LoginError::UnknownCredential(_) => (RpcErrorCode::NotFound, Some("ployz token ls")),
+            LoginError::AlreadyPro => (RpcErrorCode::Conflict, Some("ployz billing manage")),
+        };
+        let details = next.map_or(Value::Null, |next| serde_json::json!({ "next": next }));
+        Self::detailed(code, error.to_string(), details)
     }
 }
 
@@ -766,6 +826,33 @@ mod tests {
     fn bad_log_tail_is_invalid_argument() {
         let failure = Failure::from(OperatorError::InvalidTail("bad".into()));
         assert_eq!(failure.report().code, RpcErrorCode::InvalidArgument);
+    }
+
+    #[test]
+    fn human_errors_print_next_and_valid_children() {
+        let details = serde_json::json!({
+            "deployment": "d1",
+            "next": "ployz deployment show d1",
+            "valid_children": ["web", "db"],
+        });
+        let report = |message: &str, details: Value| RpcError {
+            code: RpcErrorCode::Conflict,
+            message: message.into(),
+            details,
+        };
+        assert_eq!(
+            human_hints(&report("already ended", details)),
+            ["valid: web, db", "next: ployz deployment show d1"]
+        );
+        assert!(human_hints(&report("boom", Value::Null)).is_empty());
+        let spelled = serde_json::json!({ "next": "ployz org rm acme --confirm acme" });
+        assert!(
+            human_hints(&report(
+                "No changes made.\nRetry: ployz org rm acme --confirm acme",
+                spelled
+            ))
+            .is_empty()
+        );
     }
 
     #[test]

@@ -1,13 +1,13 @@
 import { useServerFn } from "@tanstack/react-start";
-import { usePacedMutations, throttleStrategy } from "@tanstack/react-db";
+import { useLoaderData } from "@tanstack/react-router";
+import { createOptimisticAction, usePacedMutations, throttleStrategy } from "@tanstack/react-db";
+import { toast } from "sonner";
+import { toErrorMessage } from "#/lib/error-message";
 import { type OnNodeDrag } from "@xyflow/react";
-import { updateEnvironmentResourceCanvasPositionServerFn } from "#/modules/environment-design/resource-functions";
-import { updateServiceCanvasPositionServerFn } from "#/modules/environment-design/service-functions";
-import {
-  getCanvasPositionCollectionKey,
-  useCanvasPositionsCollection,
-} from "#/modules/services/services.collection";
-import type { ServiceCanvasPositionRecord } from "#/modules/environment-design/services";
+import { getCanvasPositionsCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
+import { canvasPositionKey, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
+import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
 import type { CanvasResourceNode, CanvasResourceType } from "./types";
 
 export function useCanvasPositionMutation(params: {
@@ -16,11 +16,8 @@ export function useCanvasPositionMutation(params: {
   projectSlug: string;
   environmentSlug: string;
 }) {
-  const collection = useCanvasPositionsCollection(params.organizationSlug);
-  const updateServicePosition = useServerFn(updateServiceCanvasPositionServerFn);
-  const updateResourcePosition = useServerFn(
-    updateEnvironmentResourceCanvasPositionServerFn,
-  );
+  const collection = getCanvasPositionsCollection(params.organizationSlug, useCollectionScope());
+  const updatePosition = useServerFn(updateCanvasPositionServerFn);
 
   function writeLocalPosition(input: {
     environmentId: string;
@@ -31,7 +28,7 @@ export function useCanvasPositionMutation(params: {
   }) {
     const nextX = Math.round(input.x);
     const nextY = Math.round(input.y);
-    const collectionKey = getCanvasPositionCollectionKey(input);
+    const collectionKey = canvasPositionKey(input);
     const existing = collection.get(collectionKey);
     const now = new Date();
 
@@ -86,26 +83,16 @@ export function useCanvasPositionMutation(params: {
       await persistCanvasPositionBatch(
         transaction.mutations.map(async (m) => {
           // SAFETY: this paced mutation only writes canvas position rows; TanStack DB types `modified` as a generic mutation payload.
-          const modified = m.modified as ServiceCanvasPositionRecord;
-          const data = {
+          const modified = m.modified as CanvasPosition;
+          return updatePosition({ data: {
             organizationSlug: params.organizationSlug,
             environmentId: modified.environmentId,
+            // SAFETY: the canvas writes only the types it draws.
+            resourceType: modified.resourceType as CanvasResourceType,
+            resourceId: modified.resourceId,
             x: Math.round(modified.x),
             y: Math.round(modified.y),
-          };
-
-          if (modified.resourceType === "service") {
-            return updateServicePosition({
-              data: { ...data, serviceId: modified.resourceId },
-            });
-          }
-
-          return updateResourcePosition({
-            data: {
-              ...data,
-              resourceId: modified.resourceId,
-            },
-          });
+          } });
         }),
         collection,
       );
@@ -115,7 +102,7 @@ export function useCanvasPositionMutation(params: {
 
   const onNodeDrag: OnNodeDrag<CanvasResourceNode> = (_event, node) => {
     // Live Nodes sit where their owner put them.
-    if (node.type === "live") return;
+    if (node.type === "storeLive") return;
     mutate({
       environmentId: node.data.environmentId,
       resourceType: node.data.resourceType,
@@ -131,12 +118,35 @@ export function useCanvasPositionMutation(params: {
 }
 
 export async function persistCanvasPositionBatch(
-  writes: readonly Promise<Awaited<ReturnType<typeof updateServiceCanvasPositionServerFn>>>[],
-  collection: ReturnType<typeof useCanvasPositionsCollection>,
+  writes: readonly Promise<Awaited<ReturnType<typeof updateCanvasPositionServerFn>>>[],
+  collection: ReturnType<typeof getCanvasPositionsCollection>,
 ) {
   const results = await Promise.allSettled(writes);
   const committed = results.flatMap((result) => result.status === "fulfilled" ? [result.value.data] : []);
   if (committed.length) await collection.writeCommitted(committed);
   const failure = results.find((result) => result.status === "rejected");
   if (failure) throw failure.reason;
+}
+
+/**
+ * Places a node the user is creating where they put it: shown at once, saved in the background, and back to a free
+ * spot (with a toast) if the save fails.
+ */
+export function usePlaceNewNode(organizationSlug: string) {
+  const collection = getCanvasPositionsCollection(organizationSlug, useCollectionScope());
+  const updatePosition = useServerFn(updateCanvasPositionServerFn);
+  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  const place = createOptimisticAction<Omit<UpdateCanvasPositionInput, "organizationSlug">>({
+    onMutate: (input) => {
+      const now = new Date();
+      collection.insert({ ...input, id: crypto.randomUUID(), organizationId, x: Math.round(input.x), y: Math.round(input.y),
+        createdAt: now, updatedAt: now });
+    },
+    mutationFn: (input) => persistCanvasPositionBatch([updatePosition({ data: { ...input, organizationSlug,
+      x: Math.round(input.x), y: Math.round(input.y) } })], collection),
+  });
+  return (input: Omit<UpdateCanvasPositionInput, "organizationSlug">) => {
+    place(input).isPersisted.promise.catch((error: Error) =>
+      toast.error(toErrorMessage(error, "The new node's place couldn't be saved.")));
+  };
 }

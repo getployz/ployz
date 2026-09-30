@@ -3,7 +3,7 @@ mod management;
 
 pub use build_grant::{GrantRegistry, open_grant_registry};
 pub use management::ManagementRelay;
-use management::connect_management;
+use management::{connect_management, dial_tunnel};
 
 use std::{
     borrow::Cow,
@@ -36,7 +36,7 @@ use crate::context::{
     SelectedConnections, Transport, expand_home, select_connections,
 };
 
-pub use crate::cluster::{Client, MachineImagesObservation};
+pub use crate::cluster::{Client, MachineImagesObservation, Remover};
 
 pub const DEFAULT_LOCAL_SOCKET: &str = "/run/ployz/ployz.sock";
 
@@ -54,10 +54,14 @@ pub(crate) const TARGET_RPC_TIMEOUT: Duration = Duration::from_secs(10);
 /// what keeps a starting daemon from hanging the CLI.
 pub(crate) const CONNECT_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>) -> Option<Duration> {
+/// The deadline of a stop RPC that waits behind `queued - 1` other stops on its
+/// Machine: a Machine stops its containers one at a time, each taking up to its grace.
+pub(crate) fn stop_rpc_timeout(grace_period_seconds: Option<i32>, queued: u32) -> Option<Duration> {
     match grace_period_seconds {
         Some(seconds) if seconds < 0 => None,
-        Some(seconds) => Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64)),
+        Some(seconds) => {
+            Some(TARGET_RPC_TIMEOUT + Duration::from_secs(seconds as u64) * queued.max(1))
+        }
         None => None,
     }
 }
@@ -170,9 +174,13 @@ impl Connector for SystemConnector {
             return Err(ConnectError::UnsupportedNetwork(network.into()));
         }
         match connection.transport() {
-            Transport::Management(_) | Transport::Tcp(_) => {
-                Err(ConnectError::ProxyUnsupported(connection.to_string()))
-            }
+            Transport::Management(capability) => tokio::time::timeout(
+                Duration::from_secs(15),
+                dial_tunnel(capability, &self.relay, address),
+            )
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "tunnel open timed out"))?,
+            Transport::Tcp(_) => Err(ConnectError::ProxyUnsupported(connection.to_string())),
             Transport::Unix(_) => TcpStream::connect(address)
                 .await
                 .map(|stream| Box::new(stream) as BoxProxyStream)

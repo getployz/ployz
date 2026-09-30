@@ -49,6 +49,33 @@ pub struct SavedVolumeIntent {
     pub resource_id: String,
     pub resource_lineage_id: String,
     pub name: String,
+    pub storage: VolumeKind,
+}
+
+/// Storage chosen for a Volume: ordinary Docker storage or bounded, provisioned storage.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum VolumeKind {
+    Docker {},
+    Provisioned {
+        maximum_bytes: crate::ProvisionedVolumeMaximumBytes,
+    },
+}
+
+impl VolumeKind {
+    /// New Cloud Volumes have a five GB storage limit unless Docker storage is explicitly chosen.
+    #[must_use]
+    pub fn provisioned_default() -> Self {
+        Self::Provisioned {
+            maximum_bytes: crate::ProvisionedVolumeMaximumBytes::try_from(5_000_000_000)
+                .expect("five GB is a positive byte count"),
+        }
+    }
 }
 
 /// An authored variable, including stable identity and comparison fingerprint.
@@ -287,16 +314,4 @@ pub fn canonicalize_environment_intent(
         });
     }
     intent
-}
-
-/// Decode one authored variable and validate its identity and value evidence.
-///
-/// # Errors
-/// Returns ConfigError for malformed identity, an empty key or fingerprint, or unsupported sealed data.
-pub fn parse_saved_variable(value: Value) -> Result<SavedVariableIntent, ConfigError> {
-    let variable: SavedVariableIntent = serde_json::from_value(value)
-        .map_err(|_| ConfigError::at("variable", "Invalid authored variable"))?;
-    unique(std::iter::once(variable.id.as_str()), "variable.id", true)?;
-    validate_variables(std::slice::from_ref(&variable))?;
-    Ok(variable)
 }

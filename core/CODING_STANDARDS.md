@@ -42,13 +42,13 @@ A fallible public function has an error-path test at its seam.
 
 ## CLI output
 
-Every command that produces a result takes `--json` and prints it through `crate::output`: one JSON object on stdout, keyed by noun (`{"machines": […]}`). Streams print one object per line. Anything human output reports is also in the JSON result. A mutation emits its outcome even when nothing changed. A command that cannot produce one JSON result refuses `--json` in the handler table; it never ignores the flag. `--json` never prompts: a choice that would prompt takes its documented default or fails with `invalid_argument` naming the flag that settles it.
+Every command that produces a result takes `--json` and prints it through `crate::output`: one JSON object on stdout, keyed by noun (`{"servers": […]}`). Streams print one object per line. Anything human output reports is also in the JSON result. A mutation emits its outcome even when nothing changed. A command that cannot produce one JSON result refuses `--json` in the handler table; it never ignores the flag. `--json` never prompts: a choice that would prompt takes its documented default or fails with `invalid_argument` naming the flag that settles it.
 
 Human text goes through `say!`; clippy denies `print_stdout` in the CLI crate.
 
 A fan-out result carries its per-Machine `failures` and `omitted`; a per-Machine `not_found` is not a failure. A fan-out answers `not_found` only when every Machine answered; otherwise it prints the partial result (a null value plus `failures`/`omitted`). A printed result that did not fully succeed exits 3. A failure before any result prints `{"error": {code, message, details}}` in the RPC error vocabulary and exits 1, or 2 for a rejected command line. Give a `Failure` its real code (`not_found`, `ambiguous`, `conflict`, `unavailable`); `usage` means the input was wrong. Map CLI-owned error enums to codes with exhaustive matches over their variants, no `_ =>` arm, so a new variant must choose its code.
 
-JSON fields are only added, never renamed or repurposed. A short flag has one meaning across the whole tree.
+JSON fields are only added, never renamed or repurposed; before 0.2.0 a field may be renamed or reshaped outright, with no compatibility alias. A short flag has one meaning across the whole tree.
 
 ## Async
 

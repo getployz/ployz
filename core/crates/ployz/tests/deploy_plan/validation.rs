@@ -235,7 +235,7 @@ fn unused_volume_definition_does_not_create_a_docker_volume() {
 }
 
 #[test]
-fn project_scoping_rejects_incompatible_physical_volume_aliases() {
+fn namespace_scoping_rejects_incompatible_physical_volume_aliases() {
     let mut requested = requested(ServiceMode::Global);
     add_named_volume(&mut requested, "data");
     let mut volumes = requested.volume_graph().volumes().to_vec();

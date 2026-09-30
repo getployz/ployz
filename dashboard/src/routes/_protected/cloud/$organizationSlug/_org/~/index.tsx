@@ -1,14 +1,10 @@
 import { useDeferredValue, useState } from "react";
-import { useLiveQuery } from "@tanstack/react-db";
 import { Link, createFileRoute, redirect } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { ResourcePageControls } from "#/components/resource-page-controls";
 import { DashboardPage } from "#/components/dashboard-page";
 import { RouteErrorAlert } from "#/components/route-error-alert";
-import { requireWorkspace } from "#/collections/route-data";
-import { useWorkspace } from "#/modules/environment-design/workspace.queries";
-import { getEnvironmentsCollection } from "#/collections/collections";
-import { useCollectionScope } from "#/collections/use-collection-scope";
+import { prefetchStoreViews, requireStoreProjects } from "#/collections/route-data";
 import { buttonVariants } from "#/components/ui/button-variants";
 import {
   Card,
@@ -16,21 +12,22 @@ import {
   CardHeader,
 } from "#/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "#/components/ui/empty";
+import { namespaceQuery, projectsQuery, requireView, servicesQuery, useStoreView, useStoreViews } from "#/modules/config-store/store-view.queries";
+import { useRuntimeServices } from "../../-components/services-online";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Route as EnvironmentOverviewRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/index";
 import { Route as NewProjectRoute } from "#/routes/_protected/cloud/$organizationSlug/_project/new";
 import { ProjectCard } from "../-components/project-card";
-import { useRuntimeServices } from "../../-components/services-online";
 
 export const Route = createFileRoute("/_protected/cloud/$organizationSlug/_org/~/")({
   loader: async ({ params, context }) => {
-    const projects = await requireWorkspace(context, params.organizationSlug);
-    if (projects.length === 0) {
-      throw redirect({
-        to: NewProjectRoute.to,
-        params: { organizationSlug: params.organizationSlug },
-      });
-    }
+    const projects = await requireStoreProjects(context, params.organizationSlug);
+    if (projects.length === 0) throw redirect({ to: NewProjectRoute.to, params: { organizationSlug: params.organizationSlug } });
+    // Each card draws its Default Environment's Services, and counts those online in its Namespace.
+    await prefetchStoreViews(context, params.organizationSlug, ...projects.flatMap((project) => {
+      const environment = { project: project.name, environment: project.default_environment };
+      return [servicesQuery(environment), namespaceQuery(environment)];
+    }));
   },
   pendingComponent: ProjectsPending,
   errorComponent: ProjectsError,
@@ -113,70 +110,51 @@ function RouteComponent() {
           onSearchValueChange={setQuery}
         />
       </div>
-      <ProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
+      <StoreProjectsGrid organizationSlug={organizationSlug} query={deferredQuery} />
     </DashboardPage>
   );
 }
 
-function ProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
-  const scope = useCollectionScope();
-  const { data: environments } = useLiveQuery(getEnvironmentsCollection(organizationSlug, scope));
-  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
-  const { projects } = useWorkspace(organizationSlug);
+/** The Config Store's Projects, each opening its Default Environment, drawn with that Environment's Services. */
+function StoreProjectsGrid({ organizationSlug, query }: { organizationSlug: string; query: string }) {
+  const projects = requireView(useStoreView(organizationSlug, projectsQuery())).projects;
   const normalizedQuery = query.trim().toLowerCase();
-  const filteredProjects = normalizedQuery
-    ? projects.filter((project) => {
-        const haystack = `${project.name} ${project.slug}`.toLowerCase();
-        return haystack.includes(normalizedQuery);
-      })
-    : projects;
+  const filtered = normalizedQuery ? projects.filter((project) => project.name.includes(normalizedQuery)) : projects;
+  if (filtered.length === 0) return <NoMatchingProjects query={query} />;
+  return (
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {filtered.map((project) => (
+        <Link key={project.id} to={EnvironmentOverviewRoute.to}
+          params={{ organizationSlug, projectSlug: project.name, environmentSlug: project.default_environment }}
+          className="group/project block min-w-0 rounded-xl outline-none focus-visible:ring-3 focus-visible:ring-ring">
+          <StoreProjectCard organizationSlug={organizationSlug} project={project.name} environment={project.default_environment} />
+        </Link>
+      ))}
+    </div>
+  );
+}
 
-  return filteredProjects.length === 0 ? (
-        <Empty variant="no-results">
-          <EmptyHeader>
-            <EmptyTitle>No matching projects</EmptyTitle>
-            <EmptyDescription>
-              No projects match “{query.trim()}”.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {filteredProjects.map((project) => {
-            const resolvedEnvironment = project.resolvedEnvironment;
-            const document = environments.find(environment => environment.id === resolvedEnvironment?.id);
-            const card = (
-              <ProjectCard
-                name={project.name}
-                environment={document ? { name: document.name, namespace: document.namespace, services: document.intent.services } : null}
-                runtimeServices={runtimeServices}
-                runtimeStatus={runtimeStatus}
-              />
-            );
+function StoreProjectCard({ organizationSlug, project, environment }: { organizationSlug: string; project: string; environment: string }) {
+  const [listed, namespace] = useStoreViews(organizationSlug,
+    [servicesQuery({ project, environment }), namespaceQuery({ project, environment })] as const);
+  const services = listed.ok ? listed.value.services : [];
+  const { runtimeServices, runtimeStatus } = useRuntimeServices(organizationSlug);
+  // Runtime evidence names a Service by its Namespace and Private DNS.
+  return <ProjectCard name={project} runtimeServices={runtimeServices} runtimeStatus={namespace.ok ? runtimeStatus : "unavailable"} environment={{
+    name: environment, namespace: namespace.ok ? namespace.value.namespace : "",
+    services: services.map((service) => ({ id: service.id, name: service.name, slug: service.private_dns, config: { source: { type: service.source } } })),
+  }} />;
+}
 
-            if (!resolvedEnvironment) {
-              return (
-                <div key={project.id}>
-                  {card}
-                </div>
-              );
-            }
-
-            return (
-              <Link
-                key={project.id}
-                to={EnvironmentOverviewRoute.to}
-                params={{
-                  organizationSlug,
-                  projectSlug: project.slug,
-                  environmentSlug: resolvedEnvironment.namespace,
-                }}
-                className="group/project block min-w-0 rounded-xl outline-none focus-visible:ring-3 focus-visible:ring-ring"
-              >
-                {card}
-              </Link>
-            );
-          })}
-        </div>
-      );
+function NoMatchingProjects({ query }: { query: string }) {
+  return (
+    <Empty variant="no-results">
+      <EmptyHeader>
+        <EmptyTitle>No matching projects</EmptyTitle>
+        <EmptyDescription>
+          No projects match “{query.trim()}”.
+        </EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  );
 }

@@ -23,7 +23,7 @@ fn incomplete_snapshot_lists_obsolete_services_and_removes_nothing() {
     };
     let plan = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -43,7 +43,7 @@ fn selected_services_list_obsolete_services_and_remove_nothing() {
     let (web, snapshot) = shop_with_obsolete_debug();
     let plan = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             web,
             PlanOptions::default(),
         ),
@@ -133,7 +133,7 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
         ..Default::default()
     };
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&db, &web],
         PlanOptions::default(),
     )
@@ -169,7 +169,7 @@ fn full_reconciliation_removes_obsolete_services_after_desired_work() {
 }
 
 #[test]
-fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
+fn selecting_one_service_does_not_remove_the_rest_of_the_namespace() {
     let web = spec("web");
     let api = spec("api");
     let debug = spec("debug");
@@ -184,7 +184,7 @@ fn selecting_one_service_does_not_remove_the_rest_of_the_project() {
     };
     let plan = preview_deploy(
         &DeployIntent::new(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             vec![web, api],
             PlanOptions {
                 selected: vec![ServiceAttempt {
@@ -220,7 +220,7 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
     };
     let partial = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             web,
             PlanOptions::default(),
         ),
@@ -234,7 +234,7 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
     requested_debug.container.image = "busybox".into();
     let selected_debug = preview_deploy(
         &DeployIntent::apply_one(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             requested_debug,
             PlanOptions::default(),
         ),
@@ -256,17 +256,17 @@ fn partial_deploy_leaves_an_imperative_service_unless_it_is_selected() {
 }
 
 #[test]
-fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned() {
+fn reserved_namespace_and_system_workloads_are_excluded_before_removal_is_planned() {
     let web = spec("web");
     let mut system_ingress = spec("ingress");
     system_ingress.mode = ServiceMode::Global;
     let mut leftover = container('c', '1', &system_ingress, &service_id('a'));
     leftover
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
     let shop = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("shop").unwrap(),
+            Namespace::parse("shop").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -283,14 +283,14 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
     let metrics = spec("metrics");
     let mut extra = container('3', '1', &metrics, &service_id('b'));
     extra
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
     leftover
-        .try_update(|parts| parts.project_name = ProjectName::system())
+        .try_update(|parts| parts.namespace = Namespace::system())
         .unwrap();
     let system = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::system(),
+            Namespace::system(),
             [&system_ingress],
             PlanOptions::default(),
         ),
@@ -307,16 +307,16 @@ fn reserved_project_and_system_workloads_are_excluded_before_removal_is_planned(
 }
 
 #[test]
-fn other_project_services_are_not_removed_by_a_user_project_reconcile() {
+fn other_namespace_services_are_not_removed_by_a_user_namespace_reconcile() {
     let web = spec("web");
     let other_web = spec("web");
     let mut other = container('9', '1', &other_web, &service_id('c'));
     other
-        .try_update(|parts| parts.project_name = ProjectName::parse("other").unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse("other").unwrap())
         .unwrap();
     let plan = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -340,7 +340,7 @@ fn prune_removes_hook_containers_of_an_obsolete_service() {
         .unwrap();
     let plan = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&web],
             PlanOptions::default(),
         ),
@@ -361,7 +361,7 @@ fn failed_desired_change_leaves_prune_in_the_unexecuted_suffix() {
     let debug = spec("debug");
     let plan = preview_deploy(
         &DeployIntent::apply_all(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             [&web],
             PlanOptions::default(),
         ),

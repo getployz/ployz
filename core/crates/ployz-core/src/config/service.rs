@@ -34,6 +34,20 @@ pub struct AuthoredServiceConfig {
     pub managed_hostnames: Vec<ServiceManagedHostname>,
     #[serde(default)]
     pub build: ServiceBuildConfig,
+    /// The Service Template it was created from; authoring metadata only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub template: Option<ServiceTemplate>,
+}
+
+/// Which Service Template, and which version of it, a Service was created from.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceTemplate {
+    pub id: crate::ServiceTemplateId,
+    /// Its version, from 1.
+    #[ts(type = "number")]
+    pub version: std::num::NonZeroU32,
 }
 
 /// Service settings with environment and attachments derived by compilation.
@@ -60,10 +74,14 @@ impl From<AuthoredServiceConfig> for ServiceConfig {
     }
 }
 
-const fn default_max_retries() -> u8 {
+/// How often an on-failure restart policy restarts a replica when authored config names none.
+#[must_use]
+pub const fn default_max_retries() -> u8 {
     10
 }
-const fn default_replicas() -> u8 {
+/// How many replicas a Service runs when its authored config names none.
+#[must_use]
+pub const fn default_replicas() -> u8 {
     1
 }
 

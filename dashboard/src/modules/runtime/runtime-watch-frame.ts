@@ -11,7 +11,7 @@ const runtimeWatchContainerSchema = Schema.Struct({
   container_id: Schema.String,
   display_name: Schema.String,
   machine_id: Schema.String,
-  project_name: Schema.String,
+  namespace: Schema.String,
   kind: Schema.String,
   runtime: Schema.optionalKey(runtimeContainerStateSchema),
 });
@@ -24,10 +24,12 @@ const runtimeWatchMachineSchema = Schema.Struct({
     accepts_ingress: Schema.Boolean,
     advertised_endpoints: Schema.Array(Schema.String),
     accepts_builds: Schema.Boolean,
+    accepts_services: Schema.Boolean,
     build_concurrency: Schema.NullOr(Schema.Number),
     runtime: Schema.Struct({ running_builds: Schema.Number }),
   }),
   membership: Schema.String,
+  storage: Schema.NullOr(Schema.Struct({ state: Schema.Literals(["stateless", "ready", "pool"]) })),
 });
 
 const runtimeWatchIncompleteVolumeIdSchema = Schema.Struct({
@@ -114,10 +116,12 @@ export function runtimeWatchFrameForTransport(
         accepts_ingress: machine.machine.accepts_ingress,
         advertised_endpoints: [...machine.machine.advertised_endpoints],
         accepts_builds: machine.machine.accepts_builds,
+        accepts_services: machine.machine.accepts_services,
         build_concurrency: machine.machine.build_concurrency,
         runtime: { running_builds: machine.machine.runtime.running_builds },
       },
       membership: machine.membership,
+      storage: machine.storage ? { state: machine.storage.state } : null,
     })),
     effective_build_concurrency: { ...frame.effective_build_concurrency },
     containers: frame.containers.map(runtimeWatchContainerForTransport),
@@ -178,6 +182,8 @@ export function runtimeSnapshotFromWatchFrame(
       acceptsIngress: machine.machine.accepts_ingress,
       endpoints: [...machine.machine.advertised_endpoints],
       acceptsBuilds: machine.machine.accepts_builds,
+      acceptsServices: machine.machine.accepts_services,
+      storage: machine.storage?.state ?? null,
       buildConcurrency: machine.machine.build_concurrency,
       effectiveBuildConcurrency: frame.effective_build_concurrency[machine.machine.id] ?? 1,
       runningBuilds: machine.machine.runtime.running_builds,
@@ -226,7 +232,7 @@ function runtimeContainerRecordFromWatch(
     id: container.container_id,
     displayName: container.display_name,
     machineId: container.machine_id,
-    projectName: container.project_name,
+    namespace: container.namespace,
     kind: container.kind,
   };
   return container.runtime ? { ...record, runtime: container.runtime } : record;
@@ -237,7 +243,7 @@ function runtimeWatchContainerForTransport(container: RuntimeWatchView["containe
     container_id: container.container_id,
     display_name: container.display_name,
     machine_id: container.machine_id,
-    project_name: container.project_name,
+    namespace: container.namespace,
     kind: container.kind,
     runtime: container.runtime.state === "running"
       ? { state: container.runtime.state, health: container.runtime.health }

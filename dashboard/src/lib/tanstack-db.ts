@@ -5,7 +5,7 @@ import type {
   WithoutVirtualProps,
 } from "@tanstack/react-db";
 import type { Schema } from "effect";
-import { decodeStrict } from "#/modules/environment-design/schema";
+import { decodeStrict } from "#/lib/schema";
 
 type PlainLiveQueryRow<Row extends VirtualRowProps> = Row extends VirtualRowProps
   ? WithoutVirtualProps<Row>

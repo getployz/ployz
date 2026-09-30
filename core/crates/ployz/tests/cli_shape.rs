@@ -1,9 +1,5 @@
 #[cfg(unix)]
-use std::io::{BufRead, BufReader};
-#[cfg(unix)]
 use std::process::{Command as ProcessCommand, Stdio};
-
-use clap_complete::{Shell, generate};
 
 #[test]
 fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
@@ -25,46 +21,107 @@ fn command_tree_is_exactly_the_cluster_operations_without_aliases() {
     assert_eq!(
         paths,
         [
+            "billing",
+            "billing manage",
+            "billing upgrade",
             "build",
             "cloud",
-            "cloud enroll",
+            "cloud reset",
             // Shell tooling, not a Cluster operation.
             "completion",
             "ctx",
             "ctx ls",
             "ctx rm",
             "ctx use",
-            "ingress",
-            "ingress deploy",
-            "machine",
-            "machine add",
-            "machine build-cache-clear",
-            "machine init",
-            "machine inspect",
-            "machine logs",
-            "machine ls",
-            "machine rm",
-            "machine update",
-            "machine upgrade",
+            "deploy",
+            "deployment",
+            "deployment cancel",
+            "deployment ls",
+            "deployment retry",
+            "deployment show",
+            "deployment start",
+            "diff",
+            "discard",
+            "domain",
+            "domain add",
+            "domain check",
+            "domain ls",
+            "domain rm",
+            "domain set",
+            "env",
+            "env branch",
+            "env copy",
+            "env default",
+            "env keep",
+            "env ls",
+            "env new",
+            "env pr",
+            "env rm",
+            "env save",
+            "env setup",
+            "env shutdown",
+            "env update",
+            "exec",
+            "explain",
+            "get",
+            "github",
+            "github connect",
+            "github disconnect",
+            "github ls",
+            "link",
+            "login",
+            "logout",
+            "logs",
+            "org",
+            "org build-order",
+            "org ls",
+            "org rm",
+            "org use",
             "project",
             "project ls",
+            "project new",
+            "project rename",
             "project rm",
+            "ps",
+            "publish",
+            "schema",
+            "server",
+            "server add",
+            "server build-cache-clear",
+            "server clean",
+            "server inspect",
+            "server logs",
+            "server ls",
+            "server rm",
+            "server set",
+            "server upgrade",
             "service",
-            "service exec",
+            "service add",
             "service inspect",
-            "service logs",
             "service ls",
-            "service proxy",
-            "service ps",
+            "service port-forward",
+            "service rename",
+            "service restart",
             "service rm",
-            "service scale",
             "service start",
             "service stop",
+            "set",
+            "setup",
+            "setup agent",
+            "status",
+            "token",
+            "token ls",
+            "token new",
+            "token rm",
+            "unset",
+            "up",
             "volume",
-            "volume create",
+            "volume add",
             "volume inspect",
             "volume ls",
+            "volume rename",
             "volume rm",
+            "volume set",
         ]
     );
 }
@@ -90,16 +147,15 @@ fn json_is_one_global_switch_and_no_command_keeps_an_output_format() {
     assert_no_output(&command, "ployz");
 
     let matches = command
-        .try_get_matches_from(["ployz", "--json", "machine", "ls"])
+        .try_get_matches_from(["ployz", "--json", "server", "ls"])
         .unwrap();
     assert!(matches.get_flag("json"));
 }
 
 #[test]
-fn sessions_tunnels_shell_code_and_build_refuse_json() {
+fn sessions_shell_code_and_build_refuse_json() {
     for args in [
-        &["service", "exec", "--json", "api"][..],
-        &["service", "proxy", "--json", "api", "8080"],
+        &["exec", "--json", "api"][..],
         &["completion", "--json", "bash"],
         &[
             "build",
@@ -157,40 +213,34 @@ fn each_short_flag_has_one_meaning_across_the_tree() {
 }
 
 #[test]
-fn native_completion_is_generated_for_every_supported_shell() {
-    for shell in [
-        Shell::Bash,
-        Shell::Elvish,
-        Shell::Fish,
-        Shell::PowerShell,
-        Shell::Zsh,
-    ] {
-        let mut output = Vec::new();
-        generate(shell, &mut ployz::cli::command(), "ployz", &mut output);
-        let output = String::from_utf8(output).unwrap();
-        assert!(!output.is_empty(), "empty {shell:?} completion");
-        assert!(output.contains("ployz"), "unnamed {shell:?} completion");
+fn completion_hooks_the_binary_for_every_supported_shell() {
+    for shell in ["bash", "elvish", "fish", "powershell", "zsh"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ployz"))
+            .args(["completion", shell])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{shell}");
+        let output = String::from_utf8(output.stdout).unwrap();
+        assert!(output.contains("PLOYZ_COMPLETE"), "{shell} hook: {output}");
     }
 }
 
 #[test]
-fn machine_upgrade_requires_explicit_targets() {
+fn server_upgrade_requires_explicit_targets_in_order() {
     let command = ployz::cli::command();
     let request = command
         .clone()
         .try_get_matches_from([
             "ployz",
-            "machine",
+            "server",
             "upgrade",
             "1.2.3-beta.4",
-            "--machine",
             "edge-a",
-            "--machine",
             "0123456789abcdef0123456789abcdef",
         ])
         .unwrap();
     let upgrade = request
-        .subcommand_matches("machine")
+        .subcommand_matches("server")
         .unwrap()
         .subcommand_matches("upgrade")
         .unwrap();
@@ -203,7 +253,7 @@ fn machine_upgrade_requires_explicit_targets() {
     );
     assert_eq!(
         upgrade
-            .get_many::<String>("machine")
+            .get_many::<String>("server")
             .unwrap()
             .map(String::as_str)
             .collect::<Vec<_>>(),
@@ -211,26 +261,18 @@ fn machine_upgrade_requires_explicit_targets() {
     );
     assert!(
         command
-            .clone()
-            .try_get_matches_from(["ployz", "machine", "upgrade", "stable"])
-            .is_err()
-    );
-    assert!(
-        command
-            .try_get_matches_from([
-                "ployz",
-                "machine",
-                "upgrade",
-                "nightly",
-                "--machine",
-                "edge-a"
-            ])
+            .try_get_matches_from(["ployz", "server", "upgrade", "stable"])
             .is_err()
     );
 }
 
 /// Run the binary against an empty config home; returns (exit code, stdout JSON, stderr).
 fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
+    run_json_with(args, &[])
+}
+
+/// [`run_json`] with extra environment variables.
+fn run_json_with(args: &[&str], envs: &[(&str, &str)]) -> (Option<i32>, serde_json::Value, String) {
     let home = tempfile::tempdir().unwrap();
     let config = home.path().join("config.yaml");
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
@@ -239,6 +281,10 @@ fn run_json(args: &[&str]) -> (Option<i32>, serde_json::Value, String) {
         .env("HOME", home.path())
         .env_remove("PLOYZ_CONTEXT")
         .env_remove("PLOYZ_CONNECT")
+        .env_remove("PLOYZ_TOKEN")
+        .env_remove("PLOYZ_CLOUD_URL")
+        .env_remove("PLOYZ_STORE")
+        .envs(envs.iter().copied())
         .output()
         .unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
@@ -296,14 +342,70 @@ fn json_without_a_command_is_the_version_or_an_error() {
 
 #[test]
 fn json_with_a_missing_subcommand_is_a_usage_error_not_help() {
-    let (code, json, _) = run_json(&["machine", "--json"]);
+    let (code, json, _) = run_json(&["server", "--json"]);
     assert_eq!(code, Some(2));
     assert_eq!(
         json.pointer("/error/code").unwrap(),
         "invalid_argument",
         "{json}"
     );
-    assert_eq!(message(&json), "ployz machine requires a subcommand");
+    assert_eq!(message(&json), "ployz server requires a subcommand");
+}
+
+#[test]
+fn cloud_commands_act_with_ployz_token_or_the_signed_in_device() {
+    for args in [
+        &["token", "ls", "--json"][..],
+        &["org", "ls", "--json"],
+        &["billing", "--json"],
+        &["github", "ls", "--json"],
+        // Store and live commands fail the same way instead of naming a config file.
+        &["status", "--json"],
+        &["get", "--json"],
+        &["deploy", "--json"],
+        &["server", "ls", "--json"],
+        &["ps", "--json"],
+        &["logs", "--json"],
+        &["service", "restart", "web", "--json"],
+    ] {
+        let (code, json, _) = run_json(args);
+        assert_eq!(code, Some(1), "{args:?}");
+        assert_eq!(
+            json.pointer("/error/code").unwrap(),
+            "unauthenticated",
+            "{json}"
+        );
+        assert_eq!(
+            json.pointer("/error/details/next").unwrap(),
+            "ployz login",
+            "{json}"
+        );
+    }
+
+    // A token needs no sign-in: it goes straight to its Cloud (here, nothing listens).
+    let token = [
+        ("PLOYZ_TOKEN", "ployz_secret"),
+        ("PLOYZ_CLOUD_URL", "http://127.0.0.1:1"),
+    ];
+    let (code, json, _) = run_json_with(&["billing", "--json"], &token);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unavailable",
+        "{json}"
+    );
+    assert!(!json.to_string().contains("ployz_secret"), "{json}");
+
+    let (code, json, _) = run_json_with(&["org", "use", "acme", "--json"], &token);
+    assert_eq!(code, Some(1));
+    assert_eq!(
+        json.pointer("/error/code").unwrap(),
+        "unsupported",
+        "{json}"
+    );
+
+    let (code, json, _) = run_json(&["token", "new", "ci", "--expires-in", "0", "--json"]);
+    assert_eq!(code, Some(2), "{json}");
 }
 
 fn message(json: &serde_json::Value) -> &str {
@@ -314,32 +416,28 @@ fn message(json: &serde_json::Value) -> &str {
 
 #[cfg(unix)]
 #[test]
-fn completion_exits_on_sigpipe_when_the_reader_closes_after_one_line() {
+fn piped_output_exits_on_sigpipe_when_the_reader_is_gone() {
     use std::os::unix::process::ExitStatusExt;
 
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
     let mut child = ProcessCommand::new(env!("CARGO_BIN_EXE_ployz"))
-        .args(["completion", "bash"])
-        .stdout(Stdio::piped())
+        .args(["schema"])
+        .stdout(Stdio::from(writer))
         .spawn()
         .unwrap();
-    let mut output = BufReader::new(child.stdout.take().unwrap());
-    let mut first_line = String::new();
-    output.read_line(&mut first_line).unwrap();
-    drop(output);
-
-    assert!(!first_line.is_empty());
     assert_eq!(child.wait().unwrap().signal(), Some(13));
 }
 
 #[test]
 fn compose_workflows_and_inputs_are_not_accepted() {
     for args in [
-        &["ployz", "deploy"][..],
+        &["ployz", "deploy", "--file", "compose.yaml"][..],
         &["ployz", "changes"],
         &["ployz", "build"],
         &["ployz", "run", "nginx"],
         &["ployz", "service", "run", "nginx"],
-        &["ployz", "service", "logs", "--file", "compose.yaml", "api"],
+        &["ployz", "logs", "--file", "compose.yaml", "api"],
         &["ployz", "service", "scale", "-p", "shop", "api", "2"],
     ] {
         assert!(
@@ -352,10 +450,10 @@ fn compose_workflows_and_inputs_are_not_accepted() {
 #[test]
 fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rejected() {
     for path in [
-        vec!["machine", "update", "node"],
-        vec!["machine", "init"],
-        vec!["machine", "add", "root@node"],
-        vec!["cloud", "enroll", "pmet_test"],
+        vec!["server", "set", "node"],
+        vec!["server", "add", "--standalone"],
+        vec!["server", "add", "root@node"],
+        vec!["server", "add", "--token", "pmet_test"],
     ] {
         let mut args = vec!["ployz"];
         args.extend(path);
@@ -382,7 +480,7 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
         removal.extend(["--label-rm", "retired"]);
         assert_eq!(
             ployz::cli::command().try_get_matches_from(removal).is_ok(),
-            args.get(2) == Some(&"update")
+            args.get(2) == Some(&"set")
         );
         for invalid in [
             "--no-ingress",
@@ -401,34 +499,24 @@ fn machine_policy_flags_are_independent_boolean_values_and_legacy_ingress_is_rej
 }
 
 #[test]
-fn ingress_deploy_accepts_repeated_constraints_and_rejects_legacy_machine_selection() {
-    let matches = ployz::cli::command()
-        .try_get_matches_from([
-            "ployz",
-            "ingress",
-            "deploy",
-            "--constraint",
-            "node.labels.region==west",
-            "--constraint",
-            "node.labels.retired!=true",
-        ])
-        .unwrap();
-    let deploy = matches
-        .subcommand_matches("ingress")
-        .unwrap()
-        .subcommand_matches("deploy")
-        .unwrap();
-    assert_eq!(
-        deploy
-            .get_many::<String>("constraint")
-            .unwrap()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["node.labels.region==west", "node.labels.retired!=true"]
-    );
-    assert!(
+fn a_patch_excludes_a_secret_or_an_env_file() {
+    let parse = |args: &[&str]| {
         ployz::cli::command()
-            .try_get_matches_from(["ployz", "ingress", "deploy", "--machine", "edge",])
-            .is_err()
-    );
+            .try_get_matches_from([&["ployz", "set", "web"][..], args].concat())
+            .is_ok()
+    };
+    assert!(!parse(&["--patch", "{}", "--from-env-file", ".env"]));
+    assert!(!parse(&["--patch", "{}", "--secret"]));
+    assert!(parse(&["--from-env-file", ".env", "--secret"]));
+}
+
+#[test]
+fn up_resets_only_a_server_it_adds() {
+    let parse = |args: &[&str]| {
+        ployz::cli::command()
+            .try_get_matches_from([&["ployz", "up"][..], args].concat())
+            .is_ok()
+    };
+    assert!(parse(&["--server", "root@203.0.113.1", "--reset"]));
+    assert!(!parse(&["--reset"]));
 }

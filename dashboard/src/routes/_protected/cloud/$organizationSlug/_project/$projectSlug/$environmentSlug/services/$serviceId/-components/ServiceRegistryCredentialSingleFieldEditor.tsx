@@ -2,7 +2,7 @@ import { SchemaFieldInput } from "#/components/stageable/schema-field-input";
 import { Button } from "#/components/ui/button";
 import { FieldDescription } from "#/components/ui/field";
 import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
-import type { StringSchema } from "#/modules/environment-design/schema";
+import type { StringSchema } from "#/lib/schema";
 
 type ServiceRegistryCredentialSingleFieldEditorProps = {
   schema: StringSchema;

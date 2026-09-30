@@ -18,6 +18,7 @@ import {
   completeMachineRemoveAttemptActivity,
   failOwnedMachineRemoveAttemptActivity,
   prepareMachineRemoveAttemptActivity,
+  releaseServerActivity,
   removeMachineActivity,
 } from "#/modules/machines/machine-removal.server";
 import { runInngestEffect } from "#/server/run.server";
@@ -105,13 +106,28 @@ export async function executeProcessMachineRemove({
     );
     return { attemptId, status: "missing_identities" as const };
   }
+  // Its own step: a retry after the reset releases again, never resets a Server that's gone.
+  const release = await step.run("release-server", () =>
+    runInngestEffect(
+      releaseServerActivity({
+        organizationId: attempt.organizationId,
+        machineId: attempt.machineId,
+        generation: removed.generation,
+        resetWarning: removed.resetWarning,
+        noReset: attempt.noReset,
+      }),
+    ),
+  );
 
   await step.run("complete-succeeded", () =>
     runInngestEffect(
       completeMachineRemoveAttemptActivity({
         attemptId,
         inngestRunId: runId,
-        completion: { state: "succeeded" },
+        completion: {
+          state: "succeeded",
+          result: { resetWarning: removed.resetWarning, release },
+        },
         now: new Date(),
       }),
     ),

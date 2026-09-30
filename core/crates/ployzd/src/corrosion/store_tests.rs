@@ -512,7 +512,7 @@ fn identity_container(machine_id: MachineId) -> ployz_core::ContainerObservation
         "container_id": "c".repeat(64),
         "display_name": "service-c",
         "machine_id": machine_id,
-        "project_name": "app",
+        "namespace": "app",
         "kind": "service_container",
         "runtime": { "state": "created" },
         "resolved_spec": {

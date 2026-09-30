@@ -13,7 +13,7 @@ use futures_util::{Stream, StreamExt, stream};
 use ployz_core::{
     ContainerId, ContainerLogsRequest, ContainerRef, ContainerSelector, ExecConfig, ExecOptions,
     ExecRequestFrame, FanoutSelector, LogBody, LogEntry, LogsOptions, MachineId, MachineLogService,
-    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, OpaquePayload,
+    MachineLogsRequest, MachineName, MachineObservation, MachineTarget, Namespace, OpaquePayload,
     ServiceContainer, ServiceObservation, ServiceSelector, StreamProtocolError, op,
     resolve_container_selector, resolve_machine_selectors, select_service,
 };
@@ -151,6 +151,10 @@ pub enum OperatorError {
     NoContainersOnMachines { service: ServiceSelector },
     #[error("no Machines found")]
     NoMachines,
+    #[error("no Service is running")]
+    NoServices,
+    #[error("no running container came from this Deployment")]
+    NoDeploymentContainers,
     #[error("selected Machine disappeared from the snapshot")]
     SnapshotStale,
     #[error("unsupported Machine log service {service:?}; {expected}")]
@@ -415,12 +419,20 @@ pub async fn open_exec(
     })
 }
 
+/// The label ployzd puts on each container a Deployment creates: its Deploy log ID.
+const DEPLOYMENT_LABEL: &str = "ployz.deployment.id";
+
+/// Open log streams for `args`; none means every Service in `namespace`, or in the
+/// whole Cluster without one. `deployment` keeps only the containers that
+/// Deployment created.
 pub async fn open_service_logs(
     client: &mut Client,
     args: &[ServiceArg],
+    namespace: Option<&Namespace>,
     machine_selectors: &[FanoutSelector],
     options: LogsOptions,
     cancellation: CancellationToken,
+    deployment: Option<&str>,
 ) -> Result<Vec<LogInput>, OperatorError> {
     let machines = client.machines().await?;
     let selected_machines = select_machines(&machines, machine_selectors)?;
@@ -430,15 +442,44 @@ pub async fn open_service_logs(
         .collect::<HashSet<_>>();
     let live = client.live_services(EnvironmentValues::Redacted).await?;
     let services = live.services();
+    let mut every = Vec::new();
+    let args = if args.is_empty() {
+        every = services
+            .iter()
+            .filter(|service| {
+                namespace.is_none_or(|namespace| service.identity.namespace == *namespace)
+            })
+            .map(|service| ServiceArg {
+                service: ServiceSelector::from(&service.identity),
+                containers: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        if every.is_empty() {
+            return Err(OperatorError::NoServices);
+        }
+        every.as_slice()
+    } else {
+        args
+    };
     let mut inputs = Vec::new();
     for arg in args {
         let service = select_service(&services, &arg.service)?;
         let containers = select_log_containers(service, &arg.containers)?;
         let containers = containers
             .into_iter()
-            .filter(|container| machine_ids.contains(&container.as_observation().machine_id))
+            .filter(|container| {
+                let observation = container.as_observation();
+                machine_ids.contains(&observation.machine_id)
+                    && deployment.is_none_or(|id| {
+                        observation.labels.get(DEPLOYMENT_LABEL).map(String::as_str) == Some(id)
+                    })
+            })
             .collect::<Vec<_>>();
         if containers.is_empty() {
+            // Of every Service, only those the Deployment still has containers of.
+            if deployment.is_some() && !every.is_empty() {
+                continue;
+            }
             return Err(OperatorError::NoContainersOnMachines {
                 service: arg.service.clone(),
             });
@@ -469,6 +510,9 @@ pub async fn open_service_logs(
                 });
             }
         }
+    }
+    if inputs.is_empty() {
+        return Err(OperatorError::NoDeploymentContainers);
     }
     Ok(inputs)
 }

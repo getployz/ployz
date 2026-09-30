@@ -315,15 +315,13 @@ fn explicit_config_beats_environment_and_interactive_errors_do_not_mutate() {
     );
 
     let before = Config::load(&flag_path).unwrap();
-    for args in [vec!["ctx"], vec!["ctx", "use"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
-            .args(args)
-            .args(["--ployz-config", flag_path.to_str().unwrap()])
-            .output()
-            .unwrap();
-        assert!(!output.status.success());
-        assert_eq!(Config::load(&flag_path).unwrap(), before);
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_ployz"))
+        .args(["ctx", "use"])
+        .args(["--ployz-config", flag_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(Config::load(&flag_path).unwrap(), before);
 
     fs::remove_dir_all(root).unwrap();
 }

@@ -9,7 +9,6 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from "#/components/ui/context-menu";
-import { useDeleteService } from "../../services/$serviceId/-components/useDeleteService";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
 
 const tabs = [
@@ -19,13 +18,14 @@ const tabs = [
 
 export function ServiceContextMenu({
   serviceId,
+  onDelete,
   children,
 }: {
   serviceId: string;
+  onDelete: () => void;
   children: ReactElement;
 }) {
   const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const deleteService = useDeleteService(serviceId);
 
   return (
     <ContextMenu>
@@ -50,7 +50,7 @@ export function ServiceContextMenu({
         </ContextMenuGroup>
         <ContextMenuSeparator />
         <ContextMenuGroup>
-          <ContextMenuItem variant="destructive" onClick={deleteService}>
+          <ContextMenuItem variant="destructive" onClick={onDelete}>
             <Trash2Icon />
             Delete service
           </ContextMenuItem>

@@ -18,7 +18,7 @@ const sdk = require(dir);
     fs.writeFileSync(path.join(checkout, "Dockerfile"), "FROM scratch\n");
     const input = {
       deployment: {
-        projectName: "app",
+        namespace: "app",
         snapshots: [{
           config: {
             version: 2, privateDns: "api",

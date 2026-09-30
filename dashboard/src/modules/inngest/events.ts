@@ -1,33 +1,10 @@
-import type { WebhookCustomerStateChangedPayload } from "@polar-sh/sdk/models/components/webhookcustomerstatechangedpayload";
-import type { WebhookSubscriptionActivePayload } from "@polar-sh/sdk/models/components/webhooksubscriptionactivepayload";
-import type { WebhookSubscriptionCanceledPayload } from "@polar-sh/sdk/models/components/webhooksubscriptioncanceledpayload";
-import type { WebhookSubscriptionCreatedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptioncreatedpayload";
-import type { WebhookSubscriptionRevokedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionrevokedpayload";
-import type { WebhookSubscriptionUncanceledPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionuncanceledpayload";
-import type { WebhookSubscriptionUpdatedPayload } from "@polar-sh/sdk/models/components/webhooksubscriptionupdatedpayload";
+import type { webhooks } from "#/modules/billing/polar-api";
 import { Schema } from "effect";
 import type { ServerPolicyChange } from "#/modules/machines/server-policy";
 import { eventType, staticSchema } from "inngest";
-import {
-  githubCheckSuiteReceivedEventDataSchema,
-  githubCheckSuiteTransitionEventDataSchema,
-  githubEnvironmentTriggerPersistedEventDataSchema,
-  githubPullRequestReceivedEventDataSchema,
-  githubPushReceivedEventDataSchema,
-  type GithubCheckSuiteReceivedEventData,
-  type GithubCheckSuiteReceivedEventInput,
-  type GithubCheckSuiteTransitionEventData,
-  type GithubEnvironmentTriggerPersistedEventData,
-  type GithubPullRequestReceivedEventData,
-  type GithubPullRequestReceivedEventInput,
-  type GithubPushReceivedEventData,
-  type GithubPushReceivedEventInput,
-} from "#/modules/github/github-ingestion.contracts";
+import { githubCheckSuiteReceivedEventDataSchema, githubPullRequestReceivedEventDataSchema, githubPushReceivedEventDataSchema, type GithubCheckSuiteReceivedEventData, type GithubCheckSuiteReceivedEventInput, type GithubPullRequestReceivedEventData, type GithubPullRequestReceivedEventInput, type GithubPushReceivedEventData, type GithubPushReceivedEventInput } from "#/modules/github/github-ingestion.contracts";
 import { asReferenceId } from "#/lib/json";
-import type {
-  GithubInstallationRepositoriesWebhook,
-  GithubInstallationWebhook,
-} from "#/modules/github/github-webhook-contracts";
+import type { GithubInstallationRepositoriesWebhook, GithubInstallationWebhook } from "#/modules/github/github-webhook-contracts";
 
 export const inngestEventEnvelopeFields = {
   id: Schema.optionalKey(Schema.String),
@@ -76,20 +53,17 @@ export const githubRepositoriesSyncRequestedEvent =
   "github/repositories-sync.requested";
 export const organizationBillingSyncRequestedEvent =
   "billing/organization-sync.requested";
-export const environmentDeployRequestedEvent = "environment/deploy.requested";
-export const githubEnvironmentTriggerPersistedEvent =
-  "github/environment-trigger.persisted";
-export const githubCheckSuiteTransitionedEvent =
-  "github/check-suite.transitioned";
 export const githubPushReceivedEvent = "github/push.received";
 export const githubCheckSuiteReceivedEvent = "github/check-suite.received";
 export const githubPullRequestReceivedEvent = "github/pull-request.received";
-export const volumeRemoveRequestedEvent = "cloud/volume-remove.requested";
 export const machineRemoveRequestedEvent = "machine/remove.requested";
 export const serverPolicyChangeRequestedEvent = "machine/policy-change.requested";
-export const teardownRequestedEvent = "cloud/teardown.requested";
 export const clusterDomainSyncRequestedEvent = "cluster-domain/sync.requested";
-export const prCheckRequestedEvent = "pr-environments/check.requested";
+export const configDeploymentAdmittedEvent = "config/deployment.admitted";
+export const configPrCheckRequestedEvent = "config/pr-check.requested";
+export const serverAccessRetireRequestedEvent = "server-access/retire.requested";
+export const configFirstServerJoinedEvent = "config/first-server.joined";
+export const configSweepRequestedEvent = "config/sweep.requested";
 
 export type GithubInstallationWebhookEventData = GithubInstallationWebhook & {
   deliveryId: string;
@@ -109,11 +83,6 @@ export type OrganizationBillingSyncRequestedEventData = {
   sourceUpdatedAt?: string;
 };
 
-export type EnvironmentDeployRequestedEventData = {
-  environmentDeploymentId: string;
-  environmentId: string;
-};
-
 export type ServerPolicyChangeRequestedEventData = {
   organizationId: string;
   machineId: string;
@@ -124,23 +93,40 @@ export type MachineRemoveRequestedEventData = {
   attemptId: string;
 };
 
-export type VolumeRemoveRequestedEventData = {
-  attemptId: string;
-};
-
-export type TeardownRequestedEventData = {
-  attemptId: string;
-};
-
 export type ClusterDomainSyncRequestedEventData = {
   organizationId: string;
 };
 
-export type PrCheckRequestedEventData = {
+/** The Organization's first Server joined: its published Environments deploy to it. */
+export type ConfigFirstServerJoinedEventData = {
+  organizationId: string;
+  /** The founding Server: a later founding (after teardown) is its own event. */
+  machineId: string;
+};
+
+/** A Config Store write closed a Branch at once (nothing on a Server): its Store sweeps it away now. */
+export type ConfigSweepRequestedEventData = {
+  organizationId: string;
+};
+
+/** A Config Store write named a pull request whose check Cloud publishes again from the Store's view. */
+export type ConfigPrCheckRequestedEventData = {
+  organizationId: string;
   repositoryId: number;
   number: number;
   /** `repositoryId:number`: one pull request's posts run one at a time. */
   pullRequestKey: string;
+};
+
+/** A member left an Organization (when the request named it): their devices' holders on its Servers go now. */
+export type ServerAccessRetireRequestedEventData = Record<string, never>;
+
+/** A Config Store Deployment was admitted; Cloud's worker runs it. */
+export type ConfigDeploymentAdmittedEventData = {
+  organizationId: string;
+  /** Deployments of one Environment run one at a time. */
+  environmentId: string;
+  deploymentId: string;
 };
 
 export type InngestFunctionCancelledEventData = {
@@ -152,8 +138,6 @@ export type InngestFunctionCancelledEventData = {
 export type {
   GithubCheckSuiteReceivedEventData,
   GithubCheckSuiteReceivedEventInput,
-  GithubCheckSuiteTransitionEventData,
-  GithubEnvironmentTriggerPersistedEventData,
   GithubPullRequestReceivedEventData,
   GithubPullRequestReceivedEventInput,
   GithubPushReceivedEventData,
@@ -176,9 +160,17 @@ export const organizationBillingSyncRequestedEventType = eventType(
   organizationBillingSyncRequestedEvent,
   { schema: staticSchema<OrganizationBillingSyncRequestedEventData>() },
 );
-export const environmentDeployRequestedEventType = eventType(
-  environmentDeployRequestedEvent,
-  { schema: staticSchema<EnvironmentDeployRequestedEventData>() },
+export const configPrCheckRequestedEventType = eventType(
+  configPrCheckRequestedEvent,
+  { schema: staticSchema<ConfigPrCheckRequestedEventData>() },
+);
+export const serverAccessRetireRequestedEventType = eventType(
+  serverAccessRetireRequestedEvent,
+  { schema: staticSchema<ServerAccessRetireRequestedEventData>() },
+);
+export const configDeploymentAdmittedEventType = eventType(
+  configDeploymentAdmittedEvent,
+  { schema: staticSchema<ConfigDeploymentAdmittedEventData>() },
 );
 export const githubPushReceivedEventType = eventType(
   githubPushReceivedEvent,
@@ -192,10 +184,6 @@ export const githubPullRequestReceivedEventType = eventType(
   githubPullRequestReceivedEvent,
   { schema: staticSchema<GithubPullRequestReceivedEventData>() },
 );
-export const volumeRemoveRequestedEventType = eventType(
-  volumeRemoveRequestedEvent,
-  { schema: staticSchema<VolumeRemoveRequestedEventData>() },
-);
 export const machineRemoveRequestedEventType = eventType(
   machineRemoveRequestedEvent,
   { schema: staticSchema<MachineRemoveRequestedEventData>() },
@@ -204,17 +192,17 @@ export const serverPolicyChangeRequestedEventType = eventType(
   serverPolicyChangeRequestedEvent,
   { schema: staticSchema<ServerPolicyChangeRequestedEventData>() },
 );
-export const teardownRequestedEventType = eventType(
-  teardownRequestedEvent,
-  { schema: staticSchema<TeardownRequestedEventData>() },
+export const configFirstServerJoinedEventType = eventType(
+  configFirstServerJoinedEvent,
+  { schema: staticSchema<ConfigFirstServerJoinedEventData>() },
+);
+export const configSweepRequestedEventType = eventType(
+  configSweepRequestedEvent,
+  { schema: staticSchema<ConfigSweepRequestedEventData>() },
 );
 export const clusterDomainSyncRequestedEventType = eventType(
   clusterDomainSyncRequestedEvent,
   { schema: staticSchema<ClusterDomainSyncRequestedEventData>() },
-);
-export const prCheckRequestedEventType = eventType(
-  prCheckRequestedEvent,
-  { schema: staticSchema<PrCheckRequestedEventData>() },
 );
 export const inngestFunctionCancelledEventType = eventType(
   "inngest/function.cancelled",
@@ -265,16 +253,6 @@ export function createGithubRepositoriesSyncRequestedEvent(
   } as const;
 }
 
-export function createVolumeRemoveRequestedEvent(
-  data: VolumeRemoveRequestedEventData,
-) {
-  return {
-    id: `volume-remove-${data.attemptId}`,
-    name: volumeRemoveRequestedEvent,
-    data,
-  } as const;
-}
-
 export function createMachineRemoveRequestedEvent(
   data: MachineRemoveRequestedEventData,
 ) {
@@ -291,24 +269,19 @@ export function createServerPolicyChangeRequestedEvent(
   return { name: serverPolicyChangeRequestedEvent, data } as const;
 }
 
-export function createTeardownRequestedEvent(
-  data: TeardownRequestedEventData,
-) {
-  return {
-    id: `teardown-${data.attemptId}`,
-    name: teardownRequestedEvent,
-    data,
-  } as const;
+/** Keyed by founding: a retried completion sends it again, and Inngest runs it once. */
+export function createConfigFirstServerJoinedEvent(data: ConfigFirstServerJoinedEventData) {
+  return { id: `config-first-server-joined-${data.organizationId}-${data.machineId}`, name: configFirstServerJoinedEvent, data } as const;
+}
+
+export function createConfigSweepRequestedEvent(data: ConfigSweepRequestedEventData) {
+  return { name: configSweepRequestedEvent, data } as const;
 }
 
 export function createClusterDomainSyncRequestedEvent(
   data: ClusterDomainSyncRequestedEventData,
 ) {
   return { name: clusterDomainSyncRequestedEvent, data } as const;
-}
-
-export function createPrCheckRequestedEvent(input: { repositoryId: number; number: number }) {
-  return { name: prCheckRequestedEvent, data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies PrCheckRequestedEventData } as const;
 }
 
 export function createOrganizationBillingSyncRequestedEvent(
@@ -320,49 +293,25 @@ export function createOrganizationBillingSyncRequestedEvent(
   } as const;
 }
 
-export function createEnvironmentDeployRequestedEvent(
-  data: EnvironmentDeployRequestedEventData,
-) {
+/** Keyed by the Deployment, so admitting it again (a replayed request) sends nothing new. */
+export function createConfigPrCheckRequestedEvent(input: { organizationId: string; repositoryId: number; number: number }) {
   return {
-    id: `environment-deploy-requested-${data.environmentDeploymentId}`,
-    name: environmentDeployRequestedEvent,
-    data,
+    name: configPrCheckRequestedEvent,
+    data: { ...input, pullRequestKey: `${input.repositoryId}:${input.number}` } satisfies ConfigPrCheckRequestedEventData,
   } as const;
 }
 
-export function createGithubEnvironmentTriggerPersistedEvent(
-  data: GithubEnvironmentTriggerPersistedEventData,
-) {
-  const parsed = Schema.decodeUnknownSync(
-    githubEnvironmentTriggerPersistedEventDataSchema,
-  )(
-    {
-      ...data,
-      serviceIds: Array.from(new Set(data.serviceIds)).sort((a, b) =>
-        a.localeCompare(b),
-      ),
-    },
-    { onExcessProperty: "error" },
-  );
-  const eventData = { ...parsed, serviceIds: Array.from(parsed.serviceIds) };
-  return {
-    id: `github-environment-trigger-${parsed.triggerId}-revision-${parsed.triggerRevision}`,
-    name: githubEnvironmentTriggerPersistedEvent,
-    data: eventData,
-  } as const;
+export function createServerAccessRetireRequestedEvent() {
+  return { name: serverAccessRetireRequestedEvent, data: {} satisfies ServerAccessRetireRequestedEventData } as const;
 }
 
-export function createGithubCheckSuiteTransitionEvent(
-  data: GithubCheckSuiteTransitionEventData,
-) {
-  const parsed = Schema.decodeUnknownSync(
-    githubCheckSuiteTransitionEventDataSchema,
-  )(data, { onExcessProperty: "error" });
-  return {
-    id: `github-check-suite-${parsed.installationId}-${parsed.repositoryId}-${parsed.headSha}-${parsed.checkSuiteId}-revision-${parsed.transitionRevision}`,
-    name: githubCheckSuiteTransitionedEvent,
-    data: parsed,
-  } as const;
+export function createConfigDeploymentAdmittedEvent(data: ConfigDeploymentAdmittedEventData) {
+  return { id: `config-deployment-admitted-${data.deploymentId}`, name: configDeploymentAdmittedEvent, data } as const;
+}
+
+/** Deploy now: unkeyed, so it asks again for a queued Deployment its admission's event never ran. */
+export function createConfigDeploymentStartedEvent(data: ConfigDeploymentAdmittedEventData) {
+  return { name: configDeploymentAdmittedEvent, data } as const;
 }
 
 export function createGithubPushReceivedEvent(
@@ -421,12 +370,12 @@ export function createGithubPullRequestReceivedEvent(
 }
 
 type PolarSubscriptionWebhookPayload =
-  | WebhookSubscriptionCreatedPayload
-  | WebhookSubscriptionUpdatedPayload
-  | WebhookSubscriptionActivePayload
-  | WebhookSubscriptionCanceledPayload
-  | WebhookSubscriptionRevokedPayload
-  | WebhookSubscriptionUncanceledPayload;
+  | webhooks.WebhookSubscriptionCreatedPayload
+  | webhooks.WebhookSubscriptionUpdatedPayload
+  | webhooks.WebhookSubscriptionActivePayload
+  | webhooks.WebhookSubscriptionCanceledPayload
+  | webhooks.WebhookSubscriptionRevokedPayload
+  | webhooks.WebhookSubscriptionUncanceledPayload;
 
 export function createOrganizationBillingSyncEventsFromSubscriptionPayload(
   payload: PolarSubscriptionWebhookPayload,
@@ -443,21 +392,19 @@ export function createOrganizationBillingSyncEventsFromSubscriptionPayload(
     createOrganizationBillingSyncRequestedEvent({
       organizationId,
       reason: payload.type,
-      sourceUpdatedAt: payload.timestamp.toISOString(),
+      sourceUpdatedAt: new Date(payload.timestamp).toISOString(),
     }),
   ];
 }
 
 export function createOrganizationBillingSyncEventsFromCustomerStatePayload(
-  payload: WebhookCustomerStateChangedPayload,
+  payload: webhooks.WebhookCustomerStateChangedPayload,
 ) {
   const organizationIds = Array.from(
     new Set(
-      payload.data.activeSubscriptions
-        .map(
-          (
-            subscription: WebhookCustomerStateChangedPayload["data"]["activeSubscriptions"][number],
-          ) => coerceReferenceId(subscription.metadata["referenceId"]),
+      payload.data.active_subscriptions
+        .map((subscription) =>
+          coerceReferenceId(subscription.metadata["referenceId"]),
         )
         .filter(
           (organizationId): organizationId is string => organizationId !== null,
@@ -473,7 +420,7 @@ export function createOrganizationBillingSyncEventsFromCustomerStatePayload(
     createOrganizationBillingSyncRequestedEvent({
       organizationId,
       reason: payload.type,
-      sourceUpdatedAt: payload.timestamp.toISOString(),
+      sourceUpdatedAt: new Date(payload.timestamp).toISOString(),
     }),
   );
 }
@@ -482,17 +429,16 @@ export type InngestSendableEvent =
   | ReturnType<typeof createGithubInstallationReceivedEvent>
   | ReturnType<typeof createGithubInstallationRepositoriesReceivedEvent>
   | ReturnType<typeof createGithubRepositoriesSyncRequestedEvent>
-  | ReturnType<typeof createVolumeRemoveRequestedEvent>
   | ReturnType<typeof createMachineRemoveRequestedEvent>
   | ReturnType<typeof createServerPolicyChangeRequestedEvent>
-  | ReturnType<typeof createTeardownRequestedEvent>
   | ReturnType<typeof createClusterDomainSyncRequestedEvent>
-  | ReturnType<typeof createPrCheckRequestedEvent>
+  | ReturnType<typeof createConfigFirstServerJoinedEvent>
   | ReturnType<typeof createOrganizationBillingSyncRequestedEvent>
-  | ReturnType<typeof createEnvironmentDeployRequestedEvent>
-  | ReturnType<typeof createEnvironmentDeployCancelRequestedEvent>
-  | ReturnType<typeof createGithubEnvironmentTriggerPersistedEvent>
-  | ReturnType<typeof createGithubCheckSuiteTransitionEvent>
+  | ReturnType<typeof createConfigDeploymentAdmittedEvent>
+  | ReturnType<typeof createServerAccessRetireRequestedEvent>
+  | ReturnType<typeof createConfigPrCheckRequestedEvent>
+  | ReturnType<typeof createConfigSweepRequestedEvent>
+  | ReturnType<typeof createConfigDeploymentStartedEvent>
   | ReturnType<typeof createGithubPushReceivedEvent>
   | ReturnType<typeof createGithubCheckSuiteReceivedEvent>
   | ReturnType<typeof createGithubPullRequestReceivedEvent>
@@ -505,9 +451,4 @@ export type InngestSendableEvent =
 export const githubBuildRunCompletedEvent = "github/build-run.completed";
 export function createGithubBuildRunCompletedEvent(data: { id: string; runId: number }) {
   return { id: data.id, name: githubBuildRunCompletedEvent, data: { runId: data.runId } };
-}
-
-export const environmentDeployCancelRequestedEvent = "environment/deploy.cancel.requested";
-export function createEnvironmentDeployCancelRequestedEvent(environmentDeploymentId: string) {
-  return { name: environmentDeployCancelRequestedEvent, data: { environmentDeploymentId } };
 }

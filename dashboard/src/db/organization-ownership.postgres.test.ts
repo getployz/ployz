@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { changeNameSources } from "#/collections/change-sources";
+import { changeNameSources, storeViewSources } from "#/collections/change-sources";
 import { collectionNames } from "#/collections/read.contract";
+import { Effect } from "effect";
+import { openCloudStore } from "#/modules/config-store/store-sdk.server";
 import { changeSources } from "#/modules/organization/change-log.sources";
 import {
   type PostgresTestHarness,
@@ -19,19 +21,30 @@ const notOrganizationOwned = {
   user: "Belongs to a user.",
   account: "Belongs to a user.",
   verification: "Belongs to a user.",
+  device_code: "Belongs to the user who claims it; a CLI sign-in picks its Organization later.",
+  organization_token: "A credential the dashboard never reads into the Org Store, so it needs no change log.",
+  server_access: "A device's credential on one Server; never read into the Org Store, so it needs no change log.",
   session: "Belongs to a user; its active Organization doesn't make it organization-owned.",
   github_installation: "Belongs to a user.",
   github_repository_cache: "Belongs to a user.",
-  github_branch_projection: "Belongs to a GitHub installation, which several Organizations can share.",
-  github_check_suite_projection: "Belongs to a GitHub installation, which several Organizations can share.",
-  github_webhook_delivery: "Belongs to a GitHub installation, which several Organizations can share.",
   organization_change: "It is the Organization change log, written by the triggers on organization-owned tables.",
+  config_create: "The Config Store's record of caller-minted IDs for replay; no view reads it, so it needs no change log.",
+  config_migration: "The Config Store's applied migrations.",
+  deployment_run: "Which worker run owns a Deployment, read only when Inngest cancels the run; no view reads it, so it needs no change log.",
+  upload_chunk: "Source a Deployment's runner reads while it's in flight; no view reads it, so it needs no change log.",
+  config_build_receipt: "Private build evidence only a Deployment's runner reads at claim; no view reads it, so it needs no change log.",
+  config_volume_storage: "Storage fixed when a Deployment first targets a Volume; no Cloud view reads it, so it needs no change log.",
+  config_branch: "The GitHub branch heads the Store's automation compares from; no view reads them, so they need no change log.",
+  config_check_suite: "GitHub check-suite results only the Store's automation reads; no view reads them, so they need no change log.",
+  config_waiting_deploy: "Auto-deploys waiting for CI, read only by the Store's automation; no view reads them, so they need no change log.",
 } satisfies Record<string, string>;
 
 let harness: PostgresTestHarness;
 
 beforeAll(async () => {
   harness = await startPostgresTestHarness();
+  // The Config Store's tables live in Cloud's database once Cloud opens the Store.
+  await Effect.runPromise(openCloudStore(harness.databaseUrl, harness.database, "test-encryption-secret"));
 }, 60_000);
 
 afterAll(async () => {
@@ -86,7 +99,7 @@ it("keys every source feeding a collection by its key table's key", async () => 
   `);
   const references = new Set(foreignKeys.rows.map((row) => `${row.source}(${row.columns.join(", ")}) -> ${row.target}(${row.target_columns.join(", ")})`));
   // A change to any source names the collection rows it affects only if it logs their key.
-  const required = collectionNames.map((name) => changeNameSources[name]).flatMap(([keyTable, ...others]) =>
+  const required = [...collectionNames.map((name) => changeNameSources[name]), ...Object.values(storeViewSources)].flatMap(([keyTable, ...others]) =>
     others.map((source) => `${source}(${changeSources[source].key.join(", ")}) -> ${keyTable}(${changeSources[keyTable].key.join(", ")})`));
   expect(required.length).toBeGreaterThan(0);
   expect(required.filter((reference) => !references.has(reference))).toEqual([]);

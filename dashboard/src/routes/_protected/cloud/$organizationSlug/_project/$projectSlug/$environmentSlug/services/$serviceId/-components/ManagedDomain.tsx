@@ -16,13 +16,26 @@ import {
   useAppForm,
   validateOnChangeOrBlur,
 } from "#/form";
-import type { ServiceManagedHostname } from "#/modules/environment-design/tables";
-import {
-  serviceManagedHostnamePrefixSchema,
-  serviceManagedHostnameSchema,
-} from "#/modules/environment-design/services";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { parseServiceSetting, type ServiceManagedHostname } from "@ployz/sdk/config";
+import { strictParseOptions } from "#/lib/schema";
 import { domainPortSchema } from "./domain-port";
+
+/** A field core admits: Effect owns the form's envelope, Rust the rule and its message. */
+function coreSetting<T>(parse: <Input>(value: Input) => T) {
+  /** Why core refuses `value`, in its words, or undefined when it admits it. */
+  const refusal = <Input,>(value: Input) => {
+    try { parse(value); return undefined; } catch (cause) { return cause instanceof Error ? cause.message : "Invalid domain"; }
+  };
+  // The input side lets anything through to the check, so a refusal shows core's reason, not the declaration's
+  // generic "Expected <Declaration>".
+  const input = Schema.declare<T>((_value): _value is T => true).check(Schema.makeFilter((value) => refusal(value)));
+  return input.pipe(Schema.decodeTo(Schema.declare<T>((value): value is T => refusal(value) === undefined), {
+    decode: SchemaGetter.transform((value) => parse(value)),
+    encode: SchemaGetter.transform((value) => value),
+  }));
+}
+const serviceManagedHostnamePrefixSchema = coreSetting((value) => parseServiceSetting("managedHostnamePrefix", value));
+const serviceManagedHostnameSchema = coreSetting((value) => parseServiceSetting("managedHostnameValue", value));
 
 export function ManagedDomainDialog({
   mode = "edit",
@@ -88,12 +101,12 @@ export function ManagedDomainDialog({
               <DialogTitle>
                 {mode === "generate"
                   ? "Generate Service Domain"
-                  : "Edit managed domain"}
+                  : "Edit generated domain"}
               </DialogTitle>
               <DialogDescription>
-                {mode === "generate"
-                  ? "Enter the port your app is listening on."
-                  : "Update your domain or target port."}
+                {mode === "edit"
+                  ? "Change its subdomain or the port it reaches."
+                  : "Enter the port your app is listening on."}
               </DialogDescription>
             </DialogHeader>
             <FieldGroup>

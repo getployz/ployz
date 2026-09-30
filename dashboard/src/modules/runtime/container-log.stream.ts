@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { cachedByCollectionScope, type CollectionScope } from "#/collections/scope";
 import { appendContainerLogs, containerLogEventSchema, containerLogPageSchema, mergeContainerHistory, remainingHistory, type ContainerLogRow } from "./container-log.collection";
 
-export type ContainerLogSelection = { organizationSlug: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
+export type ContainerLogSelection = { organizationSlug: string; projectSlug?: string; environmentSlug?: string; deploymentId?: string; serviceId?: string };
 
 /**
  * `opened`: the server has answered once, so an empty log means no output rather than not loaded yet.
@@ -108,7 +108,7 @@ function createLogStream(id: string, selection: ContainerLogSelection, scope: Co
 const streams = cachedByCollectionScope(() => new Map<string, ReturnType<typeof createLogStream>>());
 export function getContainerLogStream(selection: ContainerLogSelection, scope: CollectionScope) {
   const cache = streams(selection.organizationSlug, scope);
-  const key = JSON.stringify([selection.environmentSlug, selection.deploymentId, selection.serviceId]);
+  const key = JSON.stringify([selection.projectSlug, selection.environmentSlug, selection.deploymentId, selection.serviceId]);
   let stream = cache.get(key);
   if (!stream) {
     stream = createLogStream(`container-logs:${scope.sessionId}:${scope.userId}:${selection.organizationSlug}:${key}`, selection, scope);

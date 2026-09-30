@@ -7,8 +7,8 @@ import {
   DialogTitle,
 } from "#/components/ui/dialog";
 import { ServiceCreateCommand } from "#/components/service-create-command";
-import type { createServiceServerFn } from "#/modules/environment-design/service-functions";
-import type { CreatorPanel, FlowPosition } from "./types";
+import type { CreatePanel } from "#/components/create-menu-items";
+import type { FlowPosition } from "./types";
 
 export function ServiceCreatorDialog({
   open,
@@ -21,7 +21,7 @@ export function ServiceCreatorDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  panel: CreatorPanel;
+  panel: CreatePanel;
   position: FlowPosition;
   params: {
     organizationSlug: string;
@@ -29,10 +29,7 @@ export function ServiceCreatorDialog({
     environmentSlug: string;
   };
   onCreateVolume: () => void;
-  onCreated: (
-    result: Awaited<ReturnType<typeof createServiceServerFn>>["data"],
-    stillHere: boolean,
-  ) => void | Promise<void>;
+  onCreated: (result: { service: { id: string } }, stillHere: boolean) => void | Promise<void>;
 }) {
   // Escape or a click outside can't close it mid-create: the new service opens once it's saved.
   const [creating, setCreating] = useState(false);

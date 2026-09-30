@@ -9,13 +9,11 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asTestDouble } from "#/lib/test-double";
-import type { OrganizationVariablesCollection } from "#/modules/environment-design/variable-collections";
-import type { PlainVariableRecord } from "#/modules/environment-design/variable-mutation-actions";
-import type { VariableRecord } from "#/modules/environment-design/variables";
+import type { PlainVariableRecord, VariableRecord, VariableWriter } from "#/modules/variables/variables";
 import { VariableRow } from "./variable-row";
 import { toast } from "sonner";
 
-const collection = asTestDouble<OrganizationVariablesCollection>()({
+const collection = asTestDouble<VariableWriter>()({
   delete: vi.fn(),
   update: vi.fn(),
 });
@@ -34,8 +32,6 @@ function plainVariable(
       type: "plain",
       value: "super-secret",
     },
-    createdAt: new Date(0),
-    updatedAt: new Date(0),
     ...overrides,
   };
 }
@@ -45,8 +41,6 @@ function sealedVariable(): VariableRecord {
     ...plainVariable(),
     value: {
       type: "sealed",
-      hasValue: true,
-      fingerprint: "fingerprint",
     },
   };
 }

@@ -62,6 +62,10 @@ class Client {
     return withRpcError(this._inner.register(assignment));
   }
 
+  setManagementClient(label) {
+    return withRpcError(this._inner.setManagementClient(label));
+  }
+
   clearManagementClient(label) {
     return withRpcError(this._inner.clearManagementClient(label));
   }
@@ -78,18 +82,6 @@ class Client {
     return withRpcError(this._inner.publishCertificateMaterial(request));
   }
 
-  outsideBuild(input) {
-    return withRpcError(this._inner.outsideBuild(input));
-  }
-
-  mintBuildGrant(request) {
-    return withRpcError(this._inner.mintBuildGrant(request));
-  }
-
-  endBuildGrant(request) {
-    return withRpcError(this._inner.endBuildGrant(request));
-  }
-
   prepare(input, options = {}) {
     return wrapProgress(() => this._inner.prepare(input), options.signal, wrapPreview);
   }
@@ -102,9 +94,9 @@ class Client {
     return wrapPreview(await withRpcError(this._inner.preview(intent)));
   }
 
-  async previewProjectRemoval(projectName, destroyVolumes) {
+  async previewNamespaceRemoval(namespace, destroyVolumes) {
     return wrapPreview(
-      await withRpcError(this._inner.previewProjectRemoval(projectName, destroyVolumes)),
+      await withRpcError(this._inner.previewNamespaceRemoval(namespace, destroyVolumes)),
     );
   }
 
@@ -130,16 +122,20 @@ class Client {
     return withRpcError(this._inner.removeMachine(machine, confirmDataLoss));
   }
 
+  removeMachineMembership(machine) {
+    return withRpcError(this._inner.removeMachineMembership(machine));
+  }
+
   updateMachine(machine, update) {
     return withRpcError(this._inner.updateMachine(machine, update));
   }
 
-  dataLossIfProjectDestroyed(projectName, destroyVolumes = false) {
-    return withRpcError(this._inner.dataLossIfProjectDestroyed(projectName, destroyVolumes));
+  dataLossIfNamespaceDestroyed(namespace, destroyVolumes = false) {
+    return withRpcError(this._inner.dataLossIfNamespaceDestroyed(namespace, destroyVolumes));
   }
 
-  destroyProject(projectName, confirmDataLoss, destroyVolumes = false) {
-    return withRpcError(this._inner.destroyProject(projectName, confirmDataLoss, destroyVolumes));
+  destroyNamespace(namespace, confirmDataLoss, destroyVolumes = false) {
+    return withRpcError(this._inner.destroyNamespace(namespace, confirmDataLoss, destroyVolumes));
   }
 
   dataLossIfClusterDestroyed() {
@@ -271,17 +267,17 @@ function defaultPlanOptions() {
   };
 }
 
-function applyAll(project_name, specs, options = defaultPlanOptions()) {
+function applyAll(namespace, specs, options = defaultPlanOptions()) {
   return {
-    project_name,
+    namespace,
     target: specs,
     options,
   };
 }
 
-function applyOne(project_name, spec, options = defaultPlanOptions()) {
+function applyOne(namespace, spec, options = defaultPlanOptions()) {
   return {
-    project_name,
+    namespace,
     target: [spec],
     options: {
       ...defaultPlanOptions(),
@@ -315,17 +311,43 @@ async function connect(options) {
   } catch (error) { cleanup(); throw error; }
 }
 
+async function openConfigStore(url, sealingSecret) {
+  const store = await withRpcError(native.openConfigStore(url, sealingSecret));
+  return {
+    read: (organization, query, trusted) => withRpcError(store.read(organization, query, trusted)),
+    write: (organization, command, trusted, principal) =>
+      withRpcError(store.write(organization, command, trusted, principal)),
+    deploymentSources: (deployment) => withRpcError(store.deploymentSources(deployment)),
+    pinSources: (deployment, commits) => withRpcError(store.pinSources(deployment, commits)),
+    runDeployment: (organization, deployment, runner, connections, sources) =>
+      withRpcError(store.runDeployment(organization, deployment, runner, connections, sources)),
+    abandonDeployment: (deployment, runner) => withRpcError(store.abandonDeployment(deployment, runner)),
+    checks: (environment) => withRpcError(store.checks(environment)),
+    system: (organization, event, trusted) => withRpcError(store.system(organization, event, trusted)),
+    removeOrganization: (organization) => withRpcError(store.removeOrganization(organization)),
+    unclaimed: (before) => withRpcError(store.unclaimed(before)),
+    branchHead: (organization, repositoryId, branch) =>
+      withRpcError(store.branchHead(organization, repositoryId, branch)),
+    pendingSaves: (organization, repositoryId, branch) =>
+      withRpcError(store.pendingSaves(organization, repositoryId, branch)),
+    githubStart: (build, connections) => withRpcError(store.githubStart(build, connections)),
+    githubDispatched: (build, run) => withRpcError(store.githubDispatched(build, run)),
+    githubBuild: (build) => withRpcError(store.githubBuild(build)),
+    githubSkip: (build, message) => withRpcError(store.githubSkip(build, message)),
+    githubCheckIn: (build, claims, connections) => withRpcError(store.githubCheckIn(build, claims, connections)),
+    githubReport: (build, claims, report) => withRpcError(store.githubReport(build, claims, report)),
+    githubFinish: (build, timedOut, connections) => withRpcError(store.githubFinish(build, timedOut, connections)),
+    githubCancel: (deployment, connections) => withRpcError(store.githubCancel(deployment, connections)),
+  };
+}
+
 module.exports = {
+  openConfigStore,
+  observeVolumes: (connections, sought) => withRpcError(native.observeVolumes(connections, sought)),
   allocateEnrollment: (...args) => {
     try { return native.allocateEnrollment(...args); } catch (error) { throwRpcError(error); }
   },
-  buildFingerprints: (input) => {
-    try { return native.buildFingerprints(input); } catch (error) { throwRpcError(error); }
-  },
   ployzVersion: () => native.ployzVersion(),
-  buildGrantTag: (repository, digest) => {
-    try { return native.buildGrantTag(repository, digest); } catch (error) { throwRpcError(error); }
-  },
   connect,
   Client,
   RpcError,

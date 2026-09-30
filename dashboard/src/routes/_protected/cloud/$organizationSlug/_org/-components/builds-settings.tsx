@@ -3,10 +3,10 @@ import { CheckIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
 import { Button } from "#/components/ui/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "#/components/ui/item";
-import { Skeleton } from "#/components/ui/skeleton";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
-import { BUILD_ORDERS, BUILD_ORDER_LABELS, defaultBuildOrder } from "#/modules/deployments/build-order";
-import { useBuildOrder } from "#/modules/deployments/build-order.collection";
+import type { BuildOrder } from "@ployz/sdk";
+import { requireView, useStoreView } from "#/modules/config-store/store-view.queries";
+import { useStoreWriter } from "#/modules/config-store/store-write";
 import { githubBuildRepositoryKey, githubBuildWorkflowUrl, type GithubBuildRepository } from "#/modules/github/github-build-workflow";
 import { useGithubBuildRepositories } from "#/modules/github/github.queries";
 import { useServerList, type ServerListItem } from "#/modules/machines/use-servers";
@@ -23,13 +23,26 @@ export function BuildsSettings({ organizationSlug }: { organizationSlug: string 
   );
 }
 
-/** Takes effect on the next build; never staged. */
+const BUILD_ORDER_LABELS = {
+  "github-then-servers": "GitHub, then your servers",
+  "servers-then-github": "Your servers, then GitHub",
+  "servers-only": "Your servers only",
+  "github-only": "GitHub only",
+} satisfies Record<BuildOrder, string>;
+const BUILD_ORDERS: BuildOrder[] = ["github-then-servers", "servers-then-github", "servers-only", "github-only"];
+
+/** The Organization's Build Order, which the settings page prefetches. */
+export const BUILD_ORDER_QUERY = { query: "build_order" } as const;
+
+/**
+ * Takes effect on the next build; never staged. Never chosen, GitHub goes first, and a repository without the build
+ * workflow skips it at once.
+ */
 function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
-  const { buildOrder: chosen, setBuildOrder } = useBuildOrder(organizationSlug);
-  // Never chosen: the default follows whether GitHub is set up, as Cloud decides it at each build.
-  // Unknown until GitHub answers; a failed read shows no order rather than a guess.
-  const { data: repositories, isError } = useGithubBuildRepositories(organizationSlug);
-  const buildOrder = chosen ?? (repositories && defaultBuildOrder(repositories.some(({ readiness }) => readiness === "ready")));
+  const view = requireView(useStoreView(organizationSlug, BUILD_ORDER_QUERY));
+  const writer = useStoreWriter(organizationSlug);
+  // Shown at once; the refetch after the write confirms it, and a refusal (toasted) puts the saved one back.
+  const buildOrder = view.build_order ?? "github-then-servers";
   return (
     <section aria-labelledby="build-order-heading">
       <ItemGroup>
@@ -40,13 +53,14 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
           {/* A section's intro reads in full; the two-line clamp is for rows. */}
           <ItemDescription className="line-clamp-none">Builds try these in order and move on when one can’t start in time. A service can prefer one in its own settings.</ItemDescription>
         </ItemContent>
-        {!buildOrder && !isError ? <Skeleton className="h-8 w-full sm:w-72" /> : <Select value={buildOrder ?? null} onValueChange={(next) => {
+        <Select value={buildOrder} onValueChange={(next) => {
           const order = BUILD_ORDERS.find((candidate) => candidate === next);
-          if (order) setBuildOrder(order);
+          if (!order) return;
+          // Shown at once; a refusal toasts and the saved order shows again.
+          writer.commit({ command: "set_build_order", build_order: order });
         }}>
           <SelectTrigger aria-label="Where builds run" className="w-full sm:w-72">
-            {/* Nothing chosen and nothing to default from only when GitHub failed; the skeleton covers the wait. */}
-            <SelectValue placeholder="Could not check GitHub; choose one">{buildOrder && BUILD_ORDER_LABELS[buildOrder]}</SelectValue>
+            <SelectValue>{BUILD_ORDER_LABELS[buildOrder]}</SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
@@ -55,7 +69,7 @@ function WhereBuildsRun({ organizationSlug }: { organizationSlug: string }) {
               ))}
             </SelectGroup>
           </SelectContent>
-        </Select>}
+        </Select>
       </ItemGroup>
     </section>
   );

@@ -1,19 +1,61 @@
 use ployz_core::{
     ClusterTeardown, DataLoss, DataLossConfirmation, DescribeContractRequest, MachineFailure,
     MachineSuccess, ObservedDataLoss, PartialResult, RemoveMachineRequest, RpcError,
-    UnconfirmedDataLoss, derive_projects, op,
+    UnconfirmedDataLoss, derive_namespaces, op,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::{Client, evict_machine},
     deploy::{DeploySnapshot, VolumeFate},
+    output::Gaps,
 };
 
 impl Client {
+    /// Every user Namespace the Cluster runs, with its Services and Docker Volumes,
+    /// as far as the Machines that answered show it, and the Machines whose
+    /// Containers or Volumes went unseen.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub(crate) async fn namespaces(
+        &mut self,
+    ) -> Result<(Vec<ployz_core::NamespaceObservation>, Gaps), RpcError> {
+        let machines = self.machines().await.map_err(RpcError::from)?;
+        let snapshot = self
+            .deploy_snapshot(machines)
+            .await
+            .map_err(RpcError::from)?;
+        let seen = &snapshot.volume_snapshot;
+        let mut gaps = Gaps::default();
+        gaps.extend(&snapshot.container_failures, &snapshot.container_omissions);
+        gaps.extend(seen.machine_failures(), seen.omissions());
+        // A Volume a Machine couldn't inspect has no known Namespace.
+        let unread: Vec<_> = seen
+            .named_failures()
+            .iter()
+            .map(|failure| MachineFailure {
+                machine_id: failure.id.machine_id,
+                error: failure.error.clone(),
+            })
+            .collect();
+        gaps.extend(&unread, &[]);
+        let namespaces = derive_namespaces(
+            &snapshot.containers,
+            seen.observations()
+                .iter()
+                .map(|volume| (&volume.id, &volume.labels)),
+        )
+        .into_iter()
+        .filter(|namespace| !namespace.name.is_reserved())
+        .collect();
+        Ok((namespaces, gaps))
+    }
+
     /// Live Observation of Data Loss that destroying this Cluster would cause.
     ///
-    /// Unions Docker Volumes across every visible Project and Machine. This is
+    /// Unions Docker Volumes across every visible Namespace and Machine. This is
     /// not a complete Cluster view. Mutates nothing.
     ///
     /// # Errors
@@ -32,7 +74,7 @@ impl Client {
     ///
     /// Re-reads Data Loss at execute time. Confirmed identities that
     /// disappeared are ignored.
-    /// User Projects are destroyed with [`VolumeFate::Destroy`]. Every Machine
+    /// User Namespaces are destroyed with [`VolumeFate::Destroy`]. Every Machine
     /// is reset. Endpoint revocation is confirmed separately by Cloud.
     /// Unreachable Machines are reported. A repeated call can finish leftover work.
     ///
@@ -59,7 +101,7 @@ impl Client {
             .await
             .map_err(RpcError::from)?
             .machine_id;
-        let projects = derive_projects(
+        let namespaces = derive_namespaces(
             &snapshot.containers,
             snapshot
                 .volume_snapshot
@@ -67,14 +109,14 @@ impl Client {
                 .iter()
                 .map(|volume| (&volume.id, &volume.labels)),
         );
-        let mut destroyed_projects = Vec::new();
-        for project in projects {
-            if project.name.is_reserved() {
+        let mut destroyed_namespaces = Vec::new();
+        for namespace in namespaces {
+            if namespace.name.is_reserved() {
                 continue;
             }
             match self
-                .destroy_project(
-                    &project.name,
+                .destroy_namespace(
+                    &namespace.name,
                     confirm_data_loss,
                     VolumeFate::Destroy,
                     cancellation,
@@ -83,7 +125,7 @@ impl Client {
                 .await
             {
                 Ok(ployz_core::DeployOutcome::Success { .. }) => {
-                    destroyed_projects.push(project.name);
+                    destroyed_namespaces.push(namespace.name);
                 }
                 Ok(ployz_core::DeployOutcome::Failed { .. }) => {}
                 Err(error) if UnconfirmedDataLoss::from_rpc_error(&error).is_some() => {
@@ -123,7 +165,7 @@ impl Client {
             }
         }
         Ok(ClusterTeardown {
-            destroyed_projects,
+            destroyed_namespaces,
             machines: result,
             pairing_revoked: false,
         })

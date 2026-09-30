@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ployz_core::{
     ContainerAction, DataLoss, DependencyCondition, HookContainer, IngressHost, MachineId,
-    MachineObservation, MembershipObservation, ObservedDataLoss, PreservedVolume, ProjectName,
+    MachineObservation, MembershipObservation, Namespace, ObservedDataLoss, PreservedVolume,
     PruneRefusal, QualifiedService, RequestedServiceSpec, ServiceId, ServiceMode, ServiceName,
     ServiceObservation, ServicePlacementEligibility, ServicePlacementIneligibleReason,
     VolumeToCreate, explicit_ingress_hosts, hostname_owners, machine_matches_placement,
@@ -25,10 +25,10 @@ use placement::{
 };
 use volumes::{PlannedVolumes, VolumePlan, preserved_owned_volumes, scope_requested};
 
-/// Whether Project removal keeps or destroys observer-visible managed volumes.
+/// Whether Namespace removal keeps or destroys observer-visible managed volumes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VolumeFate {
-    /// Leave owned Docker Volumes in place. They keep listing under the Project.
+    /// Leave owned Docker Volumes in place. They keep listing under the Namespace.
     Preserve,
     /// Destroy each preserved owned Docker Volume after Services are removed.
     Destroy,
@@ -69,6 +69,8 @@ struct Planned {
 pub struct DeployPlan {
     operations: Vec<DeployOperation>,
     preview: DeployPreview,
+    /// The intent's pull credentials, for execution only; never in the preview.
+    registry_auth: std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
 }
 
 impl DeployPlan {
@@ -80,6 +82,12 @@ impl DeployPlan {
 
     pub(super) fn operations(&self) -> &[DeployOperation] {
         &self.operations
+    }
+
+    pub(super) const fn registry_auth(
+        &self,
+    ) -> &std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth> {
+        &self.registry_auth
     }
 
     pub(super) fn pending_rows(&self) -> Vec<super::OperationRow> {
@@ -103,22 +111,16 @@ impl DeployPlan {
         self.preview.warnings.splice(0..0, warnings);
     }
 
-    pub(super) fn empty(project: ProjectName, warnings: Vec<DeployWarning>) -> Self {
-        Self {
-            operations: Vec::new(),
-            preview: DeployPreview::new(Vec::new(), warnings, project),
-        }
-    }
-
     #[cfg(test)]
     pub(super) fn for_execution_test(
         operations: Vec<DeployOperation>,
-        project: ProjectName,
+        namespace: Namespace,
     ) -> Self {
         let rows = super::pending_rows(&operations, &DeploySnapshot::default());
         Self {
             operations,
-            preview: DeployPreview::new(rows, Vec::new(), project),
+            preview: DeployPreview::new(rows, Vec::new(), namespace),
+            registry_auth: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -131,31 +133,31 @@ impl std::ops::Deref for DeployPlan {
     }
 }
 
-/// Plan removal of observer-visible compute for `project`.
+/// Plan removal of observer-visible compute for `namespace`.
 ///
 /// Empty target is full reconciliation of nothing: owned Services are obsolete.
 /// Managed volumes stay in `preserved_volumes` unless `volumes` is
 /// [`VolumeFate::Destroy`] and pruning is not refused. Incomplete snapshots
 /// reuse [`DeployIntent::prune_refusal`]; reserved names are refused at the
-/// command boundary by [`crate::project::refuse_reserved`].
+/// command boundary by [`crate::namespace::refuse_reserved`].
 ///
 /// # Errors
 ///
 /// Returns when [`preview_deploy`] cannot produce a preview.
-pub fn plan_project_removal(
-    project: &ProjectName,
+pub fn plan_namespace_removal(
+    namespace: &Namespace,
     snapshot: &DeploySnapshot,
     volumes: VolumeFate,
 ) -> Result<DeployPreview, PlanError> {
-    Ok(prepare_project_removal(project, snapshot, volumes)?.preview)
+    Ok(prepare_namespace_removal(namespace, snapshot, volumes)?.preview)
 }
 
-pub(super) fn prepare_project_removal(
-    project: &ProjectName,
+pub(super) fn prepare_namespace_removal(
+    namespace: &Namespace,
     snapshot: &DeploySnapshot,
     volumes: VolumeFate,
 ) -> Result<DeployPlan, PlanError> {
-    let intent = DeployIntent::apply_all(project.clone(), [], PlanOptions::default());
+    let intent = DeployIntent::apply_all(namespace.clone(), [], PlanOptions::default());
     let mut planned = plan_operations(&intent, snapshot)?;
     if volumes == VolumeFate::Destroy && planned.prune_refusal.is_none() {
         planned.operations.extend(
@@ -165,10 +167,10 @@ pub(super) fn prepare_project_removal(
                 .map(|volume| DeployOperation::RemoveVolume { id: volume.id }),
         );
     }
-    Ok(seal_plan(planned, snapshot, project))
+    Ok(seal_plan(planned, snapshot, namespace))
 }
 
-/// Data Loss implied by a Project-removal preview.
+/// Data Loss implied by a Namespace-removal preview.
 ///
 /// Preserve previews are empty. Destroy names each `RemoveVolume`. Completeness
 /// is the caller's check; this listing is not a Cluster view.
@@ -192,15 +194,15 @@ fn remove_volume_loss(operation: &DeployOperation) -> Option<DataLoss> {
 
 /// Calculate a Deploy Preview for this Intent against this Snapshot.
 ///
-/// Expands applied Cluster Domain hostnames, binds Project volumes once, then
+/// Expands applied Cluster Domain hostnames, binds Namespace volumes once, then
 /// constructs pending operation rows. Does not mutate `intent`.
 ///
 /// Matching and replacement use only Containers owned by
-/// [`DeployIntent::project_name`]. Empty `options.selected` is a full
+/// [`DeployIntent::namespace`]. Empty `options.selected` is a full
 /// reconciliation of `target`. Non-empty
 /// `selected` is partial: those names expand through dependencies that are also
 /// in `target`. Other target Services are unchanged. Visible obsolete Services
-/// owned by that user Project are removed after desired work when pruning is
+/// owned by that user Namespace are removed after desired work when pruning is
 /// not refused; otherwise they are listed as `would_remove`.
 ///
 /// # Errors
@@ -225,7 +227,8 @@ pub fn plan_deploy(
 ) -> Result<DeployPlan, PlanError> {
     let mut planned = plan_operations(intent, snapshot)?;
     let budgets = std::mem::take(&mut planned.volumes.budgets);
-    let mut plan = seal_plan(planned, snapshot, &intent.project_name);
+    let mut plan = seal_plan(planned, snapshot, &intent.namespace);
+    plan.registry_auth.clone_from(&intent.registry_auth);
     if !budgets.is_empty() {
         plan.preview
             .warnings
@@ -248,14 +251,10 @@ pub fn plan_deploy(
     Ok(plan)
 }
 
-fn seal_plan(
-    planned: Planned,
-    snapshot: &DeploySnapshot,
-    project_name: &ProjectName,
-) -> DeployPlan {
+fn seal_plan(planned: Planned, snapshot: &DeploySnapshot, namespace: &Namespace) -> DeployPlan {
     let preview = DeployPreview {
         storage: Vec::new(),
-        project_name: project_name.clone(),
+        namespace: namespace.clone(),
         operations: super::pending_rows(&planned.operations, snapshot),
         warnings: planned.warnings,
         volumes_to_create: planned
@@ -293,6 +292,7 @@ fn seal_plan(
     DeployPlan {
         operations: planned.operations,
         preview,
+        registry_auth: std::collections::BTreeMap::new(),
     }
 }
 
@@ -307,7 +307,7 @@ fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
         .target
         .iter()
         .cloned()
-        .map(|spec| scope_requested(spec, &intent.project_name))
+        .map(|spec| scope_requested(spec, &intent.namespace))
         .collect::<Result<_, _>>()?;
     let requested = specs
         .into_iter()
@@ -323,12 +323,12 @@ fn bind(intent: &DeployIntent) -> Result<BoundIntent, PlanError> {
 }
 
 fn hostname_policy_for(
-    project_name: &ProjectName,
+    namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
     retiring: &[QualifiedService],
 ) -> Result<Vec<DeployWarning>, PlanError> {
-    reject_hostname_conflicts(project_name, requested, snapshot, retiring)?;
+    reject_hostname_conflicts(namespace, requested, snapshot, retiring)?;
     let mut warnings = Vec::new();
     if !snapshot.is_observer_complete()
         && requested
@@ -346,7 +346,7 @@ fn assemble_plan(
     snapshot: &DeploySnapshot,
 ) -> Result<Planned, PlanError> {
     let BoundIntent { target, requested } = bound;
-    let services = snapshot.services_in(&intent.project_name);
+    let services = snapshot.services_in(&intent.namespace);
     let would_remove = obsolete_services(intent, &services);
     let prune_refusal = intent.prune_refusal(snapshot.is_observer_complete());
     let retiring = if prune_refusal.is_none() {
@@ -354,16 +354,16 @@ fn assemble_plan(
     } else {
         &[]
     };
-    let mut warnings = hostname_policy_for(&intent.project_name, &requested, snapshot, retiring)?;
+    let mut warnings = hostname_policy_for(&intent.namespace, &requested, snapshot, retiring)?;
     warnings.extend(storage_eligibility_warnings(
         &requested,
-        &intent.project_name,
+        &intent.namespace,
         snapshot,
     ));
     for spec in &requested {
         placement::validate_host_ports(spec)?;
     }
-    let mut volume_plan = VolumePlan::new(snapshot, &intent.project_name, &target, &requested)?;
+    let mut volume_plan = VolumePlan::new(snapshot, &intent.namespace, &target, &requested)?;
     let name_errors_with_service = requested.len() > 1;
     let mut reservations = PlacementReservations::new(snapshot);
     volume_plan.reserve_shared(&requested, &services, &mut reservations, &intent.options)?;
@@ -372,7 +372,7 @@ fn assemble_plan(
     for spec in &requested {
         let operations = plan_one_service(
             spec,
-            &intent.project_name,
+            &intent.namespace,
             snapshot,
             &services,
             &mut volume_plan,
@@ -397,10 +397,9 @@ fn assemble_plan(
                 if dependency.condition != DependencyCondition::ServiceHealthy {
                     continue;
                 }
-                let dependent =
-                    QualifiedService::new(intent.project_name.clone(), spec.name.clone());
+                let dependent = QualifiedService::new(intent.namespace.clone(), spec.name.clone());
                 let dependency =
-                    QualifiedService::new(intent.project_name.clone(), dependency.service.clone());
+                    QualifiedService::new(intent.namespace.clone(), dependency.service.clone());
                 if intent.options.skip_health_monitor {
                     warnings.push(DeployWarning::SkippedDependencyHealth {
                         dependent,
@@ -419,7 +418,7 @@ fn assemble_plan(
     }
     let volumes = volume_plan.finish(&mut service_operations)?;
     let mut operations = service_operations;
-    let preserved_volumes = preserved_owned_volumes(&intent.project_name, &target, snapshot);
+    let preserved_volumes = preserved_owned_volumes(&intent.namespace, &target, snapshot);
     if prune_refusal.is_none() {
         operations.extend(removal_operations(&services, retiring));
     }
@@ -434,7 +433,7 @@ fn assemble_plan(
 }
 
 fn reject_hostname_conflicts(
-    project_name: &ProjectName,
+    namespace: &Namespace,
     requested: &[RequestedServiceSpec],
     snapshot: &DeploySnapshot,
     retiring: &[QualifiedService],
@@ -450,7 +449,7 @@ fn reject_hostname_conflicts(
     );
     let mut claimed = BTreeMap::<&IngressHost, QualifiedService>::new();
     for spec in requested {
-        let identity = QualifiedService::new(project_name.clone(), spec.name.clone());
+        let identity = QualifiedService::new(namespace.clone(), spec.name.clone());
         for hostname in explicit_ingress_hosts(&spec.ports) {
             if let Some(owner) = claimed.get(hostname).or_else(|| owners.get(hostname))
                 && *owner != identity
@@ -466,13 +465,13 @@ fn reject_hostname_conflicts(
     Ok(())
 }
 
-/// Find observed Services absent from the full target, excluding reserved projects.
+/// Find observed Services absent from the full target, excluding reserved namespaces.
 /// The caller must apply the intent's prune refusal before deleting them.
 fn obsolete_services(
     intent: &DeployIntent,
     services: &[ServiceObservation],
 ) -> Vec<QualifiedService> {
-    if intent.project_name.is_reserved() {
+    if intent.namespace.is_reserved() {
         return Vec::new();
     }
     let declared = intent
@@ -579,15 +578,15 @@ fn order_included<'intent>(
 
 fn plan_one_service<'snapshot>(
     requested: &RequestedServiceSpec,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
     services: &[ServiceObservation],
     volume_plan: &mut VolumePlan<'snapshot>,
     placement: &mut PlacementState,
     options: &PlanOptions,
 ) -> Result<Vec<DeployOperation>, PlanError> {
-    let mut machines = eligible_machines(requested, project_name, snapshot, options)?;
-    let identity = QualifiedService::new(project_name.clone(), requested.name.clone());
+    let mut machines = eligible_machines(requested, namespace, snapshot, options)?;
+    let identity = QualifiedService::new(namespace.clone(), requested.name.clone());
     let existing = services.iter().find(|service| service.identity == identity);
     let (service_id, current, hooks) = match existing {
         None => (ServiceId::random(), &[][..], &[][..]),
@@ -685,16 +684,16 @@ fn service_error(name_errors_with_service: bool, service: &str, source: PlanErro
 
 fn eligible_machines<'snapshot>(
     requested: &RequestedServiceSpec,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
     options: &PlanOptions,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
-    let candidates = placement_candidates(requested, project_name, snapshot)?;
+    let candidates = placement_candidates(requested, namespace, snapshot)?;
     let mut unknown = Vec::new();
     let mut machines = Vec::new();
     for machine in &candidates {
-        match requested.placement_eligibility_in_project(
-            project_name,
+        match requested.placement_eligibility_in_namespace(
+            namespace,
             &machine.machine,
             machine.storage.as_ref(),
         ) {
@@ -730,7 +729,7 @@ fn eligible_machines<'snapshot>(
 
 fn placement_candidates<'snapshot>(
     requested: &RequestedServiceSpec,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     snapshot: &'snapshot DeploySnapshot,
 ) -> Result<Vec<&'snapshot MachineObservation>, PlanError> {
     let candidates = snapshot
@@ -739,8 +738,8 @@ fn placement_candidates<'snapshot>(
         .filter(|machine| machine.membership != MembershipObservation::Down)
         .filter(|machine| {
             !matches!(
-                requested.placement_eligibility_in_project(
-                    project_name,
+                requested.placement_eligibility_in_namespace(
+                    namespace,
                     &machine.machine,
                     machine.storage.as_ref()
                 ),
@@ -752,14 +751,14 @@ fn placement_candidates<'snapshot>(
         })
         .collect::<Vec<_>>();
     if candidates.is_empty() {
-        return Err(placement_error(requested, project_name, snapshot));
+        return Err(placement_error(requested, namespace, snapshot));
     }
     Ok(candidates)
 }
 
 fn storage_eligibility_warnings(
     requested: &[RequestedServiceSpec],
-    project_name: &ProjectName,
+    namespace: &Namespace,
     snapshot: &DeploySnapshot,
 ) -> Vec<DeployWarning> {
     let mut warned = BTreeSet::new();
@@ -772,8 +771,8 @@ fn storage_eligibility_warnings(
                 .filter(|machine| machine.membership != MembershipObservation::Down)
                 .filter(move |machine| {
                     matches!(
-                        spec.placement_eligibility_in_project(
-                            project_name,
+                        spec.placement_eligibility_in_namespace(
+                            namespace,
                             &machine.machine,
                             machine.storage.as_ref()
                         ),
@@ -790,7 +789,7 @@ fn storage_eligibility_warnings(
 
 fn placement_error(
     spec: &RequestedServiceSpec,
-    project_name: &ProjectName,
+    namespace: &Namespace,
     snapshot: &DeploySnapshot,
 ) -> PlanError {
     if snapshot.machines.is_empty() {
@@ -812,8 +811,8 @@ fn placement_error(
         if machine.membership == MembershipObservation::Down {
             down.push(machine.machine.name.clone());
         } else if matches!(
-            spec.placement_eligibility_in_project(
-                project_name,
+            spec.placement_eligibility_in_namespace(
+                namespace,
                 &machine.machine,
                 machine.storage.as_ref()
             ),

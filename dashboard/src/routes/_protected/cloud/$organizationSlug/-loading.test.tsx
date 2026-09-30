@@ -5,7 +5,7 @@ import { createMemoryHistory, createRootRouteWithContext, createRouter } from "@
 import { afterEach, expect, it, vi } from "vitest";
 import { orgStoreOptions } from "#/collections/org-store";
 import { getDbClient } from "#/collections/scope";
-import { organizationKeys } from "#/modules/environment-design/workspace.queries";
+import { organizationKeys } from "#/modules/organization/organization-state.queries";
 import { Route } from "./route";
 
 afterEach(() => { vi.restoreAllMocks(); });

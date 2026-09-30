@@ -20,8 +20,8 @@ use ployz_core::{
     DockerVolumeId, DockerVolumeName, DockerVolumeStorageObservation, LocalMachinePhase,
     LocalMachineRemoved, MANAGED_LABEL, Machine, MachineDetails, MachineId, MachineList,
     MachineName, MachineObservation, MachinePath, MachineRemoved, MachineRpc, MachineRpcServer,
-    MachineStorageObservation, MembershipObservation, ObservedDataLoss, OpaquePayload,
-    PROJECT_NAME_LABEL, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
+    MachineStorageObservation, MembershipObservation, NAMESPACE_LABEL, ObservedDataLoss,
+    OpaquePayload, PROTOCOL_MAJOR, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT, Registered,
     RemoveMachineRequest, RpcError, RpcErrorCode, RpcRequestBody, RpcResponse, RuntimeWatchFrame,
     RuntimeWatchRequest, VolumeInventory, VolumeObservationFailure, VolumeRemoved,
     WireGuardPublicKey, encode_runtime_watch_frame, op,
@@ -177,6 +177,8 @@ pub(super) struct DiscoveryService {
     pub(super) reset_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) removed_machines: Arc<Mutex<Vec<MachineId>>>,
     pub(super) management_clients: Arc<Mutex<Vec<ployz_core::ManagementClientLabel>>>,
+    /// Inspect fails, so who manages the Machine can't be read.
+    pub(super) inspect_fails: bool,
     register_error: Arc<Mutex<Option<RpcError>>>,
     pub(super) register_calls: Arc<AtomicUsize>,
     pub(super) lose_register_reply: bool,
@@ -221,6 +223,7 @@ impl DiscoveryService {
             reset_machines: Arc::new(Mutex::new(Vec::new())),
             removed_machines: Arc::new(Mutex::new(Vec::new())),
             management_clients: Arc::default(),
+            inspect_fails: false,
             register_error: Arc::new(Mutex::new(None)),
             register_calls: Arc::new(AtomicUsize::new(0)),
             lose_register_reply: false,
@@ -500,6 +503,9 @@ impl MachineRpc for DiscoveryService {
         request: Request<OpaquePayload>,
     ) -> Result<Response<OpaquePayload>, Status> {
         self.inspect_calls.fetch_add(1, Ordering::SeqCst);
+        if self.inspect_fails {
+            return Err(Status::unavailable("inspect is down"));
+        }
         let request = request
             .into_inner()
             .decode_request()
@@ -1276,11 +1282,11 @@ pub(super) fn docker_volume(machine_id: MachineId, name: &str) -> DockerVolume {
     }
 }
 
-pub(super) fn owned_volume(machine_id: MachineId, name: &str, project: &str) -> DockerVolume {
+pub(super) fn owned_volume(machine_id: MachineId, name: &str, namespace: &str) -> DockerVolume {
     DockerVolume {
         labels: BTreeMap::from([
             (MANAGED_LABEL.to_owned(), String::new()),
-            (PROJECT_NAME_LABEL.to_owned(), project.to_owned()),
+            (NAMESPACE_LABEL.to_owned(), namespace.to_owned()),
         ]),
         ..docker_volume(machine_id, name)
     }

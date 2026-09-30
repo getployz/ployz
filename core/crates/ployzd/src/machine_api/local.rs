@@ -303,10 +303,11 @@ impl MachineRpc for MachineService {
             self.local
                 .create_container(
                     request.kind,
-                    &request.project_name,
+                    &request.namespace,
                     &request.resolved_spec,
                     request.creation_key,
                     request.deployment_id,
+                    request.registry_auth,
                 )
                 .await,
         )

@@ -9,7 +9,6 @@ import { expect, it, vi } from "vitest";
 import { getDbClient } from "#/collections/scope";
 import { orgStoreOptions } from "#/collections/org-store";
 import { orgStoreSeed, orgStoreTableNames } from "#/test/org-store-tables";
-import { environmentChangeStateOptions } from "#/modules/deployments/environment-change-state.queries";
 
 it("keeps the SSR canvas visible while hydrated live queries take over", async () => {
   const server = new QueryClient();
@@ -18,7 +17,6 @@ it("keeps the SSR canvas visible while hydrated live queries take over", async (
   for (const table of orgStoreTableNames) {
     server.setQueryData(["collections", "session", "user", "acme", table], orgStoreSeed([]));
   }
-  server.setQueryData(environmentChangeStateOptions("acme", scope).queryKey, []);
   await server.ensureQueryData(orgStoreOptions("acme", scope));
   const pending = vi.fn(() => <div>Loading canvas</div>);
   function Canvas({ queryClient }: { queryClient: QueryClient }) {

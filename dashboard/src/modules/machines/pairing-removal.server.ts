@@ -1,23 +1,18 @@
 import "@tanstack/react-start/server-only";
-
 import { createHash } from "node:crypto";
-import type { Connection, MachineId } from "@ployz/sdk";
+import type { MachineId } from "@ployz/sdk";
 import { and, eq } from "drizzle-orm";
 import { Data, Effect, Option, Schema } from "effect";
 import { rustMachineIdSchema } from "#/modules/machines/enrollment";
-import {
-  enrollmentAllocation,
-  machineEnrollmentToken,
-  organizationMachine,
-} from "#/modules/machines/tables";
+import { enrollmentAllocation, machineEnrollmentToken, organizationMachine, serverAccess } from "#/modules/machines/tables";
 import { OrganizationRuntime } from "#/modules/runtime/organization-runtime.server";
 import { Ployz } from "#/modules/runtime/ployz.server";
 import { organizationPairing } from "#/modules/runtime/tables";
 import { Database } from "#/server/database.server";
 import { Conflict } from "#/server/public-error";
 import { SecretEncryption } from "#/utils/encrypted-secret.server";
-
 import { RemovalEndpoints, type RemovalEndpoint } from "#/modules/machines/pairing-removal";
+import type { ServerRelease } from "#/modules/machines/machine-removal";
 
 type Pairing = typeof organizationPairing.$inferSelect;
 type RemovalAttempt = Pairing & {
@@ -82,6 +77,8 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
           .where(eq(organizationPairing.organizationId, organizationId));
         // This also retires the old generation's preferred-entry flag.
         yield* drizzle.delete(organizationMachine).where(eq(organizationMachine.organizationId, organizationId));
+        // Every device's capability goes at once; clearing each Server's `cli-*` holders below confirms it.
+        yield* drizzle.delete(serverAccess).where(eq(serverAccess.organizationId, organizationId));
         yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
         attempt = { ...pairing, removalStartedAt, removalEndpoints };
       }
@@ -92,6 +89,77 @@ export const disableOrganizationPairing = Effect.fn("PairingRemoval.disable")(
       yield* runtime.cancel(organizationId, disabled.generation);
     }
     return disabled?.attempt ?? null;
+  },
+);
+
+/** The witnessed pairing, locked for this transaction; null when it's gone, or no longer `generation`. */
+const lockWitnessedPairing = Effect.fn("PairingRemoval.lockWitnessed")(function* (organizationId: string, generation: string) {
+  const { drizzle } = yield* Database;
+  const [pairing] = yield* drizzle.select().from(organizationPairing)
+    .where(eq(organizationPairing.organizationId, organizationId)).for("update");
+  if (!pairing) return { kind: "gone" } as const;
+  const current = createHash("sha256").update(yield* decrypt(pairing.encryptedPairingSecret)).digest("hex");
+  return current === generation && pairing.removalStartedAt === null ? { kind: "witnessed" } as const : { kind: "replaced" } as const;
+});
+
+/** Whether a Server of pairing `generation` other than its removed ones is still enrolled. */
+const othersRemain = Effect.fn("PairingRemoval.othersRemain")(function* (organizationId: string, generation: string) {
+  const { drizzle } = yield* Database;
+  const [other] = yield* drizzle.select({ machineId: organizationMachine.machineId }).from(organizationMachine)
+    .where(and(eq(organizationMachine.organizationId, organizationId), eq(organizationMachine.clusterKey, generation))).limit(1);
+  return other !== undefined;
+});
+
+const replaced = { kind: "kept", reason: "Cloud was paired with a new Cluster since." } satisfies ServerRelease;
+
+/**
+ * Server `machineId` of the pairing whose generation Cloud witnessed, `generation`, left the Cluster under Cloud's own
+ * connection: reset, which took every key Cloud held there, or only taken out (`membership`), keeping its state. While
+ * that pairing is still the current one, Cloud drops that Server's row of it (its device keys cascade); a pairing that
+ * changed since is left untouched. `last` means a reset took the pairing's last Server: the caller clears the Store's
+ * Applied State, then `forgetEmptiedPairing`. A pairing already gone was forgotten by an earlier run.
+ */
+export const dropRemovedServer = Effect.fn("PairingRemoval.dropRemoved")(
+  function* (input: { organizationId: string; machineId: string; generation: string; removal: "reset" | "membership" }) {
+    const { organizationId, generation } = input;
+    const database = yield* Database;
+    return yield* database.transaction(Effect.gen(function* () {
+      const pairing = yield* lockWitnessedPairing(organizationId, generation);
+      if (pairing.kind === "gone") return { kind: "released" } as const;
+      if (pairing.kind === "replaced") return replaced;
+      const { drizzle } = yield* Database;
+      // SAFETY: a Machine ID the SDK removed; an organization_machine row only matches the same representation.
+      yield* drizzle.delete(organizationMachine).where(and(
+        eq(organizationMachine.organizationId, organizationId),
+        eq(organizationMachine.clusterKey, generation),
+        eq(organizationMachine.machineId, input.machineId as MachineId),
+      ));
+      if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } as const;
+      if (input.removal === "membership") {
+        return { kind: "kept", reason: "it left the Cluster without a reset, so Cloud keeps the pairing." } as const;
+      }
+      return { kind: "last" } as const;
+    }));
+  },
+);
+
+/**
+ * The Cluster of pairing `generation` is gone and the Store let go of what ran on it: Cloud forgets the pairing and its
+ * enrollment tokens outright, with no Clear to confirm, if it is still that pairing with no Server left.
+ */
+export const forgetEmptiedPairing = Effect.fn("PairingRemoval.forgetEmptied")(
+  function* (organizationId: string, generation: string) {
+    const database = yield* Database;
+    return yield* database.transaction(Effect.gen(function* () {
+      const pairing = yield* lockWitnessedPairing(organizationId, generation);
+      if (pairing.kind === "gone") return { kind: "released" } satisfies ServerRelease;
+      if (pairing.kind === "replaced") return replaced;
+      if (yield* othersRemain(organizationId, generation)) return { kind: "others_remain" } satisfies ServerRelease;
+      const { drizzle } = yield* Database;
+      yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
+      yield* drizzle.delete(organizationPairing).where(eq(organizationPairing.organizationId, organizationId));
+      return { kind: "released" } satisfies ServerRelease;
+    }));
   },
 );
 
@@ -114,12 +182,19 @@ const ManagementClientCleared = Schema.Struct({
   details: Schema.Struct({ management_client: Schema.Literal("cleared") }),
 });
 
-/** Clear one Machine's `cloud` Management Client. Only a successful Clear or an authenticated cleared response confirms removal. */
+/**
+ * Clear one Machine's device holders (`cli-*`), then its `cloud` Management Client. Only a successful Clear or an
+ * authenticated cleared response confirms removal; once `cloud` is gone, Cloud can't reach the device holders.
+ */
 const removeEndpointPairing = Effect.fn("PairingRemoval.removeEndpoint")(
   function* (machineId: MachineId, management: string) {
     const ployz = yield* Ployz;
     return yield* Effect.scoped(Effect.gen(function* () {
       const session = yield* ployz.connect({ connections: [{ machine_id: machineId, management }], timeoutMs: 10_000 });
+      const { management_clients: labels } = yield* session.inspect();
+      for (const label of labels) {
+        if (label.startsWith("cli-")) yield* session.clearManagementClient(label);
+      }
       yield* session.clearManagementClient("cloud");
       return true;
     })).pipe(Effect.catch((error) => Effect.succeed(
@@ -162,23 +237,5 @@ export const revokeOrganizationPairing = Effect.fn("PairingRemoval.revoke")(
         status: endpoint.status === "confirmed" ? "confirmed" as const : "unconfirmed" as const,
       })) };
     }));
-  },
-);
-
-/** Only the explicitly admitted destructive teardown can use retained old credentials. */
-export const loadTeardownConnections = Effect.fn("PairingRemoval.teardownConnections")(
-  function* (organizationId: string) {
-    const { drizzle } = yield* Database;
-    const [pairing] = yield* drizzle.select().from(organizationPairing)
-      .where(eq(organizationPairing.organizationId, organizationId));
-    const connections: Connection[] = [];
-    const endpoints = yield* decodeEndpoints(pairing?.removalEndpoints ?? []);
-    for (const endpoint of endpoints) {
-      if (endpoint.status === "pending") connections.push({
-        machine_id: endpoint.machineId,
-        management: yield* decrypt(endpoint.encryptedExpected),
-      });
-    }
-    return connections;
   },
 );

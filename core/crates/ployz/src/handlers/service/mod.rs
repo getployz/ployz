@@ -1,12 +1,12 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 
-use clap::ArgMatches;
+use clap::{Arg, ArgAction, ArgMatches, Command};
+
+use crate::cli::{base, positional, value};
 use ployz_core::{
-    ContainerAction, ContainerId, ContainerObservation, ContainerRef, ContainerRuntimeObservation,
-    DataLoss, DockerVolumeId, DockerVolumeName, HealthObservation, LiveServices, MachineFailure,
-    MachineId, MachineObservation, MembershipObservation, ObservedDataLoss, QualifiedService,
-    RemoveVolumesRequest, RpcError, ServiceObservation, ServicePlacementEligibility,
-    ServiceSelector, ServiceSelectorError, VolumeRemoval, VolumeSource, select_service,
+    ContainerAction, ContainerId, ContainerRef, ContainerRuntimeObservation, HealthObservation,
+    LiveServices, MachineFailure, MachineId, QualifiedService, RpcError, ServiceObservation,
+    ServiceSelector, select_service,
 };
 use serde::Serialize;
 
@@ -16,111 +16,7 @@ use crate::{
 };
 use ployz_core::EnvironmentValues;
 
-use super::{
-    Error, cancellation_on_ctrl_c, connect_client, data_loss, leaf_matches, required, runtime,
-    with_client,
-};
-
-/// List the observed Services.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, or serialization error.
-pub fn list(root: &ArgMatches) -> Result<(), Error> {
-    with_client(root, |client| {
-        Box::pin(async move {
-            let mut machines = client.machines().await?;
-            // Storage only feeds replica counts, which warn on unknown eligibility.
-            client.observe_machine_storage(&mut machines).await;
-            let live = client
-                .live_services_from(&machines, EnvironmentValues::Redacted)
-                .await?;
-            print_observation_warning(&live);
-            let services = live.services();
-            output::finish_fanout("services", &services, &Gaps::of(&live.containers), || {
-                say!("SERVICE ID\tSERVICE\tCONTAINERS\tHOOKS");
-                for service in &services {
-                    let counts = service_counts(service, &machines);
-                    say!(
-                        "{}\t{}\t{}\t{}",
-                        service.service_id,
-                        service.identity,
-                        service_count_text(counts),
-                        service.hook_containers.len()
-                    );
-                    if counts.unknown > 0 {
-                        eprintln!(
-                            "WARNING: {} has unknown storage eligibility on {} Machine(s)",
-                            service.identity, counts.unknown
-                        );
-                    }
-                }
-            })
-        })
-    })
-}
-
-fn service_counts(service: &ServiceObservation, machines: &[MachineObservation]) -> ServiceCounts {
-    let running = service
-        .containers
-        .iter()
-        .filter(|container| {
-            matches!(
-                container.as_observation().runtime,
-                ContainerRuntimeObservation::Running { .. }
-            )
-        })
-        .count();
-    let Some(spec) = service.observed_global_slot_spec() else {
-        return ServiceCounts {
-            running,
-            expected: service.containers.len(),
-            unknown: 0,
-        };
-    };
-    let mut eligible = 0;
-    let mut unknown = 0;
-    for machine in machines
-        .iter()
-        .filter(|machine| machine.membership == MembershipObservation::Up)
-    {
-        match spec.placement_eligibility_in_project(
-            &service.identity.project,
-            &machine.machine,
-            machine.storage.as_ref(),
-        ) {
-            ServicePlacementEligibility::Eligible => eligible += 1,
-            ServicePlacementEligibility::Unknown(_) => unknown += 1,
-            ServicePlacementEligibility::Ineligible(_) => {}
-        }
-    }
-    ServiceCounts {
-        running,
-        expected: eligible,
-        unknown,
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ServiceCounts {
-    running: usize,
-    expected: usize,
-    unknown: usize,
-}
-
-fn service_count_text(
-    ServiceCounts {
-        running,
-        expected,
-        unknown,
-    }: ServiceCounts,
-) -> String {
-    if unknown == 0 {
-        format!("{running}/{expected}")
-    } else {
-        format!("{running}/{expected} (+{unknown} unknown)")
-    }
-}
+use super::{Error, cancellation_on_ctrl_c, leaf_matches, with_client};
 
 /// List observed Service and hook Containers.
 ///
@@ -133,6 +29,7 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
         .get_one::<String>("sort")
         .cloned()
         .ok_or_else(|| Error::usage("sort order is required"))?;
+    let namespace = super::operator::scope(root)?.map(|scoped| scoped.namespace);
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
@@ -140,6 +37,11 @@ pub fn processes(root: &ArgMatches) -> Result<(), Error> {
             let services = live.services();
             let mut containers = services
                 .iter()
+                .filter(|service| {
+                    namespace
+                        .as_ref()
+                        .is_none_or(|namespace| service.identity.namespace == *namespace)
+                })
                 .flat_map(ployz_core::ServiceObservation::members)
                 .collect::<Vec<_>>();
             sort_processes(&mut containers, &sort);
@@ -240,261 +142,54 @@ fn runtime_health_rank(runtime: &ContainerRuntimeObservation) -> u8 {
     }
 }
 
-pub fn inspect(root: &ArgMatches) -> Result<(), Error> {
-    let selector = ServiceSelector::parse(
-        leaf_matches(root)
-            .get_one::<String>("service")
-            .cloned()
-            .ok_or_else(|| Error::usage("Service selector is required"))?,
-    )?;
-    with_client(root, |client| {
-        Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
-            let services = live.services();
-            let gaps = Gaps::of(&live.containers);
-            let service = match select_service(&services, &selector) {
-                Ok(service) => Some(service),
-                Err(error @ ServiceSelectorError::NotFound { .. }) => gaps.absence(error.into())?,
-                Err(error) => return Err(error.into()),
-            };
-            output::show_fanout("service", &service, &gaps)
-        })
-    })
+/// Stop, then start, the addressed Environment's Services. Every Container is started
+/// again even when stopping one failed, so a failed restart never leaves a Service down.
+/// Both steps wait for their Container Observations, each bounded by the barrier timeout.
+fn restart(root: &ArgMatches) -> Result<(), Error> {
+    lifecycle(root, &[ContainerAction::Stop, ContainerAction::Start])
 }
 
-/// Start, stop, or remove observed Services.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, usage, or wait error.
-pub fn change(root: &ArgMatches, action: ContainerAction) -> Result<(), Error> {
+/// Start or stop the addressed Environment's Services.
+fn lifecycle(root: &ArgMatches, actions: &'static [ContainerAction]) -> Result<(), Error> {
     let leaf = leaf_matches(root);
-    let selectors = change_selectors(leaf)?;
-    let (signal, timeout) = stop_options(leaf, action)?;
+    let namespace = super::operator::scope(root)?;
+    let selectors = change_selectors(leaf, namespace.as_ref())?;
+    let (signal, timeout) = stop_options(leaf, actions)?;
+    let hint = super::store::next(leaf, &["ps"]);
     with_client(root, |client| {
         Box::pin(async move {
             let live = client.live_services(EnvironmentValues::Redacted).await?;
             print_observation_warning(&live);
             let observed = live.services();
             let services = select_services(&observed, &selectors)?;
-            let outcome =
-                apply_service_action(client, &live, &services, action, signal, timeout).await?;
-            output::emit(&outcome.result(&live))?;
-            service_action_result(outcome.partial)
-        })
-    })
-}
-
-/// Remove observed Services, and their named Docker Volumes when `--volumes` is set.
-///
-/// # Errors
-///
-/// Returns a connection, RPC, usage, or confirmation error.
-pub fn remove(root: &ArgMatches) -> Result<(), Error> {
-    let leaf = leaf_matches(root);
-    let selectors = change_selectors(leaf)?;
-    let destroy_volumes = leaf.get_flag("volumes");
-    let command = root.clone();
-    with_client(root, |client| {
-        Box::pin(async move {
-            let live = client.live_services(EnvironmentValues::Redacted).await?;
-            print_observation_warning(&live);
-            let observed = live.services();
-            let services = select_services(&observed, &selectors)?;
-            let volumes = if destroy_volumes {
-                // Selected volumes come from successful Machine-local container observations.
-                // Unrelated failures cannot conceal another mount on these owners.
-                service_volume_teardown(&services, &observed)?
-            } else {
-                Vec::new()
-            };
-            let data_loss_observed = ObservedDataLoss {
-                data_loss: volumes
-                    .iter()
-                    .map(|id| DataLoss::DockerVolume { id: id.clone() })
-                    .collect(),
-            };
-            let targets = services
-                .iter()
-                .map(|service| service.identity.to_string())
-                .collect::<Vec<_>>();
-            let Some(_confirmation) = data_loss::confirm_removal(
-                &command,
-                client,
-                &data_loss_observed,
-                "Remove Services",
-                &targets,
-                if destroy_volumes {
-                    data_loss::VolumeEffect::Delete
-                } else {
-                    data_loss::VolumeEffect::Preserve
-                },
-            )?
-            else {
-                return Ok(());
-            };
-            let outcome = apply_service_action(
-                client,
-                &live,
-                &services,
-                ContainerAction::Remove,
-                None,
-                None,
-            )
-            .await?;
-            let (volumes, skipped) = volumes_safe_to_remove(volumes, &services, &outcome.affected);
-            let mut removals = Vec::new();
-            let volume_result = if volumes.is_empty() {
-                Ok(())
-            } else {
-                match client
-                    .remove_volumes(RemoveVolumesRequest {
-                        volumes,
-                        force: false,
-                    })
-                    .await
-                {
-                    Ok(removal) => {
-                        removals.clone_from(&removal);
-                        super::volume::refuse_unless_removed(removal)
-                    }
-                    Err(error) => Err(error.into()),
-                }
-            };
+            let mut outcome: Option<ServiceActionOutcome> = None;
+            for &action in actions {
+                let (signal, timeout) = match action {
+                    ContainerAction::Stop => (signal.clone(), timeout),
+                    ContainerAction::Start | ContainerAction::Remove => (None, None),
+                };
+                let step =
+                    apply_service_action(client, &live, &services, action, signal, timeout).await?;
+                outcome = Some(match outcome {
+                    Some(before) => before.then(step),
+                    None => step,
+                });
+            }
+            let outcome = outcome.expect("a lifecycle command has an action");
             output::emit(&ServiceActionResult {
-                volumes: Some(&removals),
-                volumes_not_attempted: Some(&skipped),
+                next: outcome.partial.then_some(hint.as_str()),
                 ..outcome.result(&live)
             })?;
-            combined_teardown_result(
-                combined_teardown_result(
-                    service_action_result(outcome.partial),
-                    skipped_volume_result(&skipped),
-                ),
-                volume_result,
-            )
+            if outcome.partial {
+                Err(Error::partial())
+            } else {
+                Ok(())
+            }
         })
     })
-}
-
-fn service_volume_teardown(
-    selected: &[&ServiceObservation],
-    observed: &[ServiceObservation],
-) -> Result<Vec<DockerVolumeId>, Error> {
-    let mut volumes = BTreeSet::new();
-    for service in selected {
-        volumes.extend(managed_volume_ids(service));
-    }
-    let selected_identities = selected
-        .iter()
-        .map(|service| &service.identity)
-        .collect::<HashSet<_>>();
-    for service in observed {
-        if selected_identities.contains(&service.identity) {
-            continue;
-        }
-        if let Some(id) = docker_volume_ids(service)
-            .into_iter()
-            .find(|id| volumes.contains(id))
-        {
-            return Err(Error::conflict(format!(
-                "Docker Volume {} on {} is still mounted by {}",
-                id.name, id.machine_id, service.identity
-            )));
-        }
-    }
-    Ok(volumes.into_iter().collect())
-}
-
-fn volumes_safe_to_remove(
-    planned: Vec<DockerVolumeId>,
-    selected: &[&ServiceObservation],
-    gone: &HashSet<ContainerId>,
-) -> (Vec<DockerVolumeId>, Vec<DockerVolumeId>) {
-    let still_mounted = selected
-        .iter()
-        .flat_map(|service| service.members())
-        .filter(|member| !gone.contains(&member.as_observation().container_id))
-        .flat_map(|member| {
-            member_volume_ids(member.as_observation(), VolumeSource::docker_volume_name)
-        })
-        .collect::<HashSet<_>>();
-    planned
-        .into_iter()
-        .partition(|id| !still_mounted.contains(id))
-}
-
-fn skipped_volume_result(skipped: &[DockerVolumeId]) -> Result<(), Error> {
-    if skipped.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::usage(format!(
-            "Docker Volume removals not attempted: {}",
-            skipped
-                .iter()
-                .map(|id| format!("{}/{}", id.machine_id, id.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )))
-    }
-}
-
-fn service_action_result(partial: bool) -> Result<(), Error> {
-    if partial {
-        Err(Error::usage("Service lifecycle completed partially"))
-    } else {
-        Ok(())
-    }
-}
-
-fn combined_teardown_result(
-    action: Result<(), Error>,
-    volumes: Result<(), Error>,
-) -> Result<(), Error> {
-    match (action, volumes) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(action), Err(volumes)) => Err(Error::usage(format!("{action}; {volumes}"))),
-    }
-}
-
-fn managed_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::managed_docker_volume_name)
-}
-
-fn docker_volume_ids(service: &ServiceObservation) -> Vec<DockerVolumeId> {
-    volume_ids(service, VolumeSource::docker_volume_name)
-}
-
-fn volume_ids(
-    service: &ServiceObservation,
-    name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
-) -> Vec<DockerVolumeId> {
-    service
-        .members()
-        .flat_map(|member| member_volume_ids(member.as_observation(), name_of))
-        .collect()
-}
-
-fn member_volume_ids(
-    observation: &ContainerObservation,
-    name_of: fn(&VolumeSource) -> Option<&DockerVolumeName>,
-) -> Vec<DockerVolumeId> {
-    observation
-        .resolved_spec
-        .volume_graph()
-        .mounted_volumes()
-        .filter_map(|volume| name_of(&volume.source))
-        .map(|name| DockerVolumeId {
-            machine_id: observation.machine_id,
-            name: name.clone(),
-        })
-        .collect()
 }
 
 struct ServiceActionOutcome {
-    affected: HashSet<ContainerId>,
     /// One entry per Container the action reached.
     containers: Vec<ChangedContainer>,
     /// One entry per Container the action failed on.
@@ -519,7 +214,7 @@ struct ContainerFailure {
     error: RpcError,
 }
 
-/// The `--json` result of start, stop, and rm.
+/// The `--json` result of start and stop.
 #[derive(Serialize)]
 struct ServiceActionResult<'a> {
     containers: &'a [ChangedContainer],
@@ -531,9 +226,7 @@ struct ServiceActionResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     wait_error: Option<&'a RpcError>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    volumes: Option<&'a [VolumeRemoval]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    volumes_not_attempted: Option<&'a [DockerVolumeId]>,
+    next: Option<&'a str>,
 }
 
 impl ServiceActionOutcome {
@@ -544,9 +237,17 @@ impl ServiceActionOutcome {
             failures: &live.containers.failures,
             omitted: &live.containers.omissions,
             wait_error: self.wait_error.as_ref(),
-            volumes: None,
-            volumes_not_attempted: None,
+            next: None,
         }
+    }
+
+    /// This step's outcome followed by `later`'s.
+    fn then(mut self, later: Self) -> Self {
+        self.containers.extend(later.containers);
+        self.container_failures.extend(later.container_failures);
+        self.wait_error = self.wait_error.or(later.wait_error);
+        self.partial |= later.partial;
+        self
     }
 }
 
@@ -622,15 +323,12 @@ async fn apply_service_action(
     if let Some(error) = &wait_error {
         eprintln!("WARNING: {action} was not confirmed: {}", error.message);
         partial = true;
-        // Unconfirmed Containers may still mount their volumes.
-        changed.clear();
     }
     if !live.containers.all_targets_succeeded() {
         eprintln!("WARNING: the Service selection came from a partial Live Observation");
         partial = true;
     }
     Ok(ServiceActionOutcome {
-        affected: changed.into_iter().collect(),
         containers: rows,
         container_failures,
         wait_error,
@@ -638,43 +336,15 @@ async fn apply_service_action(
     })
 }
 
-pub(super) fn scale(root: &ArgMatches) -> Result<(), Error> {
-    let matches = leaf_matches(root);
-    let replicas = required(matches, "replicas")?
-        .parse::<u32>()
-        .ok()
-        .and_then(std::num::NonZeroU32::new)
-        .ok_or_else(|| Error::usage("replicas must be greater than zero"))?;
-    let selector = ServiceSelector::parse(required(matches, "service")?)?;
-    let context = matches.get_one::<String>("context").map(String::as_str);
-    runtime()?.block_on(async {
-        let mut client = connect_client(root, context).await?;
-        let outcome = crate::deploy::deploy_scale(
-            &mut client,
-            &selector,
-            replicas,
-            matches.get_flag("skip-health"),
-            crate::deploy::ConfirmGate {
-                auto_confirm: matches.get_flag("yes"),
-                context: context.unwrap_or("default"),
-            },
-        )
-        .await;
-        crate::deploy::emit_outcome(outcome)
-    })
-}
-
-fn change_selectors(matches: &ArgMatches) -> Result<Vec<ServiceSelector>, Error> {
-    let project = crate::project::explicit(matches)?;
+fn change_selectors(
+    matches: &ArgMatches,
+    namespace: Option<&super::operator::Scoped>,
+) -> Result<Vec<ServiceSelector>, Error> {
     matches
         .get_many::<String>("service")
         .ok_or_else(|| Error::usage("at least one Service selector is required"))?
         .map(|selector| {
-            let selector = ServiceSelector::parse(selector.as_str())?;
-            match project.as_ref() {
-                Some(project) => selector.with_project(project).map_err(Into::into),
-                None => Ok(selector),
-            }
+            super::operator::in_scope(ServiceSelector::parse(selector.as_str())?, namespace)
         })
         .collect()
 }
@@ -696,9 +366,9 @@ fn select_services<'a>(
 
 fn stop_options(
     matches: &ArgMatches,
-    action: ContainerAction,
+    actions: &[ContainerAction],
 ) -> Result<(Option<String>, Option<i32>), Error> {
-    if action != ContainerAction::Stop {
+    if !actions.contains(&ContainerAction::Stop) {
         return Ok((None, None));
     }
     let signal = matches.get_one::<String>("signal").cloned();
@@ -733,5 +403,76 @@ fn observation_warning_lines(live: &LiveServices<RpcError>) -> Vec<String> {
     lines
 }
 
+mod authored;
 #[cfg(test)]
 mod tests;
+
+pub(crate) fn command() -> Command {
+    base("service", "Manage services")
+        .arg_required_else_help(true)
+        .subcommand(authored::add_command())
+        .subcommand(authored::inspect_command())
+        .subcommand(authored::ls_command())
+        .subcommand(service_port_forward())
+        .subcommand(authored::rename_command())
+        .subcommand(service_restart())
+        .subcommand(authored::rm_command())
+        .subcommand(service_start())
+        .subcommand(service_stop())
+}
+
+fn service_port_forward() -> Command {
+    super::store::scoped(base(
+        "port-forward",
+        "Forward a local port to a Service's container until interrupted",
+    ))
+    .arg(positional("service", true))
+    .arg(positional("port", true).help("REMOTE, or LOCAL:REMOTE; LOCAL 0 picks a free port"))
+}
+
+fn services() -> Arg {
+    Arg::new("service")
+        .required(true)
+        .num_args(1..)
+        .action(ArgAction::Append)
+}
+
+fn service_restart() -> Command {
+    stop_flags(base(
+        "restart",
+        "Stop, then start, a Service's containers; its configuration is unchanged",
+    ))
+}
+
+fn service_start() -> Command {
+    super::store::scoped(base("start", "Start a Service's stopped containers")).arg(services())
+}
+
+fn service_stop() -> Command {
+    stop_flags(base(
+        "stop",
+        "Stop a Service's containers; they stay until started or deployed",
+    ))
+}
+
+fn stop_flags(command: Command) -> Command {
+    super::store::scoped(command)
+        .arg(services())
+        .arg(value("signal", None).default_value("SIGTERM"))
+        .arg(value("timeout", Some('t')).default_value("10"))
+}
+
+pub(super) fn handler(path: &str) -> Option<super::Handler> {
+    Some(match path {
+        "add" => authored::add,
+        "inspect" => authored::inspect,
+        "ls" => authored::list,
+        "port-forward" => super::operator::port_forward,
+        "rename" => authored::rename,
+        "restart" => restart,
+        "rm" => authored::remove,
+        "start" => |root| lifecycle(root, &[ContainerAction::Start]),
+        "stop" => |root| lifecycle(root, &[ContainerAction::Stop]),
+        _ => return None,
+    })
+}

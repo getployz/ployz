@@ -6,7 +6,7 @@ import {
   getDashboardSectionFromRouteId,
   type DashboardScope,
 } from "#/components/dashboard-navigation-model";
-import { organizationStateQueryOptions } from "#/modules/environment-design/workspace.queries";
+import { organizationStateQueryOptions } from "#/modules/organization/organization-state.queries";
 
 export function useDashboardSection() {
   return useMatches({

@@ -10,12 +10,12 @@ afterEach(cleanup);
 const environment: NonNullable<ComponentProps<typeof ProjectCard>["environment"]> = {
   name: "Production", namespace: "store-production",
   services: ["api", "db", "worker"].map(slug => ({
-    id: slug, slug, config: { source: { type: "empty", version: 1, rootDir: "/" } },
+    id: slug, name: slug, slug, config: { source: { type: "empty", version: 1, rootDir: "/" } },
   })),
 };
 
 function container(id: string, state: string, health = "healthy"): RuntimeContainerRecord {
-  return { id, displayName: id, machineId: "machine", projectName: "store-production", kind: "service_container", runtime: { state, health } };
+  return { id, displayName: id, machineId: "machine", namespace: "store-production", kind: "service_container", runtime: { state, health } };
 }
 
 function runtimeService(identity: string, containers: RuntimeContainerRecord[], hookContainers: RuntimeContainerRecord[] = []): RuntimeServiceRecord {

@@ -162,7 +162,7 @@ async fn l3_015_through_l3_024_exec_and_l3_069_logs_cross_the_real_docker_endpoi
             &machine.id,
             TEST_GATEWAY,
             ContainerKind::ServiceContainer,
-            &ProjectName::parse("app").unwrap(),
+            &Namespace::parse("app").unwrap(),
             &spec,
         )
         .await

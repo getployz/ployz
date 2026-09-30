@@ -135,7 +135,7 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
         None if matches.get_flag("yes") || !crate::output::interactive() => StorageChoice::None,
         None => {
             crate::output::say_inline!(
-                "Storage preparation [zfs/none] (none keeps this Machine currently stateless): "
+                "Storage preparation [zfs/none] (none is Docker only, not recommended): "
             );
             let mut answer = String::new();
             io::stdin()
@@ -156,11 +156,12 @@ pub(crate) fn resolve_storage(matches: &ArgMatches) -> Result<StorageChoice, Pro
     Ok(storage)
 }
 
+/// Why `--storage none` is not recommended; said once when a Server starts without ZFS.
+const DOCKER_ONLY: &str = "Docker only (not recommended): Volumes on this Server get no size limits, and it won't get backups, Server moves or zero-downtime migrations as they arrive.";
+
 pub(crate) fn announce_storage(storage: StorageChoice) {
     if storage == StorageChoice::None {
-        crate::output::say!(
-            "Storage: none — this Machine currently supports stateless workloads only."
-        );
+        crate::output::warn(DOCKER_ONLY);
     }
 }
 
@@ -232,6 +233,8 @@ impl Remote {
         // Provisioning may wait for human authentication; only network setup is timed.
         command.args(["-tt", self.destination.target()]);
         command.stdin(Stdio::inherit());
+        // Remote installer chatter is progress, not the result: stdout stays for `--json`.
+        command.stdout(std::io::stderr());
         command
     }
 
@@ -263,7 +266,7 @@ impl Remote {
 
     async fn platform(&self) -> Result<String, ProvisionError> {
         let mut command = self.ssh();
-        command.arg("uname -s; uname -m");
+        command.arg("uname -s; uname -m").stdout(Stdio::piped());
         let output = tokio::process::Command::from(command)
             .output()
             .await
@@ -352,7 +355,7 @@ impl Remote {
     /// Confirm the remote user can install and report its architecture.
     async fn preflight(&self) -> Result<RemoteHost, ProvisionError> {
         let mut whoami = self.ssh();
-        whoami.arg("whoami");
+        whoami.arg("whoami").stdout(Stdio::piped());
         let output = tokio::process::Command::from(whoami)
             .output()
             .await
@@ -561,6 +564,7 @@ async fn install_local(
     installer_status(
         tokio::process::Command::new(bootstrap.daemon())
             .args(install_arguments(version, preparation))
+            .stdout(std::io::stderr())
             .status()
             .await,
     )
@@ -582,11 +586,11 @@ mod tests {
     #[test]
     fn provisioning_ssh_allows_interactive_authentication_with_shared_options() {
         for (extra, seconds) in [(vec![], "5"), (vec!["--ssh-timeout", "17"], "17")] {
-            let mut args = vec!["ployz", "machine", "add", "root@host"];
+            let mut args = vec!["ployz", "server", "add", "root@host"];
             args.extend(extra);
             let root = crate::cli::command().try_get_matches_from(args).unwrap();
             let matches = root
-                .subcommand_matches("machine")
+                .subcommand_matches("server")
                 .unwrap()
                 .subcommand_matches("add")
                 .unwrap();
@@ -656,15 +660,23 @@ mod tests {
     #[test]
     fn storage_resolution_honors_explicit_and_safe_noninteractive_choices() {
         assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--storage", "zfs"]),
+            storage_matches(["ployz", "server", "add", "root@host", "--storage", "zfs"]),
             StorageChoice::Zfs
         );
         assert_eq!(
-            storage_matches(["ployz", "machine", "init", "root@host", "--storage", "none"]),
+            storage_matches([
+                "ployz",
+                "server",
+                "add",
+                "--standalone",
+                "root@host",
+                "--storage",
+                "none"
+            ]),
             StorageChoice::None
         );
         assert_eq!(
-            storage_matches(["ployz", "machine", "add", "root@host", "--yes"]),
+            storage_matches(["ployz", "server", "add", "root@host", "--yes"]),
             StorageChoice::None
         );
     }
@@ -674,7 +686,7 @@ mod tests {
         let matches = crate::cli::command()
             .try_get_matches_from([
                 "ployz",
-                "machine",
+                "server",
                 "add",
                 "root@host",
                 "--storage",
@@ -685,7 +697,7 @@ mod tests {
         assert_eq!(
             resolve_storage(
                 matches
-                    .subcommand_matches("machine")
+                    .subcommand_matches("server")
                     .unwrap()
                     .subcommand_matches("add")
                     .unwrap(),
@@ -699,7 +711,7 @@ mod tests {
     fn storage_matches<const N: usize>(args: [&str; N]) -> StorageChoice {
         let matches = crate::cli::command().try_get_matches_from(args).unwrap();
         let (_, matches) = matches
-            .subcommand_matches("machine")
+            .subcommand_matches("server")
             .unwrap()
             .subcommand()
             .unwrap();

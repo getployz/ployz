@@ -1,18 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { prefetchRemote, requireEnvironment } from "#/collections/route-data";
-import { latestTeardownAttemptQueryOptions } from "#/modules/runtime/teardown.queries";
+import { prefetchStoreViews } from "#/collections/route-data";
+import { branchQuery, environmentsQuery, saveQuery, updateQuery } from "#/modules/config-store/store-view.queries";
 import { CanvasInspectorError, CanvasInspectorPending } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/CanvasInspectorRouteStates";
-import { BranchReviewPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/BranchReviewPanel";
+import { StoreBranchPanel } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-components/branch-review/StoreBranchPanel";
 
 /** A Branch's Manage panel: everything about the Branch, over its canvas. */
 export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/review",
 )({
   loader: async ({ params, context }) => {
-    const environment = await requireEnvironment(context, params);
-    await prefetchRemote(context, latestTeardownAttemptQueryOptions({ organizationSlug: params.organizationSlug, scope: "environment", environmentId: environment.id }));
+    const store = { project: params.projectSlug, environment: params.environmentSlug };
+    await prefetchStoreViews(context, params.organizationSlug, branchQuery(store), saveQuery(store), updateQuery(store), environmentsQuery(params.projectSlug));
   },
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Branch" />,
-  component: BranchReviewPanel,
+  component: StoreBranchPanel,
 });

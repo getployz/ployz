@@ -321,6 +321,72 @@ async fn global_start_failure_retains_the_keyed_container_for_retry() {
 }
 
 #[tokio::test]
+async fn a_private_image_is_created_with_its_services_credentials_only() {
+    use ployz_core::{
+        CreateContainerRequest, OpaquePayload, RegistryAuth, RpcRequestBody, RpcResponse,
+    };
+    use std::sync::Arc;
+    use tonic::{Request, Response};
+
+    let captured = Arc::new(Mutex::new(Vec::<CreateContainerRequest>::new()));
+    let requests = captured.clone();
+    let (mut client, server) =
+        crate::connect::test_support::rpc_client(move |rpc: Request<OpaquePayload>| {
+            let requests = requests.clone();
+            async move {
+                let RpcRequestBody::CreateContainer(request) =
+                    rpc.into_inner().decode_request().unwrap().body
+                else {
+                    panic!("only create is expected");
+                };
+                requests.lock().unwrap().push(request);
+                Ok(Response::new(
+                    RpcResponse::from(ContainerCreated {
+                        container_id: container('a'),
+                        display_name: "api".into(),
+                    })
+                    .encode()
+                    .unwrap(),
+                ))
+            }
+        })
+        .await;
+    let mut private = spec(None, None, None);
+    private.container.pull_policy = ployz_core::PullPolicy::Always;
+    let mut public = private.clone();
+    public.name = ployz_core::ServiceName::parse("other").unwrap();
+    let auth = RegistryAuth {
+        username: Some("octocat".into()),
+        password: "token".into(),
+    };
+    client.registry_auth = std::collections::BTreeMap::from([(private.name.clone(), auth.clone())]);
+    for (kind, specification) in [
+        (ContainerKind::ServiceContainer, &private),
+        (ContainerKind::PreDeployHook, &private),
+        (ContainerKind::ServiceContainer, &public),
+    ] {
+        MachineOperations::create_container(
+            &client,
+            &machine('1'),
+            kind,
+            &test_namespace(),
+            specification,
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    server.abort();
+    let sent = captured
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| request.registry_auth.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(sent, [Some(auth.clone()), Some(auth), None]);
+}
+
+#[tokio::test]
 async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replicas() {
     use ployz_core::{
         CreateContainerRequest, OpaquePayload, RpcRequestBody, RpcResponse, ServiceMode,
@@ -371,7 +437,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
             &client,
             &machine('1'),
             ContainerKind::ServiceContainer,
-            &test_project(),
+            &test_namespace(),
             specification,
             None,
         )
@@ -382,7 +448,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::PreDeployHook,
-        &test_project(),
+        &test_namespace(),
         &service,
         None,
     )
@@ -392,7 +458,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         Some(container('f')),
     )
@@ -402,7 +468,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         Some(container('f')),
     )
@@ -415,7 +481,7 @@ async fn global_deploy_uses_stable_revision_keys_without_keying_hooks_or_replica
         &client,
         &machine('1'),
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         &service,
         None,
     )
@@ -660,7 +726,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         ..Default::default()
     };
     let intent = DeployIntent::apply_one(
-        test_project(),
+        test_namespace(),
         requested,
         PlanOptions {
             skip_health_monitor: true,
@@ -689,7 +755,7 @@ async fn global_stop_first_retry_replays_retained_candidate_with_no_free_endpoin
         &client,
         machine_id,
         ContainerKind::ServiceContainer,
-        &test_project(),
+        &test_namespace(),
         spec,
         None,
     )

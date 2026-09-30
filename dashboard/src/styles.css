@@ -267,7 +267,8 @@
   min-width: 0;
   min-height: 0;
   margin: 0.5rem;
-  overflow: hidden;
+  /* Clip, not hide: focusing a field deep in a panel must scroll its own list, never push the header out of view. */
+  overflow: clip;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   background: var(--background);

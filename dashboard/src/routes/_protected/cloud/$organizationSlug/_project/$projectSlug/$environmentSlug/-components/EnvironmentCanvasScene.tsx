@@ -1,5 +1,4 @@
-import { useCollectionScope } from "#/collections/use-collection-scope";
-import { getEnvironmentDocumentsCollection, useEnvironmentDocument } from "#/modules/environment-design/environment-document.collection";
+import { CANVAS_FIT_VIEW } from "./canvas/constants";
 import { Suspense, useState } from "react";
 import {
   Background,
@@ -8,35 +7,26 @@ import {
   ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { eq, inArray, useLiveQuery, useLiveSuspenseQuery } from "@tanstack/react-db";
-import { useLiveNodes } from "#/modules/branches/use-live-nodes";
+import { eq, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { Outlet, useLoaderData, useParams } from "@tanstack/react-router";
+import { getCanvasPositionsCollection } from "#/collections/collections";
+import { useCollectionScope } from "#/collections/use-collection-scope";
 import { parseLiveQueryRow } from "#/lib/tanstack-db";
-import {
-  buildEnvironmentServicesViewQuery,
-  normalizeEnvironmentServicesViewRecord,
-} from "#/modules/services/services.collection";
-import { useEnvironmentChangeStateProjection } from "#/modules/deployments/environment-change-state.queries";
-import { getEnvironmentNodeIntroductionsCollection } from "#/collections/collections";
-import { environmentNodeIntroductionSchema } from "#/modules/environment-design/environment-node-introductions";
-import {
-  environmentResourceCanvasPositionSchema,
-  volumeResourceRecordSchema,
-} from "#/modules/environment-design/resources";
-import {
-  useCanvasPositionsCollection,
-  useServicesCollection,
-  useVolumeResourcesCollection,
-} from "#/modules/services/services.collection";
+import { canvasPositionSchema } from "#/modules/canvas/canvas-positions";
 import { CanvasInspectorOverlay } from "./CanvasInspectorOverlay";
 import { useCanvasInspectorSelection } from "./useCanvasInspectorSelection";
 import { LOADING_NODE, canvasNodeTypes } from "./canvas/canvas-node-types";
 import { BottomBarSlot } from "./canvas/BottomBar";
 import { CanvasFlow } from "./canvas/CanvasFlow";
 import { DeploymentLightingProvider, useOpenDeployment } from "./deployment-page";
-import { buildEdges, buildLiveEdges, buildLiveNodes, buildNodes } from "./canvas/nodes";
+import { buildStoreEdges, buildStoreNodes } from "./canvas/nodes";
+import type { StoreCanvasService } from "./canvas/types";
+import { branchQuery, diffQuery, environmentSettingsQuery, namespaceQuery, requireView, servicesQuery, useStoreViews, volumesQuery } from "#/modules/config-store/store-view.queries";
+import { liveNodes } from "#/modules/config-store/store-branches";
+import { serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
-import { BranchPickingProvider } from "./new-branch/branch-picking";
+import { StorePickingProvider } from "./new-branch/StoreNewBranchPanel";
+import { StorePrPickingProvider } from "./pr-environments/StorePrPlanPanel";
 
 export function PendingCanvas() {
   return (
@@ -68,148 +58,62 @@ export function PendingCanvas() {
   );
 }
 
+/** The canvas over the Config Store: its Services, Volumes and Live Nodes, where the canvas last put them. */
 function CanvasWithData() {
-  const collectionScope = useCollectionScope();
-  const params = useParams({ from: ENVIRONMENT_ROUTE_FROM });
-  const { environmentId, organizationId } = useLoaderData({
-    from: ENVIRONMENT_ROUTE_FROM,
-  });
-  const servicesCollection = useServicesCollection(params.organizationSlug);
-  const canvasPositionsCollection = useCanvasPositionsCollection(
-    params.organizationSlug,
-  );
-  const volumeResourcesCollection = useVolumeResourcesCollection(
-    params.organizationSlug,
-  );
-  const documents = getEnvironmentDocumentsCollection(params.organizationSlug, collectionScope);
-  const document = useEnvironmentDocument(params.organizationSlug, environmentId);
-  const nodeIntroductionsCollection = getEnvironmentNodeIntroductionsCollection(
-    params.organizationSlug, collectionScope,
-  );
-  const environmentChangeState = useEnvironmentChangeStateProjection({
-    organizationSlug: params.organizationSlug,
-    environmentId,
-  });
+  const scope = useCollectionScope();
+  const { organizationSlug, projectSlug, environmentSlug } = useParams({ from: ENVIRONMENT_ROUTE_FROM });
+  const { store: ref, environmentId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
+  const { organizationId } = useLoaderData({ from: "/_protected/cloud/$organizationSlug" });
+  // The branch view is refused unless this is a Branch.
+  const [servicesResult, settingsResult, diffResult, volumesResult, branch, namespace] = useStoreViews(organizationSlug,
+    [servicesQuery(ref), environmentSettingsQuery(ref), diffQuery(ref), volumesQuery(ref), branchQuery(ref), namespaceQuery(ref)] as const);
   const { selectedNodeId } = useCanvasInspectorSelection();
-  const { data: services } = useLiveSuspenseQuery({
-    queryKey: ['canvas-services', servicesCollection.id, canvasPositionsCollection.id, documents.id, params.projectSlug, params.environmentSlug],
-    query: (q) =>
-      buildEnvironmentServicesViewQuery(q, params, {
-        services: servicesCollection,
-        canvasPositions: canvasPositionsCollection,
-        documents,
-      }),
+  const positions = getCanvasPositionsCollection(organizationSlug, scope);
+  const { data: positionRows } = useLiveSuspenseQuery({
+    queryKey: ["canvas-positions", positions.id, environmentId],
+    query: (q) => q.from({ position: positions }).where(({ position }) => eq(position.environmentId, environmentId))
+      .select(({ position }) => position),
   });
-  const { data: canvasPositionRows } = useLiveSuspenseQuery({
-    queryKey: ['canvas-positions', canvasPositionsCollection.id, environmentId],
-    query: (q) =>
-      q
-        .from({ canvasPosition: canvasPositionsCollection })
-        .where(({ canvasPosition }) =>
-          eq(canvasPosition["environmentId"], environmentId),
-        )
-        .select(({ canvasPosition }) => ({
-          id: canvasPosition["id"],
-          environmentId: canvasPosition["environmentId"],
-          resourceType: canvasPosition["resourceType"],
-          resourceId: canvasPosition["resourceId"],
-          x: canvasPosition["x"],
-          y: canvasPosition["y"],
-          createdAt: canvasPosition["createdAt"],
-          updatedAt: canvasPosition["updatedAt"],
-        })),
-  });
-  const { data: volumeResourceRows } = useLiveSuspenseQuery({
-    queryKey: ['canvas-volumes', volumeResourcesCollection.id, params.projectSlug, params.environmentSlug],
-    query: (q) =>
-      q
-        .from({ resource: volumeResourcesCollection })
-        .where(({ resource }) => eq(resource.projectSlug, params.projectSlug))
-        .where(({ resource }) =>
-          eq(resource.environmentSlug, params.environmentSlug),
-        )
-        .select(({ resource }) => resource),
-  });
-  const { data: nodeIntroductionRows } = useLiveSuspenseQuery({
-    queryKey: ['canvas-introductions', nodeIntroductionsCollection.id, environmentId],
-    query: (q) =>
-      q
-        .from({ introduction: nodeIntroductionsCollection })
-        .where(({ introduction }) =>
-          eq(introduction.environmentId, environmentId),
-        )
-        .select(({ introduction }) => ({
-          organizationId: introduction.organizationId,
-          environmentId: introduction.environmentId,
-          nodeType: introduction.nodeType,
-          nodeId: introduction.nodeId,
-          nodeLineageId: introduction.nodeLineageId,
-          configVersion: introduction.configVersion,
-          config: introduction.config,
-          createdAt: introduction.createdAt,
-          updatedAt: introduction.updatedAt,
-        })),
-  });
-  // A Branch draws the services its Own Copies use live where they sit on their owner's canvas.
-  const liveNodes = useLiveNodes(params.organizationSlug, environmentId);
-  const liveOwnerNodeIds = liveNodes.flatMap((node) => node.owner ? [node.owner.node.nodeId] : []);
-  const { data: liveNodePositionRows } = useLiveQuery({
-    queryKey: ['canvas-live-positions', canvasPositionsCollection.id, liveOwnerNodeIds.join()],
-    query: (q) => q.from({ canvasPosition: canvasPositionsCollection })
-      .where(({ canvasPosition }) => inArray(canvasPosition["resourceId"], liveOwnerNodeIds))
-      .select(({ canvasPosition }) => ({
-        id: canvasPosition["id"], environmentId: canvasPosition["environmentId"], resourceType: canvasPosition["resourceType"],
-        resourceId: canvasPosition["resourceId"], x: canvasPosition["x"], y: canvasPosition["y"],
-        createdAt: canvasPosition["createdAt"], updatedAt: canvasPosition["updatedAt"],
-      })),
-  });
-  const liveNodePositions = liveNodePositionRows.map((position) => parseLiveQueryRow(environmentResourceCanvasPositionSchema, position));
-  const nodeIntroductions = nodeIntroductionRows.map((introduction) =>
-    parseLiveQueryRow(environmentNodeIntroductionSchema, introduction),
-  );
-  const volumeResources = volumeResourceRows.map((resource) =>
-    parseLiveQueryRow(volumeResourceRecordSchema, resource),
-  );
-  const canvasPositions = canvasPositionRows.map((position) =>
-    parseLiveQueryRow(environmentResourceCanvasPositionSchema, position),
-  );
-  const servicesWithBoundEnv = services.map(normalizeEnvironmentServicesViewRecord);
-  const serviceVolumeAttachments = document?.intent.services.flatMap((service) =>
-    service.volumeAttachments.map((attachment) => ({ ...attachment, serviceId: service.id, environmentId }))) ?? [];
-  const activeServicesWithBoundEnv = servicesWithBoundEnv.filter(
-    (service) => service.service.deletedAt == null,
-  );
-  const initialNodes = [...buildNodes(
-    activeServicesWithBoundEnv,
-    canvasPositions,
-    selectedNodeId,
-    volumeResources,
-  ), ...buildLiveNodes(liveNodes, liveNodePositions).map((node) => ({ ...node, selected: node.id === selectedNodeId }))];
-  const initialEdges = [...buildEdges(
-    volumeResources,
-    serviceVolumeAttachments,
-    activeServicesWithBoundEnv,
-  ), ...buildLiveEdges(liveNodes)];
+  // A closed Branch is deleted under the open page; the page leaves for its Parent, the canvas just stops drawing.
+  if ([servicesResult, settingsResult, diffResult, volumesResult].some((r) => !r.ok && r.refusal.code === "not_found")) return <PendingCanvas />;
+  const services = requireView(servicesResult);
+  const settings = requireView(settingsResult);
+  const diff = requireView(diffResult);
+  const volumes = requireView(volumesResult);
+  const canvasPositions = positionRows.map((row) => parseLiveQueryRow(canvasPositionSchema, row));
+  const store = {
+    services: services.services.map((service): StoreCanvasService => ({
+      service,
+      subtitle: settingText(serviceSettingRows(settings, service.name).get(service.source === "git" ? "repository" : "image")?.value) || null,
+      changeCount: serviceChanges(diff, service.id).size,
+      runtimeIdentity: namespace.ok ? `${namespace.value.namespace}/${service.private_dns}` : null,
+      uploaded: service.source === "uploaded",
+    })),
+    volumes: volumes.volumes,
+    live: branch.ok ? liveNodes(branch.value.live, services.services) : [],
+    diff,
+  };
+  const initialNodes = buildStoreNodes(store, canvasPositions, selectedNodeId, environmentId);
+  const initialEdges = buildStoreEdges(store);
 
   return (
     <ReactFlowProvider
-      key={`${params.projectSlug}/${params.environmentSlug}`}
+      key={`${projectSlug}/${environmentSlug}`}
       initialNodes={initialNodes}
       initialEdges={initialEdges}
       initialWidth={1200}
       initialHeight={800}
-      fitView={!selectedNodeId}
+      // A link to a node that isn't here (stale, deleted) shows the whole canvas, not an unfitted corner.
+      fitView={!initialNodes.some((node) => node.id === selectedNodeId)}
+      initialFitViewOptions={CANVAS_FIT_VIEW}
       initialMaxZoom={1.25}
     >
       <CanvasFlow
         organizationId={organizationId}
         environmentId={environmentId}
-        servicesWithBoundEnv={servicesWithBoundEnv}
-        volumeResources={volumeResources}
-        environmentChangeState={environmentChangeState}
-        nodeIntroductions={nodeIntroductions}
         canvasNodes={initialNodes}
         canvasEdges={initialEdges}
+        store={store}
       />
     </ReactFlowProvider>
   );
@@ -226,7 +130,8 @@ export function EnvironmentCanvasScene() {
 
   return (
     <BottomBarSlot.Provider value={bottomBarSlot}>
-    <BranchPickingProvider newBranch={newBranch} prPlan={prPlan}>
+    <StorePickingProvider newBranch={newBranch}>
+    <StorePrPickingProvider prPlan={prPlan}>
     <CanvasInspectorOverlay
       selection={selectedNodeId ? {
         key: `${canvasKey}/${selectedServiceId ? "service" : "resource"}/${selectedNodeId}`,
@@ -248,7 +153,8 @@ export function EnvironmentCanvasScene() {
     >
       <Outlet />
     </CanvasInspectorOverlay>
-    </BranchPickingProvider>
+    </StorePrPickingProvider>
+    </StorePickingProvider>
     </BottomBarSlot.Provider>
   );
 }

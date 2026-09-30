@@ -1,7 +1,7 @@
 //! Native Cloud session: connect, observe_enrollment, register,
 //! about, publish_certificate_material, runtime.watch, prepare, build, preview, run,
-//! preview_project_removal, remove_volumes, Data Loss for Machine, Project, and
-//! Cluster destroy, remove_machine, destroy_project, destroy_cluster, and close.
+//! preview_namespace_removal, remove_volumes, Data Loss for Machine, Namespace, and
+//! Cluster destroy, remove_machine, destroy_namespace, destroy_cluster, and close.
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -17,24 +17,33 @@ use crate::deploy::{DeployIntent, DeployPlan, VolumeFate};
 use ployz_core::{
     CertificateMaterialPublished, ClusterTeardown, ContractDescription, DataLossConfirmation,
     DeployEvent, DeployOutcome, DescribeContractRequest, EnrollmentAssignment, EnrollmentSnapshot,
-    ExecutionError, LocalMachineRemoved, MachineTarget, ObservedDataLoss, OpaquePayload,
-    ProjectName, PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered,
-    RemoveVolumesRequest, Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest,
-    ServiceObservation, VolumeRemoval, decode_runtime_watch_frame, op,
+    ExecutionError, LocalMachineRemoved, MachineTarget, Namespace, ObservedDataLoss, OpaquePayload,
+    PublishCertificateMaterialRequest, RUNTIME_WATCH_CAPABILITY, Registered, RemoveVolumesRequest,
+    Rpc, RpcError, RpcErrorCode, RuntimeWatchFrame, RuntimeWatchRequest, ServiceObservation,
+    VolumeRemoval, decode_runtime_watch_frame, op,
 };
 
 pub use payloads::typescript_declarations;
 
 mod build;
 mod deploy;
+mod github_build;
 mod logs;
 mod payloads;
 pub(crate) mod preparation;
 pub(crate) mod prepare;
 mod running;
+mod store_call;
+mod store_runner;
 pub use build::{BuildOutcome, OutsideBuild};
 pub use deploy::ImageCleanup;
+pub use github_build::{
+    GithubCheckIn, GithubFinish, GithubReported, GithubStart, github_cancel, github_check_in,
+    github_finish, github_report, github_start,
+};
 pub use running::Running;
+pub use store_call::store_call;
+pub use store_runner::{Sources, observe_volumes, run_deployment};
 
 /// Cancellable preparation whose progress is retained until read, within a byte budget.
 pub type RunningPreparation = Running<PreparedDeploy>;
@@ -43,7 +52,8 @@ pub type RunningPreparation = Running<PreparedDeploy>;
 pub type RunningBuild = Running<BuildOutcome>;
 pub use logs::{ContainerLogInput, ContainerLogRecord, ContainerLogStream};
 pub use preparation::{
-    BuildReceipt, OutsideBuildInput, PreparationInput, VERSION, expected_fingerprints,
+    BuildReceipt, BuildVariables, OutsideBuildInput, PreparationInput, UploadDigest, VERSION,
+    expected_fingerprints,
 };
 
 /// The public SDK Watch frame: the RPC frame plus what this observer derives
@@ -233,6 +243,25 @@ impl Session {
         .await
     }
 
+    /// Set `label`'s Management Client slot to a fresh client key and return its Management
+    /// Capability. A repeated Set rotates the key; the previous one works until the new one is used.
+    ///
+    /// # Errors
+    /// Returns cancellation, transport errors, or `failed_precondition` off a participating Machine.
+    pub async fn set_management_client(
+        &self,
+        label: ployz_core::ManagementClientLabel,
+    ) -> Result<ployz_core::ManagementCapability, RpcError> {
+        let response = self
+            .unary::<op::SetManagementClient>(ployz_core::SetManagementClientRequest::Set { label })
+            .await?;
+        response.capability.ok_or_else(|| RpcError {
+            code: RpcErrorCode::Internal,
+            message: "Machine set a Management Client without a Management Capability".into(),
+            details: Value::Null,
+        })
+    }
+
     /// Inspect the selected Machine, including its Management Client labels.
     ///
     /// # Errors
@@ -349,11 +378,25 @@ impl Session {
     /// # Errors
     /// Rejects a closed session. Preparation failures arrive through `finished`.
     pub fn prepare(&self, input: PreparationInput) -> Result<RunningPreparation, RpcError> {
+        self.prepare_with(input, std::collections::BTreeMap::new())
+    }
+
+    /// [`Self::prepare`], pulling private images with `registry_auth`, which a
+    /// lowering input never carries.
+    pub(crate) fn prepare_with(
+        &self,
+        input: PreparationInput,
+        registry_auth: std::collections::BTreeMap<
+            ployz_core::ServiceName,
+            ployz_core::RegistryAuth,
+        >,
+    ) -> Result<RunningPreparation, RpcError> {
         let mut client = self.client()?;
         let token = self.inner.cancel.child_token();
         let session = Arc::downgrade(&self.inner);
         Ok(Running::spawn(token.clone(), move |reporter| async move {
-            let captured = capture(input).await?;
+            let mut captured = capture(input).await?;
+            captured.intent.registry_auth = registry_auth;
             if token.is_cancelled() {
                 return Err(preparation_error(
                     crate::sdk::prepare::PreparationError::Cancelled,
@@ -372,7 +415,8 @@ impl Session {
             .await
             .map_err(|error| preparation_error(error, token.is_cancelled()))?;
             let (preview, retained) = prepared.into_parts();
-            let build_receipts = preparation::receipts(&captured.fingerprints, &retained);
+            let build_receipts =
+                preparation::receipts(&captured.fingerprints, &captured.reused, &retained);
             let prune_targets = crate::image::prune_targets(&preview, &retained);
             Ok(PreparedDeploy {
                 preview,
@@ -386,7 +430,9 @@ impl Session {
     }
 
     /// Start one Image Build. `input` holds exactly one Git Service with its
-    /// checkout and commit; its receipt, if any, is a reuse hint. When
+    /// checkout and commit, or one uploaded Service with or without its source;
+    /// its receipt, if any, is a reuse hint, and the only way to serve an upload
+    /// that came without source. When
     /// `start_within` passes before a Build Machine admits the build, the build
     /// is withdrawn and `finished` reports [`BuildOutcome::Queued`]. An admitted
     /// build always runs to its end. The Machine's temporary image retention
@@ -446,22 +492,22 @@ impl Session {
         })
     }
 
-    /// Calculate a Project-removal preview. Confirming executes these operations.
+    /// Calculate a Namespace-removal preview. Confirming executes these operations.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, the Project
+    /// Returns a generated [`RpcError`] when the session is closed, the Namespace
     /// is reserved, snapshot gathering fails, or planning fails.
-    pub async fn preview_project_removal(
+    pub async fn preview_namespace_removal(
         &self,
-        project_name: ProjectName,
+        namespace: Namespace,
         volumes: VolumeFate,
     ) -> Result<PreparedDeploy, RpcError> {
         let mut client = self.client()?;
         let preview = tokio::select! {
             biased;
             () = self.inner.cancel.cancelled() => return Err(closed()),
-            preview = client.preview_project_removal(&project_name, volumes) => preview?,
+            preview = client.preview_namespace_removal(&namespace, volumes) => preview?,
         };
         Ok(PreparedDeploy {
             preview,
@@ -515,6 +561,21 @@ impl Session {
         self.until_closed(client.remove_volumes(request)).await
     }
 
+    /// Which Machines hold each of the Docker Volumes `sought`, naming every Machine
+    /// that did not answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed or listing
+    /// Machines fails.
+    pub async fn observe_volumes(
+        &self,
+        sought: Vec<ployz_core::DockerVolumeName>,
+    ) -> Result<ployz_store::VolumeObservation, RpcError> {
+        let mut client = self.client()?;
+        self.until_closed(client.observe_volumes(sought)).await
+    }
+
     /// Live Observation of Data Loss that removing `machine` would cause.
     ///
     /// `machine` is a Machine Target. This is not a complete Cluster view.
@@ -546,7 +607,7 @@ impl Session {
     /// Returns a generated [`RpcError`] when the session is closed, `machine`
     /// is not a Machine Target, the Machine is not visible or is the current
     /// entry while another Machine is visible, the Machine is the last one and a
-    /// Management Client holds a key, the Machine did not respond so Data Loss cannot
+    /// Management Client other than Cloud holds a key, the Machine did not respond so Data Loss cannot
     /// be listed, the confirmation does not cover the fresh Data Loss, or
     /// reset or shared-row removal fails. Unconfirmed names are in
     /// `UnconfirmedDataLoss` details.
@@ -558,7 +619,27 @@ impl Session {
         let target =
             MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.remove_machine(&target, confirm_data_loss))
+        self.until_closed(client.remove_machine(
+            &target,
+            confirm_data_loss,
+            crate::cluster::Remover::Cloud,
+        ))
+        .await
+    }
+
+    /// Take `machine` out of the Cluster without resetting it: it keeps its state and
+    /// its keys, Cloud's included. The last Machine isn't taken out this way.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when the session is closed, `machine` is not a
+    /// Machine Target or not visible, it is the last Machine and a Management Client
+    /// holds a key or its holders can't be read, or shared-row removal fails.
+    pub async fn remove_machine_membership(&self, machine: &str) -> Result<(), RpcError> {
+        let target =
+            MachineTarget::parse(machine).map_err(|error| invalid_argument(error.to_string()))?;
+        let mut client = self.client()?;
+        self.until_closed(client.remove_machine_membership(&target))
             .await
     }
 
@@ -587,52 +668,52 @@ impl Session {
         .await
     }
 
-    /// Live Observation of Data Loss that destroying `project` would cause.
+    /// Live Observation of Data Loss that destroying `namespace` would cause.
     ///
     /// [`VolumeFate::Preserve`] yields an empty list. Mutates nothing.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, `project`
-    /// is not a Project Name or is reserved, snapshot gathering fails, or
+    /// Returns a generated [`RpcError`] when the session is closed, `namespace`
+    /// is not a Namespace or is reserved, snapshot gathering fails, or
     /// destroying volumes is requested against a known incomplete snapshot.
-    pub async fn data_loss_if_project_destroyed(
+    pub async fn data_loss_if_namespace_destroyed(
         &self,
-        project: &str,
+        namespace: &str,
         volumes: VolumeFate,
     ) -> Result<ObservedDataLoss, RpcError> {
-        let project_name =
-            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace =
+            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.data_loss_if_project_destroyed(&project_name, volumes))
+        self.until_closed(client.data_loss_if_namespace_destroyed(&namespace, volumes))
             .await
     }
 
-    /// Destroy `project` after an exact Data Loss confirmation.
+    /// Destroy `namespace` after an exact Data Loss confirmation.
     ///
     /// `confirm_data_loss` is derived from the Live Observation the caller
     /// showed a human. Confirmed identities that disappeared are ignored, so
-    /// one confirmation can cover several Projects. Re-reads Data Loss at
+    /// one confirmation can cover several Namespaces. Re-reads Data Loss at
     /// execute time. [`VolumeFate::Preserve`] is the non-destructive default.
     ///
     /// # Errors
     ///
-    /// Returns a generated [`RpcError`] when the session is closed, `project`
-    /// is not a Project Name or is reserved, the Project is not visible, the
+    /// Returns a generated [`RpcError`] when the session is closed, `namespace`
+    /// is not a Namespace or is reserved, the Namespace is not visible, the
     /// snapshot is incomplete, or the confirmation does not cover the fresh
     /// Data Loss. Unconfirmed names are in `UnconfirmedDataLoss` details.
     /// Execution failure is a [`DeployOutcome::Failed`].
-    pub async fn destroy_project(
+    pub async fn destroy_namespace(
         &self,
-        project: &str,
+        namespace: &str,
         confirm_data_loss: &DataLossConfirmation,
         volumes: VolumeFate,
     ) -> Result<DeployOutcome<ExecutionError>, RpcError> {
-        let project_name =
-            ProjectName::parse(project).map_err(|error| invalid_argument(error.to_string()))?;
+        let namespace =
+            Namespace::parse(namespace).map_err(|error| invalid_argument(error.to_string()))?;
         let mut client = self.client()?;
-        self.until_closed(client.destroy_project(
-            &project_name,
+        self.until_closed(client.destroy_namespace(
+            &namespace,
             confirm_data_loss,
             volumes,
             &self.inner.cancel,
@@ -643,7 +724,7 @@ impl Session {
 
     /// Live Observation of Data Loss that destroying this Cluster would cause.
     ///
-    /// Unions Docker Volumes across every visible Project and Machine. Mutates
+    /// Unions Docker Volumes across every visible Namespace and Machine. Mutates
     /// nothing: it is safe to call when the operator then cancels.
     ///
     /// # Errors
@@ -819,7 +900,7 @@ async fn capture(input: PreparationInput) -> Result<preparation::CapturedPrepara
         .map_err(|_| invalid_argument("source capture task failed".into()))?
 }
 
-fn preparation_error(
+pub(crate) fn preparation_error(
     error: crate::sdk::prepare::PreparationError,
     cancellation_requested: bool,
 ) -> RpcError {
@@ -866,6 +947,7 @@ fn preparation_error(
                 details,
             }
         }
+        PreparationError::UploadNeeded(services) => preparation::upload_needed(&services),
         PreparationError::Cancelled => RpcError {
             code: RpcErrorCode::Unavailable,
             message,

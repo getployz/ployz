@@ -1,15 +1,20 @@
 import "@tanstack/react-start/server-only";
 import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { polar, portal, webhooks } from "@polar-sh/better-auth";
-import { Polar as PolarSdk } from "@polar-sh/sdk";
 import { betterAuth } from "better-auth";
-import { organization as organizationPlugin } from "better-auth/plugins";
+import {
+  bearer,
+  deviceAuthorization,
+  organization as organizationPlugin,
+} from "better-auth/plugins";
+import { createAuthMiddleware } from "better-auth/api";
 import { tanstackStartCookies } from "better-auth/tanstack-start";
 import { Context, Data, Effect, Layer, Redacted, Schema } from "effect";
 import { sessionAdditionalFields, userAdditionalFields } from "#/auth/session-fields";
 import { getBetterAuthUrlConfig } from "#/auth/trusted-origins";
 import {
   account,
+  deviceCode,
   invitation,
   member,
   session,
@@ -20,6 +25,7 @@ import { organization } from "#/modules/organization/tables";
 import {
   createOrganizationBillingSyncEventsFromCustomerStatePayload,
   createOrganizationBillingSyncEventsFromSubscriptionPayload,
+  createServerAccessRetireRequestedEvent,
   type InngestSendableEvent,
 } from "#/modules/inngest/events";
 import {
@@ -27,12 +33,13 @@ import {
   sendInngestEvent,
 } from "#/modules/inngest/client";
 import {
+  getOrganizationSlugById,
   handleSessionCreated,
   handleUserCreated,
-} from "#/modules/environment-design/workspace-bootstrap.server";
-import { getOrganizationSlugById } from "#/modules/environment-design/workspace-repository.server";
+} from "#/modules/organization/organization-state.server";
 import { Actor } from "#/modules/identity/actor";
 import { Polar } from "#/modules/billing/polar-provider.server";
+import { makePolarCore } from "#/modules/billing/polar-api";
 import { asString } from "#/lib/json";
 import { AppConfig } from "#/server/config.server";
 import { BetterAuthDatabase, Database } from "#/server/database.server";
@@ -90,6 +97,7 @@ export class Auth extends Context.Service<Auth, AuthService>()("ployz/Auth") {}
 
 const AuthSchema = {
   account,
+  deviceCode,
   invitation,
   member,
   organization,
@@ -97,6 +105,19 @@ const AuthSchema = {
   user,
   verification,
 };
+
+/** The `ployz` CLI's device-authorization client id. */
+export const CLI_CLIENT_ID = "ployz-cli";
+
+// better-auth >= 1.6.11 binds a code to the user whose `GET /device` claims it,
+// so another signed-in user can neither approve nor deny it.
+const cliSignInPlugins = [
+  deviceAuthorization({
+    verificationUri: "/device",
+    validateClient: (clientId) => clientId === CLI_CLIENT_ID,
+  }),
+  bearer(),
+];
 
 function hostedPolarPlugin(
   config: Effect.Success<typeof AppConfig.make>,
@@ -114,10 +135,7 @@ function hostedPolarPlugin(
   },
 ) {
   if (config.polar.mode === "self_hosted") return null;
-  const client = new PolarSdk({
-    accessToken: Redacted.value(config.polar.accessToken),
-    server: config.polar.server,
-  });
+  const client = makePolarCore(config.polar);
   // Sign-up never calls Polar; checkout creates the customer.
   return polar({
     client,
@@ -191,7 +209,7 @@ const makeAuth = Effect.gen(function* () {
     user: {
       additionalFields: userAdditionalFields,
     },
-    advanced: { database: { generateId: "uuid" } },
+    advanced: { database: { generateId: "uuid" }, ipAddress: { ipAddressHeaders: config.auth.clientIpHeaders } },
     databaseHooks: {
       user: {
         create: { after: (createdUser) => runHook(handleUserCreated(createdUser)) },
@@ -219,8 +237,19 @@ const makeAuth = Effect.gen(function* () {
         },
       },
     },
+    hooks: {
+      // A member removed or leaving: their devices' holders on the Organization's Servers go now, not at the next sweep.
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/organization/remove-member" && ctx.path !== "/organization/leave") return;
+        // The retirement sweeps every holder a credential no longer authorizes: it needs no payload.
+        await runHook(sendInngestEvent(createServerAccessRetireRequestedEvent()).pipe(
+          Effect.catch((error) => Effect.logWarning("Server access retirement was not requested; the sweep does it.", error)),
+        ));
+      }),
+    },
     plugins: [
       organizationPlugin(),
+      ...cliSignInPlugins,
       ...(polarPlugin === null ? [] : [polarPlugin]),
       tanstackStartCookies(),
     ],

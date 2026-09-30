@@ -22,7 +22,7 @@ import type {
   MachinePath,
   PidMode,
   PreDeployCommand,
-  ProjectName,
+  Namespace,
   QualifiedService,
   RegisterRequest,
   Registered,
@@ -49,7 +49,7 @@ import {
   allocateEnrollment,
   RpcError,
 } from "../index";
-import type { PreparedDeploy } from "../index";
+import type { PreparationInput, PreparedDeploy } from "../index";
 
 // Every field serde always writes is present in the type; `Option` is `T | null`.
 const container: ServiceContainerSpec = {
@@ -100,7 +100,7 @@ const web: RequestedServiceSpec = {
 };
 const intent: DeployIntent = {
   dependencies: {},
-  project_name: "app" as ProjectName,
+  namespace: "app" as Namespace,
   target: [web],
   options: {
     force_recreate: false,
@@ -146,7 +146,7 @@ const invalidVolumeDriver: VolumeDriver = { name: "local" };
   // @ts-expect-error targets is not a field of DeployIntent
   targets: [web],
 }) satisfies DeployIntent;
-("project_name") satisfies keyof DeployIntent;
+("namespace") satisfies keyof DeployIntent;
 // @ts-expect-error an undeclared name is not a key of DeployIntent
 ("from_a_newer_daemon") satisfies keyof DeployIntent;
 
@@ -188,13 +188,13 @@ const flatLoss: DataLoss = { kind: "docker_volume", machine_id: "m" as MachineId
 
 const ordinary = { kind: "ordinary", name: "data", driver: { name: "local", options: {} }, labels: {} } as const;
 ordinary satisfies VolumeSource;
-({ ...ordinary, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+({ ...ordinary, scope: { namespace: "app" as Namespace, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 // @ts-expect-error a resolved source always states its scope, even when absent
 ordinary satisfies ResolvedVolumeSource;
 const bind = { kind: "bind", machine_path: "/srv" as MachinePath, create_machine_path: false, propagation: null, recursive: null } as const;
 ({ ...bind, scope: null }) satisfies ResolvedVolumeSource;
 // @ts-expect-error only a managed source carries a scope
-({ ...bind, scope: { project: "app" as ProjectName, logical_name: "data" } }) satisfies ResolvedVolumeSource;
+({ ...bind, scope: { namespace: "app" as Namespace, logical_name: "data" } }) satisfies ResolvedVolumeSource;
 
 // The façade accepts generated payloads and keeps destructive actions explicit.
 declare const client: Client;
@@ -230,8 +230,8 @@ const identity: RegisterRequest = {
     running_builds: 0,
   },
 };
-applyAll("app" as ProjectName, [web]) satisfies DeployIntent;
-applyOne("app" as ProjectName, web) satisfies DeployIntent;
+applyAll("app" as Namespace, [web]) satisfies DeployIntent;
+applyOne("app" as Namespace, web) satisfies DeployIntent;
 client.preview(intent) satisfies Promise<PreparedDeploy>;
 client.runtime.watch() satisfies AsyncIterable<RuntimeWatchView>;
 client.removeMachine("machine", { confirmed: [] }) satisfies Promise<LocalMachineRemoved>;
@@ -258,7 +258,32 @@ const assignment = allocateEnrollment(identity, enrollmentSnapshot, []) satisfie
 client.observeEnrollment() satisfies Promise<EnrollmentSnapshot>;
 client.register(assignment) satisfies Promise<Registered>;
 
-import { lowerDeployment } from '../config';
-import type { ServiceConfig } from '../config';
-declare const serviceConfig: ServiceConfig;
-lowerDeployment({ projectName: 'test', snapshots: [{ serviceId: 'service-id', config: serviceConfig }] });
+import { parseServiceSetting } from '../config';
+parseServiceSetting('replicas', 3) satisfies number;
+
+// A Namespace's Volumes carry their storage, as native decoding requires.
+const withVolumes: PreparationInput = {
+  deployment: {
+    namespace: "app",
+    snapshots: [],
+    volumes: [
+      { volumeResourceId: "v1", storage: { kind: "provisioned", maximumBytes: 5_000_000_000 } },
+      { volumeResourceId: "v2", storage: { kind: "docker" } },
+    ],
+  },
+  sources: {},
+};
+// @ts-expect-error storage is required
+const withoutStorage: PreparationInput = { deployment: { namespace: "app", snapshots: [], volumes: [{ volumeResourceId: "v1" }] }, sources: {} };
+void withVolumes;
+void withoutStorage;
+
+// Receipts to try are listed per Service, own first; a build says whether it reused.
+declare const receipt: import("../index").BuildReceipt;
+const withReceipts: PreparationInput = { deployment: { namespace: "app", snapshots: [] }, sources: {}, build_receipts: { web: [receipt] } };
+// @ts-expect-error receipts are a list per Service
+const withOneReceipt: PreparationInput = { deployment: { namespace: "app", snapshots: [] }, sources: {}, build_receipts: { web: receipt } };
+const reusedBuild: import("../index").BuildOutcome = { kind: "built", receipt, reused: true };
+void withReceipts;
+void withOneReceipt;
+void reusedBuild;

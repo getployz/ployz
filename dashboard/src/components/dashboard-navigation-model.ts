@@ -208,6 +208,7 @@ export function createDashboardNavigation(
 
 const sectionByRouteId = new Map<RegisteredRouteId, DashboardSection>([
   ["/_protected/cloud/$organizationSlug/_org/~/", "projects"],
+  ["/_protected/cloud/$organizationSlug/_project/new", "projects"],
   ["/_protected/cloud/$organizationSlug/_org/~/billing", "billing"],
   ["/_protected/cloud/$organizationSlug/_org/~/settings", "organization-settings"],
   ["/_protected/cloud/$organizationSlug/_org/~/servers/", "servers"],

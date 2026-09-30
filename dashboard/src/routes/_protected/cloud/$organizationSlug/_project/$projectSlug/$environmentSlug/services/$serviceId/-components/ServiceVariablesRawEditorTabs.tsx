@@ -1,6 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { VariableValueTextarea } from "#/components/variables/VariableValueTextarea";
-import type { ReferenceTarget } from "#/modules/environment-design/variable-autocomplete";
+import type { ReferenceTarget } from "#/modules/variables/variable-autocomplete";
 import type { RawEditorMode } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/services/$serviceId/-components/ServiceVariablesRawEditorTypes";
 
 export function ServiceVariablesRawEditorTabs({

@@ -13,7 +13,7 @@ use ployz_core::{
     ListVolumesRequest, LiveServices, LocalMachineRemoved, MACHINE_STORAGE_OBSERVATION_CAPABILITY,
     Machine, MachineFailure, MachineId, MachineImages, MachineName, MachineObservation,
     MachineRpcClient, MachineStorageObservation, MachineSuccess, MachineTarget, NameMatches,
-    ObservedDataLoss, OpaquePayload, PartialResult, ProjectName, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
+    Namespace, ObservedDataLoss, OpaquePayload, PartialResult, RUNTIME_WATCH_MESSAGE_SIZE_LIMIT,
     RemoveContainerRequest, RemoveLocalMachineRequest, RemoveMachineRequest, RemoveVolumeRequest,
     RemoveVolumesRequest, ResolvedServiceSpec, Rpc, RpcError, RpcErrorCode, RpcResponseBody,
     StartContainerRequest, StopContainerRequest, UnconfirmedDataLoss, VolumeInventory,
@@ -56,6 +56,9 @@ pub(crate) const LIVE_MUTATION_REPLY_TIMEOUT: Duration = Duration::from_secs(60)
 #[derive(Clone)]
 pub struct Client {
     pub(crate) deployment_id: Option<ployz_core::DeploymentLogId>,
+    /// Pull credentials by Service for the Deploy this client executes.
+    pub(crate) registry_auth:
+        std::collections::BTreeMap<ployz_core::ServiceName, ployz_core::RegistryAuth>,
     channel: Channel,
     connection: Connection,
     source: ConnectionSource,
@@ -77,6 +80,7 @@ impl Client {
     ) -> Self {
         Self {
             deployment_id: None,
+            registry_auth: std::collections::BTreeMap::new(),
             channel,
             connection,
             source,
@@ -514,6 +518,51 @@ impl Client {
         Ok(remove_volumes_on(self, &machines.machines, request).await)
     }
 
+    /// Which Machines hold each of the Docker Volumes `sought`: the evidence a
+    /// Deploy that deletes Volume data is reviewed against. Every Machine that did not
+    /// answer, or could not read one of them, is named in `unanswered`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a generated [`RpcError`] when listing Machines fails.
+    pub async fn observe_volumes(
+        &mut self,
+        sought: Vec<DockerVolumeName>,
+    ) -> Result<ployz_store::VolumeObservation, RpcError> {
+        let machines = self
+            .call::<op::ListMachines>(ListMachinesRequest {}, None)
+            .await
+            .map_err(RpcError::from)?;
+        let result = self.list_volumes(&machines.machines).await;
+        let mut unanswered: BTreeSet<MachineId> = result
+            .failures
+            .iter()
+            .map(|failure| failure.machine_id)
+            .chain(result.omissions.iter().copied())
+            .collect();
+        let mut held = Vec::new();
+        for success in result.successes {
+            for failure in &success.value.failures {
+                if sought.contains(&failure.id.name) {
+                    unanswered.insert(failure.id.machine_id);
+                }
+            }
+            held.extend(
+                success
+                    .value
+                    .volumes
+                    .into_iter()
+                    .map(|volume| volume.id)
+                    .filter(|id| sought.contains(&id.name)),
+            );
+        }
+        Ok(ployz_store::VolumeObservation {
+            sought,
+            held,
+            unanswered: unanswered.into_iter().collect(),
+        })
+    }
+
     /// Live Observation of Data Loss that removing `machine` would cause.
     ///
     /// This is not a complete Cluster view. Mutates nothing: it is safe to
@@ -540,19 +589,21 @@ impl Client {
     /// are ignored.
     /// Resets the Machine. A reset warning is returned, not swallowed.
     /// Refused before reset or membership mutation when this is the last Machine
-    /// and a Management Client holds a key.
+    /// and a Management Client other than Cloud holds a key, or Cloud holds it and
+    /// `remover` isn't Cloud.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible or is
     /// the current entry while another Machine is visible, when the Machine
-    /// is the last Machine and a Management Client holds a key, when the Machine
+    /// is the last Machine and its holders refuse it or can't be read, when the Machine
     /// did not respond so Data Loss cannot be listed, when the confirmation does not cover the
     /// fresh Data Loss, or when reset or shared-row removal fails.
     pub async fn remove_machine(
         &mut self,
         machine: &MachineTarget,
         confirm_data_loss: &DataLossConfirmation,
+        remover: Remover,
     ) -> Result<LocalMachineRemoved, RpcError> {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
@@ -571,20 +622,23 @@ impl Client {
                 details: Value::Null,
             });
         }
-        refuse_last_managed(self, &machines, selected).await?;
+        let hold = refuse_last_managed(self, &machines, selected).await?;
+        if hold == CloudHold::Last && remover == Remover::Operator {
+            return Err(cloud_holds_last(selected));
+        }
         evict_machine(self, observation, confirm_data_loss, current).await
     }
 
     /// Remove Cluster membership for `machine` without resetting it.
     ///
-    /// Refused before membership mutation when this is the last Machine and a
-    /// Management Client holds a key.
+    /// Refused before membership mutation when this is the last Machine and any
+    /// Management Client holds a key: Cloud lets go of its last Machine only by resetting it.
     ///
     /// # Errors
     ///
     /// Returns a generated [`RpcError`] when the Machine is not visible, when
-    /// it is the last Machine and a Management Client holds a key, or when
-    /// shared-row removal fails.
+    /// it is the last Machine and a Management Client holds a key or its holders
+    /// can't be read, or when shared-row removal fails.
     pub async fn remove_machine_membership(
         &mut self,
         machine: &MachineTarget,
@@ -592,7 +646,9 @@ impl Client {
         let machines = self.machines().await.map_err(RpcError::from)?;
         let observation = visible_machine(machine, &machines)?;
         let selected = observation.machine.id;
-        refuse_last_managed(self, &machines, selected).await?;
+        if refuse_last_managed(self, &machines, selected).await? == CloudHold::Last {
+            return Err(cloud_holds_last(selected));
+        }
         self.call::<op::RemoveMachine>(
             RemoveMachineRequest {
                 machine_id: selected,
@@ -764,7 +820,7 @@ impl Client {
         &self,
         machine_id: MachineId,
         kind: ContainerKind,
-        project_name: ProjectName,
+        namespace: Namespace,
         resolved_spec: ResolvedServiceSpec,
         creation_key: Option<String>,
     ) -> Result<ContainerCreated, RpcError> {
@@ -773,7 +829,8 @@ impl Client {
                 deployment_id: None,
                 creation_key,
                 kind,
-                project_name,
+                namespace,
+                registry_auth: None,
                 resolved_spec,
             },
             &MachineTarget::from(&machine_id),
@@ -791,6 +848,12 @@ impl Client {
     ) -> PartialResult<ContainerId, ContainerOperationFailure> {
         let mut tasks = JoinSet::new();
         let mut task_targets = HashMap::new();
+        let mut queued = HashMap::<MachineId, u32>::new();
+        for container in service.containers_for(action) {
+            *queued
+                .entry(container.as_observation().machine_id)
+                .or_default() += 1;
+        }
         for container in service.containers_for(action) {
             let observation = container.as_observation();
             let machine_id = observation.machine_id;
@@ -802,6 +865,7 @@ impl Client {
                 action,
                 signal.clone(),
                 grace_period_seconds,
+                queued.get(&machine_id).copied().unwrap_or(1),
             ));
             task_targets.insert(handle.id(), (machine_id, container_id));
         }
@@ -918,15 +982,54 @@ async fn remove_volumes_on(
     .await
 }
 
-async fn refuse_last_managed(
+/// Whether Cloud holds the last Machine. Cloud lets go of it by removing it itself:
+/// the reset takes its keys, and Cloud forgets the pairing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CloudHold {
+    None,
+    Last,
+}
+
+/// Who removes a Machine. Only Cloud may remove the last Machine it holds: it sees the
+/// reset, and only then lets go of the Cluster.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Remover {
+    /// Cloud, through its own Management Client.
+    Cloud,
+    /// Anyone else: the CLI, whatever it connects through.
+    Operator,
+}
+
+/// The last Machine is Cloud's: anyone else removing it would leave Cloud paired
+/// with a Cluster that no longer exists.
+fn cloud_holds_last(machine: MachineId) -> RpcError {
+    RpcError {
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "Machine {machine} is the last Machine and Cloud manages it; only Cloud's removal \
+             lets go of it too. No changes made."
+        ),
+        details: Value::Null,
+    }
+}
+
+/// Refuse removing the last Machine while a Management Client other than Cloud still
+/// holds a key: that holder would be left managing a Cluster that no longer exists.
+/// Cloud's own hold (`cloud` and the `cli-*` device keys it provisions) goes with the
+/// Machine when Cloud removes it, so it only shows in the returned [`CloudHold`].
+/// Holders that can't be read refuse too: they may be anyone's.
+///
+/// # Errors
+/// Returns `conflict` naming the other holders, or `unavailable` when the last
+/// Machine's holders can't be read.
+pub(crate) async fn refuse_last_managed(
     client: &Client,
     machines: &[MachineObservation],
     selected: MachineId,
-) -> Result<(), RpcError> {
+) -> Result<CloudHold, RpcError> {
     if machines.len() != 1 {
-        return Ok(());
+        return Ok(CloudHold::None);
     }
-    // Inspect errors must not block unmanaged last-Machine removal.
     let holders = client
         .invoke::<op::Inspect>(
             InspectRequest::default(),
@@ -934,37 +1037,36 @@ async fn refuse_last_managed(
             Some(TARGET_RPC_TIMEOUT),
         )
         .await
-        .map(|details| details.management_clients)
-        .unwrap_or_default();
-    if holders.is_empty() {
-        return Ok(());
-    }
+        .map_err(|error| RpcError {
+            code: RpcErrorCode::Unavailable,
+            message: format!(
+                "cannot read who manages Machine {selected}, the last Machine: {}. No changes made.",
+                error.message
+            ),
+            details: Value::Null,
+        })?
+        .management_clients;
     let cloud = holders.iter().any(|label| label.as_str() == "cloud");
-    let mut names: Vec<String> = holders
+    let names: Vec<String> = holders
         .iter()
-        .filter(|label| label.as_str() != "cloud")
+        .filter(|label| {
+            !cloud || (label.as_str() != "cloud" && !label.as_str().starts_with("cli-"))
+        })
         .map(|label| format!("`{label}`"))
         .collect();
-    if cloud {
-        names.insert(0, "Cloud".into());
-    }
     let who = match names.split_last() {
+        None if cloud => return Ok(CloudHold::Last),
+        None => return Ok(CloudHold::None),
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => unreachable!("holders is not empty"),
     };
-    let next = if cloud {
-        "Delete the Cluster from Cloud instead.".to_owned()
-    } else {
-        format!("Disconnect {who} from this Machine first.")
-    };
-    let message = format!(
-        "this is the last Machine in the Cluster and it is still managed by {who}; \
-         removing it would leave {who} managing a Cluster that no longer exists. {next}"
-    );
     Err(RpcError {
-        code: RpcErrorCode::InvalidArgument,
-        message,
+        code: RpcErrorCode::Conflict,
+        message: format!(
+            "this is the last Machine in the Cluster and it is still managed by {who}; \
+             removing it would leave {who} managing a Cluster that no longer exists. \
+             No changes made. Disconnect {who} from this Machine first."
+        ),
         details: Value::Null,
     })
 }
@@ -1206,6 +1308,7 @@ async fn change_on_machine(
     action: ContainerAction,
     signal: Option<String>,
     grace_period_seconds: Option<i32>,
+    queued: u32,
 ) -> Result<MachineSuccess<ContainerId>, MachineFailure<ContainerOperationFailure>> {
     match change_container_rpc(
         &client,
@@ -1214,6 +1317,7 @@ async fn change_on_machine(
         action,
         signal,
         grace_period_seconds,
+        queued,
     )
     .await
     {
@@ -1238,6 +1342,7 @@ async fn change_container_rpc(
     action: ContainerAction,
     signal: Option<String>,
     grace_period_seconds: Option<i32>,
+    queued: u32,
 ) -> Result<(), RpcError> {
     let target = MachineTarget::from(machine_id);
     if matches!(action, ContainerAction::Stop | ContainerAction::Remove) {
@@ -1251,7 +1356,7 @@ async fn change_container_rpc(
                         grace_period_seconds,
                     },
                     &target,
-                    stop_rpc_timeout(grace_period_seconds),
+                    stop_rpc_timeout(grace_period_seconds, queued),
                 )
                 .await
                 .map(|_| ()),
@@ -1308,7 +1413,7 @@ fn accept_stop_result(
 #[path = "cluster_tests.rs"]
 mod tests;
 
-/// One Global revision per target; Project and kind are scoped by CreateContainer.
+/// One Global revision per target; Namespace and kind are scoped by CreateContainer.
 pub(crate) fn global_creation_key(spec: &ResolvedServiceSpec) -> String {
     format!(
         "global:{}:{}",

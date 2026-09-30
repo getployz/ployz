@@ -101,8 +101,8 @@ impl CatchUpClient for Client {
                 message: "Global catch-up target has no participating Machine observation".into(),
                 details: serde_json::Value::Null,
             })?;
-        let eligibility = request.resolved_spec.placement_eligibility_in_project(
-            &request.project_name,
+        let eligibility = request.resolved_spec.placement_eligibility_in_namespace(
+            &request.namespace,
             &machine,
             details.storage.as_ref(),
         );
@@ -119,7 +119,7 @@ impl CatchUpClient for Client {
                 for container in containers.containers.into_iter().filter(|container| {
                     container.machine_id == *machine_id
                         && container.kind == ContainerKind::ServiceContainer
-                        && container.project_name == request.project_name
+                        && container.namespace == request.namespace
                         && container.resolved_spec.name == request.resolved_spec.name
                 }) {
                     self.call::<op::StopContainer>(
@@ -164,7 +164,7 @@ impl CatchUpClient for Client {
         if let Some(existing) = containers.containers.into_iter().find(|container| {
             container.machine_id == *machine_id
                 && container.kind == ContainerKind::ServiceContainer
-                && container.project_name == request.project_name
+                && container.namespace == request.namespace
                 && container.resolved_spec == request.resolved_spec
         }) {
             return Ok(Some(ContainerCreated {
@@ -223,19 +223,22 @@ impl CatchUpClient for Client {
     }
 }
 
-pub(crate) fn joined_catch_up_error(error: CatchUpError) -> String {
+pub(crate) fn joined_catch_up_error(error: CatchUpError, server: &Machine) -> String {
     let mut message = format!(
-        "Machine joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
+        "Server joined, but Global catch-up is incomplete; it remains a Cluster member. {}",
         error.cause
     );
     if !error.unresolved.is_empty() {
         message.push_str("\nGlobals requiring attention:");
         for identity in error.unresolved {
             if identity == QualifiedService::system_ingress() {
-                message.push_str("\n- ployz-system/ingress: run `ployz ingress deploy`.");
+                message.push_str(&format!(
+                    "\n- ployz-system/ingress: run `ployz server set {} --accepts-ingress=true`.",
+                    server.id
+                ));
             } else {
                 message.push_str(&format!(
-                    "\n- {identity}: redeploy Project Service `{identity}`."
+                    "\n- {identity}: redeploy Namespace Service `{identity}`."
                 ));
             }
         }
@@ -283,7 +286,8 @@ pub(crate) async fn catch_up_globals<C: CatchUpClient>(
             deployment_id: None,
             creation_key: Some(crate::cluster::global_creation_key(slot.resolved_spec())),
             kind: ContainerKind::ServiceContainer,
-            project_name: identity.project.clone(),
+            namespace: identity.namespace.clone(),
+            registry_auth: None,
             resolved_spec: slot.resolved_spec().clone(),
         };
         match client.create_slot(&this_machine.id, request).await {

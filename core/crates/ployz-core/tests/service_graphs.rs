@@ -147,7 +147,7 @@ fn requested_and_resolved_conversions_preserve_graph_invariants() {
             requested
                 .volume_graph()
                 .clone()
-                .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+                .scope_to_namespace(&ployz_core::Namespace::parse("shop").unwrap())
                 .unwrap(),
         )
         .unwrap();
@@ -222,7 +222,7 @@ fn persisted_and_rpc_decoded_specs_validate_graph_invariants_on_entry() {
             valid
                 .volume_graph()
                 .clone()
-                .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+                .scope_to_namespace(&ployz_core::Namespace::parse("shop").unwrap())
                 .unwrap(),
         )
         .unwrap();
@@ -485,7 +485,7 @@ fn mount_admission_is_atomic_and_runs_on_resolved_observation_import() {
     assert_eq!(spec, before, "failed replacement preserves admitted mounts");
     spec.mount_graph = spec
         .mount_graph
-        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .scope_to_namespace(&ployz_core::Namespace::parse("shop").unwrap())
         .unwrap();
     let resolved = spec
         .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
@@ -523,7 +523,7 @@ fn volume_graph_setters_reject_collisions_and_preserve_requested_and_resolved_sp
     );
     requested.mount_graph = requested
         .mount_graph
-        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .scope_to_namespace(&ployz_core::Namespace::parse("shop").unwrap())
         .unwrap();
     let mut resolved = requested
         .to_resolved(ServiceId::random(), ResolvedUpdateConfig::default())
@@ -534,7 +534,7 @@ fn volume_graph_setters_reject_collisions_and_preserve_requested_and_resolved_sp
             vec![mount("data", target)],
         )
         .unwrap()
-        .scope_to_project(&ployz_core::ProjectName::parse("shop").unwrap())
+        .scope_to_namespace(&ployz_core::Namespace::parse("shop").unwrap())
         .unwrap();
         let before = requested.clone();
         assert!(requested.set_volume_graph(replacement.clone()).is_err());

@@ -1,188 +1,62 @@
 import { useState } from "react";
-import type { PersistableTransaction } from "#/components/stageable/collection-field-resources";
+import { PlusIcon } from "lucide-react";
 import { ConfirmableInput } from "#/components/stageable/confirmable-input";
 import { Button } from "#/components/ui/button";
-import {
-  Field,
-  FieldDescription,
-  FieldLabel,
-} from "#/components/ui/field";
-import { PlusIcon } from "lucide-react";
-import { Result, Schema } from "effect";
-import { serviceCommandSchema } from "#/modules/environment-design/services";
-import { strictParseOptions } from "#/modules/environment-design/schema";
+import { Field, FieldDescription, FieldLabel } from "#/components/ui/field";
 
-type CommandFieldDraftState = {
-  sourceValue: string | null;
-  draft: string | null;
-  error: string | null;
-};
-
-function createCommandFieldDraftState(
-  sourceValue: string | null,
-): CommandFieldDraftState {
-  return {
-    sourceValue,
-    draft: sourceValue,
-    error: null,
-  };
-}
-
+/**
+ * An optional command: a button until it has one, which opens an input on click. Confirming saves it (blank unsets
+ * it); Escape, or confirming blank, closes back to the button. A staged change shows pink, titled with what's deployed.
+ */
 export function ServiceCommandField({
-  label,
-  description,
-  addLabel,
-  placeholder,
-  value,
-  baselineLabel = "Deployed",
-  baselineValue,
-  isChanged,
-  addButtonVariant = "outline",
-  addButtonSize = "default",
-  collapsedAppearance = "full",
-  onCommit,
+  label, addLabel = label, description, placeholder, value, baselineValue, isChanged, compact = false, validate, onCommit,
 }: {
   label: string;
+  /** The closed button's words; the label by default. */
+  addLabel?: string;
   description: string;
-  addLabel: string;
   placeholder: string;
   value: string | null;
-  baselineLabel?: string;
   baselineValue?: string;
   isChanged: boolean;
-  addButtonVariant?: "outline" | "link";
-  addButtonSize?: "default" | "sm";
-  collapsedAppearance?: "full" | "compact";
-  onCommit: (value: string | null) => PersistableTransaction;
+  /** Collapsed, only a small link-styled button (a command most Services never need). */
+  compact?: boolean;
+  validate: (raw: string) => string | null;
+  onCommit: (value: string | null) => void;
 }) {
-  const [draftState, setDraftState] = useState<CommandFieldDraftState>(() =>
-    createCommandFieldDraftState(value),
+  // The draft follows `value` until edited; null is the closed button.
+  const [draft, setDraft] = useState<{ source: string | null; text: string | null; error: string | null }>({ source: value, text: value, error: null });
+  const current = draft.source === value ? draft : { source: value, text: value, error: null };
+  const open = current.text !== null;
+  const text = current.text ?? "";
+  const isDirty = current.text !== null && (value === null || text !== value);
+
+  function confirm() {
+    const next = text.trim() || null;
+    const error = next === null ? null : validate(next);
+    if (error) return setDraft({ ...current, error });
+    onCommit(next);
+    setDraft({ source: value, text: next, error: null });
+  }
+
+  const button = (
+    <Button type="button" variant={compact ? "link" : "outline"} size={compact ? "sm" : "default"}
+      data-changed={isChanged || undefined} onClick={() => setDraft({ source: value, text: "", error: null })}>
+      <PlusIcon data-icon="inline-start" />{addLabel}
+    </Button>
   );
-  const activeDraftState =
-    draftState.sourceValue === value
-      ? draftState
-      : createCommandFieldDraftState(value);
-  const { draft, error } = activeDraftState;
-  const updateDraftState = (
-    updater: (state: CommandFieldDraftState) => CommandFieldDraftState,
-  ) => {
-    setDraftState((state) =>
-      updater(
-        state.sourceValue === value
-          ? state
-          : createCommandFieldDraftState(value),
-      ),
-    );
-  };
-
-  const isOpen = draft != null;
-  const draftValue = draft ?? "";
-  const isDirty = draft != null && (value == null ? true : draftValue !== value);
-
-  function handleConfirm() {
-    if (draft == null) {
-      return;
-    }
-
-    const trimmedValue = draft.trim();
-    const nextValue = trimmedValue.length === 0 ? null : trimmedValue;
-
-    if (nextValue != null) {
-      const result = Schema.decodeUnknownResult(serviceCommandSchema)(
-        nextValue,
-        strictParseOptions,
-      );
-
-      if (Result.isFailure(result)) {
-        updateDraftState((state) => ({
-          ...state,
-          error:
-            result.failure instanceof Error
-              ? result.failure.message
-              : "Invalid value",
-        }));
-        return;
-      }
-    }
-
-    // Optimistic: a failed save rolls `value` back and toasts, which resets this draft.
-    onCommit(nextValue);
-    updateDraftState((state) => ({ ...state, draft: nextValue, error: null }));
-  }
-
-  function handleCancel() {
-    setDraftState(createCommandFieldDraftState(value));
-  }
-
-  if (!isOpen && collapsedAppearance === "compact") {
-    return (
-      <Field>
-        <Button
-          type="button"
-          variant={addButtonVariant}
-          size={addButtonSize}
-          onClick={() => {
-            setDraftState({
-              sourceValue: value,
-              draft: "",
-              error: null,
-            });
-          }}
-        >
-          <PlusIcon data-icon="inline-start" />
-          {addLabel}
-        </Button>
-      </Field>
-    );
-  }
-
+  if (!open && compact) return <Field>{button}</Field>;
   return (
     <Field>
       <FieldLabel>{label}</FieldLabel>
       <FieldDescription>{description}</FieldDescription>
-      {isOpen ? (
-        <ConfirmableInput
-          aria-label={label}
-          aria-invalid={error ? true : undefined}
-          error={error}
-          isChanged={isChanged}
-          isDirty={isDirty}
-          placeholder={placeholder}
-          title={
-            isChanged && baselineValue != null
-              ? `${baselineLabel}: ${baselineValue}`
-              : undefined
-          }
-          value={draftValue}
-          onValueChange={(nextValue) => {
-            updateDraftState((state) => ({
-              ...state,
-              draft: nextValue,
-              error: null,
-            }));
-          }}
-          onCancel={handleCancel}
-          onConfirm={() => {
-            handleConfirm();
-          }}
-        />
-      ) : (
-        <Button
-          type="button"
-          variant={addButtonVariant}
-          size={addButtonSize}
-          onClick={() => {
-            setDraftState({
-              sourceValue: value,
-              draft: "",
-              error: null,
-            });
-          }}
-        >
-          <PlusIcon data-icon="inline-start" />
-          {addLabel}
-        </Button>
-      )}
+      {open ? (
+        <ConfirmableInput aria-label={label} aria-invalid={current.error ? true : undefined} error={current.error}
+          isChanged={isChanged} isDirty={isDirty} placeholder={placeholder} autoFocus={value === null}
+          title={isChanged && baselineValue !== undefined ? `Deployed: ${baselineValue || "none"}` : undefined}
+          value={text} onValueChange={(next) => setDraft({ ...current, text: next, error: null })}
+          onCancel={() => setDraft({ source: value, text: value, error: null })} onConfirm={confirm} />
+      ) : button}
     </Field>
   );
 }

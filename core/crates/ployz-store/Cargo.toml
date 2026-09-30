@@ -1,0 +1,26 @@
+[package]
+name = "ployz-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+hex = "0.4.3"
+ployz-core.workspace = true
+postgres = "0.19.14"
+regex = "1.13.1"
+ring = "0.17.14"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+ts-rs.workspace = true
+uuid = { version = "1.24.0", features = ["v4", "v5"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+uuid = { version = "1.24.0", features = ["v5"] }
+
+[lints]
+workspace = true

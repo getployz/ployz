@@ -5,17 +5,16 @@ import { FieldDescription, FieldLegend, FieldSet } from "#/components/ui/field";
 import { Item, ItemContent, ItemDescription, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { ToggleGroup, ToggleGroupItem } from "#/components/ui/toggle-group";
 import { cn } from "#/lib/utils";
-import { presetTitles, type BranchPlan } from "#/modules/branches/branch-plan";
-import { nodePick, type BranchPicking } from "./branch-picking";
-
-type PlanNode = BranchPlan["nodes"][number];
+import type { PlannedNode } from "@ployz/sdk";
+import { presetTitles } from "#/modules/config-store/branch-picks";
+import { nodePick, ownerName, toggledNode, type PickingView } from "./branch-picking";
 
 /**
  * What the Branch runs, next to its Parent: one row per Parent node, the Parent's on the left and the Branch's on the
  * right. Tapping a row opens a sheet with its two choices, one line each; a Live Node with real data is amber.
  */
 export function ServicesSection({ picking, nameOf, target, who }: {
-  picking: BranchPicking;
+  picking: PickingView;
   nameOf: (lineage: string) => string;
   /** The right column's heading: the branch's name, or "each pull request". */
   target: ReactNode;
@@ -24,19 +23,19 @@ export function ServicesSection({ picking, nameOf, target, who }: {
 }) {
   const [choosing, setChoosing] = useState<string | null>(null);
   const { plan, parent } = picking;
-  const chosen = plan.nodes.find((node) => node.lineageId === choosing);
-  const toggled = chosen && picking.toggled(chosen.lineageId);
+  const chosen = plan.nodes.find((node) => node.name === choosing);
+  const toggled = chosen && toggledNode(chosen);
 
-  const choice = (node: PlanNode) => {
-    const name = nameOf(node.lineageId);
-    const owner = picking.ownerName(node.lineageId);
+  const choice = (node: PlannedNode) => {
+    const name = nameOf(node.name);
+    const owner = ownerName(picking, node);
     if (node.role === "live") {
       const data = nodePick(picking, node).ownsData;
       return { title: `${owner}'s ${name}`, line: data ? `Real data. ${who} can change it.` : `Shared with ${owner}.`, data };
     }
     if (node.role === "left_out") return { title: "Leave it out", line: "Anything that uses it breaks.", data: false };
-    if (picking.fromPr.has(node.lineageId)) return { title: "Run the PR's code", line: "What you're testing.", data: false };
-    return node.nodeType === "volume"
+    if (picking.fromPr.has(node.name)) return { title: "Run the PR's code", line: "What you're testing.", data: false };
+    return node.kind === "volume"
       ? { title: `New, empty ${name}`, line: "Starts with no data.", data: false }
       : { title: `Separate ${name}`, line: `Change it here without touching ${parent.name}.`, data: false };
   };
@@ -64,18 +63,18 @@ export function ServicesSection({ picking, nameOf, target, who }: {
         </div>
         {plan.nodes.map((node) => {
           const pick = nodePick(picking, node);
-          const name = nameOf(node.lineageId);
-          const why = node.role !== "own" || picking.fromPr.has(node.lineageId) ? null
+          const name = nameOf(node.name);
+          const why = node.role !== "own" || picking.fromPr.has(node.name) ? null
             : node.because === "used" ? "a copy uses it" : node.because === "parent_not_deployed" ? `${parent.name} never deployed it` : null;
           const Arrow = node.role === "own" ? ArrowRightIcon : node.role === "live" ? ArrowLeftIcon : null;
           return (
-            <div key={node.lineageId} className="grid grid-cols-[minmax(0,1fr)_1.5rem_minmax(0,1.4fr)] items-center gap-1">
+            <div key={node.name} className="grid grid-cols-[minmax(0,1fr)_1.5rem_minmax(0,1.4fr)] items-center gap-1">
               <Item variant="muted" size="sm" className="h-full">
                 <ItemContent className="min-w-0"><ItemTitle className="truncate">{name}</ItemTitle></ItemContent>
               </Item>
               {Arrow ? <Arrow aria-hidden="true" className={cn("mx-auto size-4", pick.ownsData ? "text-warning" : "text-muted-foreground")} /> : <span />}
               <Item variant="outline" size="sm" state={pick.ownsData ? "warning" : undefined}
-                render={<button type="button" disabled={pick.fixed} onClick={() => setChoosing(node.lineageId)}
+                render={<button type="button" disabled={pick.fixed} onClick={() => setChoosing(node.name)}
                   aria-label={`${name}: ${pick.label}${pick.ownsData ? ", real data" : ""}. Change`} />}
                 className={cn("h-full text-left", node.role !== "own" && "border-dashed", node.role === "left_out" && "opacity-50",
                   !pick.fixed && "hover:bg-muted")}>
@@ -94,7 +93,7 @@ export function ServicesSection({ picking, nameOf, target, who }: {
       </ItemGroup>
       <Dialog open={chosen !== undefined} onOpenChange={(open) => { if (!open) setChoosing(null); }}>
         <DialogContent>
-          <DialogHeader><DialogTitle>{chosen && nameOf(chosen.lineageId)}</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>{chosen && nameOf(chosen.name)}</DialogTitle></DialogHeader>
           <ItemGroup className="gap-2">
             {chosen && toggled && (chosen.role === "own" ? [chosen, toggled] : [toggled, chosen]).map((node) => {
               const { title, line, data } = choice(node);
@@ -102,7 +101,7 @@ export function ServicesSection({ picking, nameOf, target, who }: {
               return (
                 <Item key={node.role} variant="outline" aria-pressed={current}
                   render={<button type="button" autoFocus={current} onClick={() => {
-                    if (!current) picking.toggle(node.lineageId);
+                    if (!current) picking.toggle(node.name);
                     setChoosing(null);
                   }} />}
                   className={cn("text-left hover:bg-muted", current && "border-foreground")}>

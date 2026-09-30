@@ -133,7 +133,7 @@ The system explicitly rejects verbose infrastructure administration, self-hostin
 
 - Nearly achromatic at rest, with warm pink reserved for staged intent.
 - Compact Geist typography and familiar controls built for repeated daily use.
-- Core-owned evidence and Cloud-owned product context presented without blurring authority.
+- Runtime evidence and authored product context presented without blurring authority.
 - Autosaved changes remain visible from edited field through diff and deployment.
 - Tonal layering and borders establish structure; shadows indicate real elevation.
 
@@ -148,7 +148,7 @@ The product palette is neutral first. Ink and white carry action hierarchy; warm
 
 ### Secondary
 
-- **Intent Pink** (`#d0268c`): the saturated anchor for staged intent, selection emphasis, and focus. It is deliberately warm and unmistakably pink, never violet or purple.
+- **Intent Pink** (`#d0268c`): the saturated anchor for staged intent and focus. It is deliberately warm and unmistakably pink, never violet or purple.
 - **Intent Deep** (`#a80068`): accessible intent text and compact indicators on pale staged surfaces.
 - **Intent Soft** (`#fff0f7`) and **Intent Border** (`#efb3ce`): the background and boundary applied to autosaved fields, resources, and diff rows that differ from deployed truth.
 
@@ -228,6 +228,17 @@ Components are compact, familiar, and decisive. The stock component vocabulary i
 - **Shadow Strategy:** flat by default; use a one-pixel structural ring. Floating containers follow the Elevation section.
 - **Internal Padding:** 16px by default, 12px for compact variants, and 24px only for focused resource nodes or dialogs.
 
+### Canvas nodes
+
+A node answers two questions in two places, and neither ever stands in for the other.
+
+- **Card:** the icon, the name, and the public domain when there is one: its first custom domain, else its generated one, muted until the Deploy that adds it lands. Source, image, replicas, ports and reasons live in its panel.
+- **Status line: what runs now.** One word from runtime evidence: Online, Degraded, Unhealthy, "Crashed 2 min ago", Not deployed, No source, or a grey "Deployed" while there is no evidence. Staged or in-flight work never replaces it. It ends in **⚠ N** when there is something to fix, red if any of them is a crash and amber otherwise, and that opens the list. Crashed alone also turns the border red.
+- **Chip: anything about Deploys.** The first that applies: "Deploying 0:42" or "Queued"; "New", "N changes" or "Removing"; on an open Deployment Page, its Node Outcome. Otherwise nothing. A staged node takes the staged-intent surface and a staged removal the Failure Red one; nothing else fills a card.
+- **Volumes are trays** under each service that mounts them: the name over a fill showing how full it is, amber from 85%. A tray speaks only when it must: pink when staged, "Removing", "N% full". A volume several services share shows under each, marked shared, and hovering one lights them all. Only a volume nothing mounts is a node of its own.
+- **Selected**, while its panel is open: a two-pixel ink ring. **Keyboard focus:** an Intent Pink outline, drawn only while the user navigates by keyboard. A pointer press ends that, so a closed panel hands focus back to its node without drawing it.
+- Only a node being dragged casts a shadow.
+
 ### Projects
 
 - Label the organization destination and page **Projects**. Keep search visible and use an ink **New project** action.
@@ -283,15 +294,15 @@ Guard what can't come back, never the verb.
 
 ### Apply Changes
 
-The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Save publishes configuration without deployment; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
+The staged-change system connects edited fields, affected resources, and environment-wide review. Every screen size places the change count, Review and Deploy in the bottom bar. Review replaces the workspace rather than stacking a dialog over a resource inspector. Publish puts configuration in Saved State without deploying; Deploy publishes and starts deployment. These are distinct visible review actions. Returning from review restores the editor and canvas context.
 
 ### Deployments
 
-Deployments are a place, not a mode of the canvas. Each Cloud Deployment Attempt has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
+Deployments are a place, not a mode of the canvas. Each Deployment has its own Deployment Page, which opens as a panel over the canvas; the canvas stays mounted underneath and always draws the Environment as it is now. Closing the page leaves the canvas, its selection and its viewport as they were.
 
-- While the page is open, the canvas lights up what the attempt changed: those nodes show their Node Outcome and the rest dim. Nodes it removed, or that were deleted since, appear only in the page's list.
-- The page's header places the attempt: its message, what triggered it and who, the Git branch and commit, the status, the duration and the age. Its actions follow the status.
-- One chip per changed service picks whose logs show; past six they become a dropdown. **Build | Deploy** tabs follow the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. Build is disabled for a prebuilt image.
+- While the page is open, the canvas lights up what the attempt changed: those nodes show their Node Outcome and the rest dim. Nodes it removed, or that were deleted since, appear only on the page.
+- The page's header places the attempt in two lines: its number and message, status and duration, beside the one action its status allows (the rest wait in ⋮); then who started it, the commit or upload it ships, and the age. Why it failed sits under the header, with the fix.
+- A tab per changed service, marked with its outcome, picks whose logs show; past six they become a dropdown. The changed volumes follow, each marked with its outcome. The logs fill the rest of the panel, and a service the attempt never reached says so instead. **Build | Deploy** follows the running stage: Build while building, Deploy once deploying, the failed stage on failure, until the user picks one. A prebuilt image has only deploy logs, so its service shows no Build | Deploy.
 - A manual Deploy opens its page when the user's "open started deployments" setting is on. Git-triggered deployments never take over the screen, and nothing returns the user to the canvas automatically. Deploying while another deployment runs queues.
 
 One floating **bottom bar** sits at the bottom of the canvas on every screen size and stays usable while a panel is open. It holds this Environment's own changes and nothing else, in one row, the first that applies: its words, then its actions, at full control size, like Railway's. It sizes to its content up to 36rem; its lines truncate, and values live in Details.
@@ -321,6 +332,12 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 
 **The One Vocabulary Rule.** A state looks and behaves the same in every field, resource, drawer, diff row, and toolbar. Local reinvention is a defect.
 
+### Volume storage
+
+- New Volumes default to managed storage with a limit; Docker storage is an explicit Advanced choice, never a silent fallback when no compatible Server is available. Such a Volume stays staged and says it needs a compatible Server. Unknown or incomplete runtime evidence does not establish that managed storage is unavailable.
+- Storage settings are editable until deployment is requested, then shown as fixed, including after failed or cancelled attempts.
+- Product copy does not expose ZFS or imply backups, replication, or resizing.
+
 ## Do's and Don'ts
 
 ### Do:
@@ -328,7 +345,7 @@ Bar text stays minimal: fewer words on mobile, and explanations belong in a pane
 - **Do** use neutral ink and white for ordinary action hierarchy.
 - **Do** carry Intent Pink from changed field through resource, diff, and Apply Changes without gaps.
 - **Do** keep normal runtime state visually quiet and raise only timely, actionable evidence.
-- **Do** distinguish Cloud-owned product context from core-owned runtime truth, especially when testimony is stale or missing.
+- **Do** distinguish authored product context from runtime truth, especially when testimony is stale or missing.
 - **Do** prevent invalid states upstream so Deploy is a confident final action.
 - **Do** use compact Geist typography, familiar controls, and complete interaction states.
 - **Do** pair every semantic color with text, iconography, shape, or placement that communicates the same meaning.

@@ -73,6 +73,19 @@ export const listGithubInstallationUserIds = Effect.fn(
   return Array.from(new Set(records.map((record) => record.userId)));
 });
 
+/** The Organizations whose members installed GitHub installation `installationId`: who its pushes may deploy. */
+export const listGithubInstallationOrganizationIds = Effect.fn("Github.listInstallationOrganizationIds")(
+  function* (installationId: number) {
+    const database = yield* Database;
+    const rows = yield* database.drizzle.selectDistinct({ organizationId: schemaMember.organizationId })
+      .from(schemaGithubInstallation)
+      .innerJoin(schemaMember, eq(schemaMember.userId, schemaGithubInstallation.userId))
+      .where(eq(schemaGithubInstallation.installationId, installationId))
+      .orderBy(schemaMember.organizationId);
+    return rows.map((row) => row.organizationId);
+  },
+);
+
 export const listAllGithubInstallationIds = Effect.fn(
   "Github.listAllInstallationIds",
 )(function* () {
@@ -252,5 +265,48 @@ export const getCachedGithubRepositoryForOrganization = Effect.fn("Github.getCac
         eq(schemaGithubRepositoryCache.installationId, input.installationId),
         eq(schemaGithubRepositoryCache.repositoryId, input.repositoryId))).limit(1);
     return rows[0] ?? null;
+  },
+);
+
+/** A repository any member of the Organization reads through their GitHub installation, by `owner/name` in any case. */
+export const findGithubRepositoryByNameForOrganization = Effect.fn("Github.findRepositoryByNameForOrganization")(
+  function* (input: { organizationId: string; fullName: string }) {
+    const database = yield* Database;
+    const rows = yield* database.drizzle.select({
+      fullName: schemaGithubRepositoryCache.fullName,
+      repositoryId: schemaGithubRepositoryCache.repositoryId,
+      installationId: schemaGithubRepositoryCache.installationId,
+      defaultBranch: schemaGithubRepositoryCache.defaultBranch,
+    })
+      .from(schemaGithubRepositoryCache)
+      .innerJoin(schemaGithubInstallation, and(
+        eq(schemaGithubInstallation.userId, schemaGithubRepositoryCache.userId),
+        eq(schemaGithubInstallation.installationId, schemaGithubRepositoryCache.installationId),
+      ))
+      .innerJoin(schemaMember, eq(schemaMember.userId, schemaGithubInstallation.userId))
+      .where(and(eq(schemaMember.organizationId, input.organizationId),
+        sql`lower(${schemaGithubRepositoryCache.fullName}) = lower(${input.fullName})`))
+      .orderBy(schemaGithubRepositoryCache.installationId)
+      .limit(1);
+    return rows[0] ?? null;
+  },
+);
+
+/** Forget one of the user's GitHub installations and its repositories; the App stays installed on GitHub. */
+export const deleteGithubInstallationForUser = Effect.fn("Github.deleteInstallationForUser")(
+  function* (input: { userId: string; installationId: number }) {
+    const database = yield* Database;
+    const removed = yield* database.drizzle.delete(schemaGithubInstallation)
+      .where(and(eq(schemaGithubInstallation.userId, input.userId),
+        eq(schemaGithubInstallation.installationId, input.installationId)))
+      .returning({
+        installationId: schemaGithubInstallation.installationId,
+        accountLogin: schemaGithubInstallation.accountLogin,
+        accountType: schemaGithubInstallation.accountType,
+      });
+    yield* database.drizzle.delete(schemaGithubRepositoryCache)
+      .where(and(eq(schemaGithubRepositoryCache.userId, input.userId),
+        eq(schemaGithubRepositoryCache.installationId, input.installationId)));
+    return removed[0] ?? null;
   },
 );

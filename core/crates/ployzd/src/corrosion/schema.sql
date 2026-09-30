@@ -17,7 +17,7 @@ CREATE TABLE containers
     container          TEXT      NOT NULL DEFAULT '{}' CHECK (json_valid(container)),
     machine_id         TEXT      NOT NULL DEFAULT '',
     service_id         TEXT AS (json_extract(container, '$.resolved_spec.service_id')),
-    project_name       TEXT AS (json_extract(container, '$.project_name')),
+    namespace       TEXT AS (json_extract(container, '$.namespace')),
     service_name       TEXT AS (json_extract(container, '$.resolved_spec.name'))
 );
 
@@ -38,4 +38,4 @@ CREATE TABLE volumes
 CREATE INDEX idx_machines_name ON machines (name);
 CREATE INDEX idx_containers_machine_id ON containers (machine_id);
 CREATE INDEX idx_containers_service_id ON containers (service_id);
-CREATE INDEX idx_containers_project_service ON containers (project_name, service_name);
+CREATE INDEX idx_containers_namespace_service ON containers (namespace, service_name);

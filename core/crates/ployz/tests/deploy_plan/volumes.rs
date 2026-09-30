@@ -17,7 +17,7 @@ fn automatic_provisioned_intent() -> DeployIntent {
     add_named_volume(&mut service, "data");
     make_provisioned(&mut service, "data", 1_073_741_824);
     DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&service],
         PlanOptions::default(),
     )
@@ -164,7 +164,7 @@ fn explicitly_targeted_provisioned_deploy(
         user: None,
     });
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&service],
         PlanOptions::default(),
     );
@@ -225,8 +225,11 @@ fn stateless_explicit_target_requires_storage_preparation() {
     .to_string();
 
     assert!(error.contains("first"), "{error}");
-    assert!(error.contains("storage preparation"), "{error}");
-    assert!(error.contains("--storage zfs"), "{error}");
+    assert!(error.contains("cannot host Managed volumes"), "{error}");
+    assert!(
+        error.contains("pick a Server with Managed volumes"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -253,9 +256,9 @@ fn existing_plain_volume_is_not_adopted_as_provisioned() {
     .to_string();
 
     assert!(error.contains("app_data"), "{error}");
-    assert!(error.contains("Plain Docker Volume"), "{error}");
+    assert!(error.contains("already uses Docker storage"), "{error}");
     assert!(
-        error.contains("outside the Provisioned Volume MVP"),
+        error.contains("Automatic conversion to managed storage is unavailable"),
         "{error}"
     );
 }
@@ -361,7 +364,7 @@ fn existing_matching_provisioned_volume_is_reused_without_creation() {
 fn provisioned_volume_requires_requested_labels() {
     let mut existing = observed_volume(machine_id('1'), "data");
     existing.options = BTreeMap::from([("size".into(), "1073741824b".into())]);
-    existing.labels.remove(PROJECT_NAME_LABEL);
+    existing.labels.remove(NAMESPACE_LABEL);
     existing.storage = DockerVolumeStorageObservation::Provisioned {
         mountpoint: MachinePath::parse("/var/lib/ployz-volumes/app_data").unwrap(),
         bound_bytes: NonZeroU64::new(1_073_741_824).unwrap(),
@@ -401,7 +404,7 @@ fn existing_provisioned_volume_is_not_implicitly_resized() {
     .unwrap_err()
     .to_string();
 
-    assert!(error.contains("will not be resized or replaced"), "{error}");
+    assert!(error.contains("size is fixed once deployed"), "{error}");
 }
 
 #[test]
@@ -523,7 +526,7 @@ fn automatic_provisioned_volume_does_not_move_an_existing_plain_volume() {
     assert!(error.contains("app_data"), "{error}");
     assert!(error.contains("pinned"), "{error}");
     assert!(
-        error.contains("outside the Provisioned Volume MVP"),
+        error.contains("Automatic conversion to managed storage is unavailable"),
         "{error}"
     );
 }
@@ -574,7 +577,7 @@ fn unselected_provisioned_service_leaves_stateless_machine_unchanged() {
     add_named_volume(&mut unchanged, "data");
     make_provisioned(&mut unchanged, "data", 1_073_741_824);
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&applied, &unchanged],
         PlanOptions {
             selected: vec![ServiceAttempt {
@@ -658,7 +661,7 @@ fn disjoint_global_volumes_may_have_different_bounds() {
     let first = global_service("first", "first", 1_073_741_824);
     let second = global_service("second", "second", 2_147_483_648);
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&first, &second],
         PlanOptions::default(),
     );
@@ -682,7 +685,7 @@ fn partial_apply_rejects_different_bounds_for_colocated_global_volumes() {
     let first = global_service("first", "first", 1_073_741_824);
     let second = global_service("second", "first", 2_147_483_648);
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&first, &second],
         PlanOptions {
             selected: vec![ServiceAttempt {
@@ -725,7 +728,7 @@ fn colocated_global_services_reject_conflicting_provisioned_labels() {
         .set_volume_graph(ployz_core::ServiceVolumeGraph::parse(volumes, mounts).unwrap())
         .unwrap();
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&first, &second],
         PlanOptions::default(),
     );
@@ -752,7 +755,7 @@ fn preview_distinguishes_provisioned_and_ordinary_volume_creates() {
     make_provisioned(&mut requested, "data", 1_073_741_824);
     add_named_volume(&mut requested, "cache");
     let intent = DeployIntent::apply_all(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         [&requested],
         PlanOptions::default(),
     );
@@ -792,7 +795,7 @@ fn duplicate_target_services_fail_before_volume_resolution() {
         replicas: NonZeroU32::new(1).unwrap(),
     });
     let intent = DeployIntent::new(
-        ProjectName::parse("app").unwrap(),
+        Namespace::parse("app").unwrap(),
         vec![requested.clone(), requested],
         PlanOptions::default(),
     );
@@ -843,7 +846,7 @@ fn sibling_target_volume_is_not_listed_as_preserved_on_a_partial_deploy() {
     add_named_volume(&mut worker, "worker-data");
     let plan = preview_deploy(
         &DeployIntent::new(
-            ProjectName::parse("app").unwrap(),
+            Namespace::parse("app").unwrap(),
             vec![web, worker],
             PlanOptions {
                 selected: vec![ServiceAttempt {

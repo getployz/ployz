@@ -1,4 +1,5 @@
 import { testConfigEnvironment } from "#/test/config-environment";
+import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createClientRpc } from "@tanstack/react-start/client-rpc";
@@ -8,13 +9,13 @@ import { Inngest } from "inngest";
 import { Client } from "pg";
 import { createServer } from "vite";
 import { expect, it } from "vitest";
+import { CloudStoreLive, cloudStore } from "#/modules/config-store/store-sdk.server";
 import { Auth, AuthLive } from "#/server/auth.server";
 import { AppConfig } from "#/server/config.server";
 import { DatabaseLive } from "#/server/database.server";
 import { Polar } from "#/modules/billing/polar-provider.server";
 import { InngestClient } from "#/modules/inngest/client";
 import { postgresTestDatabase } from "#/test/postgres";
-import { emptyEnvironmentIntent } from "#/modules/environment-design/saved-intent";
 
 const configFile = fileURLToPath(new URL("../../vite.config.ts", import.meta.url));
 const BoundaryResult = Schema.Union([
@@ -80,26 +81,27 @@ it(
         return value;
       }).pipe(Effect.provide(authLayer));
 
-      const organizationSlug = yield* Effect.promise(async () => {
+      const organization = yield* Effect.promise(async () => {
         const database = new Client({ connectionString: testDatabase.url.href });
         await database.connect();
         try {
           const result = await database.query<{ id: string; slug: string }>("select id, slug from organization");
           const organization = result.rows[0];
           if (!organization) throw new Error("Signup did not create an organization.");
-          const project = await database.query<{ id: string }>(
-            "insert into project (organization_id, name, slug) values ($1, $2, $3) returning id",
-            [organization.id, "SSR project", "ssr-project"],
-          );
-          await database.query(
-            "insert into environment (organization_id, project_id, name, namespace, intent) values ($1, $2, $3, $4, $5)",
-            [organization.id, project.rows[0]?.id, "SSR production", "ssr-production", emptyEnvironmentIntent("ssr-production")],
-          );
-          return organization.slug;
+          return organization;
         } finally {
           await database.end();
         }
       });
+      const organizationSlug = organization.slug;
+      // The canvas reads the Environment's Services and Settings from the Config Store.
+      yield* Effect.gen(function* () {
+        const store = yield* cloudStore;
+        yield* Effect.promise(async () => {
+          await store.write(organization.id, { command: "create_project", id: randomUUID(), name: "ssr-project", default_environment: randomUUID() });
+          await store.write(organization.id, { command: "create_environment", id: randomUUID(), project: "ssr-project", name: "ssr-production" });
+        });
+      }).pipe(Effect.provide(CloudStoreLive.pipe(Layer.provide(Layer.merge(configLayer, databaseLayer)))));
 
       yield* Effect.promise(async () => {
         const previousDatabaseUrl = process.env["DATABASE_URL"];
@@ -215,8 +217,8 @@ it(
             });
             expect(page.status).toBe(200);
             const html = await page.text();
-            expect(html).toContain("SSR project");
-            expect(html).toContain("SSR production");
+            expect(html).toContain("ssr-project");
+            expect(html).toContain("ssr-production");
             expect(html).toContain('aria-label="Dashboard navigation"');
             expect(html).toContain("dehydratedDbClient");
             expect(html).not.toContain("Switched to client rendering");

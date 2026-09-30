@@ -4,7 +4,7 @@ import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { Tooltip, TooltipContent, TooltipTrigger } from "#/components/ui/tooltip";
-import type { SetupCommand } from "#/modules/project/tables";
+import type { SetupCommand } from "#/modules/config-store/branch-picks";
 
 /** Commands and the service each runs in. `typed` marks a keystroke, so a saved-at-once owner can wait for blur. */
 export function SetupCommandsField({ id, commands, services, onChange, onBlur }: {

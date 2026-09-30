@@ -1,12 +1,12 @@
 import type { AuthSession } from "./auth";
 import { createAuthClient } from "better-auth/react";
-import { inferAdditionalFields, organizationClient } from "better-auth/client/plugins";
+import { deviceAuthorizationClient, inferAdditionalFields, organizationClient } from "better-auth/client/plugins";
 import { polarClient } from "@polar-sh/better-auth";
 
 import { sessionAdditionalFields, userAdditionalFields } from "./session-fields";
 
 export const authClient = createAuthClient({
-  plugins: [organizationClient(), polarClient(), inferAdditionalFields({ session: sessionAdditionalFields, user: userAdditionalFields })],
+  plugins: [organizationClient(), deviceAuthorizationClient(), polarClient(), inferAdditionalFields({ session: sessionAdditionalFields, user: userAdditionalFields })],
 });
 
 /** Called by Router hydration before it renders consumers or runs client guards. */

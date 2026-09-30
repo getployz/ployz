@@ -16,8 +16,9 @@ use crate::connect::Client;
 pub enum BuildOutcome {
     /// No Build Machine admitted the build within its start limit; it was withdrawn.
     Queued,
-    /// The build finished; its receipt identifies the image.
-    Built { receipt: BuildReceipt },
+    /// The build finished; its receipt identifies the image. `reused`: an earlier
+    /// image of the same build inputs served it, and nothing was built.
+    Built { receipt: BuildReceipt, reused: bool },
 }
 
 /// Build the one Service; withdraw it as `Queued` if no Build Machine admits
@@ -30,9 +31,17 @@ pub(super) async fn run(
     reporter: Reporter,
 ) -> Result<BuildOutcome, RpcError> {
     let captured = super::capture(input).await?;
-    if captured.build.targets().count() != 1 || captured.fingerprints.len() != 1 {
+    // An uploaded Service without its source has no target: its receipt alone serves it.
+    let services: std::collections::BTreeSet<_> = captured
+        .fingerprints
+        .keys()
+        .chain(captured.reused.keys())
+        .collect();
+    if captured.build.targets().count() > 1 || services.len() != 1 {
         return Err(super::invalid_argument(
-            "build input must hold exactly one Git Service with its source commit".into(),
+            "build input must hold exactly one Git Service with its source commit, \
+             or one uploaded Service"
+                .into(),
         ));
     }
     let admit_by = start_within.map(|limit| tokio::time::Instant::now() + limit);
@@ -48,10 +57,17 @@ pub(super) async fn run(
     )
     .await;
     match result {
-        Ok(builds) => preparation::receipts(&captured.fingerprints, &builds)
-            .into_values()
+        Ok(builds) => preparation::receipts(&captured.fingerprints, &captured.reused, &builds)
+            .into_iter()
             .next()
-            .map(|receipt| BuildOutcome::Built { receipt })
+            .map(|(service, receipt)| BuildOutcome::Built {
+                reused: captured.reused.get(&service).is_some_and(|candidates| {
+                    candidates
+                        .iter()
+                        .any(|reused| reused.image == receipt.image)
+                }),
+                receipt,
+            })
             .ok_or_else(|| super::invalid_argument("Build produced no receipt".into())),
         Err(PreparationError::Build(crate::build::Error::Withdrawn)) => Ok(BuildOutcome::Queued),
         Err(error) => Err(super::preparation_error(error, token.is_cancelled())),
@@ -117,7 +133,7 @@ async fn reuse(
     )?;
     if fingerprints.get(&spec.name) != Some(&receipt.fingerprint)
         || receipt.image.platforms.is_empty()
-        || !crate::build::runs_everywhere(&receipt.image, spec, &intent.project_name, machines)
+        || !crate::build::runs_everywhere(&receipt.image, spec, &intent.namespace, machines)
     {
         return Ok(None);
     }

@@ -1,11 +1,10 @@
 import { PackageIcon, TerminalIcon } from "lucide-react";
 import { GitHubMarkIcon } from "#/components/icons/github-mark";
-import type { ServiceDeploymentSurfaceState } from "#/modules/services/service-deployment-semantics";
-import type { EnvironmentServiceViewRecord } from "#/modules/services/services.collection";
 
-export function getServiceIcon(service: Pick<EnvironmentServiceViewRecord["service"], "source">) {
+export function getServiceIcon(service: { source: { type: "empty" | "uploaded" | "git" | "image" } }) {
   switch (service.source.type) {
     case "empty":
+    case "uploaded":
       return <TerminalIcon />;
     case "git":
       return <GitHubMarkIcon />;
@@ -14,18 +13,8 @@ export function getServiceIcon(service: Pick<EnvironmentServiceViewRecord["servi
   }
 }
 
-export function getServiceSubtitle(service: Pick<EnvironmentServiceViewRecord["service"], "source">) {
-  switch (service.source.type) {
-    case "empty":
-      return null;
-    case "git":
-      return service.source.repository;
-    case "image":
-      return service.source.image;
-  }
-}
-
-export function getServiceStatusClasses(state: ServiceDeploymentSurfaceState) {
+/** A card's status dot by its state. */
+export function getServiceStatusClasses(state: "success" | "changed" | "warning" | "destructive" | undefined) {
   if (state === "success") {
     return {
       dot: "bg-success-soft",

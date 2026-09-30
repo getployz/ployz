@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use hickory_server::proto::op::{Edns, Query as WireQuery};
 use ployz_core::{
     ContainerAddress, ContainerId, ContainerKind, ContainerRuntimeObservation, HealthObservation,
-    Machine, MachineId, MachineName, MachineRuntime, ProjectName, ResolvedServiceSpec, ServiceId,
+    Machine, MachineId, MachineName, MachineRuntime, Namespace, ResolvedServiceSpec, ServiceId,
     ServiceName, WireGuardPublicKey,
 };
 use serde_json::json;
@@ -205,12 +205,12 @@ fn resolves_every_canonical_lookup_and_rotates_ordinary_answers() {
 }
 
 #[test]
-fn cross_project_and_reserved_names_are_resolved_structurally() {
+fn cross_namespace_and_reserved_names_are_resolved_structurally() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let words = ["rr", "nearest", "machine", "region", "id", "lookup"];
     let mut observations = Vec::new();
     for (index, word) in words.into_iter().enumerate() {
-        observations.push(in_project(
+        observations.push(in_namespace(
             observation(
                 index as u8 + 1,
                 &machine,
@@ -220,9 +220,9 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
                 running(HealthObservation::Healthy),
                 Some([10, 210, 1, index as u8 + 2]),
             ),
-            "project",
+            "namespace",
         ));
-        observations.push(in_project(
+        observations.push(in_namespace(
             observation(
                 index as u8 + 9,
                 &machine,
@@ -241,7 +241,7 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
         assert_eq!(
             addresses(plan(
                 &projection,
-                &format!("{word}.project.internal."),
+                &format!("{word}.namespace.internal."),
                 RecordType::A,
             )),
             vec![Ipv4Addr::new(10, 210, 1, index as u8 + 2)]
@@ -259,7 +259,7 @@ fn cross_project_and_reserved_names_are_resolved_structurally() {
 }
 
 #[test]
-fn caller_project_answers_service_internal() {
+fn caller_namespace_answers_service_internal() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let api = observation(
         1,
@@ -279,7 +279,7 @@ fn caller_project_answers_service_internal() {
         running(HealthObservation::Starting),
         Some([10, 210, 1, 3]),
     );
-    let shop_api = in_project(
+    let shop_api = in_namespace(
         observation(
             3,
             &machine,
@@ -316,7 +316,7 @@ fn caller_project_answers_service_internal() {
 }
 
 #[test]
-fn caller_project_includes_hooks_but_requires_one_visible_container() {
+fn caller_namespace_includes_hooks_but_requires_one_visible_container() {
     let machine = MachineId::parse("a".repeat(32)).unwrap();
     let api = observation(
         1,
@@ -724,7 +724,7 @@ fn observation(
         display_name: format!("{service_name}-{suffix}"),
         created_at_unix_nanos: 0,
         machine_id: *machine_id,
-        project_name: ProjectName::parse("app").unwrap(),
+        namespace: Namespace::parse("app").unwrap(),
         kind,
         runtime,
         effective_healthcheck: None,
@@ -735,9 +735,9 @@ fn observation(
     .unwrap()
 }
 
-fn in_project(mut observation: ContainerObservation, project: &str) -> ContainerObservation {
+fn in_namespace(mut observation: ContainerObservation, namespace: &str) -> ContainerObservation {
     observation
-        .try_update(|parts| parts.project_name = ProjectName::parse(project).unwrap())
+        .try_update(|parts| parts.namespace = Namespace::parse(namespace).unwrap())
         .unwrap();
     observation
 }

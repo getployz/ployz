@@ -206,3 +206,13 @@ export const OrganizationRuntimeLive = Layer.unwrap(
     );
   }),
 );
+
+/**
+ * One Runtime Watch frame of the Organization's Cluster, for a read that looks once: null when no Cluster is paired.
+ * Fails when the Cluster doesn't answer within 5 seconds, so a slow one never holds up what asked.
+ */
+export const firstRuntimeFrame = Effect.fn("OrganizationRuntime.firstFrame")(function* (organizationId: string) {
+  const session = yield* (yield* OrganizationRuntime).open(organizationId);
+  if (session.status !== "connected") return null;
+  return yield* session.connected.watchFirstFrame(RUNTIME_FRAME_TIMEOUT_MS);
+}, Effect.scoped, Effect.timeout("5 seconds"));
