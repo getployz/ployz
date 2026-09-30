@@ -145,6 +145,22 @@ it("runs a Move after pending edits in every Environment", async () => {
   expect(test.write.mock.calls[1]?.[0]).toMatchObject({ data: { command: { command: "move" } } });
 });
 
+it("runs a copied node after the edits made before it, not the ones queued behind it", async () => {
+  const test = setup(view(2, 1));
+  const first = deferred<StoreResult<ConfigWritten>>();
+  test.write.mockImplementationOnce(() => first.promise)
+    .mockResolvedValueOnce({ ok: true, value: { written: "service", environment: view(4, 1).environment } as never })
+    .mockResolvedValueOnce(edited(5));
+  const one = test.edit({ environment: ref, changes: replicas(3) });
+  const copied = test.writer.commit({ command: "copy_node", environment: ref, node: "web", expect: null });
+  const two = test.edit({ environment: ref, changes: replicas(4) });
+  first.resolve(edited(3));
+  await Promise.all([one.isPersisted.promise, copied.isPersisted.promise, two.isPersisted.promise]);
+  expect(test.write.mock.calls.map((call) => call[0]?.data.command)).toMatchObject([
+    { command: "edit", expect: 2 }, { command: "copy_node", expect: 3 }, { command: "edit", expect: 4 },
+  ]);
+});
+
 it("queues storage edits against their committed revision and waits for them before a Move", async () => {
   const test = setup(view(2, 1));
   const first = deferred<StoreResult<ConfigWritten>>();
