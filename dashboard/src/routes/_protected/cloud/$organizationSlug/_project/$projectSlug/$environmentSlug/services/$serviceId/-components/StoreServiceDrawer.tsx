@@ -1,5 +1,5 @@
 import { Suspense, useState, type ReactNode } from "react";
-import { redirect, useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
+import { useLoaderData, useNavigate, useSearch } from "@tanstack/react-router";
 import { Schema } from "effect";
 import { PackageIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import type { Change, EnvironmentRef, JsonValue, ServiceListing, ServiceSettingChange, SettingRow } from "@ployz/sdk";
@@ -9,16 +9,18 @@ import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
 import { Field, FieldDescription, FieldGroup, FieldLabel } from "#/components/ui/field";
-import { Item, ItemActions, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { Item, ItemActions, ItemContent, ItemDescription, ItemMedia, ItemTitle } from "#/components/ui/item";
+import { shownValue } from "#/modules/config-store/store-deployments";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "#/components/ui/select";
 import { serviceSetting, settingChange, settingError, type ServiceSettingName, type SettingSchema } from "#/modules/config-store/catalog";
-import { DNS_LABEL_RULE, isDnsLabel, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
+import { dnsLabelError, serviceChanges, serviceSettingRows, settingText } from "#/modules/config-store/store-services";
 import { diffQuery, environmentSettingsQuery, requireView, servicesQuery, useStoreViews } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
 import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
-import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
+import { ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
 import { RegistryCredentialsField } from "./ServiceRegistryCredentialsSection";
 import { ServiceSettingInput } from "./ServiceSettingInput";
 import { ServiceCommandField } from "./ServiceCommandField";
@@ -44,7 +46,16 @@ type StoreService = {
   rows: Map<string, SettingRow>;
   /** What the next Deploy changes, by Setting: the pink trail. */
   changes: Map<string, ServiceSettingChange>;
+  /** Where its image comes from, with pending edits: connecting or disconnecting a source shows at once. */
+  source: ServiceListing["source"];
 };
+
+/** A Service's source as its Settings say, pending edits included; an upload only while it has none of its own. */
+function sourceOf(service: ServiceListing, rows: Map<string, SettingRow>): ServiceListing["source"] {
+  if (settingText(rows.get("repository")?.value)) return "git";
+  if (settingText(rows.get("image")?.value)) return "image";
+  return service.source === "uploaded" ? "uploaded" : "empty";
+}
 
 const OPTION_LABELS = new Map([
   ["unless-stopped", "Unless stopped"],
@@ -61,7 +72,8 @@ const SERVICE_ROUTE_TO = "/cloud/$organizationSlug/$projectSlug/$environmentSlug
 /** A DNS label no other Service here has as its name or Private DNS. */
 function nameSchema(service: ServiceListing, services: readonly ServiceListing[]) {
   return Schema.String.check(Schema.makeFilter<string>((name) => {
-    if (!isDnsLabel(name)) return DNS_LABEL_RULE;
+    const error = dnsLabelError(name);
+    if (error) return error;
     const taken = services.some((other) => other.id !== service.id && (other.name === name || other.private_dns === name));
     return taken ? `A service here is already named ${name}.` : undefined;
   }));
@@ -82,15 +94,17 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
   const { tab } = useSearch({ from: SERVICE_ROUTE_FROM });
   const navigate = useNavigate({ from: SERVICE_ROUTE_TO });
   const service = services.find((candidate) => candidate.id === params.serviceId);
-  // Removed while open (a staged removal of a new Service, or from the CLI): back to the canvas.
-  if (!service) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
+  // A stale link, or removed while open (from the CLI; the drawer's own Delete closes it).
+  if (!service) return <CanvasInspectorNotFound noun="Service" />;
 
+  const rows = serviceSettingRows(settings, service.name);
   const state: StoreService = {
     organizationSlug,
     environment: store,
     service,
-    rows: serviceSettingRows(settings, service.name),
+    rows,
     changes: serviceChanges(diff, service.id),
+    source: sourceOf(service, rows),
   };
   const rename = state.changes.get("name");
   const restartPolicy = state.rows.get("restartPolicy");
@@ -101,11 +115,15 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
     // Domain statuses need a look at the Cluster, so the rest of the drawer doesn't wait for them.
     networking: (
       <Suspense fallback={null}>
-        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} />
+        <StoreNetworkingSection organizationSlug={organizationSlug} environment={store} service={service} changes={state.changes} version={diff.version}
+          privateDns={settingText(rows.get("privateDns")?.value) || service.private_dns}
+          validatePrivateDns={(raw) => raw === "" ? null : settingError(serviceSetting("privateDns"), raw)
+            ?? (services.some((other) => other.id !== service.id && (other.name === raw || other.private_dns === raw))
+              ? `A service here is already reached as ${raw}.` : null)} />
       </Suspense>
     ),
     scale: <FieldGroup>{field("replicas")}{field("cpuLimit")}{field("memLimit")}</FieldGroup>,
-    build: service.source === "git" ? (
+    build: state.source === "git" ? (
       <FieldGroup>
         {field("buildMethod")}
         {buildMethod === "dockerfile" ? <StoreDockerfile state={state} /> : field("buildCommand")}
@@ -118,6 +136,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
       <FieldGroup>
         {field("startCommand")}
         {field("preDeployCommand")}
+        <StoreHealthcheckField state={state} />
         {field("restartPolicy")}
         {(restartPolicy?.value ?? restartPolicy?.default) === "on-failure" ? field("maxRetries") : null}
       </FieldGroup>
@@ -144,7 +163,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           onValueChange={(value) => {
             if (Schema.is(servicePageSchema)(value)) void navigate({ search: (prev) => ({ ...prev, tab: value }), replace: true });
           }}
-          className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          className="flex min-h-0 flex-1 flex-col overflow-clip">
           <TabsList variant="line" className="max-w-full shrink-0 overflow-x-auto">
             {SERVICE_PAGES.map((page) => <TabsTrigger key={page.id} value={page.id}>{page.label}</TabsTrigger>)}
           </TabsList>
@@ -160,7 +179,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
           <TabsContent value="logs" className="mt-4 flex min-h-0 flex-1 flex-col">
             <ContainerLogs selection={{ organizationSlug, projectSlug: params.projectSlug, environmentSlug: params.environmentSlug, serviceId: service.id }} />
           </TabsContent>
-          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-hidden">
+          <TabsContent value="settings" className="mt-3 min-h-0 flex-1 overflow-clip">
             <div className="h-full overflow-y-auto pr-1 pb-8">
               <div className="mx-auto flex w-full max-w-2xl flex-col gap-6 **:data-[slot=field-group]:gap-4">
                 {SERVICE_SETTINGS_SECTIONS.flatMap((section) => {
@@ -175,7 +194,7 @@ export function StoreServiceDrawer({ params }: { params: { organizationSlug: str
               </div>
             </div>
           </TabsContent>
-          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} />
+          <StoreServiceVariablesTab organizationSlug={organizationSlug} environment={store} service={service} services={services} settings={settings} changes={state.changes} />
         </Tabs>
       </div>
     </div>
@@ -243,7 +262,7 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
       <FieldDescription>{setting.description}</FieldDescription>
       {setting.enum ? (
         <Select value={current} onValueChange={(next) => { if (next !== null && next !== current) edit(next); }}>
-          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "h-auto w-full py-1.5" : "w-full"} data-changed={change ? true : undefined}
+          <SelectTrigger aria-label={setting.title} className={OPTION_HELP.has(current) ? "w-full py-1.5 data-[size=default]:h-auto" : "w-full"} data-changed={change ? true : undefined}
             title={change ? `Deployed: ${settingText(change.before)}` : undefined}>
             <SelectValue>
               <span className="flex flex-col items-start">
@@ -283,6 +302,52 @@ function StoreSettingField({ state, name }: { state: StoreService; name: Service
         />
       )}
     </Field>
+  );
+}
+
+const Healthcheck = Schema.Struct({ path: Schema.String, timeoutSeconds: Schema.Number });
+/** The first staged change among `names`, as the drawer keys them. */
+const changeOf = (changes: Map<string, ServiceSettingChange>, ...names: string[]) =>
+  names.map((name) => changes.get(name)).find((change) => change !== undefined);
+
+/**
+ * The HTTP check a new replica passes before it takes traffic: a path (a button until set; blank turns it off) and,
+ * once on, how long it may take.
+ */
+function StoreHealthcheckField({ state }: { state: StoreService }) {
+  const writer = useStoreWriter(state.organizationSlug);
+  const row = state.rows.get("healthcheck");
+  if (!row) return null;
+  const setting = serviceSetting("healthcheck");
+  const { path: pathSchema, timeoutSeconds } = setting.properties;
+  const on = Schema.is(Healthcheck)(row.value) ? row.value : null;
+  const path = `${state.service.name}.healthcheck`;
+  const pathChange = changeOf(state.changes, "healthcheck.path", "healthcheck");
+  const timeoutChange = changeOf(state.changes, "healthcheck.timeoutSeconds", "healthcheck");
+  const shown = (value: JsonValue | undefined) => Schema.is(Healthcheck)(value) ? `${value.path}, ${value.timeoutSeconds}s`
+    : value === null || value === undefined ? "off" : settingText(value);
+  const edit = (change: Change) => writer.edit({ environment: state.environment, changes: [change] });
+  return (
+    <>
+      <ServiceCommandField label={setting.title} addLabel="Healthcheck path" description={setting.description} placeholder="/up"
+        value={on?.path ?? null} isChanged={pathChange !== undefined} baselineValue={pathChange ? shown(pathChange.before) : undefined}
+        validate={(raw) => settingError({ ...pathSchema, title: "path", description: "", type: "string" }, raw)
+          ?? (raw.startsWith("/") ? null : "Start the path with /.")}
+        onCommit={(next) => edit(next === null ? { op: "unset", path } : { op: "set", path, value: next })} />
+      {on ? (
+        <Field>
+          <FieldLabel>Healthcheck timeout</FieldLabel>
+          <FieldDescription>How long a new replica may take to pass it.</FieldDescription>
+          <ServiceSettingInput ariaLabel="Healthcheck timeout" type="number" inputMode="numeric" min={timeoutSeconds.minimum}
+            max={timeoutSeconds.maximum} step={1} suffix="seconds" placeholder={String(timeoutSeconds.default)}
+            value={String(on.timeoutSeconds)} isChanged={timeoutChange !== undefined}
+            baselineValue={timeoutChange ? shown(timeoutChange.before) : undefined}
+            validate={(raw) => settingError({ ...timeoutSeconds, title: "timeout", description: "", type: "integer" }, raw)}
+            onCommit={(raw) => edit({ op: "set", path,
+              value: { path: on.path, timeoutSeconds: raw === "" ? timeoutSeconds.default : Number(raw) } })} />
+        </Field>
+      ) : null}
+    </>
   );
 }
 
@@ -347,13 +412,15 @@ function StoreSourceSection({ state }: { state: StoreService }) {
   const set = (name: "image" | "repository" | "branch", value: string) =>
     writer.edit({ environment: state.environment, changes: [{ op: "set", path: `${state.service.name}.${name}`, value }] });
   const close = (open: boolean) => { if (!open) setPicking(null); };
-  const kind = state.service.source === "git" ? "repository" : "image";
+  const kind = state.source === "git" ? "repository" : "image";
+  // Staged: the Service is empty again once deployed; its settings for this source stay until then.
+  const disconnect = () => writer.edit({ environment: state.environment, changes: [{ op: "unset", path: `${state.service.name}.${kind}` }] });
   const setting = serviceSetting(kind);
   const value = settingText(state.rows.get(kind)?.value);
   const change = state.changes.get(kind);
   const gitRef = useRepositoryRef(state.organizationSlug, state.environment, value);
 
-  if (state.service.source === "uploaded") {
+  if (state.source === "uploaded") {
     return (
       <Field>
         <FieldLabel>Source</FieldLabel>
@@ -362,15 +429,33 @@ function StoreSourceSection({ state }: { state: StoreService }) {
     );
   }
 
-  if (state.service.source === "empty") {
+  const dialogs = <>
+    <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
+    <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
+      onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
+  </>;
+
+  if (state.source === "empty") {
+    const change = changeOf(state.changes, "source", "image", "repository");
     return (
       <FieldGroup>
+        {change ? (
+          <Item variant="muted" size="sm" data-changed>
+            <ItemContent>
+              <ItemTitle>No source after your next deploy</ItemTitle>
+              <ItemDescription>Deployed: {shownValue(change.before) || "none"}</ItemDescription>
+            </ItemContent>
+          </Item>
+        ) : null}
         <Field>
           <FieldLabel>Add a source</FieldLabel>
-          <FieldDescription>{serviceSetting("image").description}</FieldDescription>
-          <div><Button type="button" variant="outline" onClick={() => setPicking("image")}><PackageIcon data-icon="inline-start" />Container image</Button></div>
+          <FieldDescription>Deploy from a GitHub repository, or run a container image.</FieldDescription>
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" onClick={() => setPicking("repository")}><GitHubMarkIcon data-icon="inline-start" />Git repository</Button>
+            <Button type="button" variant="outline" onClick={() => setPicking("image")}><PackageIcon data-icon="inline-start" />Container image</Button>
+          </div>
         </Field>
-        <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
+        {dialogs}
       </FieldGroup>
     );
   }
@@ -390,6 +475,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
               <PencilIcon />
               <span className="sr-only">Edit {setting.title.toLowerCase()}</span>
             </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={disconnect}>Disconnect</Button>
           </ItemActions>
         </Item>
       </Field>
@@ -404,9 +490,7 @@ function StoreSourceSection({ state }: { state: StoreService }) {
           <StoreSettingField state={state} name="watchPaths" />
         </>
       ) : <StoreRegistryCredentials state={state} image={value} />}
-      <ImageSelectorDialog open={picking === "image"} onOpenChange={close} onSelectImage={(image) => { set("image", image); setPicking(null); }} />
-      <GitRepoSelectorDialog open={picking === "repository"} onOpenChange={close}
-        onSelectRepo={({ fullName }) => { set("repository", fullName); setPicking(null); }} />
+      {dialogs}
     </FieldGroup>
   );
 }

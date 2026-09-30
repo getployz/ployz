@@ -2,6 +2,7 @@ import { Suspense, useState } from "react";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import type { BuildView, DeploymentView, NodeOutcome } from "@ployz/sdk";
 import { GitBranchPlusIcon } from "lucide-react";
+import { toast } from "sonner";
 import { ContainerLogs } from "#/components/container-logs";
 import { outcomeBadges } from "#/components/deployment-outcome-badges";
 import { DeploymentStatusIcon } from "#/components/deployment-status-icon";
@@ -18,7 +19,7 @@ import { Item, ItemContent, ItemGroup, ItemTitle } from "#/components/ui/item";
 import { Skeleton } from "#/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "#/components/ui/tabs";
 import {
-  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
+  admission, deploymentActions, deploymentStatusIcons, deploymentStatusLabels, failureReason, nodeApplied, nodeLight, nodeStatusLabels, notExecuted, previewLines,
   targetsLabel,
   uploadLabel,
 } from "#/modules/config-store/store-deployments";
@@ -26,7 +27,7 @@ import { buildLogQuery, deploymentQuery, useStoreView } from "#/modules/config-s
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { CanvasInspectorHeader } from "./CanvasInspectorHeader";
 import { DEPLOYMENT_PAGE_ROUTE_TO, type deploymentPageSearchSchema } from "./deployment-page";
-import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "./environment-route-paths";
+import { ENVIRONMENT_NEW_BRANCH_ROUTE_TO, ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "./environment-route-paths";
 
 const BUILT = new Set<BuildView["status"]>(["built", "reused"]);
 
@@ -55,6 +56,7 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
   // A build still going or failed is where to look; else how it deployed.
   const tab = search.logs ?? (build && !BUILT.has(build.status) ? "build" : "deploy");
   const skipped = notExecuted(deployment.outcome);
+  const failed = failureReason(deployment.outcome);
   const preview = previewLines(deployment.preview);
   const admitted = admission(deployment);
   const pageSearch = (service: string) => ({ service, logs: undefined, returnTo: search.returnTo });
@@ -76,17 +78,26 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
             {admitted.ended ? <> · ended <RelativeTime date={admitted.ended} /></> : null}
           </p>
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <h2 className="min-w-0 text-base font-medium break-words">Deploys {targetsLabel(deployment)}</h2>
+            <h2 className="min-w-0 text-base font-medium break-words">{deployment.message ?? `Deploys ${targetsLabel(deployment)}`}</h2>
             <StoreDeploymentActions deployment={deployment} focused={focused} />
           </div>
+          {deployment.message ? <p className="text-muted-foreground">Deploys {targetsLabel(deployment)}</p> : null}
           <p className="flex items-center gap-1 [&_svg]:size-3.5">
             <DeploymentStatusIcon status={deploymentStatusIcons[deployment.status]} />{deploymentStatusLabels[deployment.status]}
           </p>
           {skipped ? (
-            <p className="break-words text-destructive">
-              {skipped.reason}{skipped.next ? <> Run <code className="font-mono">{skipped.next}</code> from its directory.</> : null}
-            </p>
+            <div className="flex flex-col items-start gap-2">
+              <p className="break-words text-destructive">{skipped.reason}</p>
+              {/* A Service with nothing to run: the way on is giving it an image, in its drawer. */}
+              {skipped.needsSource.flatMap((name) => services.filter((node) => node.name === name)).map((node) => (
+                <Button key={node.id} size="sm" variant="outline" nativeButton={false}
+                  render={<Link to={ENVIRONMENT_SERVICE_ROUTE_TO} params={{ ...params, serviceId: node.id }} />}>
+                  Add an image to {node.name}
+                </Button>
+              ))}
+            </div>
           ) : null}
+          {failed ? <p className="break-words text-destructive">{failed}</p> : null}
         </header>
 
         {preview ? (
@@ -151,7 +162,10 @@ export function StoreDeploymentPage({ deploymentId, search }: { deploymentId: st
               {volumes.map((node) => (
                 <Item key={node.id} variant="outline" size="sm">
                   <ItemContent className="min-w-0"><ItemTitle><span className="truncate">{node.name}</span></ItemTitle></ItemContent>
-                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>{nodeStatusLabels[node.outcome]}</Badge>
+                  {/* A removed Volume's data is gone: say so. */}
+                  <Badge variant={outcomeBadges[nodeLight(node.outcome, deployment.status)]}>
+                    {node.outcome === "removed" ? "Deleted" : nodeStatusLabels[node.outcome]}
+                  </Badge>
                 </Item>
               ))}
             </ItemGroup>
@@ -203,7 +217,8 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
   }
 
   // A failed Deployment's focused Service it didn't apply can be fixed on a Branch, with the change that failed.
-  const fixing = deployment.status === "failed" && focused && !nodeApplied(focused.outcome) ? focused.name : null;
+  // With no Server, the failure is having none: Add a server is the one way on.
+  const fixing = deployment.status === "failed" && !noServers && focused && !nodeApplied(focused.outcome) ? focused.name : null;
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -218,7 +233,10 @@ function StoreDeploymentActions({ deployment, focused }: { deployment: Deploymen
       ) : null}
       {actions.retry && !noServers ? <Button size="sm" variant="outline" disabled={retrying} onClick={() => void retry()}>Retry</Button> : null}
       {actions.start && !noServers ? (
-        <Button size="sm" variant="outline" onClick={() => { writer.commit({ command: "start", deployment: deployment.id }); }}>Deploy now</Button>
+        <Button size="sm" variant="outline" onClick={() => {
+          writer.commit({ command: "start", deployment: deployment.id });
+          toast.success(`Deployment #${deployment.number} starts now`);
+        }}>Deploy now</Button>
       ) : null}
       {actions.cancel ? <Button size="sm" variant="outline" onClick={() => setCancelOpen(true)}>Cancel</Button> : null}
       <AlertDialog open={cancelOpen} onOpenChange={setCancelOpen}>

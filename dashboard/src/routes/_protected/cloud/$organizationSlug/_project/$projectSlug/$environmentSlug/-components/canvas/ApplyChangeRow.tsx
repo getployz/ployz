@@ -3,7 +3,6 @@ import { Trash2Icon } from "lucide-react";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { TableCell, TableRow } from "#/components/ui/table";
-import { cn } from "#/lib/utils";
 import type { ChangeRow } from "#/modules/config-store/store-deployments";
 import {
   getKindBadgeVariant,
@@ -30,8 +29,8 @@ export function ApplyChangeRow({
   onDiscard?: () => void;
 }) {
   return (
-    // On phones an applied row stacks old above new, so long values such as image refs get the full width.
-    <TableRow className={cn("bg-transparent hover:bg-transparent", tone === "applied" && "max-wf-nav:flex max-wf-nav:flex-col max-wf-nav:py-1")}>
+    // On phones a row stacks old above new, so long values such as image refs get the full width.
+    <TableRow className="bg-transparent hover:bg-transparent max-wf-nav:flex max-wf-nav:flex-col max-wf-nav:py-1 max-wf-nav:[&>td]:w-full">
       <TableCell>
         <div className="flex items-center gap-3">
           <Badge variant={tone === "staged" ? getKindBadgeVariant(row.kind) : "outline"}>

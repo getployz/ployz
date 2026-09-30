@@ -8,7 +8,7 @@ import { Item, ItemContent, ItemMedia, ItemTitle } from "#/components/ui/item";
 import { Spinner } from "#/components/ui/spinner";
 import { Switch } from "#/components/ui/switch";
 import { branchSetupCommands, ownLineages } from "#/modules/config-store/branch-picks";
-import { DNS_LABEL_RULE, isDnsLabel } from "#/modules/config-store/store-services";
+import { dnsLabelError } from "#/modules/config-store/store-services";
 import { prPlansQuery } from "#/modules/config-store/store-pull-requests";
 import { branchPlanQuery, environmentsQuery, useBranchPlan, useCachedStoreView, useStoreView } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
@@ -78,11 +78,13 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
   const taken = new Set(listing.ok ? listing.value.environments.map((environment) => environment.name) : []);
   const [name, setName] = useState<string | null>(null);
   const [keep, setKeep] = useState(false);
-  // Until edited, the setup the Project's PR plans run in Branches of this Environment: they seed the same data.
+  // Until edited, this Environment's Branch setup, else what the Project's PR plans run in its Branches: they seed the
+  // same data.
   const [edited, setSetupCommands] = useState<SetupCommand[] | null>(null);
   const plans = useCachedStoreView(params.organizationSlug, prPlansQuery(params.projectSlug));
-  const setupCommands = edited ?? (plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug
-    ? plan.setup.map((setup) => ({ lineageId: setup.service, command: setup.command })) : []) : []);
+  const saved = listing.ok ? listing.value.environments.find((environment) => environment.name === params.environmentSlug)?.branch_setup ?? [] : [];
+  const defaults = saved.length ? saved : plans?.ok ? plans.value.plans.flatMap((plan) => plan.start_from === params.environmentSlug ? plan.setup : []) : [];
+  const setupCommands = edited ?? defaults.map((setup) => ({ lineageId: setup.service, command: setup.command }));
   const [pending, setPending] = useState<"deploy" | "create" | null>(null);
   if (!picking) return null;
 
@@ -157,7 +159,7 @@ export function StoreNewBranchPanel({ focus, fix }: { focus: string | null; fix:
 function nameProblem(name: string, taken: ReadonlySet<string>) {
   if (!name) return "Name the branch.";
   if (taken.has(name)) return `${name} is taken in this project.`;
-  return isDnsLabel(name) ? null : DNS_LABEL_RULE;
+  return dnsLabelError(name);
 }
 
 /** The first free name: `base`, then `base-2`, `base-3`… */

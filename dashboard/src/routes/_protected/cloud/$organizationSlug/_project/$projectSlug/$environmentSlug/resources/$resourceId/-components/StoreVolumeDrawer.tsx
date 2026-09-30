@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { redirect, useLoaderData, useNavigate } from "@tanstack/react-router";
+import { Schema } from "effect";
+import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import { HardDriveIcon, PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import type { DiffView, EnvironmentRef, Mount, ServiceListing, VolumeListing } from "@ployz/sdk";
 import { Button } from "#/components/ui/button";
@@ -14,6 +15,9 @@ import { useStoreWriter } from "#/modules/config-store/store-write";
 import { detachedMounts, mountChange, mountPathError, volumeStorage, volumeStorageText } from "#/modules/config-store/store-volumes";
 import { VolumeStorageFields } from "#/modules/config-store/VolumeStorageFields";
 import { CanvasInspectorHeader } from "../../../-components/CanvasInspectorHeader";
+import { CanvasInspectorNotFound } from "../../../-components/CanvasInspectorRouteStates";
+import { CanvasInspectorNameEditor } from "../../../-components/CanvasInspectorNameEditor";
+import { dnsLabelError, settingText } from "#/modules/config-store/store-services";
 import { useStoreChangeActions } from "../../../-components/canvas/useStoreChangeActions";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../../../-components/deployment-page";
 import { ENVIRONMENT_INDEX_ROUTE_TO, ENVIRONMENT_ROUTE_FROM } from "../../../-components/environment-route-paths";
@@ -33,16 +37,27 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
   const volumes = requireView(views[0]).volumes;
   const services = requireView(views[1]).services;
   const diff = requireView(views[2]);
+  const writer = useStoreWriter(organizationSlug);
   const volume = volumes.find((candidate) => candidate.id === params.resourceId);
-  // Removed while open (a new Volume's removal, or from the CLI): back to the canvas.
-  if (!volume) throw redirect({ to: ENVIRONMENT_INDEX_ROUTE_TO, params, replace: true });
+  // A stale link, or removed while open (a new Volume's removal, or from the CLI).
+  if (!volume) return <CanvasInspectorNotFound noun="Volume" />;
   const state: StoreVolume = { organizationSlug, environment: store, volume };
   const removing = volume.change === "delete";
+  const renamed = diff.changes.find((change) => change.type === "volume" && change.id === volume.id)
+    ?.settings.find((row) => row.path === "name" || row.path.endsWith(".name"));
+  // A DNS label no other Volume here has.
+  const nameSchema = Schema.String.check(Schema.makeFilter<string>((name) => dnsLabelError(name)
+    ?? (volumes.some((other) => other.id !== volume.id && other.name === name) ? `A volume here is already named ${name}.` : undefined)));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <CanvasInspectorHeader params={params}>
-        <p className="truncate font-semibold">{volume.name}</p>
+        {removing ? <p className="truncate font-semibold">{volume.name}</p> : (
+          <CanvasInspectorNameEditor value={volume.name} schema={nameSchema} editTitle="Edit volume name"
+            editDescription="Rename this volume. Its data and mounts stay." placeholder="Volume name"
+            isChanged={renamed !== undefined} baselineValue={renamed ? settingText(renamed.before) : undefined}
+            onRename={(name) => writer.commit({ command: "rename_volume", environment: store, volume: volume.name, name })} />
+        )}
         <p className="truncate text-sm text-muted-foreground">Volume</p>
       </CanvasInspectorHeader>
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
@@ -56,7 +71,7 @@ export function StoreVolumeDrawer({ params }: { params: VolumeResourceRouteParam
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><HardDriveIcon /></EmptyMedia>
                   <EmptyTitle>Volume staged for deletion</EmptyTitle>
-                  <EmptyDescription>Discard the delete from the staged changes to manage mounts again.</EmptyDescription>
+                  <EmptyDescription>Keep the volume, below, to manage its mounts again.</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             ) : <StoreVolumeMounts state={state} services={services} volumes={volumes} diff={diff} />}
@@ -249,17 +264,25 @@ function StoreVolumeDanger({ state, params, version }: { state: StoreVolume; par
           <p className="mt-1 text-sm text-destructive/85">
             {removing && volume.deployed
               ? "Its files are still on your servers. Deploying deletes them, with this environment's other changes, once you confirm."
+              : removing
+              ? "Nothing of it is on your servers yet. Keep the volume to undo this."
               : volume.deployed
               ? "Its data on your servers goes with it. Deploy asks you to confirm first."
               : mounts > 0 ? `Deleted on your next deploy, with its ${mounts} mount${mounts === 1 ? "" : "s"}.` : "Deleted on your next deploy."}
           </p>
         </div>
-        {removing && volume.deployed ? (
-          <Button variant="destructive" className="shrink-0" onClick={actions.deploy}>
-            <Trash2Icon data-icon="inline-start" />
-            Delete data
-          </Button>
-        ) : removing ? null : (
+        {removing ? (
+          <div className="flex shrink-0 gap-2">
+            {/* The staged removal goes; the Volume stays as deployed. */}
+            <Button variant="outline" onClick={() => actions.discard(`volumes.${volume.name}`)}>Keep volume</Button>
+            {volume.deployed ? (
+              <Button variant="destructive" disabled={actions.admitting} onClick={() => actions.deploy(null)}>
+                <Trash2Icon data-icon="inline-start" />
+                Delete data
+              </Button>
+            ) : null}
+          </div>
+        ) : (
           <Button variant="destructive" className="shrink-0" onClick={remove}>
             <Trash2Icon data-icon="inline-start" />
             Delete volume

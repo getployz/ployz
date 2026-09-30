@@ -9,6 +9,7 @@ const lifecycleOnlyGroup: ChangeGroup = {
   nodeType: "service",
   nodeId: "00000000-0000-4000-8000-000000000001",
   nodeName: "nginx",
+  discardPath: "nginx",
   changeCount: 1,
   serviceSourceType: "image",
   lifecycle: "create",

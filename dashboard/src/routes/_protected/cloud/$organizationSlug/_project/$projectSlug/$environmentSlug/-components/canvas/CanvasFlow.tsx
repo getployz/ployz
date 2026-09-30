@@ -12,7 +12,7 @@ import { PlusIcon } from "lucide-react";
 import { Button } from "#/components/ui/button";
 import { BottomBar } from "./BottomBar";
 import { storeHintNotes } from "../branch-review/store-hints";
-import { CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
+import { CANVAS_FIT_VIEW, CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, SNAP_GRID } from "./constants";
 import { canvasNodeTypes } from "./canvas-node-types";
 import { CanvasNodeList } from "./CanvasServiceList";
 import { useCanvasPositionMutation } from "./useCanvasPositionMutation";
@@ -117,12 +117,13 @@ export function CanvasFlow({
             nodeTypes={canvasNodeTypes}
             elementsSelectable={false}
             nodesFocusable={false}
-            fitView={!selectedNodeId}
+            fitView={!selectedNode}
+            fitViewOptions={CANVAS_FIT_VIEW}
             proOptions={{ hideAttribution: true }}
             snapToGrid
             snapGrid={SNAP_GRID}
             minZoom={CANVAS_MIN_ZOOM}
-            maxZoom={1.35}
+            maxZoom={CANVAS_MAX_ZOOM}
             onInit={() => setFlowReady(true)}
             onNodeClick={blurClickedNodeLink}
             onNodeDrag={onNodeDrag}
@@ -206,9 +207,10 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         totalChanges={diff.total_count}
         canPublish={diff.total_count > 0 && !diff.published}
         onDeploy={actions.deploy}
+        admitting={actions.admitting}
         onPublish={actions.publish}
         onDiscardAll={() => actions.discard(null)}
-        onDiscardNode={(group) => actions.discard(group.nodeName)}
+        onDiscardNode={(group) => actions.discard(group.discardPath)}
         onDiscardRow={(_, path) => actions.discard(path)}
         active={deployments.filter((deployment) => isInFlight(deployment.status))}
         notes={storeHintNotes(diff, groups)}

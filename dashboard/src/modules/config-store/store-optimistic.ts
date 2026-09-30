@@ -13,11 +13,14 @@ import { environmentKey, queryOf, storeViewPrefix } from "./store-view.queries";
  */
 // ponytail: Discard shows the deployed values (`before`), which is what it restores unless changes were published first.
 export function applyOptimistic(queryClient: QueryClient, organizationSlug: string, command: ConfigCommand) {
-  const views = <V,>(kind: ConfigQuery["query"], environment: EnvironmentRef | null, update: (view: V) => V) => {
-    for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
+  const cached = (kind: ConfigQuery["query"], environment: EnvironmentRef | null) =>
+    queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) }).filter((query) => {
       const config = queryOf(query);
-      if (config?.query !== kind) continue;
-      if (environment && !("environment" in config && environmentKey(config.environment) === environmentKey(environment))) continue;
+      return config?.query === kind
+        && (!environment || ("environment" in config && environmentKey(config.environment) === environmentKey(environment)));
+    });
+  const views = <V,>(kind: ConfigQuery["query"], environment: EnvironmentRef | null, update: (view: V) => V) => {
+    for (const query of cached(kind, environment)) {
       queryClient.setQueryData<StoreResult<V>>(query.queryKey, (old) => old?.ok ? { ok: true, value: update(old.value) } : old);
     }
   };
@@ -64,14 +67,25 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         domain.service === command.service ? { ...domain, service: command.name } : domain) }));
       return;
     }
+    case "rename_volume": {
+      // Its mounts are keyed by its name: `SERVICE.mounts.NAME`.
+      const mount = `.mounts.${command.volume}`;
+      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: view.volumes.map((volume) =>
+        volume.name === command.volume ? { ...volume, name: command.name } : volume) }));
+      views<EnvironmentView>("environment", command.environment, (view) => ({ ...view, settings: view.settings.map((row) =>
+        row.path.endsWith(mount) ? { ...row, path: `${row.path.slice(0, -mount.length)}.mounts.${command.name}` } : row) }));
+      return;
+    }
     case "publish":
       views<DiffView>("diff", command.environment, (view) => ({ ...view, published: true }));
       return;
     case "discard": {
       const { path } = command;
       const [node, ...setting] = path?.split(".") ?? [];
-      // What goes from the review: every node, one node, or one Setting of one node.
-      const whole = (change: NodeChange) => path === null || (setting.length === 0 && change.name === node);
+      // What goes from the review: every node, one node (a Volume as `volumes.NAME`), or one Setting of one node.
+      const volume = node === "volumes" && setting.length === 1 ? setting[0] : null;
+      const whole = (change: NodeChange) => path === null
+        || (volume !== null ? change.type === "volume" && change.name === volume : setting.length === 0 && change.name === node);
       let reverted: NodeChange["settings"] = [];
       let dropped = new Set<string>();
       views<DiffView>("diff", command.environment, (view) => {
@@ -79,7 +93,7 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         const changes = view.changes.flatMap((change) => {
           if (whole(change)) {
             reverted = [...reverted, ...change.settings];
-            dropped = new Set([...dropped, change.name]);
+            dropped = new Set([...dropped, `${change.type}:${change.name}`]);
             removed += change.settings.length + (change.lifecycle === "update" ? 0 : 1);
             return [];
           }
@@ -95,12 +109,19 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
         const deployed = reverted.find((change) => change.path === row.path);
         return deployed ? { ...row, value: deployed.before } : row;
       }) }));
-      views<ServicesView>("services", command.environment, (view) => ({ ...view, services: unstage(view.services, dropped) }));
-      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: unstage(view.volumes, dropped) }));
+      const of = (type: NodeChange["type"]) => new Set([...dropped].flatMap((key) => key.startsWith(`${type}:`) ? [key.slice(type.length + 1)] : []));
+      views<ServicesView>("services", command.environment, (view) => ({ ...view, services: unstage(view.services, of("service")) }));
+      views<VolumesView>("volumes", command.environment, (view) => ({ ...view, volumes: unstage(view.volumes, of("volume")) }));
       return;
     }
     case "keep_branch":
       views<BranchView>("branch", command.environment, (view) => ({ ...view, kept: command.kept }));
+      return;
+    case "set_branch_setup":
+      views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.environment.project ? view : {
+        ...view, environments: view.environments.map((environment) => environment.name === command.environment.environment
+          ? { ...environment, branch_setup: command.setup } : environment),
+      });
       return;
     case "set_default_environment":
       views<EnvironmentsView>("environments", null, (view) => view.project.name !== command.environment.project ? view : {
@@ -110,10 +131,32 @@ export function applyOptimistic(queryClient: QueryClient, organizationSlug: stri
     case "add_domain": {
       // A custom domain names its host; a generated one is the Service's Private DNS under the Cluster Domain.
       const service = command.service;
+      // Staged, as the Store words it: live after the next Deploy.
+      const staged = { status: "setting_up", reason: "Live after your next deploy", action: { type: "deploy" }, service, port: command.port } as const;
       const domain: DomainsView["domains"][number] = command.hostname === null
-        ? { kind: "generated", prefix: service, hostname: null, status: "setting_up", reason: null, action: null, service, port: command.port }
-        : { kind: "custom", hostname: command.hostname, status: "setting_up", reason: null, action: null, service, port: command.port };
-      views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [...view.domains, domain] }));
+        ? { kind: "generated", prefix: service, hostname: null, ...staged }
+        : { kind: "custom", hostname: command.hostname, ...staged };
+      views<DomainsView>("domains", command.environment, (view) => ({ ...view, domains: [
+        ...view.domains.filter((other) => other.service !== service || other.kind !== domain.kind
+          || (other.kind === "custom" ? other.hostname !== command.hostname : false)),
+        domain,
+      ] }));
+      // Its pink: the Setting row the Store will list for it (`domainChanged` reads these paths).
+      const path = command.hostname === null ? `${service}.managedHostnames` : `${service}.routes.${command.hostname}`;
+      const row = { path, kind: "add", before: null, after: command.hostname === null ? service : { hostname: command.hostname }, canRestore: false } as const;
+      views<DiffView>("diff", command.environment, (view) => {
+        const node = view.changes.find((change) => change.type === "service" && change.name === service);
+        const id = node?.id ?? cached("services", command.environment).flatMap((query) => {
+          // SAFETY: `cached` found only services views.
+          const data = query.state.data as StoreResult<ServicesView> | undefined;
+          return data?.ok ? data.value.services.filter((listed) => listed.name === service).map((listed) => listed.id) : [];
+        })[0];
+        if (id === undefined) return view;
+        const changes: NodeChange[] = node
+          ? view.changes.map((change) => change === node ? { ...change, settings: [...change.settings.filter((other) => other.path !== path), row] } : change)
+          : [...view.changes, { name: service, id, type: "service", lifecycle: "update", comparison: null, data: null, settings: [row] }];
+        return { ...view, changes, total_count: view.total_count + 1, published: false };
+      });
       return;
     }
     case "remove_domain":

@@ -8,6 +8,7 @@ import type { Actor, Caller } from "#/modules/identity/actor";
 import { NotFound } from "#/server/public-error";
 import { revokeOrganizationPairing } from "#/modules/machines/pairing-removal.server";
 import { eq } from "drizzle-orm";
+import { session } from "#/modules/identity/tables";
 import { organizationClusterDomain } from "#/modules/cluster-domain/tables";
 import { machineEnrollmentToken } from "#/modules/machines/tables";
 import { PloyzProviderError } from "#/modules/runtime/ployz.server";
@@ -71,5 +72,8 @@ const dropOrganizationRows = Effect.fn("Organization.dropRows")(function* (organ
   const [domain] = yield* drizzle.select().from(organizationClusterDomain).where(eq(organizationClusterDomain.organizationId, organizationId));
   yield* drizzle.delete(machineEnrollmentToken).where(eq(machineEnrollmentToken.organizationId, organizationId));
   yield* drizzle.delete(organization).where(eq(organization.id, organizationId));
+  // Sessions in it act nowhere now: /cloud offers the next Organization or a new one.
+  yield* drizzle.update(session).set({ activeOrganizationId: null, activeOrganizationSlug: null })
+    .where(eq(session.activeOrganizationId, organizationId));
   return domain ?? null;
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getManagedServiceExports, servicePublicDomain } from "./managed-service-exports";
+import { getManagedServiceExports } from "./managed-service-exports";
 
 const service = {
   id: "11111111-1111-4111-8111-111111111111",
@@ -9,8 +9,7 @@ const service = {
   slug: "api-service",
   privateDns: "api",
   environmentSlug: "production",
-  routes: [],
-  managedHostnames: [],
+  publicDomain: null,
 };
 
 describe("managed service exports", () => {
@@ -53,15 +52,8 @@ describe("managed service exports", () => {
   });
 });
 
-it("selects the last linked custom domain, then generated domain, regardless of DNS", () => {
-  const first = { id: "first", hostname: "first.example.test", targetPort: null };
-  const last = { id: "last", hostname: "unresolved.example.test", targetPort: null };
-  const config = { routes: [first, last], managedHostnames: [{ prefix: "old", targetPort: null }, { prefix: "api", targetPort: null }] };
-  expect(servicePublicDomain(config, "cluster.example.test")).toBe(last.hostname);
-  expect(servicePublicDomain({ ...config, routes: [{ ...first, hostname: first.hostname }, last] }, null)).toBe(last.hostname);
-  expect(servicePublicDomain({ ...config, routes: [first] }, null)).toBe(first.hostname);
-  expect(servicePublicDomain({ ...config, routes: [] }, "cluster.example.test")).toBe("api.cluster.example.test");
-  expect(servicePublicDomain({ ...config, routes: [] }, null)).toBeNull();
-  expect(servicePublicDomain(service, "cluster.example.test")).toBeNull();
-  expect(getManagedServiceExports({ ...service, ...config }).find(row => row.key === "PLOYZ_PUBLIC_DOMAIN")?.value).toBe(last.hostname);
+it("lists PLOYZ_PUBLIC_DOMAIN only for a Service with a public domain", () => {
+  expect(getManagedServiceExports(service).some((row) => row.key === "PLOYZ_PUBLIC_DOMAIN")).toBe(false);
+  expect(getManagedServiceExports({ ...service, publicDomain: "api.example.test" }).find((row) => row.key === "PLOYZ_PUBLIC_DOMAIN")?.value)
+    .toBe("api.example.test");
 });
