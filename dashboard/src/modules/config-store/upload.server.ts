@@ -7,7 +7,6 @@ import { extractUploadedSource } from "#/modules/github/github-source.server";
 import { Database, isUniqueViolation } from "#/server/database.server";
 import { StoreRefused } from "./store.contract";
 import { refusedWith, storeTry } from "#/modules/config-store/store-sdk.server";
-import { IN_FLIGHT, isInFlight } from "./store-deployments";
 
 /** The most compressed source one Deployment may upload: the same cap as a repository archive's download. */
 const UPLOAD_LIMIT = 256 * 1024 * 1024;
@@ -38,15 +37,13 @@ export const receiveUpload = Effect.fn("ConfigStore.receiveUpload")(function* (
   return yield* Effect.gen(function* () {
     if (body === null) return yield* refused("invalid_argument", "Expected the source as the request body.");
     yield* notAdmittedYet(store, organizationId, deploymentId);
+    // ponytail: uploads never admitted, or whose Deployment is no longer in flight, go a day later, with the next upload
+    // of their Organization; one Store read each.
+    const stale = yield* database.drizzle.selectDistinct({ deploymentId: uploadChunk.deploymentId }).from(uploadChunk).where(and(
+      eq(uploadChunk.organizationId, organizationId), sql`${uploadChunk.createdAt} < now() - interval '1 day'`));
+    yield* Effect.forEach(stale, (old) => releaseUpload(store, organizationId, old.deploymentId), { discard: true });
     yield* database.transaction(Effect.gen(function* () {
       const { drizzle } = yield* Database;
-      // ponytail: uploads never admitted go a day later, with the next upload of their Organization.
-      yield* drizzle.delete(uploadChunk).where(and(
-        eq(uploadChunk.organizationId, organizationId),
-        sql`${uploadChunk.createdAt} < now() - interval '1 day'`,
-        sql`${uploadChunk.deploymentId} not in (select id from config_deployment
-          where status in (${sql.join(IN_FLIGHT.map((status) => sql`${status}`), sql`, `)}))`,
-      ));
       let pending = Buffer.alloc(0);
       let total = 0;
       let index = 0;
@@ -95,11 +92,11 @@ export const extractUpload = Effect.fn("ConfigStore.extractUpload")(function* (o
 export const releaseUpload = Effect.fn("ConfigStore.releaseUpload")(function* (
   store: ConfigStore, organizationId: string, deploymentId: string,
 ) {
-  const status = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
-    Effect.map((view) => view.status),
-    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(undefined)),
+  const inFlight = yield* storeTry(() => store.read(organizationId, { query: "deployment", id: deploymentId })).pipe(
+    Effect.map((view) => view.in_flight),
+    Effect.catchIf(refusedWith("not_found"), () => Effect.succeed(false)),
   );
-  if (status !== undefined && isInFlight(status)) return;
+  if (inFlight) return;
   const { drizzle } = yield* Database;
   yield* drizzle.delete(uploadChunk).where(and(eq(uploadChunk.organizationId, organizationId), eq(uploadChunk.deploymentId, deploymentId)));
 });

@@ -108,13 +108,6 @@ export function shownValue(value: JsonValue): string {
   });
 }
 
-/** The statuses of a Deployment that holds, or waits for, its Environment's one run. */
-export const IN_FLIGHT = ["queued", "running", "cancelling"] as const satisfies readonly DeploymentStatus[];
-
-/** Whether a Deployment holds, or waits for, its Environment's one run. */
-export const isInFlight = (status: DeploymentStatus): status is (typeof IN_FLIGHT)[number] =>
-  IN_FLIGHT.some((inFlight) => inFlight === status);
-
 export const deploymentStatusLabels = {
   queued: "Queued", running: "Deploying", cancelling: "Cancelling", applied: "Deployed", failed: "Failed",
   unknown: "Unknown", cancelled: "Cancelled", superseded: "Superseded",
@@ -148,12 +141,12 @@ export const nodeStatusLabels = {
 export const nodeApplied = (outcome: NodeStatus) => outcome === "deployed" || outcome === "removed" || outcome === "unchanged";
 
 /** A node's outcome as the badges and canvas lighting show it; a pending node reads as its Deployment does. */
-export function nodeLight(outcome: NodeStatus, deployment: DeploymentStatus): NodeLight {
+export function nodeLight(outcome: NodeStatus, deployment: Pick<DeploymentSummary, "status" | "in_flight">): NodeLight {
   if (nodeApplied(outcome)) return "deployed";
   if (outcome === "failed") return "failed";
   if (outcome === "unknown") return "unknown";
-  if (outcome === "pending" && deployment === "queued") return "queued";
-  if (outcome === "pending" && isInFlight(deployment)) return "deploying";
+  if (outcome === "pending" && deployment.status === "queued") return "queued";
+  if (outcome === "pending" && deployment.in_flight) return "deploying";
   return "not_applied";
 }
 

@@ -2,9 +2,9 @@ import "@tanstack/react-start/server-only";
 import type { ConfigWritten, EnvironmentSummary, PullRequestView, SystemEvent } from "@ployz/sdk";
 import { and, eq, inArray } from "drizzle-orm";
 import { Effect, Option, Schema } from "effect";
-import { callStore, storeSystem } from "#/modules/config-store/config-store.server";
+import { admittedEvents, callStore, storeSystem } from "#/modules/config-store/config-store.server";
 import { cloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
-import { StoreGithubFailure, admitted, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
+import { StoreGithubFailure, descendsFrom, pullRequestEvent } from "#/modules/config-store/store-github.server";
 import { fetchInstallationPullRequest, postInstallationCheckRun, resolveGithubRepository } from "#/modules/github/github-observation.api";
 import { githubRepositoryCache } from "#/modules/github/tables";
 import { member } from "#/modules/identity/tables";
@@ -28,7 +28,7 @@ export type StoreOutcome = {
 /** Gather what `written` left Cloud to do into `into`; an Environment the Store skipped is logged. */
 const collect = Effect.fn("StorePullRequest.collect")(function* (organizationId: string, written: ConfigWritten, into: StoreOutcome) {
   if (written.written !== "automated") return;
-  into.deployments.push(...admitted(organizationId, written));
+  into.deployments.push(...admittedEvents(organizationId, written));
   into.closing.push(...written.closing.map((environment) => ({ organizationId, environment })));
   into.check ||= written.checks.length > 0;
   for (const skipped of written.skipped) {

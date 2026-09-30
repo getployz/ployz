@@ -46,6 +46,6 @@ export function useOpenDeployment(): Lighting {
   const deploymentId = useCanvasInspectorSelection().deploymentId;
   const store = useCachedStoreView(organizationSlug, deploymentId ? deploymentQuery(deploymentId) : null);
   if (!store?.ok) return null;
-  const { id, status, nodes } = store.value;
-  return { deploymentId: id, lit: new Map(nodes.map((node) => [node.id, nodeLight(node.outcome, status)])) };
+  const { id, nodes } = store.value;
+  return { deploymentId: id, lit: new Map(nodes.map((node) => [node.id, nodeLight(node.outcome, store.value)])) };
 }

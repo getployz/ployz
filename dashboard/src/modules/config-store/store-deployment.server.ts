@@ -7,7 +7,6 @@ import type { OrganizationRuntime } from "#/modules/runtime/organization-runtime
 import { cloudStore, refusedWith, type CloudStore, storeTry } from "#/modules/config-store/store-sdk.server";
 import { callStore, cancelStoreGithubBuilds, connectionsOf, readStore, requestChecks } from "#/modules/config-store/config-store.server";
 import { deploymentRun } from "#/modules/config-store/tables";
-import { isInFlight } from "#/modules/config-store/store-deployments";
 import { extractUpload, releaseUpload } from "#/modules/config-store/upload.server";
 import { eq } from "drizzle-orm";
 import type { GithubApi } from "#/modules/github/github-observation.api";
@@ -186,7 +185,7 @@ export const unclaimedStoreDeployments = Effect.fn("StoreDeployment.unclaimed")(
   const held = new Set<string>();
   for (const run of runs) {
     const view = yield* storeTry(() => store.read(run.organizationId, { query: "deployment", id: run.deploymentId })).pipe(Effect.option);
-    if (Option.isSome(view) && isInFlight(view.value.status)) held.add(view.value.environment.id);
+    if (Option.isSome(view) && view.value.in_flight) held.add(view.value.environment.id);
   }
   return unclaimed.filter((found) => !held.has(found.environment)).map((found): ConfigDeploymentAdmittedEventData => ({
     organizationId: found.organization, environmentId: found.environment, deploymentId: found.deployment,

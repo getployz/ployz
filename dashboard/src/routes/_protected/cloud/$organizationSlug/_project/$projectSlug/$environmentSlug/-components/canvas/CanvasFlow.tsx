@@ -26,7 +26,7 @@ import { useVolumeCreator } from "./useVolumeCreator";
 import { useStoreChangeActions } from "./useStoreChangeActions";
 import { useSavesInto, useStoreDeployments } from "#/modules/config-store/store-view.queries";
 import { useRuntimeLens } from "#/modules/runtime/use-runtime-lens";
-import { changeGroups, isInFlight } from "#/modules/config-store/store-deployments";
+import { changeGroups } from "#/modules/config-store/store-deployments";
 import { DEPLOYMENT_PAGE_ROUTE_TO } from "../deployment-page";
 import { CanvasContextMenu } from "./CanvasContextMenu";
 import { CanvasFinder } from "./CanvasFinder";
@@ -212,7 +212,7 @@ function StoreBottomBar({ store }: { store: StoreCanvas }) {
         onDiscardAll={() => actions.discard(null)}
         onDiscardNode={(group) => actions.discard(group.discardPath)}
         onDiscardRow={(_, path) => actions.discard(path)}
-        active={deployments.filter((deployment) => isInFlight(deployment.status))}
+        active={deployments.filter((deployment) => deployment.in_flight)}
         notes={storeHintNotes(diff, groups)}
         waiting={waiting}
         noServers={noServers}
