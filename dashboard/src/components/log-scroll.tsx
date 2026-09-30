@@ -7,7 +7,7 @@ import { cn } from "#/lib/utils";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { useVirtualizer, type VirtualizerOptions } from "@tanstack/react-virtual";
 
-export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange" | "paddingStart">) {
+export function useLogScroll(options: Pick<VirtualizerOptions<HTMLDivElement, HTMLDivElement>, "count" | "getItemKey" | "onChange">) {
   const element = useRef<HTMLDivElement>(null);
   const virtual = useVirtualizer({
     ...options,

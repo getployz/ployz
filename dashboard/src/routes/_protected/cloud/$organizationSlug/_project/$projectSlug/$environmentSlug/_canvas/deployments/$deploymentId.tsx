@@ -14,7 +14,7 @@ export const Route = createFileRoute(
   "/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/_canvas/deployments/$deploymentId",
 )({
   validateSearch: Schema.toStandardSchemaV1(deploymentPageSearchSchema),
-  // The Deployment (Node Outcomes, builds, its Deploy Preview); a build log loads as its tab shows.
+  // The Deployment (Node Outcomes, builds); a build log loads as its tab shows.
   loader: ({ params, context }) => prefetchStoreViews(context, params.organizationSlug, deploymentQuery(params.deploymentId)),
   pendingComponent: CanvasInspectorPending,
   errorComponent: () => <CanvasInspectorError noun="Deployment" />,

@@ -3,32 +3,71 @@ import { useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { useLoaderData, useNavigate } from "@tanstack/react-router";
 import type { EnvironmentRef } from "@ployz/sdk";
-import { createServiceCommand, newServiceName, type NewServiceSource } from "#/modules/config-store/store-services";
-import { servicesQuery, storeViewOptions } from "#/modules/config-store/store-view.queries";
+import { createServiceCommand, newServiceName, serviceName, uniqueName, type NewServiceSource } from "#/modules/config-store/store-services";
+import { databaseCommand, randomPassword, type DatabasePreset } from "#/modules/config-store/database-presets";
+import { servicesQuery, storeViewOptions, volumesQuery } from "#/modules/config-store/store-view.queries";
 import { useStoreWriter } from "#/modules/config-store/store-write";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
 import { usePlaceNewNode } from "./useCanvasPositionMutation";
-import { SERVICE_NODE_SIZE } from "./constants";
+import { SERVICE_NODE_HEIGHT, SERVICE_NODE_SIZE, SNAP_GRID } from "./constants";
 import type { CanvasResourceNode, CreatorPanel, FlowPosition } from "./types";
 import { findPlacement } from "#/routes/_protected/cloud/$organizationSlug/_project/$projectSlug/$environmentSlug/-utils/node-placement";
 import { ENVIRONMENT_ROUTE_FROM, ENVIRONMENT_SERVICE_ROUTE_TO } from "../environment-route-paths";
+
+/** Where a new Service goes: its Environment, and where the canvas put it. */
+export type NewServicePlacement = { store: EnvironmentRef; environmentId: string; position: FlowPosition };
+
+/** What creating a Service needs: the writer, canvas placement, and the names this tab has seen taken. */
+function useStoreCreate(organizationSlug: string) {
+  const scope = useCollectionScope();
+  const writer = useStoreWriter(organizationSlug);
+  const place = usePlaceNewNode(organizationSlug);
+  const cached = <Q extends Parameters<typeof storeViewOptions>[2]>(query: Q) =>
+    scope.queryClient.getQueryData(storeViewOptions(organizationSlug, scope, query).queryKey);
+  return {
+    writer,
+    place,
+    services: (store: EnvironmentRef) => {
+      const listed = cached(servicesQuery(store));
+      return listed?.ok ? listed.value.services : [];
+    },
+    volumeNames: (store: EnvironmentRef) => {
+      const listed = cached(volumesQuery(store));
+      return listed?.ok ? listed.value.volumes.map((volume) => volume.name) : [];
+    },
+  };
+}
 
 /**
  * Creates a Service in the Config Store where the canvas put it, named from its source: on the canvas at once, saved
  * in the background. `persisted` settles once the Store has it, for callers whose next page can't show it before.
  */
 export function useCreateStoreService(organizationSlug: string) {
-  const scope = useCollectionScope();
-  const writer = useStoreWriter(organizationSlug);
-  const place = usePlaceNewNode(organizationSlug);
-  return (target: { store: EnvironmentRef; environmentId: string; position: FlowPosition }, source: NewServiceSource) => {
-    const listed = scope.queryClient.getQueryData(storeViewOptions(organizationSlug, scope, servicesQuery(target.store)).queryKey);
+  const { writer, place, services } = useStoreCreate(organizationSlug);
+  return (target: NewServicePlacement, source: NewServiceSource) => {
     const id = crypto.randomUUID();
     place({ environmentId: target.environmentId, resourceType: "service", resourceId: id, ...target.position });
-    const name = newServiceName(source, listed?.ok ? listed.value.services : []);
+    const name = newServiceName(source, services(target.store));
     const { isPersisted } = writer.commit(createServiceCommand(id, target.store, name, source));
     return { service: { id }, persisted: isPersisted.promise };
+  };
+}
+
+/** Creates a Database Preset's Service, as `useCreateStoreService` does, with its Volume placed below it: one Batch. */
+export function useCreateStoreDatabase(organizationSlug: string) {
+  const { writer, place, services, volumeNames } = useStoreCreate(organizationSlug);
+  return (target: NewServicePlacement, preset: DatabasePreset) => {
+    const service = crypto.randomUUID();
+    const volume = crypto.randomUUID();
+    const { x, y } = target.position;
+    place({ environmentId: target.environmentId, resourceType: "service", resourceId: service, x, y });
+    place({ environmentId: target.environmentId, resourceType: "volume", resourceId: volume, x, y: y + SERVICE_NODE_HEIGHT + SNAP_GRID[1] * 2 });
+    const name = serviceName(preset.id, services(target.store));
+    const command = databaseCommand(preset, { service, volume, environment: target.store, name,
+      volumeName: uniqueName(`${name}-data`, volumeNames(target.store)), password: randomPassword() });
+    const { isPersisted } = writer.commit(command);
+    return { service: { id: service }, persisted: isPersisted.promise };
   };
 }
 

@@ -1,4 +1,5 @@
 import { useServerFn } from "@tanstack/react-start";
+import { useLoaderData } from "@tanstack/react-router";
 import { createOptimisticAction, usePacedMutations, throttleStrategy } from "@tanstack/react-db";
 import { toast } from "sonner";
 import { toErrorMessage } from "#/lib/error-message";
@@ -8,6 +9,7 @@ import { useCollectionScope } from "#/collections/use-collection-scope";
 import { canvasPositionKey, type CanvasPosition, type UpdateCanvasPositionInput } from "#/modules/canvas/canvas-positions";
 import { updateCanvasPositionServerFn } from "#/modules/canvas/canvas-positions.functions";
 import type { CanvasResourceNode, CanvasResourceType } from "./types";
+import { ENVIRONMENT_ROUTE_FROM } from "../environment-route-paths";
 
 export function useCanvasPositionMutation(params: {
   organizationId: string;
@@ -134,11 +136,11 @@ export async function persistCanvasPositionBatch(
 export function usePlaceNewNode(organizationSlug: string) {
   const collection = getCanvasPositionsCollection(organizationSlug, useCollectionScope());
   const updatePosition = useServerFn(updateCanvasPositionServerFn);
+  const { organizationId } = useLoaderData({ from: ENVIRONMENT_ROUTE_FROM });
   const place = createOptimisticAction<Omit<UpdateCanvasPositionInput, "organizationSlug">>({
     onMutate: (input) => {
       const now = new Date();
-      // ponytail: the organization id is Cloud's to fill; nothing reads it before the saved row replaces this one.
-      collection.insert({ ...input, id: crypto.randomUUID(), organizationId: "", x: Math.round(input.x), y: Math.round(input.y),
+      collection.insert({ ...input, id: crypto.randomUUID(), organizationId, x: Math.round(input.x), y: Math.round(input.y),
         createdAt: now, updatedAt: now });
     },
     mutationFn: (input) => persistCanvasPositionBatch([updatePosition({ data: { ...input, organizationSlug,
