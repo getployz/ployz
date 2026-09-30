@@ -69,7 +69,7 @@ pub use settings::{Apply, NodeName, SettingPath};
 pub use teardown::{
     EnvironmentListing, EnvironmentRemoved, EnvironmentsQuery, EnvironmentsView,
     OrganizationRemoved, ProjectListing, ProjectRemoved, ProjectsQuery, ProjectsView,
-    RemoveEnvironment, RemoveProject, SetDefaultEnvironment,
+    RemoveEnvironment, RemoveProject, SetBranchSetup, SetDefaultEnvironment,
 };
 pub use trusted::{Trusted, VolumeObservation};
 

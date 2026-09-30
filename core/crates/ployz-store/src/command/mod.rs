@@ -92,6 +92,7 @@ pub enum Command {
     SetBuildOrder(crate::SetBuildOrder),
     /// Make an Environment its Project's Default Environment.
     SetDefaultEnvironment(crate::SetDefaultEnvironment),
+    SetBranchSetup(crate::SetBranchSetup),
     /// Delete an Environment nothing of which runs on the Servers.
     RemoveEnvironment(crate::RemoveEnvironment),
     /// Delete a Project nothing of which runs on the Servers.
@@ -119,6 +120,7 @@ impl Command {
             | Self::RemoveService(_)
             | Self::RemoveVolume(_)
             | Self::RenameVolume(_)
+            | Self::SetBranchSetup(_)
             | Self::SetVolumeStorage(_)
             | Self::Publish(_)
             | Self::Discard(_)
@@ -178,6 +180,7 @@ pub enum Written {
     Moved(Box<crate::Moved>),
     /// The Default Environment changed: the Project's Environments after it.
     DefaultEnvironment(crate::EnvironmentsView),
+    BranchSetup(crate::EnvironmentsView),
     /// An Environment was deleted.
     EnvironmentRemoved(crate::EnvironmentRemoved),
     /// A Project was deleted.
@@ -235,6 +238,9 @@ pub(crate) fn run(
         Command::KeepBranch(keep) => crate::branch::keep_branch(tx, who, keep).map(Written::Branch),
         Command::SetBuildOrder(set) => {
             crate::builders::set_build_order(tx, who, set).map(Written::BuildOrder)
+        }
+        Command::SetBranchSetup(set) => {
+            crate::teardown::set_branch_setup(tx, who, set).map(Written::BranchSetup)
         }
         Command::SetDefaultEnvironment(set) => {
             crate::teardown::set_default(tx, who, set).map(Written::DefaultEnvironment)
@@ -357,6 +363,7 @@ tells!(
     crate::KeepBranch => KeepBranch / Branch(crate::Branched),
     crate::SetBuildOrder => SetBuildOrder / BuildOrder(crate::BuildOrderView),
     crate::SetDefaultEnvironment => SetDefaultEnvironment / DefaultEnvironment(crate::EnvironmentsView),
+    crate::SetBranchSetup => SetBranchSetup / BranchSetup(crate::EnvironmentsView),
     crate::RemoveEnvironment => RemoveEnvironment / EnvironmentRemoved(crate::EnvironmentRemoved),
     crate::RemoveProject => RemoveProject / ProjectRemoved(crate::ProjectRemoved),
     crate::SetPrPlan => SetPrPlan / PrPlans(crate::PrPlansView),

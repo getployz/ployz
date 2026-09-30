@@ -538,9 +538,22 @@ fn insert_branch(
             ));
         }
     }
+    // None named: the Parent's defaults, each where the Branch copies its Service.
+    let defaults = match create.setup.is_empty() {
+        true => crate::teardown::branch_setup(tx, &parent.summary.id)?
+            .into_iter()
+            .filter(|setup| {
+                working.services.iter().any(|service| {
+                    service.slug == setup.service.as_str() && own.contains(&service.lineage_id)
+                })
+            })
+            .collect(),
+        false => Vec::new(),
+    };
     let setup = create
         .setup
         .iter()
+        .chain(&defaults)
         .map(|setup| {
             let service = working
                 .services
