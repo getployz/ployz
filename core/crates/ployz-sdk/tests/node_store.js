@@ -1,6 +1,6 @@
 "use strict";
 
-// Store seams Cloud's GitHub workers call refuse malformed input before any read.
+// Store seams Cloud's workers call refuse malformed input before any read.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -41,6 +41,13 @@ async function expectInvalid(what, fn) {
     await expectInvalid(`${call} repository`, () => store[call]("acme", -1, "main"));
     await expectInvalid(`${call} branch`, () => store[call]("acme", 1, "no spaces allowed"));
   }
+  // Sources are checkouts and an upload, or why Cloud couldn't read them: not both.
+  await expectInvalid("runDeployment sources", () =>
+    store.runDeployment("acme", "00000000-0000-4000-8000-000000000001", "runner-1", [], {
+      checkouts: { web: dir },
+      failure: "clone failed",
+    }),
+  );
   // Well-formed input reads: nothing seen yet.
   if ((await store.branchHead("acme", 1, "main")) !== null) {
     throw new Error("an unseen branch has no head");

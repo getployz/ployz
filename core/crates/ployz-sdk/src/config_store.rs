@@ -162,10 +162,6 @@ impl ConfigStore {
         }
         let who = actor(organization, None)?;
         let (deployment, runner) = ids(deployment, runner)?;
-        // Only a Deployment of this Organization runs here.
-        let owned = deployment.clone();
-        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
-            .await?;
         let connections = connections_of(connections)?;
         let sources: Sources = sources
             .map(|sources| decode(sources, "Expected checkouts, upload and failure"))
@@ -183,6 +179,10 @@ impl ConfigStore {
                 upload: sources.upload,
             }),
         };
+        // Only a Deployment of this Organization runs here.
+        let owned = deployment.clone();
+        self.run(move |store| store.read(&who, &ployz_store::DeploymentQuery { id: owned }))
+            .await?;
         to_json(
             ployz::sdk::run_deployment(
                 Arc::clone(&self.store),
