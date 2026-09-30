@@ -1,7 +1,7 @@
 import "@tanstack/react-start/server-only";
 import type { ConfigCommand, ConfigQuery, ConfigTrusted, ConfigWritten, SystemEvent } from "@ployz/sdk";
 import { eq, sql } from "drizzle-orm";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { gatherDomainEvidence } from "#/modules/config-store/domain-evidence.server";
 import { gatherGitEvidence } from "#/modules/config-store/git-evidence.server";
 import { gatherVolumeEvidence } from "#/modules/config-store/volume-evidence.server";
@@ -21,7 +21,7 @@ import { Database } from "#/server/database.server";
 import { NotFound } from "#/server/public-error";
 import { cancelGithubRun } from "#/modules/github/github-build.server";
 import { countOrganizationMachines, loadOrganizationConnections } from "#/modules/machines/connections.server";
-import type { StoreAnswer, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
+import type { CommittedViews, StoreAnswer, StoreWriteResult, StoreCall, StoreRead, StoreRefusal, StoreResult } from "./store.contract";
 
 /** One view Cloud reads for itself, with no evidence: its own lookups, such as a Deployment's Namespace for its logs. */
 export const readStore = <Q extends ConfigQuery>(organizationId: string, query: Q) =>
@@ -227,3 +227,24 @@ export const callStoreAsMember = <C extends StoreCall>(actor: Actor, organizatio
   if (!organization) return yield* new NotFound({ message: "Organization not found." });
   return yield* callStore(organization.id, actor.userId, call);
 }).pipe(Effect.withSpan("ConfigStore.callAsMember"));
+
+/**
+ * The dashboard's write: `command` as `actor`, answered with the committed `diff` and `services` views of the
+ * Environment it names, so the review's rows, count and pink arrive with the write. A view that can't be read is left
+ * out (the writer's refetch brings it); a command naming no Environment, or several (a Move), carries none.
+ */
+export const writeStoreAsMember = (actor: Actor, organizationSlug: string, command: ConfigCommand) => Effect.gen(function* () {
+  const organization = yield* getOrganizationForUserBySlug(actor.userId, organizationSlug).pipe(Effect.orDie);
+  if (!organization) return yield* new NotFound({ message: "Organization not found." });
+  const result = yield* callStore(organization.id, actor.userId, { operation: "write", command });
+  if (!result.ok || !("environment" in command) || !command.environment) return result satisfies StoreWriteResult;
+  const { environment } = command;
+  const views = yield* Effect.all({
+    diff: readStore(organization.id, { query: "diff", environment }).pipe(Effect.option),
+    services: readStore(organization.id, { query: "services", environment }).pipe(Effect.option),
+  }, { concurrency: 2 });
+  const committed: CommittedViews = {};
+  if (Option.isSome(views.diff)) committed.diff = views.diff.value;
+  if (Option.isSome(views.services)) committed.services = views.services.value;
+  return { ...result, views: committed } satisfies StoreWriteResult;
+}).pipe(Effect.map((answer): StoreWriteResult => answer), Effect.withSpan("ConfigStore.writeAsMember"));

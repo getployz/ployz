@@ -9,7 +9,7 @@ import type { CollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import type { StoreViewName } from "#/collections/read.contract";
 import { readStoreViewServerFn } from "./store.functions";
-import type { StoreResult, StoreViewOf } from "./store.contract";
+import type { CommittedViews, StoreResult, StoreViewOf } from "./store.contract";
 import { prPlansQuery, pullRequestQuery } from "./store-pull-requests";
 
 /**
@@ -116,6 +116,18 @@ export async function refetchEnvironmentViews(queryClient: QueryClient, organiza
 }
 
 /** The newest Working State revision any cached view of the Environment shows. */
+/**
+ * A write's committed views, in every cached view of the same kind and Environment: the review's rows, count and pink
+ * arrive with the write, before any refetch.
+ */
+export function putCommittedViews(queryClient: QueryClient, organizationSlug: string, key: string, views: CommittedViews) {
+  for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {
+    const kind = queryOf(query)?.query;
+    const view = kind === "diff" ? views.diff : kind === "services" ? views.services : undefined;
+    if (view !== undefined && isOfEnvironment(query, key)) queryClient.setQueryData(query.queryKey, { ok: true, value: view });
+  }
+}
+
 export function cachedRevision(queryClient: QueryClient, organizationSlug: string, key: string) {
   let latest: number | null = null;
   for (const query of queryClient.getQueryCache().findAll({ queryKey: storeViewPrefix(organizationSlug) })) {

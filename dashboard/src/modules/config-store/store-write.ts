@@ -6,7 +6,7 @@ import { cachedByCollectionScope } from "#/collections/scope";
 import { useCollectionScope } from "#/collections/use-collection-scope";
 import { writeStoreServerFn } from "./store.functions";
 import { StoreRefused } from "./store.contract";
-import { cachedRevision, environmentKey, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
+import { cachedRevision, environmentKey, putCommittedViews, refetchEnvironmentViews, storeEditKey, storeViewPrefix } from "./store-view.queries";
 import { applyOptimistic } from "./store-optimistic";
 
 /** Edits to one Environment's Settings, applied at once and saved in the background. */
@@ -40,6 +40,9 @@ const getStoreWriter = cachedByCollectionScope((organizationSlug, scope) => {
   async function send(command: ConfigCommand) {
     const result = await writeStoreServerFn({ data: { organizationSlug, command } });
     if (!result.ok) throw new StoreRefused(result.refusal);
+    if (result.views && "environment" in command && command.environment) {
+      putCommittedViews(queryClient, organizationSlug, environmentKey(command.environment), result.views);
+    }
     return result.value;
   }
 
